@@ -167,3 +167,8 @@ tianshu-welcome-*.html
 
 # 公开仓：禁止 knowledge 回灌（私有仓策略不同；仅保留 .rivet/SELF）
 .rivet/knowledge/
+
+# 密钥与本地环境（安全：env 值即使写入 .env 也永不进 git；secrets.json 由 secrets-store 管理）
+.env
+.env.*
+!.env.example

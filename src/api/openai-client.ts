@@ -779,8 +779,6 @@ export class OpenAIClient implements StreamClient {
   }
 
   /** Parse SSE stream from a reader — exposed for testing */
-
-  /** Parse SSE stream from a reader — exposed for testing */
   async parseStreamFromReader(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     callbacks: Partial<Pick<StreamCallbacks, 'onTextDelta' | 'onThinkingDelta' | 'onContentBlock' | 'onStopReason' | 'onStreamAttemptAborted'>>,
@@ -986,14 +984,10 @@ export class OpenAIClient implements StreamClient {
       }
 
       // Process any residual data in the SSE buffer (final chunk without trailing newline)
-      if (buffer.trim()) {
-        const trimmed = buffer.trim()
-        if (trimmed.startsWith('data:')) {
-          const payload = trimmed.slice(5).trimStart()
-          if (payload !== '[DONE]') {
-            processPayload(payload)
-          }
-        }
+      const trimmed = buffer.trim()
+      if (trimmed.startsWith('data:')) {
+        const payload = trimmed.slice(5).trimStart()
+        if (payload !== '[DONE]') processPayload(payload)
       }
 
       this.flushToolCalls(callbacks, { final: true })

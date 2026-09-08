@@ -8,6 +8,7 @@ import type { ProviderProfile } from './provider-profile.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
+import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { sanitizeMessageContent } from '../utils/sanitize.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { debugLog } from '../utils/debug.js'
@@ -782,7 +783,7 @@ export class OpenAIClient implements StreamClient {
   /** Parse SSE stream from a reader — exposed for testing */
   async parseStreamFromReader(
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    callbacks: Partial<Pick<StreamCallbacks, 'onTextDelta' | 'onContentBlock' | 'onStopReason' | 'onStreamAttemptAborted'>>,
+    callbacks: Partial<Pick<StreamCallbacks, 'onTextDelta' | 'onThinkingDelta' | 'onContentBlock' | 'onStopReason' | 'onStreamAttemptAborted'>>,
     signal?: AbortSignal,
     reasoningRef?: { content: string },
     /**
@@ -814,6 +815,32 @@ export class OpenAIClient implements StreamClient {
     let reasoningAccum = ''
     let textReceived = false
     let promotionFired = false
+    let toolProgressReceived = false
+    const repetitionGuard = this.config.providerName === 'deepseek'
+      ? new ReasoningRepetitionGuard() : undefined
+    const processPayload = (payload: string): void => {
+      let parsed: Parameters<OpenAIClient['processDelta']>[0]
+      try { parsed = JSON.parse(payload) } catch { return }
+      if (!parsed || typeof parsed !== 'object') return
+      const delta = parsed?.choices?.[0]?.delta
+      if (parsed.choices?.[0] && !delta) return
+      // Completed calls leave toolCallBuffer when flushed. Progress remains
+      // monotonic for this attempt, even if reasoning arrives after finish_reason.
+      if (delta?.tool_calls?.length) toolProgressReceived = true
+      // Match processDelta's channel ordering, including reasoning and content
+      // arriving in the same event. Only JSON decoding errors are recoverable;
+      // guard and consumer errors must reach stream cleanup and retry policy.
+      if (delta?.reasoning_content && !textReceived) {
+        reasoningAccum += delta.reasoning_content
+        receivedThinking = true
+        if (reasoningRef) reasoningRef.content = reasoningAccum
+        if (!delta.content && !toolProgressReceived && this.toolCallBuffer.size === 0) {
+          repetitionGuard?.push(delta.reasoning_content)
+        }
+      }
+      this.processDelta(parsed, callbacks)
+      if (delta?.content) textReceived = true
+    }
 
     // Create an internal timeout AbortSignal for hard timeout guarantee.
     // This ensures reader.read() is unblocked even if reader.cancel() alone
@@ -949,22 +976,7 @@ export class OpenAIClient implements StreamClient {
 
           if (process.env.RIVET_DEBUG_RAW_SSE) this.dumpRawSse(payload)
 
-          try {
-            const parsed = JSON.parse(payload)
-            this.processDelta(parsed, callbacks)
-            // Track whether text/content was received (for reasoning promotion fallback)
-            if (parsed.choices?.[0]?.delta?.content) textReceived = true
-            // Late reasoning (after content started) was reclassified as text in
-            // processDelta — exclude it from the thinking accumulation so the
-            // persisted thinking block matches the live UI channel.
-            if (parsed.choices?.[0]?.delta?.reasoning_content && !textReceived) {
-              reasoningAccum += parsed.choices[0].delta.reasoning_content
-              receivedThinking = true
-              if (reasoningRef) reasoningRef.content = reasoningAccum
-            }
-          } catch {
-            // Skip malformed SSE lines
-          }
+          processPayload(payload)
         }
         // 仅在收到真实内容事件时重置 idle timer（心跳不重置）
         if (sawDataEvent) {
@@ -979,16 +991,7 @@ export class OpenAIClient implements StreamClient {
         if (trimmed.startsWith('data:')) {
           const payload = trimmed.slice(5).trimStart()
           if (payload !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(payload)
-              this.processDelta(parsed, callbacks)
-              if (parsed.choices?.[0]?.delta?.content) textReceived = true
-              if (parsed.choices?.[0]?.delta?.reasoning_content && !textReceived) {
-                reasoningAccum += parsed.choices[0].delta.reasoning_content
-                receivedThinking = true
-                if (reasoningRef) reasoningRef.content = reasoningAccum
-              }
-            } catch { /* skip malformed */ }
+            processPayload(payload)
           }
         }
       }
@@ -1038,6 +1041,9 @@ export class OpenAIClient implements StreamClient {
       }
     } catch (err) {
       // Observability: surface how much streamed output this attempt discards.
+      // Release the unfinished response even for direct parser callers without
+      // a fetch lifecycle controller (including repetition/consumer failures).
+      void reader.cancel().catch(() => {})
       callbacks.onStreamAttemptAborted?.({
         provider: this.config.providerName ?? 'openai',
         receivedChars: reasoningAccum.length + this._textAccum.length,

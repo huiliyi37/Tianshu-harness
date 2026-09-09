@@ -44,12 +44,13 @@ describe('ContextClaimStore checkpoint — 溶解即新生', () => {
     assert.deepEqual(store.listClaims().map(c => c.text).sort(), ['use ESM', 'use strict'])
   })
 
-  it('replays incremental JSONL events after snapshot on reload', () => {
+  it('replays incremental JSONL events after snapshot on reload', async () => {
     const store = new ContextClaimStore(dir, 'session-2')
     store.propose(proposal('before checkpoint', 'e1'))
     store.checkpoint(1234)
     store.propose(proposal('after checkpoint', 'e2'))
 
+    await store.flushWrites() // write-behind：重载前先排空写链
     const reloaded = new ContextClaimStore(dir, 'session-2')
     const texts = reloaded.listClaims().map(c => c.text).sort()
 
@@ -90,11 +91,12 @@ describe('ContextClaimStore checkpoint — 溶解即新生', () => {
     assert.equal(replayed?.status, 'durable')
   })
 
-  it('auto-checkpoints after a bounded number of appended events', () => {
+  it('auto-checkpoints after a bounded number of appended events', async () => {
     const store = new ContextClaimStore(dir, 'session-auto', { checkpointEveryEvents: 2 })
     store.propose(proposal('first', 'e1'))
     store.propose(proposal('second', 'e2'))
 
+    await store.flushWrites() // write-behind：自动 checkpoint 在写链内按序执行，先排空再断言
     assert.ok(existsSync(join(dir, 'session-auto.claims.snapshot.json')))
     assert.equal(readFileSync(store.path, 'utf-8'), '')
     assert.equal(store.listClaims().length, 2)

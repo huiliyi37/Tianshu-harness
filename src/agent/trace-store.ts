@@ -25,15 +25,6 @@ export interface TraceStore {
   events: TraceEvent[]
   toolFingerprints: string[]
   toolNameHistory?: string[]
-  /** 独立于 doom 指纹的「轮询活动类」轨迹（P0-1 polling-storm guard）：
-   *  只记录会被用于判定轮询的工具类（bash 命令类 + 观察型工具）。
-   *  成功/失败都记录；绝不给 doom-loop 检测消费，避免污染失败循环语义。 */
-  toolPollingClasses?: string[]
-  /** 单调递增的总追加轮询记录数（不受 slice(-24) 裁剪）。「本轮是否有新增轮询
-   *  记录」用该计数判定，而不是裁剪后数组长度：toolPollingClasses 长度到 24
-   *  上限后恒定不变，用长度代理会让 hasNewPolling 恒为 false，守卫在长会话里
-   *  静默失效（streak 只衰减、abort 分支不可达）。 */
-  toolPollingCount?: number
   /** bash 命令类指纹（归一化后的命令类，如 "git:status·success"）。
    *  精确指纹对 sed/head/python/tee 变体免疫——每个变体都是新 hash，
    *  doom-loop 检测器全程不拦（会话 43443098：28 次 git status 变体零拦截）。
@@ -111,25 +102,7 @@ const SUBCOMMAND_BINARIES = new Set(['git', 'npm', 'pnpm', 'yarn', 'cargo', 'doc
 export function bashCommandClass(command: string): string {
   // git anywhere in the command dominates — pipes/tee/embedding included.
   const gitMatch = command.match(/\bgit\s+(?:-[^\s]+\s+)*([a-z][a-z-]*)/)
-  if (gitMatch) {
-    const sub = gitMatch[1]!
-    // 内容查询型子命令按目标参数桶化（2026-09-05 用户报告：逐提交 git show
-    // 审查被误判轮询风暴）：不同目标 = 不同查询，不合并；同目标反复 = 真重复
-    // 仍可检测。状态型（status/log 无参）保持平类，等待状态的真轮询不受影响。
-    if (GIT_CONTENT_CMDS.has(sub)) {
-      const after = command.slice(gitMatch[0].length + gitMatch.index!)
-      // flag 前置形式（git show --stat <hash>、git show -p <hash>、
-      // git log --oneline <hash>）：跳过标志 token 再取目标，避免回落平类
-      // git:show 把多提交的合法审查合并成同一轮询类。
-      const target = after.trim().split(/\s+/)
-        .find(t => t && !t.startsWith('-'))
-        ?.replace(/^['"]|['"]$/g, '') ?? ''
-      if (target) {
-        return `git:${sub}:${target.slice(0, 12)}`
-      }
-    }
-    return `git:${sub}`
-  }
+  if (gitMatch) return `git:${gitMatch[1]}`
 
   const tokens = command.trim().split(/\s+/)
   let i = 0
@@ -189,132 +162,20 @@ export function recordToolNamedFingerprint(
   }
 }
 
-/**
- * P0-1 polling-storm guard 的候选工具集合。只放「观察/等待型」工具——
- * 这些工具连续重复调用时，模型几乎一定是在轮询而不是在推进任务。
- * 刻意排除 read/grep/web_fetch 等合法长调研工具，避免误熔断。
- */
-const POLLING_CLASS_TOOLS = new Set(['job', 'monitor', 'browser_debug', 'browser', 'computer_use', 'ask_image'])
-
-/**
- * 计算轮询活动类：
- * - bash → `bash:<命令类>`（同一命令类的变体归并，sed/head/python 变体不会各算一类）
- * - 观察型工具 → 工具名本身（同工具不同 action 的轮询也归并）
- * - 其余工具 → null（不进入 polling-storm 判定）
- */
-export function pollingClassOf(name: string, input: Record<string, unknown>): string | null {
-  const tool = name.toLowerCase()
-  if (tool === 'bash') {
-    const command = typeof input.command === 'string' ? input.command.trim() : ''
-    if (!command) return null
-    return `bash:${bashCommandClass(command)}`
-  }
-  if (POLLING_CLASS_TOOLS.has(tool)) return tool
-  return null
-}
-
-export function recordToolPollingClass(
-  store: TraceStore,
-  name: string,
-  input: Record<string, unknown>,
-): TraceStore {
-  const cls = pollingClassOf(name, input)
-  if (!cls) return store
-  return {
-    ...store,
-    toolPollingClasses: [...(store.toolPollingClasses ?? []), cls].slice(-24),
-    toolPollingCount: (store.toolPollingCount ?? 0) + 1,
-  }
-}
-
-const GIT_CONTENT_CMDS = new Set(['show', 'diff', 'cat-file', 'blame', 'grep', 'log'])
-
-/** 独立于 doom 语义的轮询风暴等级。输入必须是 pollingClassOf 产出的类序列。 */
-export function getPollingStormLevel(classes: string[]): ToolStormLevel {
-  return stormLevelFromSeries(classes)
-}
-
-export const POLLING_STORM_WARN_TURNS = 3
-export const POLLING_STORM_ABORT_TURNS = 6
-
-/** P0-1 polling-storm guard 的跨轮可变状态。 */
-export interface PollingStormState {
-  streak: number
-  warned: boolean
-  lastFilesModifiedCount: number
-  /** 上次评估时的轮询记录总追加数（store.toolPollingCount 的单调计数）——
-   *  「本轮是否有新增轮询记录」判据。不用 toolPollingClasses 数组长度：
-   *  系列被 slice(-24) 裁剪后长度恒定，长度代理会在长会话里恒判「无新增」。 */
-  lastPollingCount: number
-}
-
-export interface PollingStormVerdict {
-  action: 'none' | 'warn' | 'abort'
-  className: string
-  streak: number
-  reminder: string
-}
-
-/**
- * 每轮工具执行后推进一次 polling-storm 状态机。文件修改数增长视为推进并
- * 清零 streak；pollingClass 连续 8 次同类后开始累计，streak≥3 发警告、
- * streak≥6 返回 abort（调用方负责 completeTurn 并释放 running）。
- * store 参数持有裁剪后的轮询窗口（供风暴等级判定）与单调追加计数
- * （toolPollingCount，供「本轮是否有新增」判定）。
- */
-export function evaluatePollingStorm(
-  state: PollingStormState,
-  store: TraceStore,
-  filesModifiedCount: number,
-): PollingStormVerdict {
-  const pollingClasses = store.toolPollingClasses ?? []
-  const pollingTotal = store.toolPollingCount ?? 0
-  const modifiedThisTurn = filesModifiedCount > state.lastFilesModifiedCount
-  state.lastFilesModifiedCount = filesModifiedCount
-  // 迟到误杀修复（2026-09-05，用户报告）：只读轮（read/grep 等，pollingClassOf
-  // 返回 null 不追加系列）与无工具轮不产生新 polling 记录——本轮无新增且无文件
-  // 修改时模型在做事或收束，streak 向 0 收敛而不是在冻结的 storm 帧里继续 +1
-  // 直至 abort。优先级：文件修改（最强推进，任何轮清零）> 无新增衰减 > 有新增
-  // storm 递增。真轮询每轮都有新记录且无修改 → 8 连 + 6 轮照常熔断。
-  // 环形缓冲溢出修复（2026-09-05，对抗审查）：hasNewPolling 用 toolPollingCount
-  // 的单调计数而非裁剪后数组长度——长度到 24 上限后不再增长，长度代理会让累计
-  // 满 24 条后的长会话恒判「无新增」，streak 只衰减、abort 分支永久不可达。
-  const hasNewPolling = pollingTotal > state.lastPollingCount
-  state.lastPollingCount = pollingTotal
-  if (modifiedThisTurn) {
-    state.streak = 0
-    state.warned = false
-  } else if (hasNewPolling && getPollingStormLevel(pollingClasses) === 'storm') {
-    state.streak = state.streak + 1
-  } else if (!hasNewPolling) {
-    state.streak = Math.max(0, state.streak - 1)
-  } else {
-    state.streak = 0
-    state.warned = false
-  }
-  const className = pollingClasses.slice(-8).at(-1) ?? 'unknown'
-  const reminder =
-    `<system-reminder>[polling-storm] 已连续多轮轮询同一类操作（${className}）且没有文件修改。`
-    + `如果是在等外部状态变化，请改用 monitor 订阅或 job(await) 一次性等待；否则立即停止轮询，基于已有结果收束，或换一种验证方式。</system-reminder>`
-  if (state.streak >= POLLING_STORM_ABORT_TURNS) return { action: 'abort', className, streak: state.streak, reminder }
-  if (!state.warned && state.streak >= POLLING_STORM_WARN_TURNS) {
-    state.warned = true
-    return { action: 'warn', className, streak: state.streak, reminder }
-  }
-  return { action: 'none', className, streak: state.streak, reminder }
-}
-
 export type ToolStormLevel = 'none' | 'warn' | 'storm'
 
 /**
- * 连续序列的通用风暴检测（供工具名风暴与轮询类风暴共用）。
- * - 4+ 连续同值 → warn
- * - 8+ 连续同值 → storm
+ * Detects "tool storms" — consecutive calls to the same tool TYPE
+ * regardless of input parameters (different grep queries still count).
+ *
+ * Thresholds:
+ * - 4+ consecutive same tool type → warn
+ * - 8+ consecutive same tool type → storm
  */
-function stormLevelFromSeries(values: string[]): ToolStormLevel {
-  if (values.length < 4) return 'none'
+export function getToolStormLevel(toolNames: string[]): ToolStormLevel {
+  if (toolNames.length < 4) return 'none'
 
-  const recent = values.slice(-12)
+  const recent = toolNames.slice(-12)
   let maxConsecutive = 0
   let currentConsecutive = 0
   for (let i = 1; i < recent.length; i++) {
@@ -329,18 +190,6 @@ function stormLevelFromSeries(values: string[]): ToolStormLevel {
   if (maxConsecutive >= 7) return 'storm'
   if (maxConsecutive >= 3) return 'warn'
   return 'none'
-}
-
-/**
- * Detects "tool storms" — consecutive calls to the same tool TYPE
- * regardless of input parameters (different grep queries still count).
- *
- * Thresholds:
- * - 4+ consecutive same tool type → warn
- * - 8+ consecutive same tool type → storm
- */
-export function getToolStormLevel(toolNames: string[]): ToolStormLevel {
-  return stormLevelFromSeries(toolNames)
 }
 
 /** Threshold presets for doom-loop detection, selectable by goal mode. */

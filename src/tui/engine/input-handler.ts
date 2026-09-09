@@ -62,9 +62,7 @@ export type KeyName =
   | 'ctrl_n'
   | 'ctrl_o'
   | 'ctrl_p'
-  | 'ctrl_q'
   | 'ctrl_r'
-  | 'ctrl_s'
   | 'ctrl_t'
   | 'ctrl_v'
   | 'ctrl_b'
@@ -134,9 +132,7 @@ const CTRL_CODES: Record<number, KeyName> = {
   0x0e: 'ctrl_n',
   0x0f: 'ctrl_o',
   0x10: 'ctrl_p',
-  0x11: 'ctrl_q', // XON 对偶——解冻输出的别名键
   0x12: 'ctrl_r',
-  0x13: 'ctrl_s', // XOFF——raw mode 下内核流控失效，TUI 自语义接管：冻结输出
   0x14: 'ctrl_t',
   0x15: 'ctrl_u',
   0x16: 'ctrl_v',
@@ -176,6 +172,44 @@ const ANSI_ESCAPE_MAP: Record<string, KeyName> = {
   '[Z': 'shift_tab',
 }
 
+/**
+ * Kitty keyboard protocol / xterm modifyOtherKeys 的 CSI u 解码：
+ * `CSI <unicode-codepoint>[;<mods>[;…]] u`（第三参 event-type 未请求，忽略）。
+ *
+ * start() 发送 `\x1B[>1u`（flag 1 disambiguate）后，所有「不产生文本」的键
+ * 改用此编码：Esc → `\x1B[27u`、Ctrl+C → `\x1B[99;5u`、Ctrl+P → `\x1B[112;5u`……
+ * 旧实现只认 13;2u/9;2u 两形，其余全落 unknown——kitty/Ghostty/WezTerm/
+ * Alacritty/WT 1.22+ 上 Esc/Ctrl+letter 控制面整体失效（打断/面板/换行全断）。
+ *
+ * mods 为 1+位掩码：shift=1 alt=2 ctrl=4（super=8）——alt 落 meta，super 忽略。
+ * Ctrl+letter 经 c0 = 小写化(cp)-96 复用 CTRL_CODES 单源映射（i→tab、m→return
+ * 等历史同码语义自动对齐）。xterm modifyOtherKeys level 2 与 kitty 同形，
+ * 同一解析器双方言覆盖。
+ */
+function parseCsiU(seq: string): { name: KeyName; ctrl: boolean; meta: boolean; shift: boolean } | null {
+  const m = seq.match(/^\x1B\[(\d+)(?:;(\d+))?(?:;\d+)*u$/)
+  if (!m) return null
+  const cp = Number(m[1])
+  const mods = m[2] === undefined ? 1 : Number(m[2])
+  const bitmask = Math.max(0, mods - 1)
+  const ctrl = (bitmask & 4) !== 0
+  const meta = (bitmask & 2) !== 0
+  const shift = (bitmask & 1) !== 0
+
+  if (cp === 27) return { name: 'escape', ctrl, meta, shift } // Ctrl+[ 同码（27;5u）——escape + ctrl 旗
+  if (cp === 13) return { name: 'return', ctrl, meta, shift }
+  if (cp === 127) return { name: 'backspace', ctrl, meta, shift }
+  if (cp === 9) return { name: shift ? 'shift_tab' : 'tab', ctrl, meta, shift }
+  if (ctrl) {
+    const base = cp >= 65 && cp <= 90 ? cp + 32 : cp
+    if (base >= 97 && base <= 122) {
+      const name = CTRL_CODES[base - 96]
+      if (name) return { name, ctrl, meta, shift }
+    }
+  }
+  return { name: 'unknown', ctrl, meta, shift }
+}
+
 export class InputHandler {
   private stdin: ReadStream
   private mode: InputMode
@@ -184,6 +218,9 @@ export class InputHandler {
   /** CPR（cursor position report）处理器：终端对 DSR `\x1B[6n` 的响应
    *  `\x1B[{row};{col}R` 不是按键，单独走这个通道（LiveEngine 自愈用）。 */
   private cprHandlers = new Set<(row: number, col: number) => void>()
+  /** Kitty keyboard protocol 能力响应处理器：`\x1B[?u` 查询的回包
+   *  `\x1B[?<flags>u` 不是按键，单独走这个通道（footer 提示诚实化用）。 */
+  private kittyFlagsHandlers = new Set<(flags: number) => void>()
   private escapeTimeoutMs: number
   private partialSequenceTimeoutMs: number
   private escapeTimer: ReturnType<typeof setTimeout> | null = null
@@ -248,6 +285,14 @@ export class InputHandler {
     return () => { this.cprHandlers.delete(handler) }
   }
 
+  /** 注册 kitty keyboard protocol 能力响应处理器（`\x1B[?u` 查询的回包
+   *  `\x1B[?<flags>u`，flags 为终端当前生效位掩码）。收到回包即证明终端
+   *  支持该协议——Shift+Enter 等修饰键可区分，footer 提示据此裁剪。 */
+  onKittyFlags(handler: (flags: number) => void): () => void {
+    this.kittyFlagsHandlers.add(handler)
+    return () => { this.kittyFlagsHandlers.delete(handler) }
+  }
+
   /** 切换输入模式 */
   setMode(mode: InputMode): void {
     this.mode = mode
@@ -283,6 +328,7 @@ export class InputHandler {
     this.handlers.clear()
     this.pasteHandlers.clear()
     this.cprHandlers.clear()
+    this.kittyFlagsHandlers.clear()
   }
 
   // ── internal ─────────────────────────────────────────────────
@@ -467,6 +513,15 @@ export class InputHandler {
     if (data.startsWith('\x1B')) {
       if (data.length === 1) return { key: null, consumed: 0 }
 
+      // Kitty keyboard protocol 查询回包 `\x1B[?<flags>u`：不是按键——
+      // 路由给 kittyFlagsHandlers（key=null + consumed>0，消费后继续解析）。
+      // 须在通用 CSI 匹配之前：`?` 不在 [0-9;] 内，否则会落入未知 ESC 路径。
+      const kittyQueryMatch = data.match(/^\x1B\[\?(\d+)u/)
+      if (kittyQueryMatch) {
+        for (const handler of this.kittyFlagsHandlers) handler(Number(kittyQueryMatch[1]))
+        return { key: null, consumed: kittyQueryMatch[0].length }
+      }
+
       // CSI 序列（方向键、功能键、带修饰键的序列等）
       const csiMatch = data.match(/^\x1B\[[0-9;]*[A-Za-z~]/)
       if (csiMatch) {
@@ -477,6 +532,16 @@ export class InputHandler {
         if (cprMatch) {
           for (const handler of this.cprHandlers) handler(Number(cprMatch[1]), Number(cprMatch[2]))
           return { key: null, consumed: seq.length }
+        }
+        // Kitty keyboard protocol / xterm modifyOtherKeys 的 CSI u 编码。
+        // start() 请求 flag 1 后所有「不产生文本」的键都走此编码——须在
+        // 通用路径之前解码，否则 Esc/Ctrl+letter 全落 unknown。
+        const csiU = parseCsiU(seq)
+        if (csiU) {
+          return {
+            key: { raw: seq, char: '', name: csiU.name, ctrl: csiU.ctrl, meta: csiU.meta, shift: csiU.shift },
+            consumed: seq.length,
+          }
         }
         const name = this.resolveEscapeSequence(seq)
         const meta = seq.includes(';3') || seq.includes(';4')
@@ -510,8 +575,8 @@ export class InputHandler {
         }
       }
 
-      // 看起来是未完整的 CSI/SS3 序列，等待后续字节
-      if (/^\x1B(\[([0-9;]*)|O)$/.test(data)) {
+      // 看起来是未完整的 CSI/SS3 序列，等待后续字节（含 kitty 查询回包的 `?` 前缀）
+      if (/^\x1B(\[([0-9;]*|\?[0-9;]*)|O)$/.test(data)) {
         return { key: null, consumed: 0 }
       }
 
@@ -553,12 +618,8 @@ export class InputHandler {
     // 直接映射
     if (ANSI_ESCAPE_MAP[body]) return ANSI_ESCAPE_MAP[body]!
 
-    // Kitty / xterm modifyOtherKeys: Shift+Enter can arrive as \x1B[13;2u.
-    const modifyOtherKeysMatch = body.match(/^\[(\d+);(\d+)u$/)
-    if (modifyOtherKeysMatch) {
-      const code = Number(modifyOtherKeysMatch[1])
-      if (code === 13) return 'return'
-    }
+    // CSI u 形式（kitty / modifyOtherKeys）由 parseCsiU 在 parseInput 侧
+    // 全量解码（含修饰旗），不再走这里的名值映射。
 
     // 处理带修饰键的序列（如 \x1B[1;5A = Ctrl+Up）
     const modMatch = body.match(/^\[(\d+);(\d+)([A-HF~])$/)

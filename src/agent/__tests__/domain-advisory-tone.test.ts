@@ -85,4 +85,15 @@ describe('AdvisoryBus tone adapter integration', () => {
     const out = bus.render()
     assert.ok(out.includes('原文照送。'))
   })
+
+  it('adapter returning undefined falls back to original content (30 轮 goal 收束实证：escapeXml undefined 崩溃)', () => {
+    const bus = new AdvisoryBus()
+    bus.setToneAdapter(() => undefined as unknown as string)
+    bus.submit({ key: 'k', priority: 0.6, category: 'discipline', content: '脏值回退原文。' })
+    // 修复前：render 的 XML entry 路径 escapeXml(applyTone(e)) 收到 undefined →
+    // TypeError: Cannot read properties of undefined (reading 'replaceAll')。
+    let out = ''
+    assert.doesNotThrow(() => { out = bus.render() }, '脏 tone 输出不得让 render 崩溃')
+    assert.ok(out.includes('脏值回退原文。'), '脏 tone 输出必须回退原文送达')
+  })
 })

@@ -1,10 +1,9 @@
 import { join, dirname, basename } from 'node:path'
-import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { subagentsDir } from '../config/paths.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import type { WorkerCheckpoint } from './worker-session.js'
-import { estimateOaiTokens } from '../compact/micro.js'
 
 /** Persisted worker session history — the full OaiMessage transcript from a
  *  completed worker run, so a later `resume` delegate_task can rebuild it.
@@ -41,51 +40,8 @@ function workerSubagentsDir(homeDir?: string): string {
   return subagentsDir()
 }
 
-/** 项目指纹（目录名 + cwd 哈希前 6 位，与会话 slug 同构）。专家驻场文件按项目
- *  隔离——`expert:<id>` 是跨派发稳定 id，若无项目维度，桌面 sidecar 多项目池
- *  里 A 项目的专家上下文会被 B 项目的 resume 整段带入（2026-09-02 审查修复）。 */
-function benchProjectComponent(): string {
-  const cwd = process.cwd()
-  const hash = createHash('sha256').update(cwd).digest('hex').slice(0, 6)
-  return `${basename(cwd) || 'project'}-${hash}`
-}
-
-/** 专家驻场持久化键：Windows 安全（ orderId 里的 `:` 换 `-`，否则 save 静默
- *  失败、驻场永远冷）+ 项目隔离。逻辑 id（expert:<seaId>）不变，只影响落盘
- *  文件名；进程内记忆（summon-expert resumeStore）用同一键保持口径一致。 */
-export function expertBenchStorageKey(benchId: string): string {
-  return `${benchId.replace(/:/g, '-')}@${benchProjectComponent()}`
-}
-
 export function workerSessionPath(workOrderId: string, homeDir?: string): string {
-  // 专家驻场 id 是稳定常量（expert:<seaId>），必须经存储键做项目隔离；
-  // team/batch 等 order id 自带唯一性，维持原文件名布局。
-  if (workOrderId.startsWith('expert:')) {
-    return join(workerSubagentsDir(homeDir), `${expertBenchStorageKey(workOrderId)}.session.jsonl`)
-  }
   return join(workerSubagentsDir(homeDir), `${workOrderId}.session.jsonl`)
-}
-
-/** 把驻场续跑历史裁剪到 token 预算内（从最旧侧丢，保最新上下文；至少保留最后
- *  一条避免零历史）。专家席的 budget.maxTokens 在这里兑现「上下文上限」语义——
- *  此前它只被 finalize/repair 当输出上限消费且被钳到 16384，宣称的差异化
- *  （32k/16k/48k）在执行路径不存在（2026-09-02 审查修复）。 */
-export function trimMessagesToTokenBudget(messages: readonly OaiMessage[], maxTokens: number): OaiMessage[] {
-  if (!Number.isFinite(maxTokens) || maxTokens <= 0 || messages.length === 0) return [...messages]
-  if (estimateOaiTokens([...messages]) <= maxTokens) return [...messages]
-  const last = messages[messages.length - 1]
-  if (!last) return [...messages]
-  const kept: OaiMessage[] = [last]
-  let total = estimateOaiTokens([last])
-  for (let i = messages.length - 2; i >= 0; i--) {
-    const candidate = messages[i]
-    if (!candidate) break
-    const cost = estimateOaiTokens([candidate])
-    if (total + cost > maxTokens) break
-    kept.unshift(candidate)
-    total += cost
-  }
-  return kept
 }
 
 /** Write atomically: write to a unique temp file in the same directory, then

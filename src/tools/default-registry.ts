@@ -79,12 +79,6 @@ export interface DefaultRegistryOptions {
    *  WEB_FETCH_TOOL is registered. The tool `definition` is byte-identical
    *  either way, so prefix cache is unaffected. */
   fetchOptions?: WebFetchOptions
-  /** zen structuredRead 读面（tools.zen.faceMode=structuredRead）：面内 4 个
-   *  结构化读工具（file_info/related_tests/repo_graph/semantic_search；read_section
-   *  各档本就注册）不受 preset 排除——读面若只出现在 Cockpit 而注册表里没有，
-   *  zen face 过滤后等于没开（2026-09-02 审查修复）。仅显式配置时生效，
-   *  默认 false → 装配字节零变化，frozen 前缀缓存安全。 */
-  zenStructuredRead?: boolean
 }
 
 export function createDefaultToolRegistry(extraTools: Tool[] = [], options: DefaultRegistryOptions = {}): ToolRegistry {
@@ -158,9 +152,9 @@ export function createDefaultToolRegistry(extraTools: Tool[] = [], options: Defa
   }
   if (presetIncludes(preset, 'inspect_project')) registry.register(INSPECT_PROJECT_TOOL)
   if (preset !== 'taiyi') registry.register(REPO_MAP_TOOL)
-  if (presetIncludes(preset, 'related_tests') || options.zenStructuredRead) registry.register(RELATED_TESTS_TOOL)
+  if (presetIncludes(preset, 'related_tests')) registry.register(RELATED_TESTS_TOOL)
   if (preset !== 'taiyi') registry.register(READ_SECTION_TOOL)
-  if (presetIncludes(preset, 'file_info') || options.zenStructuredRead) registry.register(FILE_INFO_TOOL)
+  if (presetIncludes(preset, 'file_info')) registry.register(FILE_INFO_TOOL)
   // capability — 能力索引（只读查询，无审批）。full 档专属（查询面低频，同
   // repo_graph/semantic_search）；RIVET_CAPABILITY=1 可单独强制开启。
   if (presetIncludes(preset, 'capability') || process.env.RIVET_CAPABILITY === '1') {

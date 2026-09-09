@@ -10,6 +10,7 @@ import { killProcessTree } from './process-kill.js'
 import { getShellCommand, getShellDiagnostics, WinStreamDecoder, rewriteWindowsNullRedirect, rewritePowershellNullRedirect } from '../platform.js'
 import { wrapSandboxCommand as sandboxWrap } from './sandbox-profile.js'
 import type { SandboxBackendKind } from './sandbox-profile.js'
+import { extractSmartSummary, renderSmartSummary } from './output-summary.js'
 import { classifySandboxDenial, buildSandboxDenialHint, recordSandboxLearn } from './sandbox-diagnose.js'
 import type { SandboxDenial } from './sandbox-diagnose.js'
 import { grantPath } from './path-grants.js'
@@ -586,20 +587,37 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
             `建议：安装 Git for Windows（https://git-scm.com）或设置 RIVET_GIT_BASH_PATH 指向 bash.exe。\n`
         }
       }
+      // 2026-09-07: 截断时用智能摘要（head + error anchors + tail）替换纯尾部——
+      // 纯尾 24K 会丢失头部/中部错误（RED 复现：40KB 输出错误在 10KB 处被丢弃）。
+      // P1-3（3a）：扫描源改为与 rawPath 同源的 rawSpool（混流保头 capped 副本）——
+      // 旧实现扫纯 stdout 保尾窗口 stdoutFull，锚行号与 rawPath（混流保头）不对应，
+      // stderr 交错即漂移，@raw 行 N / read_file 直达定位误导。同源后行号自洽；
+      // stderr 行成为锚候选属增益（错误常在 stderr）。capped 时窗口=保头 8MB，
+      // 与落盘一致（下方 capNote 声明超 cap 未捕获），可见层附注说明锚窗口。
+      let visibleStdout = stdout
+      if (stdoutTruncated) {
+        const summary = extractSmartSummary(rawSpool.content())
+        visibleStdout = renderSmartSummary(summary, stdoutRawBytes)
+        if (rawSpool.capped) {
+          visibleStdout += `\n[raw capture capped at ${RAW_SPOOL_CAP_BYTES} bytes — 锚扫描与 rawPath 同保头窗口，超 cap 内容未捕获]\n`
+        }
+      }
       const truncNote = stdoutTruncated
-        ? `[stdout truncated: output exceeded 32KB (${stdoutRawBytes} bytes total), showing last 24KB — full output at rawPath below]\n`
+        ? `[stdout truncated: output exceeded 32KB (${stdoutRawBytes} bytes total) — 智能摘要见下，full output at rawPath below]\n`
         : ''
       const stderrNote = stderrTruncated
         ? `[stderr truncated: output exceeded 32KB, showing last 24KB]\n`
         : ''
-      const raw = truncNote + stderrNote + stdout + (stderr ? '\n' + stderr : '')
+      const raw = truncNote + stderrNote + visibleStdout + (stderr ? '\n' + stderr : '')
       const totalRawBytes = stdoutRawBytes + stderrRawBytes
       // W1-A1: persistence consumes the spool (complete within the cap), not
       // the tail-truncated preview buffer. Beyond the cap we declare honestly.
+      // P1-3（3a）：capNote 放 content 之后——前缀会令锚行号整体 +1 偏移
+      // （read_file rawPath 直达错位一行）；后缀声明语义无损（仍在文件末尾可见）。
       const capNote = rawSpool.capped
-        ? `[raw capture capped at ${RAW_SPOOL_CAP_BYTES} bytes (stream total ${totalRawBytes} bytes) — content beyond the cap was NOT captured]\n`
+        ? `\n[raw capture capped at ${RAW_SPOOL_CAP_BYTES} bytes (stream total ${totalRawBytes} bytes) — content beyond the cap was NOT captured]\n`
         : ''
-      const persistedRaw = capNote + rawSpool.content()
+      const persistedRaw = rawSpool.content() + capNote
       // Persistence failure must degrade honestly (no rawPath, no silent loss
       // claim) instead of rejecting the whole tool call.
       const persistRawSafe = async (): Promise<string | undefined> => {
@@ -913,6 +931,9 @@ export const BASH_TOOL: Tool = {
     //
     // 两条触发线：RIVET_SANDBOX=learn（教学采集模式）或 skip 档（全自动的
     // 零打扰承诺——出界写首触即授，2026-09-05 用户反馈「全自动动不动被拦」）。
+    // ⚠ 2026-09-07 语义（6ff919118）：yolo 默认已无沙箱（完全权限全盘读写），
+    // skip 档触发线只在显式 RIVET_SANDBOX=1 时实际到达——保留以服务显式沙箱
+    // 用户；默认 yolo 路径不经此处（无 sandboxDenial 产生）。
     // 注意非幂等副作用：被拒前已执行的前缀会跑第二遍（网络 POST/追加/迁移
     // 会重复）——最多重跑一次，且重复在结果里声明。敏感文件硬墙与 deny 规则
     // 在上游（validatePath / approval-risk）不受影响。

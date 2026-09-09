@@ -225,11 +225,17 @@ export class SessionPersist {
     return this.loadWithChecksum()
   }
 
-  /** Append an OpenAI-native message with checksum (queued into the batch). */
-  async appendOaiWithChecksum(message: OaiMessage): Promise<void> {
+  /** Append an OpenAI-native message with checksum (queued into the batch).
+   *
+   * `flush: true` drains the batch after enqueue — used for durability-critical
+   * records (assistant tool_calls / tool results / user turns) so a hard crash
+   * cannot lose a completed tool result while its disk side effect survives.
+   */
+  async appendOaiWithChecksum(message: OaiMessage, options?: { flush?: boolean }): Promise<void> {
     const json = serializeOaiSessionMessage(message)
     const line = appendChecksum(json) + '\n'
     this.batchWriter.enqueueLine(line)
+    if (options?.flush) await this.batchWriter.flush()
   }
 
   /**

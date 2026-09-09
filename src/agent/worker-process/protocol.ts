@@ -15,6 +15,7 @@ import type { MailboxSendInput } from '../worker-mailbox.js'
 import type { DelegationActivity } from '../../tools/types.js'
 import type { OaiMessage } from '../../api/types.js'
 import type { Usage } from '../../api/types.js'
+import type { FrozenSnapshotData } from '../../prompt/frozen-snapshot.js'
 import type { WorkOrder, WorkerResult } from '../work-order.js'
 import type { WorkerActivityKind, WorkerTranscript, WorkerRuntimeDecision, WorkerCheckpoint } from '../worker-session.js'
 
@@ -37,6 +38,11 @@ export interface SerializedWorkerConfig {
   parentApprovalMode?: string
   priorMessages?: OaiMessage[]
   priorUsage?: Partial<Usage>
+  /** 上一轮（续跑/复核/重试，同 order.id+nonce）导出的冻结前缀快照——child
+   *  构造 PromptEngine 时 inheritFrozenFrom 喂回，历史 user 消息恢复原始字节，
+   *  前缀缓存只在新 user 边界断尾而非 byte-0 全 miss（2026-09-06 续跑冷启动
+   *  全量重建根修；缺省/坏数据经 parseFrozenSnapshotData 降级为冷启动）。 */
+  priorFrozenSnapshot?: FrozenSnapshotData
   sessionNonce?: string
   checkpoint?: WorkerCheckpoint
 }
@@ -81,6 +87,9 @@ export interface SerializedWorkerRun {
   checkpoint?: WorkerCheckpoint
   /** 活转录快照——parent 侧包成 duck-type session{getMessages()} 喂 coordinator。 */
   messages: OaiMessage[]
+  /** 本轮终态导出的冻结前缀快照——parent 侧随 WorkerSessionRun 带回，下一轮
+   *  （续跑/复核/重试）经 priorFrozenSnapshot 回传给新进程继承。 */
+  frozenSnapshot?: FrozenSnapshotData
   /** worker 会话侧的最终 turn 数（诊断用）。 */
   turnCount: number
 }

@@ -5,8 +5,6 @@ import type { AgentLoop } from '../../../agent/loop.js'
 import { SessionContext } from '../../../agent/context.js'
 import type { McpManager } from '../../../mcp/manager.js'
 import { createTraceStore } from '../../../agent/trace-store.js'
-import { ZenPhaseController, resolveZenConfig } from '../../../agent/zen-mode.js'
-import { __resetExpertBenchForTest, recordExpertBench } from '../../../agent/strong-expert.js'
 
 function makeAgent(overrides: Partial<AgentLoop> = {}): AgentLoop {
   return {
@@ -60,75 +58,6 @@ describe('buildCockpitSnapshot', () => {
     assert.equal(snap.panelStatuses.safety, 'ok')
     assert.equal(snap.panelStatuses.model, 'ok')
     assert.equal(snap.panelStatuses.context, 'idle')
-    assert.equal(snap.zen.phase, 'full')
-    assert.equal(snap.zen.armed, false)
-    assert.equal(snap.zen.zenTurns, 0)
-    assert.deepEqual(snap.expertSignals, [])
-    assert.deepEqual(snap.expertBench, [])
-  })
-
-  it('exposes zen phase/turns/face when the agent has a zen controller', () => {
-    const zen = new ZenPhaseController(resolveZenConfig({ faceMode: 'structuredRead' }), {
-      isTopLevel: true,
-      registeredNames: () => ['read_file', 'grep', 'file_info', 'bash'],
-      applyFace: () => {},
-    })
-    zen.arm(3)
-
-    const snap = buildCockpitSnapshot({
-      agent: makeAgent({ zenController: zen as unknown as AgentLoop['zenController'] }),
-      session: makeSession(),
-      model: 'test',
-      cacheHitRate: 0,
-      cost: 0,
-      mcpManager: null,
-    })
-
-    assert.equal(snap.zen.phase, 'zen')
-    assert.equal(snap.zen.armed, true)
-    assert.equal(snap.zen.zenTurns, 3)
-    assert.equal(snap.zen.faceMode, 'structuredRead')
-    assert.ok(snap.zen.face.includes('file_info'))
-    assert.ok(!snap.zen.face.includes('bash'))
-  })
-
-  it('projects detectCriticalMoments into expertSignals (doom-loop → root_cause)', () => {
-    const snap = buildCockpitSnapshot({
-      agent: makeAgent({
-        getDoomLoopLevel: () => 'blocked',
-        getLatestRisk: () => ({ level: 'high', reasons: ['doom loop'], suggestedAction: 'stop' }),
-      }),
-      session: makeSession(),
-      model: 'test',
-      cacheHitRate: 0,
-      cost: 0,
-      mcpManager: null,
-    })
-
-    assert.equal(snap.expertSignals.length, 1)
-    assert.equal(snap.expertSignals[0]!.suggestedExpert, 'root_cause')
-    assert.equal(snap.expertSignals[0]!.auto, true)
-  })
-
-  it('projects per-session expert bench stats into cockpit', () => {
-    __resetExpertBenchForTest()
-    recordExpertBench('session-sea', 'root_cause', { resumeHit: false, passed: 1, total: 1 })
-    recordExpertBench('session-sea', 'root_cause', { resumeHit: true, passed: 1, total: 1 })
-
-    const snap = buildCockpitSnapshot({
-      agent: makeAgent({ config: { sessionId: 'session-sea' } as Partial<AgentLoop['config']> } as Partial<AgentLoop>),
-      session: makeSession(),
-      model: 'test',
-      cacheHitRate: 0,
-      cost: 0,
-      mcpManager: null,
-    })
-
-    assert.equal(snap.expertBench.length, 1)
-    assert.equal(snap.expertBench[0]!.expert, 'root_cause')
-    assert.equal(snap.expertBench[0]!.summons, 2)
-    assert.equal(snap.expertBench[0]!.resumeHits, 1)
-    __resetExpertBenchForTest()
   })
 
   it('sets safety panel to error when doom-loop blocked', () => {

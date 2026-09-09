@@ -33,12 +33,6 @@ export const b1ReadOnlyLimitForWindow = (contextWindow: number): number =>
 export const regressionLoopLimitForWindow = (contextWindow: number): number =>
   scaledThreshold(contextWindow, 5, 12)
 
-/** B2 静默的"近期文件推进"窗口（2026-09-05 评分漂移修复）：最近一次文件修改
- *  距当前 ≤ 该轮数才授予轨迹收敛静默——持续编辑/验证的合法长任务 vs
- *  echo 空转等零产出高分循环的判别线。取 200K B2 limit 同值（12）：窗口内
- *  有真实编辑即视为任务性质。 */
-export const B2_SILENCE_PROGRESS_WINDOW = 12
-
 /**
  * B2 收敛轨迹门（会话 506a5e86 优化）：最近 window 个收敛 score 均值 >= bar
  * → 轨迹收敛 → B2 静默。score 来自 convergence-detector.evaluateConvergence

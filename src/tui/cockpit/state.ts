@@ -4,13 +4,6 @@ import { buildDeliveryGate } from '../../agent/delivery-gate.js'
 import type { McpManager } from '../../mcp/manager.js'
 import { emptyPhysarumShadowStats, type PhysarumShadowStats } from '../../repo/physarum-shadow-stats.js'
 import { STAR_DOMAINS } from '../../agent/star-domain.js'
-import { detectCriticalMoments, getExpertBenchStats, type StrongExpertRouter } from '../../agent/strong-expert.js'
-import {
-  loadStrongExpertRecords,
-  recommendStrongExpertForMoment,
-  summarizeStrongExpertLearning,
-  type StrongExpertRoutingStore,
-} from '../../agent/strong-expert-learning.js'
 import type { CockpitSnapshot, Panel, PanelStatus } from './types.js'
 
 export interface CockpitSnapshotSources {
@@ -136,9 +129,6 @@ export function buildCockpitSnapshot(sources: CockpitSnapshotSources): CockpitSn
   const cacheDiagnostic = agentWithCache.getCacheDiagnostic?.() ?? null
   // 部分上下文（mock/server）可能没有 p3——面板降级为 null（不显示投机行）
   const speculationStats = (agent as Partial<AgentLoop>).p3?.queue.statsBySource() ?? null
-  // Zen 镜像：测试 mock / worker 会话无 zenController 时降级为 full/unarmed。
-  const zenController = (agent as Partial<AgentLoop>).zenController
-  const zenStats = zenController?.snapshot().zenStats
 
   const traceStore = agent.getTraceStore()
   const evidence = agent.getEvidenceState()
@@ -148,34 +138,11 @@ export function buildCockpitSnapshot(sources: CockpitSnapshotSources): CockpitSn
   const contextReport = agent.getContextLayerReport()
   const mcpStates = mcpManager?.getStates() ?? []
   const deliveryGate = buildDeliveryGate(evidence)
-  const contextLedger = session.getContextLedger()
-  // P2e shadow→gate：从 MeridianDb 读 SEA 路由账本；特性旗标默认关（只 shadow）。
-  const meridianDb = (agent as Partial<AgentLoop>).config?.meridianIndexer?.getDb?.()
-  const routingStore = meridianDb as unknown as StrongExpertRoutingStore | undefined
-  const learningState = summarizeStrongExpertLearning(loadStrongExpertRecords(routingStore))
-  const learningRouter: StrongExpertRouter = {
-    recommend: (kind, rule) => recommendStrongExpertForMoment(
-      learningState,
-      kind,
-      rule,
-      process.env.RIVET_STRONG_EXPERT_ROUTING === '1',
-    ),
-  }
-  const expertSignals = detectCriticalMoments({
-    doomLoopLevel: doomLevel,
-    contextPressureRatio: contextLedger && contextLedger.tokenBudget.maxTokens > 0
-      ? contextLedger.tokenBudget.estimatedTokens / contextLedger.tokenBudget.maxTokens
-      : 0,
-    convergencePlateau: ((agent as Partial<AgentLoop>).latestConvergenceResult?.level ?? 0) >= 2,
-  }, learningRouter).map(m => ({ kind: m.kind, suggestedExpert: m.suggestedExpert, auto: m.auto }))
-  const expertBench = getExpertBenchStats((agent as Partial<AgentLoop>).config?.sessionId)
 
   const snapshot: Omit<CockpitSnapshot, 'panelStatuses'> = {
     intent: null,
     blockingReason: deliveryGate.blockingReason ?? null,
     nextAction: deliveryGate.nextAction ?? null,
-    expertSignals,
-    expertBench,
     safety: {
       doomLoopLevel: doomLevel,
       riskLevel: risk.level,
@@ -194,16 +161,6 @@ export function buildCockpitSnapshot(sources: CockpitSnapshotSources): CockpitSn
       deliveryStatus: evidence.deliveryStatus,
       impactedFiles: evidence.impactedFiles.size,
       impactedTests: evidence.impactedTests.size,
-    },
-    zen: {
-      phase: zenController?.currentPhase ?? 'full',
-      armed: zenStats?.armed ?? false,
-      ...(zenController?.lastPromoteReason
-        ? { promoteReason: zenController.lastPromoteReason }
-        : {}),
-      zenTurns: zenStats?.zenTurns ?? 0,
-      faceMode: zenController?.resolvedConfig.faceMode ?? 'minimal',
-      face: zenController ? [...zenController.face] : [],
     },
     trace: {
       events: traceStore.events.map(e => ({
@@ -254,9 +211,6 @@ export function buildCockpitSnapshot(sources: CockpitSnapshotSources): CockpitSn
       cacheDiagnostic,
       reasoningEffort: agent.getReasoningEffort() || reasoningEffort || 'medium',
       starDomain: describeStarDomain(agent.getSessionDomain()),
-      // W-stats：首字/输出速度均值（loop 累计；样本 0 时 undefined → UI 空组消失）
-      avgTtftMs: agent.ttftSamples > 0 ? Math.round(agent.ttftTotalMs / agent.ttftSamples) : undefined,
-      avgTps: agent.decodeMsSum > 0 ? Math.round((agent.decodeTokensSum / (agent.decodeMsSum / 1000)) * 10) / 10 : undefined,
     },
     mcp: {
       servers: mcpStates.map(s => ({

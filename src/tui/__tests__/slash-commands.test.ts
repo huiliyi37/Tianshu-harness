@@ -696,23 +696,6 @@ describe('handleSlashCommand', () => {
       assert.ok(content.includes('天枢'))
     })
 
-      it('/domain list carries plain explanations for built-in domains', async () => {
-        const entries: string[] = []
-        await handleSlashCommand(makeCtx({
-          parts: ['/domain', 'list'],
-          agent: {
-            ...makeCtx().agent,
-            getSessionDomain: () => undefined,
-          } as any,
-          pushStatic: (entry) => entries.push(entry.content),
-        }))
-        const content = entries[0]!
-        assert.ok(content.includes('特质说明'))
-        assert.match(content, /通用工程全量保留/)
-        assert.match(content, /交付纪律/)
-        assert.match(content, /称量习惯/)
-      })
-
     it('/domain <id> switches to a domain by English id', async () => {
       const entries: string[] = []
       const setCalls: any[] = []

@@ -45,6 +45,10 @@ export type PlanModeState = 'off' | 'planning'
  */
 export type AskModeState = 'off' | 'asking'
 
+// `turn_complete` data 的可选 additive 字段：`continuationReason`
+// （中间 turn 之后系统注入提醒并自动续轮的原因，如
+// 'obligation-verification'）。desktop 用它区分「给用户的消息」与
+// 「给系统提醒的自检回复」；旧 sidecar 不携带时行为不变。
 export type SessionEventType =
   | 'user'
   | 'text_delta'
@@ -65,14 +69,6 @@ export type SessionEventType =
   | 'error'
   | 'decision_shift'
   | 'rewind'
-  // P1-1 — conversation fork. data: { forkedFromId, forkedFromTurnSeq?,
-  // anchorPrompt }. Appended to the NEW session only (source log untouched).
-  | 'fork'
-  // P1-2 — persistent diff line comments. data: { op: 'add'|'resolve'|'delete',
-  // comment?: LineComment }（add 携带完整 comment，其余只带 id）。
-  | 'line_comment'
-  // P1-3 — session pin toggle. data: { pinned: boolean }。append-only，投影取最后一条。
-  | 'session_pinned'
   // T2 — structured active task list (mirrors the `todo` tool's write payload).
   | 'todo_state'
   // T3 — mid-run user guidance accepted into the steer buffer.
@@ -140,35 +136,12 @@ export type SessionEventType =
   // started 事件、sidecar 重启后注册表更是全空——前端据此 upsert 并摘除
   // 本地仍 running 但服务端已消失的任务（重启悬挂对账）。
   | 'job_snapshot'
-  // Zen Mode（禅模式）相位镜像：data: { phase:'zen'|'full', reason?, armed,
-  // zenTurns }。run 开始与每次晋升各发一次——桌面端据此渲染读面徽章。
-  | 'zen_phase'
 
 export interface SessionEvent {
   seq: number
   ts: number
   type: SessionEventType
   data: Record<string, unknown>
-}
-
-/**
- * P1-2 — 持久行级评论：锚定 diff 的一行（文件 + old/new 行号 + 文本）。
- * newLine 优先作为定位行；file 来自 parseDiff 解析的当前文件上下文。
- * kind:'agent' 预留给审查子代理产出的结构化意见。
- */
-export interface LineComment {
-  id: string
-  file: string
-  oldLine?: number
-  newLine?: number
-  comment: string
-  kind: 'user' | 'agent'
-  /** agent 评论的作者（如审查模型名）；user 评论缺省。 */
-  author?: string
-  createdAt: number
-  resolved?: boolean
-  /** 创建该评论时的事件 seq，用于跨 reload 锚定与历史回放。 */
-  anchorSeq?: number
 }
 
 export interface ResolvedDomainRecord {
@@ -269,19 +242,6 @@ export interface SessionRecord {
    *  getOrCreate（显式路径）或 maybeAutoTitle 起标题成功时隐式创建。
    *  absent → 旧 session / 未接线，桌面端回退 session.title || shortId。 */
   missionId?: string
-  /** P1-1 fork — 源会话 id。沿链回溯可定位 root（对齐 Codex forkedFromId）。 */
-  forkedFromId?: string
-  /** P1-1 fork — 分叉锚点：源会话 user 事件的 seq（消息级分叉；header 分叉 = 最后一个 user 事件）。 */
-  forkedFromTurnSeq?: number
-  /** P1-1 fork — 标题去重编号（2,3,…），落盘避免重启后重号。 */
-  forkTitleNumber?: number
-  /** P1-1 fork — 触发入口，仅观测/展示用。 */
-  forkSource?: 'header' | 'message' | 'slash' | 'command'
-  /** P1-3 — 缓存的分支名（worktree 会话 = worktreeBranch；普通会话 = 创建时
-   *  `git rev-parse --abbrev-ref HEAD`）。供搜索索引，不参与任何提示词。 */
-  branch?: string
-  /** P1-3 — 置顶会话（侧栏排序优先，不参与 agent 上下文）。 */
-  pinned?: boolean
 }
 
 /** Live plan-mode draft surfaced to the desktop — a growing working document,

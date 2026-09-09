@@ -107,28 +107,6 @@ describe('knowledge-index', () => {
     assert.ok(hits.some(h => h.file === 'manifest.md'))
   })
 
-  it('includeMarkdown:false keeps structured entries and playbook but drops md chunks', async () => {
-    const dir = join(cwd, '.rivet', 'knowledge')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'old-debug.md'), '# Old debug notes\n\nPrompt engine prefix cache broken in May, run these checks first.\n')
-    appendMemoryEntry(cwd, {
-      text: 'Prompt engine prefix cache invariants must stay byte-stable across turns',
-      kind: 'project_rule', confidence: 1, source: 'manual', status: 'verified', tags: [],
-      topic: 'prompt',
-    })
-
-    const idx = new KnowledgeIndex(cwd)
-    const mixed = await idx.search('prompt engine prefix cache')
-    assert.ok(mixed.some(h => h.file === 'old-debug.md'), '显式 recall 默认仍可检索旧文档')
-
-    const stm = await idx.search('prompt engine prefix cache', { includeMarkdown: false })
-    assert.ok(stm.some(h => h.entry), '结构化记忆条目保留')
-    assert.ok(stm.every(h => h.file === undefined), '自动注入不得带回旧 md 排查文档')
-
-    const mixedAfter = await idx.search('prompt engine prefix cache')
-    assert.ok(mixedAfter.some(h => h.file === 'old-debug.md'), '过滤后的 STM 查询不得毒化 FTS 投影，显式 recall 仍可检索 md')
-  })
-
   it('indexes playbook lessons and honors source:playbook filter (Wave 4 recall-only channel)', async () => {
     const rivetDir = join(cwd, '.rivet')
     mkdirSync(rivetDir, { recursive: true })
@@ -181,8 +159,5 @@ describe('knowledge-index', () => {
     const hits = await idx.search('pagination bounds', { excludeSessionIds: ['session-a'] })
     assert.ok(hits.length >= 1)
     assert.ok(hits.every(h => h.entry?.sessionId !== 'session-a'), '在线会话条目不得进入召回')
-
-    const fullHits = await idx.search('pagination bounds')
-    assert.ok(fullHits.some(h => h.entry?.sessionId === 'session-a'), '过滤后的查询不得毒化 FTS 投影，全量召回必须恢复在线会话条目')
   })
 })

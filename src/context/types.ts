@@ -213,20 +213,6 @@ export interface SessionMetadata {
   /** Ask Mode mirror — resume re-enters Ask when 'asking'. */
   askModeState?: 'off' | 'asking'
   /**
-   * Zen Mode（禅模式）相位镜像：'zen'（读面收窄）/ 'full'（全量面）。
-   * resume 据此恢复相位——full 不重入 zen（保守：无记录 ≠ 禅相位）；
-   * zen 则恢复读面。runtime truth 在 AgentLoop.zenController。
-   */
-  zenPhase?: 'zen' | 'full'
-  /** 最近一次晋升原因（'tool' | 'timeout' | 'triage' | 'user'）——事后归因。 */
-  zenPromoteReason?: 'tool' | 'timeout' | 'triage' | 'user'
-  /** Zen 相位计量：是否 arm 过、晋升原因、禅阶段 turn 数。 */
-  zenStats?: {
-    armed: boolean
-    promoteReason?: 'tool' | 'timeout' | 'triage' | 'user'
-    zenTurns: number
-  }
-  /**
    * H4-D3：PAL 攻坚层快照（cases + evidence registry + completedWorkers）。
    * postTurn 有攻坚活动时写入；agent 创建（resume/模型切换重建）时恢复，
    * 避免案件/预算/已消费证据随进程重建归零。

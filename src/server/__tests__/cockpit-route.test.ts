@@ -40,9 +40,6 @@ const FIXTURE_SNAPSHOT: CockpitSnapshot = {
     impactedFiles: 2,
     impactedTests: 3,
   },
-  expertSignals: [],
-  expertBench: [],
-  zen: { phase: 'full', armed: false, zenTurns: 0, faceMode: 'minimal', face: [] },
   trace: { events: [], totalEvents: 0 },
   context: {
     estimatedTokens: 12000,

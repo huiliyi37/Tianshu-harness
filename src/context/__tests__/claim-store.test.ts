@@ -25,7 +25,7 @@ function proposal(text = 'Do not repeat failed Read calls'): ClaimProposal {
   }
 }
 
-test('proposes a claim by appending a JSONL event and projecting current claims', () => {
+test('proposes a claim by appending a JSONL event and projecting current claims', async () => {
   const dir = tempDir()
   try {
     const store = new ContextClaimStore(dir, 'session-123')
@@ -37,6 +37,7 @@ test('proposes a claim by appending a JSONL event and projecting current claims'
     assert.equal(claims.length, 1)
     assert.equal(claims[0]?.text, 'Do not repeat failed Read calls')
 
+    await store.flushWrites() // write-behind：原始文件断言前先排空写链
     const raw = readFileSync(store.path, 'utf-8')
     assert.match(raw, /"type":"claim_proposed"/)
     assert.match(raw, /Do not repeat failed Read calls/)
@@ -45,7 +46,7 @@ test('proposes a claim by appending a JSONL event and projecting current claims'
   }
 })
 
-test('replays claim status transitions from JSONL', () => {
+test('replays claim status transitions from JSONL', async () => {
   const dir = tempDir()
   try {
     const store = new ContextClaimStore(dir, 'session-123')
@@ -53,6 +54,7 @@ test('replays claim status transitions from JSONL', () => {
 
     store.updateClaimStatus(claim.id, 'stale', 'evidence expired')
 
+    await store.flushWrites() // write-behind：重载前先排空写链
     const reloaded = new ContextClaimStore(dir, 'session-123')
     const claims = reloaded.listClaims()
 
@@ -136,11 +138,12 @@ test('active claim listing excludes expired claims at the supplied time', () => 
   }
 })
 
-test('ignores invalid JSONL lines while preserving valid events', () => {
+test('ignores invalid JSONL lines while preserving valid events', async () => {
   const dir = tempDir()
   try {
     const store = new ContextClaimStore(dir, 'session-123')
     const claim = store.propose(proposal())
+    await store.flushWrites() // write-behind：落盘后再注入坏行
     writeFileSync(store.path, `${readFileSync(store.path, 'utf-8')}not json\n`, 'utf-8')
 
     const reloaded = new ContextClaimStore(dir, 'session-123')
@@ -243,7 +246,7 @@ test('SessionPersist creates a claim store for the current session id', () => {
   assert.match(store.path, /session-claims-test\.claims\.jsonl$/)
 })
 
-test('loadDurableClaims returns only durable claims from a session file', () => {
+test('loadDurableClaims returns only durable claims from a session file', async () => {
   const dir = tempDir()
   try {
     const store = new ContextClaimStore(dir, 'session-old')
@@ -252,6 +255,7 @@ test('loadDurableClaims returns only durable claims from a session file', () => 
     store.updateClaimStatus(durable.id, 'durable_candidate', 'promoted')
     store.updateClaimStatus(durable.id, 'durable', 'promotion threshold met')
 
+    await store.flushWrites() // write-behind：跨实例读盘前先排空写链
     const loaded = ContextClaimStore.loadDurableClaims(dir, 'session-old')
     assert.equal(loaded.length, 1)
     assert.equal(loaded[0]!.text, 'Durable claim')

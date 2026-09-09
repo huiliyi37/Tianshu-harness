@@ -69,11 +69,6 @@ describe('tool-tiers', () => {
       assert.ok(!EXTENDED_TOOLS.includes('edit_file' as never))
       assert.ok(!EXTENDED_TOOLS.includes('bash' as never))
     })
-
-    it('summon_expert is EXTENDED（SEA 不占主控 CORE 视野）', () => {
-      assert.ok(EXTENDED_TOOLS.includes('summon_expert' as never))
-      assert.ok(!CORE_TOOLS.includes('summon_expert' as never))
-    })
   })
 
   describe('resolveMainToolTier', () => {

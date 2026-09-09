@@ -5,6 +5,8 @@
  * Pure functions, no side effects.
  */
 
+import { ReasoningRepetitionError } from './reasoning-repetition.js'
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -19,6 +21,7 @@ export type ErrorCategory =
   | 'context_overflow'
   | 'image_strip'
   | 'stream_parse'
+  | 'reasoning_repetition'
   | 'unknown'
 
 export interface ClassifiedError {
@@ -377,6 +380,12 @@ function extractRetryAfter(error: unknown): number | undefined {
  * Priority: status code → error name → message pattern → fallback.
  */
 export function classifyApiError(error: unknown): ClassifiedError {
+  if (error instanceof ReasoningRepetitionError) {
+    return {
+      retryable: false, retryDelayMs: 0, shouldReconnect: false,
+      category: 'reasoning_repetition', userMessage: error.message, maxRetries: 0,
+    }
+  }
   // Non-SSE 200 (openai-client content-type gate): the endpoint answered but
   // not with a stream — wrong path / no streaming support. Retrying repeats
   // the same misconfiguration; surface the original actionable message.
@@ -455,6 +464,8 @@ export function errorRecoveryGuidance(error: unknown): string {
       return '图片负载超限：去掉部分图片后重发'
     case 'stream_parse':
       return '流解析失败：重发一次；反复出现用 /logs 打包日志提 issue'
+    case 'reasoning_repetition':
+      return '检测到推理短句持续重复，已停止请求；建议新建会话或 /model 切换模型后重试'
     default:
       return '重发一次；持续失败：/doctor 体检 + /logs 看日志'
   }

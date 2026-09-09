@@ -102,6 +102,10 @@ export interface AgentConfigInput {
    *  （bootstrap.createAgentRuntime）从 meta 读回或按注册默认冻结后传入；
    *  流向 client（wire 截断）与锚点提取两个消费点，保证同一会话 N 恒定。 */
   wireContext?: import('../api/pro-registry.js').WireTransformContext
+  /** CLI 侧 meridian 接线（2026-09-06）：serve 路径早已接线，CLI tool-pipeline 的
+   *  meridianIndexer 恒 undefined → 写工具收尾走 importGraph fallback（每会话首个
+   *  写工具全量扫仓 ~750ms/5k 文件）。透传后走持久 SQLite 增量图。 */
+  meridianIndexer?: import('../repo/meridian-indexer.js').MeridianIndexer | null
 }
 
 export interface MainAgentConfigInputParams {
@@ -126,6 +130,7 @@ export interface MainAgentConfigInputParams {
   allowedTools?: string[]
   /** 会话冻结的 wire 变换上下文（见 AgentConfigInput.wireContext）。 */
   wireContext?: import('../api/pro-registry.js').WireTransformContext
+  meridianIndexer?: import('../repo/meridian-indexer.js').MeridianIndexer | null
 }
 
 export function createMainAgentConfigInput(params: MainAgentConfigInputParams): AgentConfigInput {
@@ -170,6 +175,7 @@ export function createMainAgentConfigInput(params: MainAgentConfigInputParams): 
     onStatusLine: params.onStatusLine,
     allowedTools: params.allowedTools,
     wireContext: params.wireContext,
+    meridianIndexer: params.meridianIndexer,
     toolGating: params.config.agent.toolGating
       ? {
           enabled: params.config.agent.toolGating.enabled,
@@ -187,7 +193,7 @@ export function createMainAgentConfigInput(params: MainAgentConfigInputParams): 
 
 export function createAgentConfig(input: AgentConfigInput): Pick<
   AgentConfig,
-  'client' | 'promptEngine' | 'contextWindow' | 'compact' | 'cwd' | 'blockPolicy' | 'providerProfile' | 'providerName' | 'compactionProfile' | 'primaryClient' | 'compactClient' | 'sessionId' | 'approvalMode' | 'autoReasoning' | 'reasoningFloor' | 'turnLevelThinking' | 'songlineEnabled' | 'constellationEnabled' | 'companionPresenceEnabled' | 'dreamEnabled' | 'runtimeLean' | 'securityGuidance' | 'hearthObserveEnabled' | 'crossSessionEnabled' | 'antiAnchoring' | 'intentRetrievalRouter' | 'llmSpeculation' | 'autoDelegateEnabled' | 'domainKeywordRouting' | 'defaultDomain' | 'goalJudge' | 'allProviders' | 'permissions' | 'toolGating' | 'prefixCacheStrategy' | 'supportsVision' | 'visionClient' | 'visionModelPrompt' | 'visionModelMaxTokens' | 'visionBridge' | 'onStatusLine' | 'wireContext'
+  'client' | 'promptEngine' | 'contextWindow' | 'compact' | 'cwd' | 'blockPolicy' | 'providerProfile' | 'providerName' | 'compactionProfile' | 'primaryClient' | 'compactClient' | 'sessionId' | 'approvalMode' | 'autoReasoning' | 'reasoningFloor' | 'turnLevelThinking' | 'songlineEnabled' | 'constellationEnabled' | 'companionPresenceEnabled' | 'dreamEnabled' | 'runtimeLean' | 'securityGuidance' | 'hearthObserveEnabled' | 'crossSessionEnabled' | 'antiAnchoring' | 'intentRetrievalRouter' | 'llmSpeculation' | 'autoDelegateEnabled' | 'domainKeywordRouting' | 'defaultDomain' | 'goalJudge' | 'allProviders' | 'permissions' | 'toolGating' | 'prefixCacheStrategy' | 'supportsVision' | 'visionClient' | 'visionModelPrompt' | 'visionModelMaxTokens' | 'visionBridge' | 'onStatusLine' | 'wireContext' | 'meridianIndexer'
 > {
   const { model, apiKey, cwd, provider } = input
   const capabilities = resolveCapabilities(provider.name, provider.capabilities, model.capabilities)
@@ -248,6 +254,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
     model: model.id,
     maxTokens: model.maxTokens,
     staticCtx: { tools: gatedTools, modelFamily: detectModelFamily(model.id) },
+    approvalMode: input.approvalMode,
     volatileCtx: createVolatileSnapshot({
       cwd,
       sessionMemoryBlock: input.sessionMemoryBlock,
@@ -270,6 +277,9 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
     providerProfile: getProviderProfile(provider.name, model.contextWindow),
     providerName: provider.name,
     wireContext: input.wireContext,
+    // CLI meridian 接线（2026-09-06）：透传持久 SQLite 增量图——消除写工具收尾
+    // importGraph fallback 每会话全量扫仓（~750ms/5k 文件）。
+    meridianIndexer: input.meridianIndexer ?? null,
     // Model-aware compaction economics: billing from provider identity
     // (oauth/baseUrl hints for custom providers), cache kind from the provider
     // profile with the aggregator escape hatch (deepseek-native capability +

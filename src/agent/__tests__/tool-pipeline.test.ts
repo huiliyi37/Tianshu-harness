@@ -10,7 +10,7 @@ import { createPermissionOverlay } from '../permissions.js'
 import type { EvidenceTrackerPublic } from '../evidence.js'
 import { ArtifactStore } from '../../artifact/store.js'
 import { _setSandboxBackendForTest, _resetSandboxBackendCache } from '../../tools/sandbox-profile.js'
-import { isWriteGranted, grantPath, _resetGrantsForTest, loadPersistedGrants, revokeGrant } from '../../tools/path-grants.js'
+import { isWriteGranted, _resetGrantsForTest, loadPersistedGrants, revokeGrant } from '../../tools/path-grants.js'
 import { rivetHome } from '../../config/paths.js'
 
 /** Sandbox-safe temp directory — macOS sandbox blocks os.tmpdir() /var/folders/...
@@ -1794,51 +1794,6 @@ describe('executeToolUse', () => {
     }
   })
 
-  it('YOLO read→write escalation is session-scoped — never persisted to the per-workspace store', async () => {
-    _resetGrantsForTest()
-    const workspace = mkdtempSync(join(testTmp(), 'rivet-ws-'))
-    const external = mkdtempSync(join(testTmp(), 'rivet-ext-'))
-    try {
-      // 项目外只读形态：外部目录只有 READ grant（等价 additionalReadDirs 根授权）。
-      grantPath(external, 'read')
-      const target = join(external, 'out.txt')
-      let approvalCalls = 0
-      const deps = makeDeps({
-        cwd: workspace,
-        config: {
-          ...makeDeps().config,
-          approvalMode: 'dangerously-skip-permissions',
-          permissions: { allow: [] },
-          toolRegistry: {
-            execute: async () => ({ content: 'wrote', isError: false }),
-            get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
-            needsApproval: () => false,
-            resolveName: (n: string) => n,
-          },
-        } as any,
-      })
-      const callbacks = { ...noopCallbacks, onApprovalRequired: async () => { approvalCalls++; return true } }
-      const result = await executeToolUse(
-        { id: 'tu-yolo-esc', name: 'write_file', input: { file_path: target, content: 'x' } },
-        deps, callbacks as any, 1, false,
-      )
-      assert.equal(approvalCalls, 0, 'YOLO must not prompt for a read-granted path')
-      assert.equal((result.toolResult as any).is_error, false)
-      assert.equal(isWriteGranted(target), true, 'escalated write grant active in-process')
-
-      // 模拟新会话：清内存后从 per-workspace store 回灌——升级授权必须消失，
-      // 否则一次 YOLO 会话会永久加宽该工作区后续所有会话（含监督档）的权限。
-      _resetGrantsForTest()
-      loadPersistedGrants(workspace)
-      assert.equal(isWriteGranted(target), false, 'escalated write grant must NOT hydrate from disk')
-    } finally {
-      _resetGrantsForTest()
-      const slug = resolvePath(workspace).replace(/[^a-zA-Z0-9]/g, '_').slice(-64)
-      rmSync(join(rivetHome(), `path-grants-${slug}.json`), { force: true })
-      for (const d of [workspace, external]) rmSync(d, { recursive: true, force: true })
-    }
-  })
-
   it('in-workspace read_file does not trigger the out-of-workspace gate', async () => {
     _resetGrantsForTest()
     let approvalCalls = 0
@@ -3088,6 +3043,36 @@ describe('deliver_task abort — post-abort commit attribution', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('touches tool:start and tool:end around execute (stall-observer wiring)', async () => {
+    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-touch-'))
+    try {
+      const deps = makeDeps(dir, {
+        sessionId: 'touch-wiring-test',
+        config: {
+          ...makeDeps(dir).config,
+          toolRegistry: {
+            execute: async () => ({ content: 'ok', isError: false }),
+            get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+            needsApproval: () => false,
+            resolveName: (n: string) => n,
+          },
+        } as any,
+      })
+      const { _resetStallObserverForTest, getLastActivity } = await import('../stall-observer.js')
+      _resetStallObserverForTest()
+      const result = await executeToolUse(
+        { id: 'tu-touch', name: 'write_file', input: { file_path: join(dir, 'a.ts'), content: 'export {}' } },
+        deps, noopCallbacks as any, 1, false,
+      )
+      assert.ok(result.toolResult, 'tool executed')
+      const last = getLastActivity('touch-wiring-test')
+      assert.equal(last.source, 'tool:write_file:end', 'execute must touch tool:end after settling')
+      _resetStallObserverForTest()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 
@@ -3209,5 +3194,50 @@ describe('TDD gate suggest annotation', () => {
     const tr = result.toolResult as any
     assert.equal(tr.is_error, true)
     assert.ok(!tr.content.includes('[TDD]'), 'failed edit result is not annotated')
+  })
+
+  it('meridian 快路径：写工具绝对路径先相对化（issue #61 族 Windows 死角）', async () => {
+    // 写工具按工具文档恒传绝对路径——旧判据 `db && !isAbsolute(filePath)` 让
+    // meridian SQLite 快路径恒不走，每次 run 首个写工具全量同步扫仓。修复后
+    // 应先 relative(cwd) 再进 analyzeImpact。
+    const seen: string[] = []
+    const fakeDb = {
+      hasFiles: () => true,
+      getTestsFor: (f: string) => { seen.push(f); return [] },
+      getReverseDependents: (_f: string) => [] as { file: string }[],
+      getCoEditNeighbors: (_f: string) => [] as { file: string }[],
+    }
+    const deps = tddDeps({ editsSinceLastTest: 0 })
+    deps.meridianIndexer = { getDb: () => fakeDb } as any
+    deps.cwd = '/tmp/test'
+    const result = await executeToolUse(
+      { id: 'tu-meridian-abs', name: 'write_file', input: { file_path: '/tmp/test/src/foo.ts', content: 'x' } },
+      deps, annotateNoopCallbacks as any, 1, false,
+    )
+    assert.equal((result.toolResult as any).is_error ?? false, false)
+    assert.ok(seen.includes('src/foo.ts'), `analyzeImpact 应收到相对化后的路径，实际记录: ${JSON.stringify(seen)}`)
+    assert.ok(!seen.some((f) => f.startsWith('/tmp/test')), '不得把绝对路径直接喂给 meridian')
+  })
+
+  it('meridian 冷库（hasFiles=false）不查空索引——落回 importGraph 兜底分支（P1-2）', async () => {
+    // 新 clone 冷启动期 indexer 已建但 files 表为空——旧判据只查 db 真值，
+    // analyzeImpact 返回空集且不落回 buildImportGraph，impact hint 静默变空。
+    // 修复后空库与 indexer=null 同路走 else（importGraph 兜底），meridian 不被打。
+    const seen: string[] = []
+    const fakeDb = {
+      hasFiles: () => false,
+      getTestsFor: (f: string) => { seen.push(f); return [] },
+      getReverseDependents: (_f: string) => [] as { file: string }[],
+      getCoEditNeighbors: (_f: string) => [] as { file: string }[],
+    }
+    const deps = tddDeps({ editsSinceLastTest: 0 })
+    deps.meridianIndexer = { getDb: () => fakeDb } as any
+    deps.cwd = '/nonexistent-p12-fallback-dir'
+    const result = await executeToolUse(
+      { id: 'tu-meridian-cold', name: 'write_file', input: { file_path: '/nonexistent-p12-fallback-dir/src/foo.ts', content: 'x' } },
+      deps, annotateNoopCallbacks as any, 1, false,
+    )
+    assert.equal((result.toolResult as any).is_error ?? false, false)
+    assert.equal(seen.length, 0, '空库时不得查询 meridian（analyzeImpact 各方法都不该被调）')
   })
 })

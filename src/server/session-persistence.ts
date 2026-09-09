@@ -29,6 +29,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { open, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, writeFile, rename } from 'node:fs/promises'
 import { setImmediate as yieldToLoop } from 'node:timers/promises'
 import { join } from 'node:path'
 import { cpuPool } from '../workers/cpu-pool.js'
@@ -104,13 +105,67 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     return d
   }
 
+  /** index.json 的写链状态：latest-wins 合并（中间态无需落盘），单对象状态机。 */
+  private recordWrites = new Map<string, { latest: SessionRecord; dirty: boolean; running: boolean }>()
+
   saveRecord(record: SessionRecord): void {
-    const d = this.ensureDir(record.id)
-    const tmp = join(d, 'index.json.tmp')
-    const final = join(d, 'index.json')
-    // tmp + rename → readers never see a half-written index.json
-    writeFileSync(tmp, JSON.stringify(record), 'utf8')
-    renameSync(tmp, final)
+    // 2026-09-06 write-behind（issue #61 族）：writeFileSync+renameSync 同步写
+    // 在 OneDrive/AV 栈上同样冻结事件循环。改 latest-wins 异步链：只保证最新
+    // 快照最终落盘（中间态合并），同步读路径由 flushSync 的同步排空兜底。
+    let st = this.recordWrites.get(record.id)
+    if (!st) {
+      st = { latest: record, dirty: true, running: false }
+      this.recordWrites.set(record.id, st)
+    } else {
+      st.latest = record
+      st.dirty = true
+    }
+    if (st.running) return
+    queueMicrotask(() => {
+      if (st.running) return
+      st.running = true
+      void (async () => {
+        try {
+          while (st.dirty) {
+            st.dirty = false
+            const snapshot = st.latest
+            const d = this.dir(record.id)
+            try {
+              await mkdir(d, { recursive: true })
+              const tmp = join(d, 'index.json.tmp')
+              const final = join(d, 'index.json')
+              await writeFile(tmp, JSON.stringify(snapshot), 'utf8')
+              await rename(tmp, final)
+            } catch {
+              st.dirty = true // 失败重试（退避防热循环）
+              await new Promise((r) => setTimeout(r, 250))
+            }
+          }
+        } finally {
+          st.running = false
+          if (st.dirty) this.saveRecord(st.latest)
+          else this.recordWrites.delete(record.id)
+        }
+      })()
+    })
+  }
+
+  /** record 写链同步排空（flushSync 用）：链未启动且有脏快照时同步写。 */
+  private flushRecordSync(id: string): void {
+    const st = this.recordWrites.get(id)
+    if (!st || st.running || !st.dirty) {
+      if (st && !st.dirty && !st.running) this.recordWrites.delete(id)
+      return
+    }
+    const d = this.ensureDir(id)
+    try {
+      const tmp = join(d, 'index.json.tmp')
+      const final = join(d, 'index.json')
+      writeFileSync(tmp, JSON.stringify(st.latest), 'utf8')
+      renameSync(tmp, final)
+      st.dirty = false
+      this.recordWrites.delete(id)
+    } catch { /* best-effort：留在队列里下轮重试 */ }
   }
 
   appendEvent(sessionId: string, event: SessionEvent): void {
@@ -128,30 +183,151 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
       }) + '\n'
     }
 
-    // Buffer the line — flush is triggered by timer OR when buffer hits capacity.
+    // Buffer the line — the per-session write chain drains it asynchronously.
     let buf = this.eventBuffers.get(sessionId)
     if (!buf) {
       buf = []
       this.eventBuffers.set(sessionId, buf)
     }
     buf.push({ line, seq: event.seq })
+    // 2026-09-06 write-behind（issue #61 族）：CRITICAL 类型的「立即落盘」从
+    // 同步 appendFileSync 改为异步写链——同步写在 OneDrive/AV/EDR 存储栈上可
+    // 卡分钟级并冻结事件循环（所有 setTimeout 界定随之失效），写工具结果
+    // 回传挂起即此机制。写链在 microtask 启动（同步调用方的 flushSync 仍可在
+    // 链启动前完成同步排空——确定性兼容语义），崩溃窗口 = 内存队列的毫秒级。
     if (
       FileSessionPersistence.CRITICAL_TYPES.has(event.type) ||
       buf.length >= FileSessionPersistence.FLUSH_MAX_LINES
     ) {
-      // One batched write for everything buffered so far — same-tick bursts
-      // (parallel tool results) coalesce naturally into a single syscall.
-      this.flushSession(sessionId)
+      this.kickWriteChain(sessionId)
     } else if (!this.flushTimer) {
       this.flushTimer = setTimeout(() => this.flushAll(), FileSessionPersistence.FLUSH_INTERVAL_MS)
       this.flushTimer.unref?.()
     }
   }
 
-  /** Flush a single session's buffered events to disk immediately. */
+  // ── 每会话异步写链（events.jsonl 唯一写者）────────────────────────────
+  // 同一时刻同一会话只有一条链在跑；新事件在链运行期间置 again 续跑。链内
+  // 依次完成：追加事件批 → 推进稀疏索引 → 执行排队裁剪。读路径的同步
+  // flushSession 兼容垫片只在链未启动时同步排空（启动/首开等空闲路径），
+  // 与链不存在双写竞态。
+  private writeChains = new Map<string, { running: boolean; again: boolean }>()
+  private pendingChainTrims = new Set<string>()
+
+  private kickWriteChain(sessionId: string): void {
+    const st = this.writeChains.get(sessionId) ?? { running: false, again: false }
+    this.writeChains.set(sessionId, st)
+    if (st.running) {
+      st.again = true
+      return
+    }
+    queueMicrotask(() => {
+      const cur = this.writeChains.get(sessionId)
+      if (!cur || cur.running) return
+      cur.running = true
+      void this.runWriteChain(sessionId, cur)
+    })
+  }
+
+  private async runWriteChain(sessionId: string, st: { running: boolean; again: boolean }): Promise<void> {
+    try {
+      for (;;) {
+        st.again = false
+        const buf = this.eventBuffers.get(sessionId) ?? []
+        const wantTrim = this.pendingChainTrims.delete(sessionId)
+        if (buf.length === 0 && !wantTrim) break
+        const d = this.dir(sessionId)
+        if (buf.length > 0) {
+          this.eventBuffers.set(sessionId, [])
+          const text = buf.map((b) => b.line).join('')
+          try {
+            await mkdir(d, { recursive: true })
+            await appendFile(join(d, 'events.jsonl'), text, { encoding: 'utf8', mode: 0o600 })
+          } catch {
+            // 失败重排队首 + 退避（持续失败不热循环；行不丢）。
+            this.eventBuffers.set(sessionId, [...buf, ...(this.eventBuffers.get(sessionId) ?? [])])
+            await new Promise((r) => setTimeout(r, 250))
+            continue
+          }
+          try {
+            await this.advanceSparseIndexAsync(sessionId, d, buf)
+          } catch {
+            this.indexTracks.delete(sessionId)
+          }
+          // 追加后评估磁盘上限：超限则排队链内 trim（下一轮迭代按序执行）。
+          this.deferTrim(sessionId, d)
+        }
+        if (wantTrim) {
+          this.pendingTrims.delete(sessionId)
+          try { this.trimEventsFileIfNeeded(sessionId, d) } catch { /* best-effort */ }
+        }
+        if (!st.again && (this.eventBuffers.get(sessionId)?.length ?? 0) === 0 && !this.pendingChainTrims.has(sessionId)) break
+      }
+    } finally {
+      st.running = false
+      st.again = false
+      // finally 期间到达的新行补一轮。
+      if ((this.eventBuffers.get(sessionId)?.length ?? 0) > 0 || this.pendingChainTrims.has(sessionId)) {
+        this.kickWriteChain(sessionId)
+      }
+    }
+  }
+
+  /** 等该会话写链排空（async 读路径/关前收口用）。有界轮询。 */
+  async flushSessionAsync(sessionId: string, timeoutMs = 30_000): Promise<void> {
+    this.kickWriteChain(sessionId)
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const st = this.writeChains.get(sessionId)
+      const pending = (this.eventBuffers.get(sessionId)?.length ?? 0) > 0 || this.pendingChainTrims.has(sessionId)
+      if ((!st || !st.running) && !pending) return
+      if (Date.now() > deadline) return
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  /** 等全部会话写链排空（测试/shutdown 收口用）。 */
+  async flushAllAsync(timeoutMs = 30_000): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    for (const id of this.eventBuffers.keys()) this.kickWriteChain(id)
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      let anyRunning = false
+      for (const [id, st] of this.writeChains) {
+        if (st.running || (this.eventBuffers.get(id)?.length ?? 0) > 0) { anyRunning = true; break }
+      }
+      if (!anyRunning) {
+        for (const st of this.recordWrites.values()) {
+          if (st.running || st.dirty) { anyRunning = true; break }
+        }
+      }
+      if (!anyRunning && this.pendingChainTrims.size === 0) return
+      if (Date.now() > deadline) return
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  /** Flush a single session's buffered events to disk immediately.
+   *
+   *  兼容垫片（2026-09-06 write-behind 后）：正常路径写入全走异步写链——
+   *  本方法只在「链未启动且仍有滞留行」时同步排空（appendEvent 的
+   *  queueMicrotask 尚未执行的同步上下文，如 loadAll/测试的即时断言），
+   *  或显式被 flushSync 调用。链在跑时双写会乱序，故链激活时直接放行
+   *  （同步读路径全是启动/首开等空闲场景，链必然不在跑）。 */
   private flushSession(sessionId: string, immediateTrim = false): void {
+    const st = this.writeChains.get(sessionId)
+    if (st?.running) return
     const buf = this.eventBuffers.get(sessionId)
-    if (!buf || buf.length === 0) return
+    if (!buf || buf.length === 0) {
+      if (immediateTrim && this.pendingChainTrims.delete(sessionId)) {
+        this.pendingTrims.delete(sessionId)
+        try { this.trimEventsFileIfNeeded(sessionId) } catch { /* best-effort */ }
+      }
+      return
+    }
     this.eventBuffers.set(sessionId, [])
     let d: string
     try {
@@ -171,31 +347,56 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
       this.indexTracks.delete(sessionId)
     }
     // Bound unbounded append-only growth: keep the tail under the disk cap.
-    // 裁剪从 flush 热路径移出：常规 flush 入队延迟执行（setImmediate），只有
-    // 关闭路径（flushSync）同步裁——读前/关前保证磁盘已收敛。
+    // 裁剪从 flush 热路径移出：常规 flush 入队到写链按序执行，只有关闭路径
+    // （flushSync）同步裁——读前/关前保证磁盘已收敛。
     try {
-      if (immediateTrim) this.trimEventsFileIfNeeded(sessionId, d)
-      else this.deferTrim(sessionId, d)
+      if (immediateTrim) {
+        this.pendingChainTrims.delete(sessionId)
+        this.pendingTrims.delete(sessionId)
+        this.trimEventsFileIfNeeded(sessionId, d)
+      } else {
+        this.deferTrim(sessionId, d)
+      }
     } catch {
       /* best-effort */
     }
   }
 
-  /** 把裁剪排入 setImmediate，同会话最多一个在途任务（pendingTrims 去重）。
-   *  事件循环有空档才执行，flush 关键路径不被 openSync/readSync/rename 阻塞。 */
-  private deferTrim(sessionId: string, dir: string): void {
+  /** 写链内的稀疏索引推进：与同步版同逻辑，异步 stat/append。 */
+  private async advanceSparseIndexAsync(sessionId: string, dir: string, batch: BufferedLine[]): Promise<void> {
+    let track = this.indexTracks.get(sessionId)
+    if (!track) {
+      let fileBytes = 0
+      try { fileBytes = statSync(join(dir, 'events.jsonl')).size } catch { fileBytes = 0 }
+      const batchBytes = batch.reduce((n, b) => n + Buffer.byteLength(b.line, 'utf8'), 0)
+      const preBytes = Math.max(0, fileBytes - batchBytes)
+      track = {
+        bytes: preBytes,
+        sinceEntry: preBytes === 0 ? FileSessionPersistence.INDEX_INTERVAL : 0,
+      }
+      this.indexTracks.set(sessionId, track)
+    }
+    const entryLines: string[] = []
+    for (const b of batch) {
+      track.sinceEntry++
+      if (track.sinceEntry > FileSessionPersistence.INDEX_INTERVAL) {
+        entryLines.push(JSON.stringify({ seq: b.seq, offset: track.bytes }))
+        track.sinceEntry = 1
+      }
+      track.bytes += Buffer.byteLength(b.line, 'utf8')
+    }
+    if (entryLines.length > 0) {
+      await appendFile(join(dir, 'events.index.jsonl'), entryLines.join('\n') + '\n', 'utf8')
+    }
+  }
+
+  /** 裁剪排入写链按序执行（同一时刻写链是唯一写者——setImmediate 直裁会与
+   *  链内 append 竞争同一文件）。关前同步裁走 flushSession(immediateTrim)。 */
+  private deferTrim(sessionId: string, _dir: string): void {
     if (this.pendingTrims.has(sessionId)) return
     this.pendingTrims.add(sessionId)
-    setImmediate(() => {
-      try {
-        // 会话可能已被 deleteSession 移除（目录没了）→ statSync 失败即返回。
-        this.trimEventsFileIfNeeded(sessionId, dir)
-      } catch {
-        /* best-effort */
-      } finally {
-        this.pendingTrims.delete(sessionId)
-      }
-    })
+    this.pendingChainTrims.add(sessionId)
+    this.kickWriteChain(sessionId)
   }
 
   /**
@@ -305,19 +506,27 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     }
   }
 
-  /** Synchronous flush — call on graceful shutdown / before critical reads. */
+  /** Synchronous flush — call on graceful shutdown / before critical reads.
+   *
+   *  write-behind 兼容语义：写链未启动时同步排空滞留行（loadAll/测试的同步
+   *  断言路径）；链在跑的会话被跳过——生产上 shutdown 收口请改用
+   *  `await flushAllAsync()`（本方法只在同步上下文兜底）。 */
   flushSync(): void {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
     this.flushAll(true)
-    // 排空在途延迟裁剪：flushAll(true) 只覆盖仍有 buffer 的会话，critical
-    // flush 已清空 buffer 并排队的 trim 在这里同步完成——shutdown 前磁盘必须
-    // 收敛到上限内。setImmediate 回调稍后重跑是幂等的（size ≤ max 直接返回）。
+    // 同步排空 record 写链（链未启动的脏快照）——index.json 与 events.jsonl 同语义。
+    for (const id of [...this.recordWrites.keys()]) this.flushRecordSync(id)
+    // 排空在途/链内排队裁剪：同步 drain 仅覆盖链未启动的会话（writeChains 在
+    // 跑的会话由链尾 trim 自然收尾）。重跑幂等（size ≤ max 直接返回）。
     for (const id of [...this.pendingTrims]) {
+      const st = this.writeChains.get(id)
+      if (st?.running) continue
       try { this.trimEventsFileIfNeeded(id) } catch { /* best-effort */ }
       this.pendingTrims.delete(id)
+      this.pendingChainTrims.delete(id)
     }
   }
 
@@ -502,7 +711,7 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
    * chunked inline parse (yields between batches) when the pool is unavailable.
    */
   async loadEventsAsync(id: string): Promise<SessionEvent[]> {
-    this.flushSession(id)
+    await this.flushSessionAsync(id)
     const file = join(this.dir(id), 'events.jsonl')
     let text: string
     try {

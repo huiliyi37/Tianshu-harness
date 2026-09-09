@@ -153,6 +153,23 @@ describe('LspManager', () => {
     assert.equal(result.length, 0)
   })
 
+  it('spawn failure with null stdio degrades to not-ready instead of hanging', async () => {
+    const mgr = createLspManager(
+      () => ({
+        stdin: null,
+        stdout: null,
+        stderr: null,
+        kill: () => true,
+        on: () => {},
+      }) as any,
+      '/project',
+    )
+    managers.push(mgr)
+
+    await mgr.initialize()
+    assert.equal(mgr.isReady(), false, 'desktop ENOENT spawn path must not wedge initialize')
+  })
+
   it('dispose calls kill on the spawned process after initialization', async () => {
     // Create a mock that remembers kill invocation
     let killed = false

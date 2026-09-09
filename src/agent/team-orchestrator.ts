@@ -66,17 +66,11 @@ export interface TeamRunInput {
   /** 计划约束（D8 L2）：team-orchestrate 从 planPath 解析的反目标/待验证假设。
    *  透传进每个 DelegationRequest.constraints（任务级约束在前，计划级在后）。 */
   planConstraints?: string[]
-  /** 计划文件路径（T5）：注入每个 DelegationRequest.planRef → WorkOrder.planRef，
-   *  worker 提示词渲染「计划全文见：<path>」。无文件源（planJson 契约）时缺省。 */
-  planRef?: string
   /** 上一波波间门禁的失败项（仅未通过时提供）。与 priorResults / priorScopeLeaks
    *  一起压成跨波回执注入下一波工单——闭合「验收 → 反馈 → 下一波」回路。 */
   priorWaveGateFailures?: string[]
   /** 上一波 scope-health 检出的计划外改动文件 */
   priorScopeLeaks?: string[]
-  /** 仓库状态指纹（git HEAD）——max 计划缓存命中条件之一；缺省 = 旧行为
-   *  （不校验指纹，测试与未接 git 的调用方保持兼容）。 */
-  repoFingerprint?: string
 }
 
 export interface TeamRunSummary {
@@ -110,21 +104,6 @@ function isFileScopedPatcher(task: TeamTaskDraft): boolean {
 function buildExecutionObjective(task: TeamTaskDraft): string {
   if (task.profile !== 'patcher') return task.objective
   return `你是天梁执行者。只执行本 task，不扩展范围，不重写计划。\n\n${task.objective}`
-}
-
-/**
- * Task 级验收命令 → worker 约束。verification 此前只参与波间门禁与 review
- * hint，worker 自己反而不知道本 shard 的验收命令；这里把不在 objective 中
- * 已重复出现的命令内联进 request.constraints（worker prompt 的 L1 通道）。
- */
-function buildTaskVerificationConstraint(task: TeamTaskDraft): string | undefined {
-  const commands = [...new Set(task.verification.map(v => v.trim()).filter(Boolean))]
-  const unseen = commands.filter(command => !task.objective.includes(command))
-  if (unseen.length === 0) return undefined
-  return [
-    '本任务验收命令（交付前必须实际运行，并把 exit code/结果写进报告）：',
-    ...unseen.map(command => `- ${command}`),
-  ].join('\n')
 }
 
 export function taskAuthority(task: TeamTaskDraft): string {
@@ -173,7 +152,6 @@ export function teamTasksToDelegationRequests(tasks: TeamTaskDraft[], parentTurn
     if (task.dependsOn && task.dependsOn.length > 0) {
       deps = task.dependsOn.map(d => mapTeamDependency(d))
     }
-    const verificationConstraint = buildTaskVerificationConstraint(task)
     return {
       parentTurnId: `${parentTurnId}:${stableId}`,
       objective: buildExecutionObjective(task),
@@ -186,7 +164,6 @@ export function teamTasksToDelegationRequests(tasks: TeamTaskDraft[], parentTurn
       dependencies: deps,
       authority: taskAuthority(task),
       riskTier: 'riskTier' in task ? (task as TeamTask).riskTier : undefined,
-      ...(verificationConstraint ? { constraints: [verificationConstraint] } : {}),
     }
   })
 }
@@ -211,7 +188,6 @@ function waveToRequests(wave: TeamWave, taskMap: Map<string, TeamTask>, parentTu
       const deps = task.dependsOn.length > 0
         ? task.dependsOn.map(d => mapTeamDependency(d))
         : undefined
-      const verificationConstraint = buildTaskVerificationConstraint(task)
       return {
         parentTurnId: `${parentTurnId}:${stableId}`,
         objective: buildExecutionObjective(task),
@@ -222,7 +198,6 @@ function waveToRequests(wave: TeamWave, taskMap: Map<string, TeamTask>, parentTu
         dependencies: deps,
         authority: taskAuthority(task),
         riskTier: task.riskTier,
-        ...(verificationConstraint ? { constraints: [verificationConstraint] } : {}),
       }
     })
 }
@@ -463,9 +438,6 @@ async function dispatchWaveAt(
       r.constraints = [...(r.constraints ?? []), ...input.planConstraints]
     }
   }
-  // T5：计划指针注入——objective 只携带章节+checklist 摘要，worker 需要计划
-  // 原文时 read_file 自取（worker-prompts 渲染「计划全文见：<path>」）。
-  if (input.planRef) for (const r of requests) r.planRef = input.planRef
   // 跨波回执（2026-08-05 闭环审计）：上一波的失败、门禁未过项、计划外改动
   // 压成几条约束下传。此前这些结论只进 tool 输出给主控看，下一波 worker
   // 对上一波一无所知，常在同一个坑上再摔一次。走与 planConstraints 同一条
@@ -629,9 +601,7 @@ export async function runTeamSkeleton(input: TeamRunInput, deps: TeamOrchestrato
     // Track 2 plan cache: a fresh skeleton for the same/similar objective
     // skips the 3-perspective planner fanout entirely. This also keeps wave
     // indices stable when the main controller re-enters per fromWave.
-    const cached = loadTeamPlanSkeleton(deps.planCacheStore, input.objective, 'max', {
-      ...(input.repoFingerprint ? { repoFingerprint: input.repoFingerprint } : {}),
-    })
+    const cached = loadTeamPlanSkeleton(deps.planCacheStore, input.objective, 'max')
     let mergedTasks: TeamTask[]
     let plannerRun: CoordinatorRun | undefined
     let planMerge: TeamRunSummary['planMerge']
@@ -676,12 +646,7 @@ export async function runTeamSkeleton(input: TeamRunInput, deps: TeamOrchestrato
       // the orthogonal shards augment folded into the executable graph.
       planMerge = { conflicts: merged.conflicts, risks: merged.risks, deferred: merged.deferred, rejected: merged.rejected, augmented: merged.augmented }
       if (mergedTasks.length > 0) {
-        saveTeamPlanSkeleton(deps.planCacheStore, {
-          objective: input.objective,
-          mode: 'max',
-          tasks: mergedTasks,
-          ...(input.repoFingerprint ? { repoFingerprint: input.repoFingerprint } : {}),
-        })
+        saveTeamPlanSkeleton(deps.planCacheStore, { objective: input.objective, mode: 'max', tasks: mergedTasks })
       }
     }
     // Non-blocking advisory on the final merged graph (covers cached + fresh):
@@ -747,8 +712,6 @@ export async function runTeamSkeleton(input: TeamRunInput, deps: TeamOrchestrato
         r.constraints = [...(r.constraints ?? []), ...input.planConstraints]
       }
     }
-    // T5：计划指针注入（同上，max 模式 planner 分片路径）。
-    if (input.planRef) for (const r of requests) r.planRef = input.planRef
     const run = await deps.delegateBatch(requests, 'all_required', input.abortSignal)
     try {
       deps.recordTeamWaveTelemetry?.(buildTeamWaveTelemetry({

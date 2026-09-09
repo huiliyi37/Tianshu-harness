@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ContextLedger } from '../../context/types.js'
-import { buildVolatileBlock, buildStableVolatileBlock, buildLatestTurnVolatileBlock, buildDynamicAppendix, buildDynamicAppendixParts, appendixBlockName, assignSalience, selectTopKBlocks, renderPlanMethodologyAdvisory, renderPlanExecutingBlock, stripFirstMarkdownTable, windowsShellNote, type VolatileContext, type SalientBlock } from '../volatile.js'
+import { buildVolatileBlock, buildStableVolatileBlock, buildLatestTurnVolatileBlock, buildDynamicAppendix, buildDynamicAppendixParts, appendixBlockName, assignSalience, selectTopKBlocks, renderPlanMethodologyAdvisory, renderPlanExecutingBlock, renderPermissionNote, stripFirstMarkdownTable, windowsShellNote, type VolatileContext, type SalientBlock } from '../volatile.js'
 import { setTargetConventions, getShellCommand } from '../../platform.js'
 
 /** Fallback temp dir for sandboxed environments where os.tmpdir() is read-only. */
@@ -226,43 +226,31 @@ describe('volatile context layers', () => {
   })
 })
 
-describe('zenLean — 禅模式 appendix 裁剪 CVM 动态注入块', () => {
-  /** CVM 动态注入块 + keep-list 齐备的上下文。gitStatus 用短格式 + Recent
-   *  commits 行，让 appendix 侧拆出 <git-status> 与 <recent-commits> 两块。 */
-  const cvmCtx = (over: Partial<VolatileContext> = {}): VolatileContext => ({
-    cwd: '/repo',
-    gitStatus: 'M  src/main.tsx\n?? src/new.ts\n\nRecent commits:\n  1234abcd fix: zen\n',
-    activePlanPointer: '<active-plan pointer="zen-plan">执行中计划: zen-plan</active-plan>',
-    cognitiveProjection: '<cognitive-mirror>projection</cognitive-mirror>',
-    toolContext: '<tool-context>strategy</tool-context>',
-    harnessAdvisoryBlock: '<星域-advisory>advisory</星域-advisory>',
-    controlPlaneBlock: '<control-plane>telemetry</control-plane>',
-    ...over,
+describe('permission note — approval mode surfaced to the model', () => {
+  const unattended = { cwd: '/repo', approvalMode: 'dangerously-skip-permissions' } as VolatileContext
+
+  it('renders the note for the unattended level', () => {
+    const note = renderPermissionNote('dangerously-skip-permissions')
+    assert.match(note, /^<permission-note>/)
+    assert.match(note, /工作区外路径/)
+    assert.match(note, /request_path_access/)
   })
 
-  it('zenLean 裁剪 CVM 动态注入块，保留 git-status / recent-commits / 计划指针', () => {
-    const appendix = buildDynamicAppendix(cvmCtx({ zenLean: true }))
-    // keep-list: git-status / recent-commits / 计划指针 仍在
-    assert.match(appendix, /<git-status>/)
-    assert.match(appendix, /<recent-commits>/)
-    assert.match(appendix, /<active-plan/)
-    // CVM 动态注入块（sensorium=projection / 策略 profile=tool-context /
-    // 星域提醒=advisory-appendix / 遥测摘要=control-appendix）被裁剪
-    assert.doesNotMatch(appendix, /<cognitive-mirror>/)
-    assert.doesNotMatch(appendix, /<tool-context>/)
-    assert.doesNotMatch(appendix, /<星域-advisory>/)
-    assert.doesNotMatch(appendix, /<control-plane>/)
+  it('renders nothing for modes that still ask', () => {
+    for (const mode of ['manual', 'auto-safe', 'auto-accept', undefined] as const) {
+      assert.equal(renderPermissionNote(mode), '', `mode=${String(mode)} must render no note`)
+    }
   })
 
-  it('非 zenLean 时 CVM 块照常渲染（回归锚：行为与既有 appendix 一致）', () => {
-    const appendix = buildDynamicAppendix(cvmCtx())
-    assert.match(appendix, /<cognitive-mirror>/)
-    assert.match(appendix, /<tool-context>/)
-    assert.match(appendix, /<星域-advisory>/)
-    assert.match(appendix, /<control-plane>/)
-    assert.match(appendix, /<git-status>/)
-    assert.match(appendix, /<recent-commits>/)
-    assert.match(appendix, /<active-plan/)
+  it('lands in the dynamic appendix, never the frozen prefix', () => {
+    // approvalMode flips mid-session (live setApprovalMode) — it must stay out of
+    // the exact-prefix frozen base or every toggle would shatter the cache.
+    assert.match(buildDynamicAppendix(unattended), /<permission-note>/)
+    assert.doesNotMatch(buildStableVolatileBlock(unattended), /<permission-note>/)
+  })
+
+  it('is byte-constant across renders for the same mode (cache-safe)', () => {
+    assert.equal(buildDynamicAppendix(unattended), buildDynamicAppendix(unattended))
   })
 })
       

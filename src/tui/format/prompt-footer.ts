@@ -19,6 +19,9 @@ export interface PromptFooterInput {
   agentBusy?: boolean
   /** 审批挂起：提示审批动作 */
   approvalPending?: boolean
+  /** 终端支持 kitty keyboard protocol（能力探测回包确认）。Shift+Enter
+   *  只在支持的终端上与 Enter 可区分——不支持时提示该键即谎言，裁掉。 */
+  shiftEnterAvailable?: boolean
 }
 
 const CHROME_INACTIVE_SHIMMER = '#8a8a8a'
@@ -33,12 +36,16 @@ export function formatPromptFooter(input: PromptFooterInput, theme: RivetTheme):
      Shift+Enter 退出回「normal」。此前恒显 normal 是无信息量的死占位。 */
   const mode = input.newlineMode === true ? 'insert' : 'normal'
   const modeColor = theme.dim
+  // shift+enter 段只在能力探测通过的终端显示——非 kitty 终端上该键与
+  // Enter 同码（裸 \r），按提示操作只会触发提交/继续换行，提示即误导。
+  const shiftEnterSegs = input.shiftEnterAvailable === true ? ['shift+enter 换行模式'] : []
+  const shiftEnterExitSegs = input.shiftEnterAvailable === true ? ['shift+enter 退出'] : []
   const hints: string[] = input.approvalPending === true
     ? ['y 允许', 'n 拒绝', 'a 放行', 'esc 取消']
-    : input.agentBusy === true
-      ? ['esc 打断', 'ctrl+c 打断']
-      : input.newlineMode === true
-        ? ['换行中', 'enter 换行', 'shift+enter 退出']
+    : input.newlineMode === true
+      ? ['换行中', 'enter 换行', ...shiftEnterExitSegs]
+      : input.agentBusy === true
+        ? ['ctrl+j 换行', ...shiftEnterSegs]
         : ['/ 命令', 'ctrl+j 换行', 'ctrl+p 面板']
 
   let segs = hints

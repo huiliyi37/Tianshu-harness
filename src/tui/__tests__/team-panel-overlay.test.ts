@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { encodeTeamPanelModel, overlayFleetStatus, stripTeamPanelFrames, type TeamPanelModel } from '../team-panel-model.js'
+import { overlayFleetStatus, type TeamPanelModel } from '../team-panel-model.js'
 import { FleetRegistry } from '../fleet-registry.js'
 import { buildTeamPanelLines } from '../format/team-panel.js'
 
@@ -77,38 +77,5 @@ describe('buildTeamPanelLines progress + live rows', () => {
     assert.ok(/\d\/3 完成/.test(plain), `progress bar present: ${plain}`)
     assert.ok(plain.includes('scanning'), 'activity line present')
     assert.ok(plain.includes('ready · deps met'), 'dependency unlock cue present')
-  })
-})
-
-describe('stripTeamPanelFrames（帧剥离：raw 编码串永不入 UI 文本）', () => {
-  it('剥离帧行，保留进度文本行', () => {
-    const frame = encodeTeamPanelModel(baseModel())
-    const mixed = `  ↳ [w1·patcher] ⚙ read_file a.ts\n${frame}\n✦ team progress: 1/3 workers done\n`
-    const out = stripTeamPanelFrames(mixed)
-    assert.ok(!out.includes('rivet:team-panel:v1'), '帧行被剥离')
-    assert.ok(out.includes('⚙ read_file a.ts'), '帧前的进度行保留')
-    assert.ok(out.includes('team progress: 1/3'), '帧后的进度行保留')
-  })
-
-  it('无帧文本原样返回（引用不变，零开销路径）', () => {
-    const text = '✦ team progress: 2/3 workers done\n'
-    assert.equal(stripTeamPanelFrames(text), text)
-  })
-
-  it('帧独占 chunk 剥离后只剩空白（调用方据此跳过累积）', () => {
-    const only = `\n${encodeTeamPanelModel(baseModel())}\n`
-    assert.equal(stripTeamPanelFrames(only).trim(), '')
-  })
-
-  it('同 buffer 多帧全部剥离（onPlanReady + 中途推进帧）', () => {
-    const buf = `${encodeTeamPanelModel(baseModel())}\n✦ team progress: 1/3 workers done\n${encodeTeamPanelModel(baseModel())}\n`
-    const out = stripTeamPanelFrames(buf)
-    assert.ok(!out.includes('rivet:team-panel:v1'))
-    assert.ok(out.includes('team progress'))
-  })
-
-  it('撕裂帧（非法 JSON 尾部）同样剥离——泄露防控不依赖 decode 成功', () => {
-    const torn = '\nrivet:team-panel:v1:{"mode":"standard","wav\n'
-    assert.equal(stripTeamPanelFrames(torn).trim(), '')
   })
 })

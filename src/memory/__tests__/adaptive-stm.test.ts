@@ -1,7 +1,7 @@
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { AUTO_STM_KINDS, adaptiveMemoryMode, resetAdaptiveMemoryState, reviewAdaptiveMemory } from '../adaptive-stm.js'
-import type { KnowledgeHit, KnowledgeSearchOptions } from '../knowledge-index.js'
+import { adaptiveMemoryMode, resetAdaptiveMemoryState, reviewAdaptiveMemory } from '../adaptive-stm.js'
+import type { KnowledgeHit } from '../knowledge-index.js'
 
 beforeEach(() => resetAdaptiveMemoryState())
 
@@ -45,22 +45,6 @@ describe('adaptive STM', () => {
     assert.equal(result.reason, 'initial')
     assert.equal(result.block, null)
     assert.deepEqual(result.selectedIds, ['memory'])
-  })
-
-  it('automatic STM search excludes knowledge markdown docs and non-governance kinds', async () => {
-    const calls: KnowledgeSearchOptions[] = []
-    const index = {
-      search: async (_query: string, options?: KnowledgeSearchOptions): Promise<KnowledgeHit[]> => {
-        calls.push(options ?? {})
-        return []
-      },
-    }
-    await reviewAdaptiveMemory({
-      cwd: '/project', sessionId: 'session-md', turn: 1,
-      intentText: 'ask a new question', userInput: 'ask a new question', mode: 'on', index,
-    })
-    assert.equal(calls[0]?.includeMarkdown, false, '旧 md 文档不得进入自动 STM 注入')
-    assert.deepEqual(calls[0]?.kind, AUTO_STM_KINDS, 'failure_pattern/finding 等旧问题条目不得自动注入')
   })
 
   it('emits an explicit empty replacement when a new intent has no hits', async () => {

@@ -20,6 +20,7 @@ import {
   type WorkerResult,
 } from './work-order.js'
 import { STALL_TOOL_CALL_THRESHOLD, subtractUsage } from './worker-continuation.js'
+import { clearActivity } from './stall-observer.js'
 import { toolArgSummary } from '../tui/tool-label.js'
 import { buildWorkerPrompt, buildWorkerRepairPrompt, buildFinalizationInstruction, workerOrderHasWriteTools } from './worker-prompts.js'
 import { reconcileCapturedWorkerFacts } from './worker-evidence.js'
@@ -175,6 +176,11 @@ export interface WorkerSessionConfig {
    *  run's returned `usage` stays a DELTA (total − seed) so coordinator-side
    *  mergeUsage bookkeeping is unchanged. */
   priorUsage?: Partial<Usage>
+  /** 上一轮（续跑/复核/重试，同 order.id+nonce）导出的冻结前缀快照——新引擎
+   *  经 inheritFrozenFrom 继承，历史 user 消息恢复原始字节，前缀缓存只在新
+   *  user 边界断尾而非 byte-0 全 miss。进程内续跑直接用；OOP 子进程经协议
+   *  init 帧携带。缺省/坏数据 = 冷启动（历史行为）。 */
+  priorFrozenSnapshot?: import('../prompt/frozen-snapshot.js').FrozenSnapshotData
   /** Per-dispatch nonce mixed into the worker's session id (see
    *  deriveWorkerSessionId) — batch order ids repeat across delegation runs,
    *  and without the nonce every run appends to the same conversation JSONL.
@@ -237,6 +243,10 @@ export interface WorkerSessionRun {
   /** Extracted checkpoint when the worker was aborted mid-work — can be passed
    *  back as config.checkpoint to resume on retry. */
   checkpoint?: WorkerCheckpoint
+  /** 本轮终态导出的冻结前缀快照——下一轮（续跑/复核/重试）经
+   *  WorkerSessionConfig.priorFrozenSnapshot 回传给新引擎继承（OOP 经协议
+   *  result/init 帧携带）。导出失败缺席 = 下一轮冷启动（历史行为）。 */
+  frozenSnapshot?: import('../prompt/frozen-snapshot.js').FrozenSnapshotData
 }
 
 function emptyTranscript(): WorkerTranscript {
@@ -1042,9 +1052,6 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
         }
         const pollutionHint = detectPollutionFailure(transcript)
         const approvalHint = detectApprovalDeadlock(transcript)
-        // 这里的 blocked 是「abort 时的原始形态」——coordinator 回收侧还会过一道
-        // completed-aborted 产物校验（upgradeAbortedDelivery）：scope 声明产物已
-        // 按预期写盘的 abort 结果会在那里升级为 passed + deliveredOnAbort。
         return {
           result: {
             ...buildBlockedWorkerResult(
@@ -1161,6 +1168,11 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
     // 内存，worker 不走主会话的 shutdown drain）。必须在 wrapper 写终态前
     // 完成，否则 wrapper 从盘上 merge 到的是缺了尾巴的旧账。
     try { await agent.drainPersistWrites() } catch { /* best-effort */ }
+    // worker 会话本次运行终结（含 blocked/salvaged/abort/throw 全出口）：清
+    // stall-observer 活动表条目——否则结束后残留 key 被周期性重报（delegate
+    // 返回后仍见 [stall-observer] worker 噪音，2026-09-09）。resume 续跑会
+    // 重新 touch，无需保留条目。
+    clearActivity(deriveWorkerSessionId(config.order.id, config.sessionNonce))
   }
 }
 
@@ -1181,6 +1193,9 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
  */
 export async function runWorkerSession(config: WorkerSessionConfig): Promise<WorkerSessionRun> {
   const run = await runWorkerSessionImpl(config)
+  // 冻结前缀快照随 run 带回（coordinator 续跑/复核/重试回传继承；caller_aborted
+  // 分支同样要挂——那正是父会话接管续跑的场景）。导出失败 = 下轮冷启动，不毁结果。
+  try { run.frozenSnapshot = config.promptEngine.exportFrozenSnapshot() } catch { /* best-effort */ }
   // caller_aborted：不写终态——保持 active + cleanExit:false，与 R1 crash-recoverable
   // 语义一致（abort 后父会话可能接管续跑，不能误标已收尾）。timeout 是预算耗尽
   // （文档要修的形态），failureReason 已编码在结果上，正常写终态 + 归因。
@@ -1189,6 +1204,11 @@ export async function runWorkerSession(config: WorkerSessionConfig): Promise<Wor
   }
   try {
     const persist = new SessionPersist(deriveWorkerSessionId(config.order.id, config.sessionNonce), config.cwd)
+    // 快照落盘与主会话同语义（worker 目录此前 0 个 frozen.json）——本轮在
+    // 哪个进程跑就写哪个进程的盘；OOP 子进程 cwd 相同，落点一致。
+    if (run.frozenSnapshot) {
+      try { persist.writeFrozenSnapshot(run.frozenSnapshot) } catch { /* best-effort */ }
+    }
     // 无条件写（成功时为 undefined）：续跑各轮共用同一 meta——order.id 与 nonce 都不变，
     // 而 updateMetadata 是合并语义。条件展开会让首轮的 'timeout' 在续跑成功后残留，
     // 把最终成功的 worker 读成预算耗尽，正好抵消这里要提供的归因能力。

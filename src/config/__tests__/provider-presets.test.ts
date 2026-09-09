@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { providerSchema } from '../schema.js'
 import { PROVIDER_PRESETS, cloneProviderPreset, providerPresetKeys } from '../provider-presets.js'
+import { DEFAULT_CONFIG } from '../default.js'
 import { migratePresetModelBackfill } from '../preset-model-backfill.js'
 
 describe('provider presets', () => {
@@ -77,6 +78,42 @@ describe('provider presets', () => {
     assert.equal(flash.supportsVision, true, '原生多模态声明视觉')
     assert.equal(flash.contextWindow, 1_000_000)
     assert.deepEqual(flash.pricing, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+  })
+
+  // Kimi Code（会员订阅端点）与 CLI 内置 DEFAULT_CONFIG.kimi 必须同源。
+  // 2026-09 之前预设走 Moonshot 开放平台（api.moonshot.cn + MOONSHOT_API_KEY + kimi-k3），
+  // 与内置的 Kimi Code 配置（api.kimi.com/coding + KIMI_API_KEY + k3）两套并存：
+  // 用户在预设卡填的开放平台 Key 拿不到内置模型，反之亦然。以官方 Kimi Code 文档为准
+  // （https://www.kimi.com/coding/docs/：Base URL api.kimi.com/coding/v1、模型 id k3 系）。
+  it('kimi 预设走 Kimi Code 订阅端点，模型为 k3 系', () => {
+    const kimi = cloneProviderPreset('kimi')
+    assert.equal(kimi.baseUrl, 'https://api.kimi.com/coding/v1')
+    assert.equal(kimi.apiKeyEnv, 'KIMI_API_KEY')
+    assert.equal(PROVIDER_PRESETS.kimi.defaultModelId, 'k3')
+    assert.equal(PROVIDER_PRESETS.kimi.keyUrl, 'https://www.kimi.com/code/console', 'Key 在 Kimi Code 控制台创建，不是开放平台')
+    const k3 = kimi.models.find(m => m.id === 'k3')
+    assert.ok(k3, 'k3 必须在 kimi 预设模型列表')
+    assert.equal(k3.contextWindow, 1_000_000)
+    assert.equal(k3.maxTokens, 131_072)
+    assert.equal(k3.reasoningEffort, 'max')
+    assert.deepEqual(k3.pricing, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, 'Kimi Code 会员订阅不按 token 计费')
+    const code = kimi.models.find(m => m.id === 'kimi-for-coding')
+    assert.ok(code, 'kimi-for-coding 必须在 kimi 预设模型列表')
+    // 官方 4 个模型 ID 里的 k3-256k：256K 上下文省额度版，k3（1M）消耗约为其两倍。
+    const budget = kimi.models.find(m => m.id === 'k3-256k')
+    assert.ok(budget, 'k3-256k 必须在 kimi 预设模型列表（官方 256K 省额度版）')
+    assert.equal(budget.contextWindow, 262_144)
+    assert.equal(budget.reasoningEffort, 'max')
+    assert.deepEqual(budget.pricing, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+  })
+
+  it('DEFAULT_CONFIG.kimi 与 kimi 预设同源（端点/apiKeyEnv/模型 id 序列）', () => {
+    const builtin = DEFAULT_CONFIG.provider.providers.kimi
+    assert.ok(builtin)
+    const preset = PROVIDER_PRESETS.kimi.provider
+    assert.equal(builtin.baseUrl, preset.baseUrl)
+    assert.equal(builtin.apiKeyEnv, preset.apiKeyEnv)
+    assert.deepEqual(builtin.models.map(m => m.id), preset.models.map(m => m.id))
   })
 })
 

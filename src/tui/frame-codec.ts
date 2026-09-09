@@ -103,16 +103,3 @@ export function decodeFrameLastWins<T>(
   }
   return null
 }
-
-/**
- * 从文本中剥离指定前缀的帧（帧恒为单行 JSON，按行过滤）。
- * 进度文本行原样保留（不动行结构、不 trim——调用方自行决定拼接口径）。
- * 与桌面端 event-reducer 的 stripTeamPanelFrames 同语义：raw 帧串永不落入 UI 文本。
- */
-export function stripFrames(text: string, prefix: string): string {
-  if (!text.includes(prefix)) return text
-  return text
-    .split('\n')
-    .filter(line => !line.includes(prefix))
-    .join('\n')
-}

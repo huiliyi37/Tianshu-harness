@@ -36,8 +36,6 @@ export interface CaptureVerdict {
   /** 适用范围（可选，与 essence-gate 的 transferableTo 同语义）。 */
   transferableTo?: string[]
   topic?: string
-  /** 该坑/问题在会话内是否已被后续操作解决（P2：旧问题不背新问题）。 */
-  resolved?: boolean
 }
 
 const CODE_WRITE_TOOLS = new Set(['write_file', 'write', 'edit', 'edit_file', 'apply_patch', 'ast_edit', 'hash-edit', 'multi_edit'])
@@ -122,7 +120,6 @@ export function buildCapturePrompt(candidates: CaptureCandidate[], sessionId?: s
   lines.push('4. 其余琐碎操作不要记。')
   lines.push('对每个值得记的操作，截取成一段简洁的摘要（1-2 句，能脱离上下文独立理解），并给 kind。')
   lines.push('kind 只取：decision（实现/修复）、failure_pattern（坑/根因）、user_constraint（约束）、verification_fact（验证）。')
-  lines.push('如果某个 failure_pattern 在候选序列后面已经被修好，给该条加 "resolved":true（旧问题不背新问题）。')
   lines.push('')
   lines.push(`候选（${candidates.length} 条，CANDIDATES）：`)
   for (let i = 0; i < candidates.length; i++) {
@@ -132,7 +129,7 @@ export function buildCapturePrompt(candidates: CaptureCandidate[], sessionId?: s
   }
   lines.push('')
   lines.push('只返回一个 JSON 数组（无 markdown 围栏），每个候选一项：')
-  lines.push('[{"index":0,"worth":true,"summary":"...","kind":"decision","confidence":0.9,"resolved":false,"transferableTo":["..."],"topic":"..."}]')
+  lines.push('[{"index":0,"worth":true,"summary":"...","kind":"decision","confidence":0.9,"transferableTo":["..."],"topic":"..."}]')
   if (sessionId) lines.push(`会话：${sessionId}`)
   return lines.join('\n')
 }
@@ -181,7 +178,6 @@ export function parseCaptureOutput(raw: string, candidateCount: number): Capture
         ? v.transferableTo.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
         : undefined,
       topic: typeof v.topic === 'string' && v.topic.trim() ? v.topic.trim().toLowerCase() : undefined,
-      resolved: v.resolved === true,
     })
   }
   return verdicts
@@ -219,7 +215,7 @@ export function applyCaptureVerdicts(
         confidence: verdict.confidence,
         source: 'auto-capture' as MemorySource,
         status: 'observed',
-        tags: ['auto-capture', verdict.kind, ...(verdict.resolved ? ['resolved'] : [])],
+        tags: ['auto-capture', verdict.kind],
         sessionId,
         evidence,
         transferableTo: verdict.transferableTo,

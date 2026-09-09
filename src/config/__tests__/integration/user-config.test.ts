@@ -20,7 +20,7 @@ function hasProvider(config: any, name: string): boolean {
 describe('User config validation', () => {
   const config = loadConfig()
 
-  it('config file exists', { skip: config === null ? '本机无用户配置（CI/新环境正常，非缺陷）' : false }, () => {
+  it('config file exists', () => {
     assert.ok(config !== null, `Config not found at ${userConfigPath()}`)
   })
 

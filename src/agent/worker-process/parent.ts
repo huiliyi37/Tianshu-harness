@@ -119,6 +119,7 @@ export async function runWorkerSessionOop(
       parentApprovalMode: config.parentApprovalMode,
       priorMessages: config.priorMessages ? [...config.priorMessages] : undefined,
       priorUsage: config.priorUsage,
+      priorFrozenSnapshot: config.priorFrozenSnapshot,
       sessionNonce: config.sessionNonce,
       checkpoint: config.checkpoint,
     },
@@ -234,6 +235,7 @@ export async function runWorkerSessionOop(
       session: { getMessages: () => run.messages } as unknown as SessionContext,
       usage: run.usage,
       checkpoint: run.checkpoint,
+      frozenSnapshot: run.frozenSnapshot,
     })
 
     const decoder = createFrameDecoder()

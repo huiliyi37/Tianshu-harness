@@ -18,8 +18,7 @@ test('钉底审阅卡在输入框上方，标日期不标模型', () => {
   app.openPlanApprovalPanel(PLAN, { body: BODY, date: '2026-08-26' })
   const plain = visible(out)
   assert.ok(plain.includes('计划审批'), `header: ${plain}`)
-  // 2026-08-28（b15e90428）视觉分层重排：标题裸排入顶边框（`☰ 计划审批 · <title>`），不再加「」
-  assert.ok(plain.includes('☰ 计划审批 · 重构缓存层'))
+  assert.ok(plain.includes('「重构缓存层」'))
   assert.ok(plain.includes('2026-08-26'))
   assert.ok(plain.includes('批准并执行'))
   assert.ok(plain.includes('❯'), 'input remains')

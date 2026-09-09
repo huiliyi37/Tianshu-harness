@@ -13,20 +13,14 @@ const SEARCH_SNIPPET_RADIUS = 60
 export type SessionSearchHit = {
   sessionId: string
   title: string
-  role: 'user' | 'assistant' | 'branch'
+  role: 'user' | 'assistant'
   snippet: string
-  /** P1-3 — which index produced the hit; branch hits never come from the transcript. */
-  matchedField?: 'content' | 'branch'
-  /** P1-3 — the matched branch name (matchedField === 'branch'). */
-  branch?: string
 }
 
 export type SessionSearchRecord = {
   id: string
   title?: string
   cwd: string
-  /** P1-3 — cached branch name from SessionRecord (worktree or creation-time ref). */
-  branch?: string
 }
 
 export type SessionSearchMetrics = {
@@ -98,7 +92,6 @@ async function searchTranscript(
         title: session.title ?? session.id.slice(0, 8),
         role: parsed.role,
         snippet,
-        matchedField: 'content',
       })
     }
   }
@@ -140,36 +133,18 @@ export async function searchSessionTranscripts(
     }
   }
 
-  const branchHit = (session: SessionSearchRecord): SessionSearchHit[] => {
-    const branch = session.branch?.trim()
-    if (!branch || !branch.toLowerCase().includes(lowerQuery)) return []
-    return [{
-      sessionId: session.id,
-      title: session.title ?? session.id.slice(0, 8),
-      role: 'branch',
-      snippet: `⎇ ${branch}`,
-      matchedField: 'branch',
-      branch,
-    }]
-  }
-
   const worker = async () => {
     while (!options.signal?.aborted && !capReached) {
       const index = nextIndex++
       if (index >= sessions.length) return
       scannedFiles++
-      const session = sessions[index]!
-      const branchHits = branchHit(session)
-      const transcriptHits = await searchTranscript(
-        session,
+      hitsByIndex[index] = await searchTranscript(
+        sessions[index]!,
         lowerQuery,
         read,
         filePathFor,
         options.signal,
       )
-      // Branch hits rank first within a session; the per-session cap keeps the
-      // result list bounded across both indexes.
-      hitsByIndex[index] = [...branchHits, ...transcriptHits].slice(0, SEARCH_PER_SESSION_MAX)
       updateContiguousPrefix()
       if (options.signal?.aborted || capReached || nextIndex >= sessions.length) return
       await yieldControl()

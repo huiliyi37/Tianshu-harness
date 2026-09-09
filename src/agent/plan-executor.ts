@@ -16,7 +16,6 @@
  */
 
 import { isAbsolute } from 'node:path'
-import { execFileSync } from 'node:child_process'
 import type { CoordinatorRun, DelegationRequest } from './coordinator.js'
 import { createCoordinatorReviewDeps } from './review-coordinator-deps.js'
 import { classifyChangeScale, isCrossModule, isFixContext, type ChangeSet, type ReviewScale } from './review-discipline.js'
@@ -90,8 +89,6 @@ export interface PlanExecutorOptions {
   parentTurnId?: string
   reviewDepth: number
   cwd: string
-  /** 仓库状态指纹（缺省时按 cwd 读 git HEAD）——透传给 max 计划缓存。 */
-  repoFingerprint?: string
   abortSignal?: AbortSignal
   /** When false, the review-squadron dispatch is skipped. plan_task sets this
    *  false because its post-commit auto review gate covers it. */
@@ -107,9 +104,6 @@ export interface PlanExecutorOptions {
    *  已渲染为 ≤400 字符的约束条目。透传进每波派发的 request.constraints（任务级
    *  约束在前，计划级在后）。缺省不注入——解析不到就是空，不报错不拦截。 */
   planConstraints?: string[]
-  /** 计划文件路径（T5）：透传 TeamRunInput.planRef → 每个工单的 planRef，worker
-   *  提示词渲染「计划全文见：<path>」。无文件源（planJson 契约）时缺省不注入。 */
-  planRef?: string
   /** 上一波 scope-health 检出的计划外改动文件。由 executePlanWaves 在循环内
    *  从上一波 run 传入——单波直调时缺省为空，行为不变。 */
   priorScopeLeaks?: string[]
@@ -140,25 +134,6 @@ export interface PlanExecutorRun {
  *  large blast radius doesn't flood the review focus / returned content. */
 function capList(items: string[], n = 8): string {
   return items.length <= n ? items.join(', ') : `${items.slice(0, n).join(', ')} (+${items.length - n} more)`
-}
-
-/**
- * Repository-state fingerprint for the max plan cache. Best-effort: non-git
- * cwd / git failure / timeout returns undefined and the caller falls back to
- * legacy cache behavior (no fingerprint check).
- */
-export function readRepoFingerprint(cwd: string): string | undefined {
-  try {
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).toString().trim()
-    return head.length > 0 ? `git:${head}` : undefined
-  } catch {
-    return undefined
-  }
 }
 
 function requireDelegate(deps: PlanExecutorDeps): Required<Pick<PlanExecutorDeps, 'delegate'>>['delegate'] {
@@ -325,7 +300,6 @@ export async function executePlan(opts: PlanExecutorOptions, deps: PlanExecutorD
       parentTurnId: opts.parentTurnId,
       abortSignal: opts.abortSignal,
       priorResults,
-      repoFingerprint: opts.repoFingerprint ?? (opts.mode === 'max' ? readRepoFingerprint(opts.cwd) : undefined),
       teamSchedulerBanditEnabled: deps.isTeamSchedulerBanditEnabled?.() === true,
       onActivity: opts.onActivity,
       onWorkerSettled: opts.onWorkerSettled,
@@ -333,8 +307,6 @@ export async function executePlan(opts: PlanExecutorOptions, deps: PlanExecutorD
       // D8 L2：计划约束透传（team-orchestrator 分片在 TeamRunInput 消费并并入
       // waveToRequests 的 request.constraints）。条件注入——空则不带，fail-open。
       ...(opts.planConstraints && opts.planConstraints.length > 0 ? { planConstraints: opts.planConstraints } : {}),
-      // T5：计划指针随约束同路透传（waveToRequests 注入 request.planRef）。
-      ...(opts.planRef ? { planRef: opts.planRef } : {}),
       // 跨波回执：条件注入，空则不带字段——wave 0 与一切正常的波次行为不变。
       ...(priorWaveGateFailures.length > 0 ? { priorWaveGateFailures } : {}),
       ...(opts.priorScopeLeaks && opts.priorScopeLeaks.length > 0 ? { priorScopeLeaks: opts.priorScopeLeaks } : {}),
@@ -603,9 +575,6 @@ export const EXECUTE_PLAN_WAVES_GUARDRAIL = 10
 export interface WaveStopContext {
   /** 已中止 → 停止推进下一波。 */
   abortSignal?: AbortSignal
-  /** 最小通过率（0..1）。本波有 worker 且 passed/total 低于该值 → 停止推进
-   *  下一波。缺省 = 现状行为（只有 0 通过才停）。 */
-  minPassRate?: number
 }
 
 /**
@@ -622,10 +591,6 @@ export interface WaveStopContext {
 export function classifyWaveStop(outcome: TeamOrchestrationOutcome, ctx: WaveStopContext = {}): boolean {
   if (ctx.abortSignal?.aborted) return true
   if (outcome.workers.total > 0 && outcome.workers.passed === 0) return true
-  if (ctx.minPassRate !== undefined && outcome.workers.total > 0) {
-    const passRate = outcome.workers.passed / outcome.workers.total
-    if (passRate < ctx.minPassRate) return true
-  }
   if (outcome.waveGate && !outcome.waveGate.passed) return true
   if (outcome.reviewVerdict === 'rejected' || outcome.reviewVerdict === 'inconclusive') return true
   return false
@@ -678,13 +643,8 @@ export interface PlanExecutorWavesOptions {
   /** 波数硬上限（exclusive：wave < maxWaves）。缺省 startWave + 10（护栏）；
    *  计划真实总波数更小则按 outcome.totalWaves 提前 break。 */
   maxWaves?: number
-  /** 每波完成回调（run 已入 runs 后、停止判定前调用；支持异步——council
-   *  autoExecute 用它做门禁失败后的波间复议）。 */
-  onWave?: (run: PlanExecutorRun, wave: number) => void | Promise<void>
-  /** 每波 parentTurnId 工厂（council autoExecute 按 wave 编号区分父 turn）。 */
-  parentTurnIdForWave?: (wave: number) => string
-  /** 最小通过率（0..1）——低于该值停止推进下一波。缺省 = 现状（零通过才停）。 */
-  minPassRate?: number
+  /** 每波完成回调（run 已入 runs 后、停止判定前调用）。 */
+  onWave?: (run: PlanExecutorRun, wave: number) => void
 }
 
 export interface PlanExecutorWavesResult {
@@ -715,67 +675,23 @@ export async function executePlanWaves(
     throw new Error(`executePlanWaves: maxWaves (${maxWaves}) must be > startWave (${startWave})`)
   }
   // 解构出驱动字段，剩余透传给单波 executePlan（多余键运行时被忽略）。
-  const {
-    startWave: _startWave,
-    autoAdvance: _autoAdvance,
-    maxWaves: _maxWaves,
-    onWave,
-    parentTurnIdForWave,
-    minPassRate,
-    ...planOpts
-  } = opts
-  // 仓库指纹每轮计划只读一次，逐波复用（git 失败返回 undefined → 旧缓存行为）。
-  const repoFingerprint = opts.repoFingerprint ?? (opts.mode === 'max' ? readRepoFingerprint(opts.cwd) : undefined)
+  const { startWave: _startWave, autoAdvance: _autoAdvance, maxWaves: _maxWaves, onWave, ...planOpts } = opts
   const runs: PlanExecutorRun[] = []
   // 跨波回执：上一波的 scope 泄漏没有会话级 store（门禁与 worker 结果都有），
   // 由本驱动在循环内直接接力。单波直调 executePlan 时该字段缺省为空。
   let priorScopeLeaks: string[] = []
   for (let wave = startWave; wave < maxWaves; wave++) {
-    let run: PlanExecutorRun
-    try {
-      run = await executePlan(
-        {
-          ...planOpts,
-          fromWave: wave,
-          ...(parentTurnIdForWave ? { parentTurnId: parentTurnIdForWave(wave) } : {}),
-          ...(repoFingerprint !== undefined ? { repoFingerprint } : {}),
-          ...(priorScopeLeaks.length > 0 ? { priorScopeLeaks } : {}),
-        },
-        deps,
-      )
-    } catch (err) {
-      // T13 超时/abort 兜底：波内异常（含 withToolTimeout 超时级联的 abort 传播）
-      // 时，executePlan 未走到覆盖式 saveCheckpoint——前波 checkpoint 应仍在
-      // （未覆盖），此处防御性确认：缺失则补写"最后完成波"元数据，fromWave
-      // 续跑不会重跑已完成的波次。
-      if (runs.length > 0 && opts.cwd) {
-        try {
-          const groupId = deriveTeamGroupId(opts.objective)
-          if (!loadCheckpoint(opts.cwd, groupId)) {
-            saveCheckpoint(opts.cwd, {
-              groupId,
-              timestamp: Date.now(),
-              lastCompletedWave: runs.length - 1,
-              completedResults: runs.flatMap(r => r.summary.run?.results ?? []),
-              remainingOrders: [],
-              objective: opts.objective,
-              // totalWaves 未知（未走到 summary）——填已完成波数而非 0，
-              // 否则 checkpoint 渲染出「N/0 波」。
-              totalWaves: runs.length,
-            })
-          }
-        } catch { /* checkpoint 是续跑便利，绝不影响派发 */ }
-      }
-      throw err
-    }
+    const run = await executePlan(
+      { ...planOpts, fromWave: wave, ...(priorScopeLeaks.length > 0 ? { priorScopeLeaks } : {}) },
+      deps,
+    )
     priorScopeLeaks = run.scopeLeakedFiles ?? []
     runs.push(run)
-    await onWave?.(run, wave)
+    onWave?.(run, wave)
     const outcome = buildTeamOutcome(run.summary, wave, run)
-    const stop = classifyWaveStop(outcome, { abortSignal: opts.abortSignal, minPassRate })
-    // 停止：本波判据（零通过 / minPassRate / waveGate / review / abort）、
-    // autoAdvance=false、或已到计划末波（wave + 1 >= totalWaves；maxWaves 为
-    // 护栏后备上限）。
+    const stop = classifyWaveStop(outcome, { abortSignal: opts.abortSignal })
+    // 停止：本波判据（零通过 / waveGate / review / abort）、autoAdvance=false、
+    // 或已到计划末波（wave + 1 >= totalWaves；maxWaves 为护栏后备上限）。
     if (stop || !autoAdvance || wave + 1 >= outcome.totalWaves) break
   }
   return { runs, run: aggregatePlanExecutorRuns(runs) }

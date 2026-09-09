@@ -1,7 +1,5 @@
 export interface StreamCacheObservability {
   ttftMs?: number
-  /** W-stats：输出速度 tok/s（解码段分母）——随主轮行落 cache-log。 */
-  tps?: number
 }
 
 export interface ToolBatchCacheObservability {
@@ -107,7 +105,6 @@ export class TurnCacheObservability {
     this.pending = undefined
     return {
       ...(stream.ttftMs !== undefined ? { ttftMs: stream.ttftMs } : {}),
-      ...(stream.tps !== undefined ? { tps: stream.tps } : {}),
       ...pending,
     }
   }

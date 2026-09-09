@@ -12,13 +12,14 @@ import { createCheckpoint, recordAgentTouchedFile, recordBashSideEffects, makeOw
 import { validatePath, validatePathSafe } from '../tools/path-validate.js'
 import { grantPath } from '../tools/path-grants.js'
 import { expandHome } from '../platform.js'
-import { dirname, join, resolve as resolvePath, isAbsolute } from 'node:path'
+import { dirname, join, relative, resolve as resolvePath, isAbsolute } from 'node:path'
 import { getSessionDir } from './session-persist.js'
 import { classifyFailure, classifyToolFailure, classifyTestRun, isTransient, resolveErrorKind, type FailureClass } from './failure-classifier.js'
 import { extractClaimsFromToolResult } from '../context/claim-extractor.js'
 import { appendProjectMemory, compactProjectMemory } from '../context/project-memory-writer.js'
 import { detectConflicts } from '../context/conflict-detect.js'
 import { createAntibodyProposal } from '../context/antibody.js'
+import { touchActivity } from './stall-observer.js'
 import { buildImportGraph, invalidateFile } from './import-graph.js'
 import { generateImpactHint } from './impact-hint.js'
 import { analyzeImpact } from '../repo/meridian-impact.js'
@@ -216,8 +217,6 @@ async function emitToolResultTrace(input: {
   isError: boolean | undefined
   contentLen: number
   source: 'pipeline' | 'bridge' | 'tui'
-  durationMs?: number
-  cu?: import('../tools/types.js').ComputerUseActionMetrics
 }): Promise<void> {
   try {
     const sessionDir = input.sessionId
@@ -231,8 +230,6 @@ async function emitToolResultTrace(input: {
       isError: input.isError,
       contentLen: input.contentLen,
       source: input.source,
-      ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
-      ...(input.name === 'computer_use' && input.cu ? { cu: input.cu } : {}),
     })
     await appendFile(join(sessionDir, 'tool-result-trace.jsonl'), `${line}\n`, 'utf8')
   } catch {
@@ -312,11 +309,6 @@ function buildOwnershipGuard(deps: {
   return makeOwnershipGuard(registry, sessionId, deps.cwd)
 }
 
-/** T11 超时恢复指引（withToolTimeout 超时错误文案的一部分）——主控要知道
- *  超时不等于执行停止：worker 可能仍在写盘（超时中断不回滚），可查证后续跑。 */
-export const TOOL_TIMEOUT_RECOVERY_HINT =
-  '— 底层执行可能仍在后台继续（worker 部分写入可能已落盘，以 git status / 会话 checkpoint 实查为准）；可用 executePlanWaves fromWave=N 续跑或 deliver 已完成的波次'
-
 function withToolTimeout<T>(
   promise: Promise<T>,
   toolName: string,
@@ -335,7 +327,7 @@ function withToolTimeout<T>(
       // Cascade abort to the underlying op (child proc / fetch) BEFORE rejecting,
       // so the tool stops consuming resources instead of orphaning.
       try { timeoutController?.abort() } catch { /* noop */ }
-      reject(new Error(`Tool ${toolName} timed out after ${timeoutMs / 1000}s ${TOOL_TIMEOUT_RECOVERY_HINT}`))
+      reject(new Error(`Tool ${toolName} timed out after ${timeoutMs / 1000}s`))
     }, timeoutMs)
     const onAbort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -351,8 +343,6 @@ export interface ToolPipelineDeps {
   config: AgentConfig
   cwd: string
   harness: TurnHarness
-  /** sensorium LITE 遥测出口（computer_use 动作指标默认落盘）。可缺省（测试）。 */
-  telemetryWriter?: import('./telemetry-writer.js').TelemetryWriter
   prewarm: PrewarmCache
   evidence: EvidenceTrackerPublic
   /** 证据义务状态机：pre-tool RED 编辑门 + post-tool probe/失败归账。可缺省（测试/worker）。 */
@@ -449,8 +439,6 @@ export interface ToolPipelineDeps {
   onGateBlocked?: (kind: string) => void
   /** P1b: TDD gate 同 target 被拦计数回调 */
   onTddBlocked?: (target?: string) => void
-  /** Zen 相位下未注册工具报错的行动指引（loop 注入；worker/未接 zen 时缺省）。 */
-  getZenUnregisteredHint?: (toolName: string) => string | undefined
 }
 
 export interface ToolExecResult {
@@ -729,7 +717,45 @@ function gitHeadSummaryQuiet(cwd: string): Promise<string | null> {
   })
 }
 
+/**
+ * edit_file / hash_edit 总闸（2026-09-08 wedge 纵深）：`withToolTimeout` inside
+ * the body only bounds `toolRegistry.execute`; post-tool work (LSP diagnostics,
+ * artifact intercept, hooks) ran outside that gate. Wrap the WHOLE call so any
+ * unknown future hang becomes a visible timeout instead of a wedged turn. The
+ * abort cascades into the inner execute path via the composed signal.
+ */
 export async function executeToolUse(
+  tu: { id: string; name: string; input: Record<string, unknown>; argsTruncated?: boolean },
+  deps: ToolPipelineDeps,
+  callbacks: AgentCallbacks,
+  turn: number,
+  checkpointAlreadyCreated: boolean,
+): Promise<ToolExecResult> {
+  const canonicalName = deps.config.toolRegistry.resolveName(tu.name)
+  const hasTotalGate = canonicalName === 'edit_file' || canonicalName === 'hash_edit'
+  if (!hasTotalGate) {
+    return executeToolUseInner(tu, deps, callbacks, turn, checkpointAlreadyCreated)
+  }
+  const totalAbort = new AbortController()
+  const composedSignal = deps.abortSignal
+    ? AbortSignal.any([deps.abortSignal, totalAbort.signal])
+    : totalAbort.signal
+  return withToolTimeout(
+    executeToolUseInner(
+      tu,
+      { ...deps, abortSignal: composedSignal },
+      callbacks,
+      turn,
+      checkpointAlreadyCreated,
+    ),
+    tu.name,
+    DEFAULT_TOOL_TIMEOUT_MS,
+    deps.abortSignal,
+    totalAbort,
+  )
+}
+
+async function executeToolUseInner(
   tu: { id: string; name: string; input: Record<string, unknown>; argsTruncated?: boolean },
   deps: ToolPipelineDeps,
   callbacks: AgentCallbacks,
@@ -1183,21 +1209,16 @@ export async function executeToolUse(
 
     // YOLO mode intelligent fallback: auto-grant write access for file-tool
     // paths already covered by a read grant. This eliminates the validatePath →
-    // request_path_access → unconditional popup chain that makes "项目外只读"
+    // request_path_access → unconditional popup chain that makes "完全访问"
     // (yolo + additionalReadDirs: ["/"]) meaningless for writes outside the
     // workspace. The kernel sandbox still blocks writes to ungranted paths;
     // unattended runs can pre-authorize via additionalWriteDirs.
-    //
-    // Session-scoped by design: the escalation is the model's own doing, not a
-    // user decision, so it must NOT outlive the session — a persisted escalation
-    // would silently widen every future session of this workspace (even in
-    // supervised mode, where validatePathSafe trusts the grant store without
-    // prompting). request_path_access with remember=true stays the only path to
-    // a persistent out-of-workspace write grant.
     if (skipAllApproval && pathGrantNeed) {
       for (const p of pathGrantNeed.paths) {
-        // 完全读写档：零审批打扰——出界路径首触即授（会话级）。旧行为要求
-        // 先读过才升级，未读先写要多花一轮 request_path_access 自愈。
+        // 完全读写档：零审批打扰承诺——出界路径**首触即授**（会话级，不出会话）。
+        // 此前仅「先读后写」升级：未读过就写要多花一轮 request_path_access
+        // 自愈，违背 skip 档的零打断语义。读/写统一当场授予；持久授权仍只能
+        // 经用户 remember（persist）。
         grantPath(dirname(p), pathGrantNeed.mode)
       }
     }
@@ -1405,45 +1426,52 @@ export async function executeToolUse(
       preAbortHead = await gitHeadQuiet(deps.cwd)
     }
 
-    const __traceT0 = Date.now()
     const harnessResult = await deps.harness.executeTool({
       id: tu.id,
       name: tu.name,
       input: tu.input,
       turn,
       execute: async () => {
-        // P5+P6: read_file must always go through real execute to honor the
-        // active contextWindow's read cap. The prewarm cache is shared with
-        // P3 speculative reads which may have been populated under a different
-        // (smaller) cap; serving cached content here would re-introduce the
-        // truncation regression. fs.readFile + OS page cache is fast enough.
-        const toolTimeout = toolDef?.timeoutMs?.(params) ?? DEFAULT_TOOL_TIMEOUT_MS
-        // P0/H1: compose a per-tool timeout AbortController with the loop signal,
-        // so a tool-level timeout cascades an abort into the underlying op
-        // (child proc / fetch) instead of merely rejecting the wrapper Promise.
-        const toolAbort = new AbortController()
-        const composedSignal = deps.abortSignal
-          ? AbortSignal.any([deps.abortSignal, toolAbort.signal])
-          : toolAbort.signal
-        // Zen 相位下未注册工具（幻觉调用）不晋升，但把 registry 的裸
-        // Unknown tool 报错变成可行动的 zen_unlock 指引，避免死路重试。
-        const execution = deps.config.toolRegistry.execute(tu.name, { ...params, approvalMode, abortSignal: composedSignal })
-        const zenGuardedExecution = execution.catch(err => {
-          const zenHint = deps.getZenUnregisteredHint?.(tu.name)
-          if (zenHint) {
-            throw new Error(`${err instanceof Error ? err.message : String(err)}\n${zenHint}`)
-          }
-          throw err
-        })
-        const r = await withToolTimeout(
-          zenGuardedExecution,
-          tu.name,
-          toolTimeout,
-          deps.abortSignal,
-          toolAbort,
-        )
-        rawToolResult = r
-        return { content: r.content, isError: r.isError }
+        // 无进展哨兵打点：工具执行起止（CLI/server 共用 agent 内核）。start
+        // 后无 end = 卡在工具内（stall-observer 90s 后指认）；end 后无下一
+        // start = 卡在回合处理。finally 保证 end 在成功/失败/超时都触达。
+        const activityKey = deps.sessionId ?? 'default'
+        touchActivity(activityKey, `tool:${tu.name}:start`)
+        try {
+          // P5+P6: read_file must always go through real execute to honor the
+          // active contextWindow's read cap. The prewarm cache is shared with
+          // P3 speculative reads which may have been populated under a different
+          // (smaller) cap; serving cached content here would re-introduce the
+          // truncation regression. fs.readFile + OS page cache is fast enough.
+          const toolTimeout = toolDef?.timeoutMs?.(params) ?? DEFAULT_TOOL_TIMEOUT_MS
+          // P0/H1: compose a per-tool timeout AbortController with the loop signal,
+          // so a tool-level timeout cascades an abort into the underlying op
+          // (child proc / fetch) instead of merely rejecting the wrapper Promise.
+          const toolAbort = new AbortController()
+          const composedSignal = deps.abortSignal
+            ? AbortSignal.any([deps.abortSignal, toolAbort.signal])
+            : toolAbort.signal
+          const r = await withToolTimeout(
+            deps.config.toolRegistry.execute(tu.name, { ...params, approvalMode, abortSignal: composedSignal }),
+            tu.name,
+            toolTimeout,
+            deps.abortSignal,
+            toolAbort,
+          ).catch((err) => {
+            // 超时错误补目标摘要（2026-09-08 写后挂起事故教训）：模型与 sidecar
+            // 日志都能指认是哪个文件/命令超时，而非只有工具名。日志留痕——
+            // 超时走 reject 路径不进 trajectory（turn-harness 只记录返回结果）。
+            if (err instanceof Error && err.message.includes('timed out')) {
+              console.warn(`[tool-timeout] ${tu.name} timed out after ${toolTimeout / 1000}s (target: ${toolTarget ?? 'unknown'})`)
+              if (toolTarget) throw new Error(`${err.message} (target: ${toolTarget})`)
+            }
+            throw err
+          })
+          rawToolResult = r
+          return { content: r.content, isError: r.isError }
+        } finally {
+          touchActivity(activityKey, `tool:${tu.name}:end`)
+        }
      },
       classify: (content) => resolveErrorKind(rawToolResult ?? undefined) ?? classifyFailure(content).class,
       isConcurrencySafe: toolDef?.isConcurrencySafe() ?? false,
@@ -1648,28 +1676,7 @@ export async function executeToolUse(
     // commits to scrollback. Force false so terminal results render.
     // DEBUG: unconditional trace for TUI rendering-loss investigation.
     // Log file: ~/.rivet/sessions/<project-slug>/<sessionId>/tool-result-trace.jsonl
-    void emitToolResultTrace({
-      cwd: deps.cwd,
-      sessionId: deps.sessionId,
-      id: tu.id,
-      name: tu.name,
-      isError: harnessResult.isError,
-      contentLen: finalContent.length,
-      source: 'pipeline',
-      durationMs: harnessResult.durationMs ?? (Date.now() - __traceT0),
-      cu: harnessResult.metrics,
-    })
-    // computer_use 执行指标 → sensorium LITE 遥测（默认落盘，<200B/条）：
-    // 动作耗时/成功率/树规模是 W3 性能项唯一的验证依据。
-    if (tu.name === 'computer_use' && harnessResult.metrics) {
-      try {
-        deps.telemetryWriter?.write({
-          kind: 'computer-use-action',
-          ts: new Date().toISOString(),
-          ...harnessResult.metrics,
-        })
-      } catch { /* telemetry is best-effort */ }
-    }
+    void emitToolResultTrace({ cwd: deps.cwd, sessionId: deps.sessionId, id: tu.id, name: tu.name, isError: harnessResult.isError, contentLen: finalContent.length, source: 'pipeline' })
     callbacks.onToolResult(tu.id, tu.name, finalContent, harnessResult.isError ?? false, rawToolResult?.rawPath, rawToolResult?.uiContent)
 
     deps.recordToolHistory(tu.name, tu.input, harnessResult.isError, harnessResult.content, rawToolResult?.errorClass, rawToolResult?.errorKind)
@@ -2012,10 +2019,20 @@ export async function executeToolUse(
         `file modified by ${tu.name}`,
       )
       // Prefer meridian graph (persisted SQLite reverse BFS) over in-memory import-graph.
+      // 绝对路径死角修复（issue #61 族）：写工具按工具文档恒传绝对路径——
+      // `db && !isAbsolute(filePath)` 旧判据让快路径在 Windows 恒不走、每次 run
+      // 首个写工具全量同步扫仓（import-graph，数千次同步 syscall 冻结事件循环）。
+      // 先相对化再判；出界路径（relative 以 .. 开头）才落回内存图。
       const filePath = tu.input.file_path as string
       const db = deps.meridianIndexer?.getDb()
-      if (db && !isAbsolute(filePath)) {
-        const impact = analyzeImpact(db, [filePath])
+      const relFilePath = isAbsolute(filePath) ? relative(deps.cwd, filePath) : filePath
+      // P1-2：冷库（新 clone 首启索引为空）时 db 为真值但无数据——analyzeImpact 恒返回
+      // 空集且不落回 importGraph，impact hint 静默变空（9a9bbf49b 提交信息「importGraph
+      // 留作兜底」仅对 indexer=null/路径出界成立）。加 hasFiles() 空库探测：库空时与
+      // indexer=null 同路落回 importGraph；索引非空但无 impact 才是真无影响，不兜底
+      // （避免每写工具全量扫仓——issue #61 已修路径）。
+      if (db && db.hasFiles() && !relFilePath.startsWith('..') && !isAbsolute(relFilePath)) {
+        const impact = analyzeImpact(db, [relFilePath])
         if (impact.direct.length > 0 || impact.tests.length > 0) {
           deps.evidence.trackImpact(impact.direct, impact.tests)
         }

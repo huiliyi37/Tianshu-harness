@@ -22,7 +22,6 @@ const TOOL_MAP: Record<string, ToolFamilyInfo> = {
   delegate_task:   { family: 'run',   verb: 'delegate' },
   delegate_batch:  { family: 'run',   verb: 'batch'    },
   team_orchestrate:{ family: 'run',   verb: 'team'     },
-  plan_task:       { family: 'run',   verb: 'plan'     },
   git:             { family: 'run',   verb: 'git'      },
   undo:            { family: 'write', verb: 'undo'     },
   web_fetch:       { family: 'read',  verb: 'fetch'    },

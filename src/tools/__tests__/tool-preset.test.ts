@@ -14,7 +14,6 @@ const BOOTSTRAP_TOOLS = [
   'recall_capsule', 'recall_general', 'record_general_finding', 'ask_user_question',
   'browser_debug', 'repo_graph', 'related_tests', 'semantic_search', 'apply_patch',
   'session_vitals', 'attack_case', 'plan_task', 'deliver_task', 'update_goal',
-  'summon_expert',
 ] as const
 
 function bootstrapCount(preset: ToolPreset): number {
@@ -31,7 +30,7 @@ describe('presetIncludes', () => {
     for (const keep of ['read_file', 'bash', 'grep', 'web_search', 'web_fetch', 'deliver_task', 'delegate_task', 'delegate_batch', 'apply_patch', 'plan_task', 'recall_capsule', 'ask_user_question']) {
       assert.ok(presetIncludes('minimal', keep), `minimal must keep ${keep}`)
     }
-    for (const drop of ['council_convene', 'summon_expert', 'browser_debug', 'attack_case', 'semantic_search', 'repo_graph', 'undo', 'recall_general', 'record_general_finding', 'ast_edit', 'related_tests', 'inspect_project', 'import_resource', 'leave_mark', 'file_info', 'session_vitals', 'update_goal']) {
+    for (const drop of ['council_convene', 'browser_debug', 'attack_case', 'semantic_search', 'repo_graph', 'undo', 'recall_general', 'record_general_finding', 'ast_edit', 'related_tests', 'inspect_project', 'import_resource', 'leave_mark', 'file_info', 'session_vitals', 'update_goal']) {
       assert.ok(!presetIncludes('minimal', drop), `minimal must drop ${drop}`)
     }
   })
@@ -72,9 +71,6 @@ describe('presetIncludes', () => {
         assert.ok(presetIncludes(preset, name), `${preset} keeps ${name}（taiyi 排除不外溢）`)
       }
     }
-    // summon_expert 同时落在 MINIMAL_EXCLUDES 与 TAIYI_EXCLUDES：minimal/full 均
-    // 由 minimal 排除门控，taiyi 由专属排除兜底。
-    assert.ok(!presetIncludes('taiyi', 'summon_expert'), 'taiyi must drop summon_expert')
     // 16 核心集里的交付/计划闭环不受专属排除误伤
     for (const keep of ['deliver_task', 'plan_submit', 'plan_close', 'memory', 'todo', 'job']) {
       assert.ok(presetIncludes('taiyi', keep), `taiyi keeps ${keep}`)
@@ -85,7 +81,7 @@ describe('presetIncludes', () => {
 describe('assembly counts per preset', () => {
   // 口径 = 无调度器的 CLI 交互模式。schedule 三工具按 isSchedulerAvailable()
   // 条件注册，有调度器的 serve/桌面端各档 +3（见下一条用例）。
-  it('minimal=29 / frontend=30 / full=51（完整装配口径）', () => {
+  it('minimal=29 / frontend=30 / full=49（完整装配口径）', () => {
     assert.equal(totalCount('minimal'), 29)
     assert.equal(totalCount('frontend'), 30)
     // 118d0505：monitor 工具（full 档专属）入注册表，full 44 → 45
@@ -93,8 +89,7 @@ describe('assembly counts per preset', () => {
     // 视觉副驾：ask_image 无条件注册（各档 +1），28/29/47 → 29/30/48
     // capability 能力索引（full 档专属，查询面低频，同 repo_graph/semantic_search），48 → 49
     // cli_discover CLI 能力发现与安装（full 档专属，安装审批硬闸门），49 → 50
-    // summon_expert 强专家代理（full 档专属 + EXTENDED 层），50 → 51
-    assert.equal(totalCount('full'), 51)
+    assert.equal(totalCount('full'), 50)
   })
 
   it('schedule 三工具按调度器存在与否条件注册', () => {
@@ -110,7 +105,7 @@ describe('assembly counts per preset', () => {
       }
       assert.equal(totalCount('minimal'), 32)
       // cli_discover full 档 +1：49→50（无调度器）/ 52→53（有调度器）
-      assert.equal(totalCount('full'), 54)
+      assert.equal(totalCount('full'), 53)
     } finally {
       setActiveScheduler(undefined)
     }

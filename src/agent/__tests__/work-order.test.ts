@@ -44,100 +44,6 @@ describe('work-order contract', () => {
     assert.equal(order.aggregationPolicy, 'primary_decides')
   })
 
-  it('extraAllowedTools union 进 profile 工具面（专家席方法论工具授予）', () => {
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_sea',
-      parentTurnId: 'turn_1',
-      kind: 'code_search',
-      profile: 'troubleshooter',
-      objective: 'root cause',
-      scope: { files: ['src/a.ts'] },
-      authority: 'tianji',
-      extraAllowedTools: ['recall_capsule', 'run_tests'],
-    })
-
-    assert.ok(order.allowedTools.includes('recall_capsule'), '方法论工具必须授予')
-    assert.ok(order.allowedTools.includes('run_tests'), '只读复现工具必须授予')
-    assert.ok(order.allowedTools.includes('grep'), 'baseProfile 工具面保留')
-  })
-
-  it('extraAllowedTools 仍过 authority 白名单（未知 authority 不因专家授予而放行）', () => {
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_sea_unknown',
-      parentTurnId: 'turn_1',
-      kind: 'code_search',
-      profile: 'troubleshooter',
-      objective: 'root cause',
-      scope: {},
-      authority: 'not-loaded',
-      extraAllowedTools: ['recall_capsule'],
-    })
-    assert.equal(order.allowedTools.length, 0, '专家授予不得绕过 fail-closed authority')
-  })
-
-  it('run_tests 显式授予必须解除 disallowedTools 禁令（2026-09-02 审查：三重否决）', () => {
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_grant_tests',
-      parentTurnId: 'turn_1',
-      kind: 'code_search',
-      profile: 'troubleshooter',
-      objective: 'root cause',
-      scope: {},
-      extraAllowedTools: ['run_tests'],
-    })
-    assert.ok(!order.disallowedTools.includes('run_tests'), '授予的工具不得同时出现在禁用清单（prompt 自相矛盾→模型放弃）')
-    assert.ok(order.constraints.some(c => c === 'Do not request write, edit, or bash tools.'),
-      '约束样板必须随授予去掉 test execution 字样')
-    assert.ok(!order.constraints.some(c => c.includes('test execution tools')), '不得残留禁止测试执行的样板')
-  })
-
-  it('写/执行/自召核心禁令不可被 extraAllowedTools 解除（fail-closed）', () => {
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_grant_hard',
-      parentTurnId: 'turn_1',
-      kind: 'code_search',
-      profile: 'troubleshooter',
-      objective: 'root cause',
-      scope: {},
-      extraAllowedTools: ['bash', 'write_file', 'edit_file', 'delegate_task'],
-    })
-    for (const tool of ['bash', 'write_file', 'edit_file', 'delegate_task', 'delegate_batch']) {
-      assert.ok(order.disallowedTools.includes(tool), `${tool} 属不可解除核心禁令`)
-      assert.ok(!order.allowedTools.includes(tool), `${tool} 不得经授予进入 allowedTools`)
-    }
-  })
-
-  it('evidence 证据级约束走独立 4000 预算，不被任务级 400 截断', () => {
-    const longEvidence = `[evidence] 证据包：\n${Array.from({ length: 20 }, (_, i) => `TS2322-${i}: ${'x'.repeat(80)}`).join('\n')}`
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_evidence',
-      parentTurnId: 'turn_1',
-      kind: 'code_search',
-      profile: 'troubleshooter',
-      objective: 'root cause',
-      scope: {},
-      constraints: [longEvidence],
-    })
-    const evidence = order.constraints.find(c => c.startsWith('[evidence]'))
-    assert.ok(evidence, '证据约束必须存在')
-    assert.ok(evidence.length > 400, `证据包不得被任务级 400 砍（实际 ${evidence.length}）`)
-    assert.ok(evidence.length <= 4000 + '[evidence 截断@4000]'.length, '证据包不超独立上限')
-    assert.ok(evidence.includes('TS2322-19'), '末尾证据必须活着')
-  })
-
-  it('evidence 约束不占任务级 12 条名额', () => {
-    const tasks = [
-      `[evidence] ${'y'.repeat(300)}`,
-      ...Array.from({ length: 12 }, (_, i) => `任务约束-${i}`),
-    ]
-    const order = createReadOnlyWorkOrder({
-      id: 'wo_ev_budget', parentTurnId: 't1', kind: 'code_search', profile: 'code_scout',
-      objective: 'x', scope: {}, constraints: tasks,
-    })
-    assert.ok(order.constraints.some(c => c.startsWith('[evidence]')), '证据约束必须下传')
-    assert.ok(order.constraints.includes('任务约束-11'), '12 条任务约束必须全部下传（证据不占名额）')
-  })
-
   it('accepts all built-in registry profiles in work orders', () => {
     const architect = createReadOnlyWorkOrder({
       id: 'wo_architect',
@@ -713,9 +619,15 @@ describe('classifyWorkerParseError (D 度量细分)', () => {
   })
 
   it('unescaped quote breaks syntax → json_syntax', () => {
-    const err = catchParse('{"workOrderId":"wo_x","status":"passed","summary":"他说"你好"","findings":[],"artifacts":[],"changedFiles":[],"risks":[],"nextActions":[]}')
+    // 结构性垃圾（非白名单模式）仍不可修 → json_syntax
+    const err = catchParse('{"workOrderId":"wo_x","status":"passed","summary": }')
     assert.ok(err instanceof WorkerResultParseError)
     assert.equal(classifyWorkerParseError(err), 'json_syntax')
+  })
+
+  it('F2: 裸引号不再是 syntax 错误——repairJsonSyntax 修复后整包解析（2026-09-06）', () => {
+    const result = parseWorkerResult('{"workOrderId":"wo_x","status":"passed","summary":"他说"你好"","findings":[],"artifacts":[],"changedFiles":[],"risks":[],"nextActions":[]}', 'wo_x')
+    assert.equal(result.summary, '他说"你好"')
   })
 
   it('truncated output → truncated', () => {

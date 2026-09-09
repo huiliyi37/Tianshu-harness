@@ -97,7 +97,6 @@ export function getPaletteCommands(): PaletteCommand[] {
     { name: '/fork', description: '把当前会话 fork 成新分支——想试另一条路又怕丢上下文时用' },
     { name: '/handoff', description: '写结构化交接文档（任务目标/已完成/卡点/下一步/坑），归档后自动注入新会话', argsHint: '[备注]', tier: 'core' },
     { name: '/remember', description: '把一句话写进项目长期记忆（跨会话生效，新会话自动携带）；无参查看最近的用户记忆', argsHint: '<要记住的事>', tier: 'core' },
-    { name: '/forget', description: '显式失效一条项目长期记忆：问题已解决用 resolved，记错了/不想要了用 forgotten；无参列出最近可失效条目', argsHint: '<entryId> [resolved]', tier: 'core' },
     { name: '/vim', description: '开关 vim 键位绑定（esc 进 normal 模式等）' },
     { name: '/effort', description: '切换推理强度——控成本与控质量的核心旋钮。off 最省/max 最强/auto 按任务复杂度自动选', argsHint: 'off|low|medium|high|max|auto', tier: 'core' },
     { name: '/domain', description: '查看或切换星域人格（改变方法论与决策阈值，不改工具）。list 列出/auto 按消息匹配/off 关闭', argsHint: 'list|<name>|auto|off' },

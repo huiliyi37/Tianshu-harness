@@ -85,8 +85,6 @@ export const EXTENDED_TOOLS = [
   // 主控可用 /tools enable council_convene 或通过 team_orchestrate 触发
   // review gate（L3 = council 审查队，语义等价但入口由编排承担）。
   'council_convene',
-  // 强专家代理（SEA）：显式召唤/建议卡触发；默认不进主控 CORE 视野。
-  'summon_expert',
   'import_resource',
   'apply_patch',
   'undo',

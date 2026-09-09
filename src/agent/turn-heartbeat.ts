@@ -44,7 +44,6 @@ export interface TurnHeartbeatOptions {
 
 export class TurnHeartbeat {
   private timer: ReturnType<typeof setTimeout> | null = null
-  private batchDeadlineTimer: ReturnType<typeof setTimeout> | null = null
   private lastTick = Date.now()
   private lastActivity = 'starting'
   private firstFired = false
@@ -126,56 +125,16 @@ export class TurnHeartbeat {
     this.watchdogDisarmed = true
   }
 
-  /**
-   * 批级硬限（2026-09-05 写工具卡死链收口）：工具批期间 onToolUse→onToolResult
-   * 之间没有 UI 事件，逐 tick 看门狗完全失明——此前是整批 disarm，楔死在收尾
-   * await 里的批只能靠用户杀进程解锁，杀进程正是「持久化孤儿」的产房。
-   * 本方法保留 disarm 的语义（不做逐 tick 静默判定，合法长批不被误杀），但
-   * 加一条**一次性硬限**：整批从现在起超过 ms 未结束即触发一次 onHardStall，
-   * 由 loop 走 abort → executeBatch 的 backfill/安全网兜底收账。
-   * 阈值必须远超合法批时长（工具级 120s 超时 × 批内工具数 + 收尾链界定值），
-   * 默认由调用方按 env 给值；ms ≤ 0 视为关闭（回到完全 disarm）。
-   * 批结束时调用方照常 rearmWatchdog()——它同时清掉本定时器。
-   */
-  armBatchDeadline(ms: number): void {
-    this.disarmWatchdog()
-    if (this.batchDeadlineTimer) {
-      clearTimeout(this.batchDeadlineTimer)
-      this.batchDeadlineTimer = null
-    }
-    if (ms <= 0) return
-    this.batchDeadlineTimer = setTimeout(() => {
-      this.batchDeadlineTimer = null
-      if (this.stopped || this.paused) return
-      if (!this.hardStallFired) {
-        this.hardStallFired = true
-        try {
-          this.onHardStall?.(ms, 'tool batch deadline exceeded')
-        } catch {
-          // Watchdog callback errors must not break the agent.
-        }
-      }
-    }, ms)
-  }
-
   /** Re-enable the hard-stall abort after disarmWatchdog(). */
   rearmWatchdog(): void {
     this.watchdogDisarmed = false
     this.hardStallFired = false
-    if (this.batchDeadlineTimer) {
-      clearTimeout(this.batchDeadlineTimer)
-      this.batchDeadlineTimer = null
-    }
   }
 
   /** Stop firing. Call when the turn ends (success, abort, or error). */
   stop(): void {
     this.stopped = true
     this.paused = false
-    if (this.batchDeadlineTimer) {
-      clearTimeout(this.batchDeadlineTimer)
-      this.batchDeadlineTimer = null
-    }
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null

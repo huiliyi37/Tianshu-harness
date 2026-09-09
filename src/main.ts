@@ -397,6 +397,7 @@ async function main() {
     const { GoalTracker, buildGoalModePrompt } = await import('./agent/goal-tracker.js')
     const { SessionContext } = await import('./agent/context.js')
     const { createAgentConfig, createMainAgentConfigInput } = await import('./agent/create-agent-config.js')
+    const { MeridianIndexer } = await import('./repo/meridian-indexer.js')
     const { createDefaultToolRegistry } = await import('./tools/default-registry.js')
     const { createDeliverTaskTool } = await import('./agent/deliver-task.js')
     const { createTaskLedger } = await import('./agent/task-ledger.js')
@@ -604,8 +605,13 @@ async function main() {
           cwd: process.cwd(),
         }))
 
+        // CLI meridian 接线（2026-09-06）：headless 与交互 TUI 同缺——写工具收尾
+        // 走 importGraph fallback 每会话全量扫仓。headless 短进程不调度 backfill，
+        // 只建 indexer（db 懒开），写工具 analyzeImpact 落库供后续会话增量复用。
+        const headlessIndexer = new MeridianIndexer(process.cwd())
         const agentCfg = createAgentConfig(createMainAgentConfigInput({
           apiKey: key,
+          meridianIndexer: headlessIndexer,
           model: { id: model.id, maxTokens: model.maxTokens, contextWindow: model.contextWindow, reasoningEffort: model.reasoningEffort, capabilities: model.capabilities },
           cwd: process.cwd(),
           provider: prov,
@@ -1567,7 +1573,7 @@ async function main() {
     const applyPermission = (mode: string) => {
       ctx!.agent.setApprovalMode(mode as import('./agent/loop-types.js').ApprovalMode)
       tuiApp.setApprovalMode(mode)
-      // Switching to YOLO mid-session must also raise the write boundary.
+      // YOLO = 完全权限（免审批 + 全盘无沙箱，2026-09-07 语义）；沙箱仅显式 RIVET_SANDBOX=1。
       applySandboxPolicyForApprovalMode(mode)
       // YOLO 联动无限轮次：真正全自动，不被 maxTurns 截断。
       // 其他模式恢复默认 200 轮预算。
@@ -2070,9 +2076,6 @@ async function main() {
 
   // 中断收尾窗口靠它对着真相校验，而不是只信 notifyRunSettled 那一条信号。
   app.setAgentRunningProbe(() => ctx?.agent.isRunning() === true)
-
-  // Zen Mode（禅模式）相位徽章：读面收窄期间状态栏常驻「禅」，晋升后消失。
-  app.setZenBadgeProvider(() => (ctx?.agent.zenController.isZen ? '禅' : undefined))
 
   // ── Wire abort ───────────────────────────────────────────────
   app.onAbort(() => {

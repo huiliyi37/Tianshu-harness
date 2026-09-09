@@ -48,11 +48,6 @@ export interface TurnStreamDeps {
   prewarmFile?: (filePath: string) => void
   addUsage: (usage: Partial<Usage>) => void
   recordTurnCache: (turn: number, usage: Usage, observability?: StreamCacheObservability) => void
-  /** W-stats：本轮模型请求指标（TTFT/输出速度）——桌面端 turn_complete 事件展示用。
-   *  tokensPerSecond 分母是解码段（首 token → 流结束），与 dsh 口径一致；
-   *  decodeMs 是未舍入的解码段时长精确值（tps 已按 0.1 舍入，反推有偏差，
-   *  cockpit 累计走这里）。 */
-  onTurnMetrics?: (m: { turn: number; ttftMs?: number; tokensPerSecond?: number; outputTokens: number; decodeMs?: number }) => void
   /** 记录本轮等首字节的毫秒数。独立于 `recordTurnCache`——后者被 provider 是否返回
    *  缓存字段 gate 住（延迟指标不该挂在成本字段的存在性上），worker 常用的模型响应
    *  里没有那两个字段时，TTFT 会连同整行一起被丢弃。 */
@@ -117,11 +112,9 @@ export class TurnStreamController {
     const now = this.deps.now ?? Date.now
     let streamStartMs: number | undefined
     let ttftMs: number | undefined
-    let firstOutputAt: number | undefined
     const markFirstProviderOutput = () => {
       if (streamStartMs === undefined || ttftMs !== undefined) return
       ttftMs = Math.max(0, now() - streamStartMs)
-      firstOutputAt = now()
     }
 
     // TTSR: compile stream rule patterns once â default rules always active
@@ -202,30 +195,13 @@ export class TurnStreamController {
         stopReason = reason
         this.deps.addUsage(usage)
         if (ttftMs !== undefined) this.deps.recordTtft?.(ttftMs)
-        // W-stats：输出速度 = 输出 tokens / 解码段时长（首 token → 流结束）。
-        const outputTokens = usage.output_tokens ?? 0
-        let tokensPerSecond: number | undefined
-        let decodeMsExact: number | undefined
-        if (outputTokens > 0 && firstOutputAt !== undefined) {
-          decodeMsExact = Math.max(1, now() - firstOutputAt)
-          tokensPerSecond = Math.round((outputTokens / (decodeMsExact / 1_000)) * 10) / 10
-        }
-        this.deps.onTurnMetrics?.({
-          turn: input.turn,
-          ttftMs,
-          tokensPerSecond,
-          outputTokens,
-          ...(decodeMsExact !== undefined ? { decodeMs: decodeMsExact } : {}),
-        })
         if (usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined) {
           this.deps.recordTurnCache(input.turn, {
             input_tokens: usage.input_tokens ?? 0,
             output_tokens: usage.output_tokens ?? 0,
             cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
             cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-          }, ttftMs !== undefined || tokensPerSecond !== undefined
-            ? { ttftMs, tps: tokensPerSecond }
-            : undefined)
+          }, ttftMs !== undefined ? { ttftMs } : undefined)
         }
       },
       onError: (error) => {

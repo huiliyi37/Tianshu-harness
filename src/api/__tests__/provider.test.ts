@@ -150,6 +150,15 @@ describe('resolveCapabilities — override precedence and thinking derivation', 
     assert.deepEqual(caps.effortCap, { max: 'medium' })
   })
 
+  // 官方 Kimi Code 文档（models.html）：k3 / k3-256k 的 reasoning_effort 支持
+  // low|high|max（默认 high），第三方工具传 max 会映射到 max。此前的
+  // effortCap {max:'high'} 会把用户显式选的 max 静默降档——K3 旗舰的 max 档
+  // 因此永远发不出去。K2.7 Code（kimi-for-coding）是 Thinking:ON，无档位。
+  it('kimi 不再钳制 max——K3 系原生支持 low/high/max', () => {
+    const caps = resolveCapabilities('kimi')
+    assert.equal(caps.effortCap?.max, undefined, 'kimi 不得再把 max 降成 high（K3/K3-256K 原生支持 max）')
+  })
+
   it('resolving with overrides never mutates the shared WELL_KNOWN table', () => {
     resolveCapabilities('deepseek', { cacheControl: true, thinkingBlock: 'none' })
     const fresh = resolveCapabilities('deepseek')

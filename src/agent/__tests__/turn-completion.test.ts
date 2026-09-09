@@ -66,6 +66,40 @@ describe('TurnCompletionController', () => {
     assert.deepEqual(texts, [])
   })
 
+  it('forwards continuationReason to onTurnComplete for intermediate turns', async () => {
+    const session = new SessionContext()
+    session.addUserMessage('finish task')
+    const completions: Array<{ isFinal?: boolean; continuationReason?: string }> = []
+
+    const controller = new TurnCompletionController({
+      config: makeConfig(),
+      session,
+      trajectory: new TrajectoryRecorder(),
+      routingMetrics: new RoutingMetricsCollector(),
+      evidence: new EvidenceTracker(),
+      getStreamedText: () => '',
+      getDecisions: () => [],
+      setDecisions: () => {},
+      refreshLedger: () => {},
+      refreshCacheDiagnostic: () => {},
+      runPostTurn: async () => {},
+    })
+
+    await controller.complete({
+      turn: 3,
+      isFinal: false,
+      continuationReason: 'obligation-verification',
+      callbacks: {
+        onTextDelta: () => {},
+        onTurnComplete: (_usage, _turn, isFinal, _evidence, continuationReason) => {
+          completions.push({ isFinal, continuationReason })
+        },
+      },
+    })
+
+    assert.deepEqual(completions, [{ isFinal: false, continuationReason: 'obligation-verification' }])
+  })
+
   it('persists effort_shadow evidence row when the shadow reward closes', async () => {
     const session = new SessionContext()
     session.addUserMessage('finish task')

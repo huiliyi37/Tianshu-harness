@@ -11,7 +11,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  extractPlanKeywords,
   hashPlanObjective,
   loadTeamPlanSkeleton,
   saveTeamPlanSkeleton,
@@ -75,62 +74,6 @@ describe('team plan cache (Track 2)', () => {
     })
     const hit = loadTeamPlanSkeleton(store, 'refactor compaction thresholds unify ratio gates now', 'max')
     assert.ok(hit, 'high-overlap objective should hit')
-  })
-
-  it('normalizes legacy rows missing touchSet/verification instead of crashing later', () => {
-    const store = memStore()
-    const objective = 'normalize the legacy cached task shape safely'
-    const legacy = {
-      schemaVersion: 1,
-      objectiveHash: hashPlanObjective(objective),
-      keywords: extractPlanKeywords(objective),
-      mode: 'max',
-      tasks: [{
-        id: 't1', title: 'Task t1', objective: 'implement t1',
-        files: ['src/t1.ts'], profile: 'patcher', kind: 'patch_proposal',
-        dependsOn: [], riskTier: 'low',
-      }],
-      createdAt: Date.now(),
-    }
-    store.rows.set(teamPlanCacheKind(hashPlanObjective(objective)), JSON.stringify(legacy))
-
-    const hit = loadTeamPlanSkeleton(store, objective, 'max')
-    assert.ok(hit, 'legacy row should load')
-    assert.deepEqual(hit.tasks[0]!.touchSet, ['src/t1.ts'], 'missing touchSet must fall back to files')
-    assert.deepEqual(hit.tasks[0]!.verification, [], 'missing verification must normalize to empty')
-  })
-
-  it('treats repo-fingerprint mismatches as stale when the caller pins a fingerprint', () => {
-    const store = memStore()
-    const objective = 'refactor the compaction thresholds under repo state pinning'
-    saveTeamPlanSkeleton(store, {
-      objective,
-      mode: 'max',
-      tasks: [task('t1')],
-      repoFingerprint: 'git:head-a',
-    })
-
-    assert.ok(loadTeamPlanSkeleton(store, objective, 'max', { repoFingerprint: 'git:head-a' }))
-    assert.equal(
-      loadTeamPlanSkeleton(store, objective, 'max', { repoFingerprint: 'git:head-b' }),
-      null,
-      'different HEAD must not reuse the cached skeleton',
-    )
-    // 兼容路径：调用方不传指纹 → 仍沿用旧命中语义。
-    assert.ok(loadTeamPlanSkeleton(store, objective, 'max'))
-  })
-
-  it('legacy rows without a fingerprint miss when a fingerprint is required', () => {
-    const store = memStore()
-    const objective = 'refactor the compaction thresholds legacy unpinned row'
-    saveTeamPlanSkeleton(store, { objective, mode: 'max', tasks: [task('t1')] })
-
-    assert.ok(loadTeamPlanSkeleton(store, objective, 'max'))
-    assert.equal(
-      loadTeamPlanSkeleton(store, objective, 'max', { repoFingerprint: 'git:head-a' }),
-      null,
-      'unpinned rows are not trustworthy under repo-state pinning',
-    )
   })
 
   it('misses on expiry, mode mismatch, and corrupt rows', () => {

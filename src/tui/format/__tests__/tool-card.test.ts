@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatToolCardLive, formatToolCard, isToolCardTruncated, toolCardTitle } from '../tool-card.js'
+import { formatToolCardLive, formatToolCard, isToolCardTruncated } from '../tool-card.js'
 import { getTheme } from '../../theme.js'
 import { buildFileDiff } from '../../../tools/edit-diff.js'
 
@@ -99,40 +99,6 @@ describe('formatToolCardLive', async () => {
       toolName: 'read', toolInput: { path: 'a.ts' }, outputTail: '', columns: 80, tailLines: 0,
     }, theme)
     assert.equal(lines.length, 1, '无输出也只有标题行')
-  })
-})
-
-describe('toolCardTitle — 长工具等待期必须自报身份（「Tool (3m24s)」无名洞修复）', () => {
-  it('plan_task 标题为 Plan(objective)', () => {
-    assert.equal(toolCardTitle('plan_task', { objective: '重构认证模块' }), 'Plan(重构认证模块)')
-  })
-
-  it('team_orchestrate 标题为 Team(objective)', () => {
-    assert.equal(toolCardTitle('team_orchestrate', { objective: '重构认证模块' }), 'Team(重构认证模块)')
-  })
-
-  it('未登记家族的长工具回退到工具原名（不再是无名 Tool）', () => {
-    assert.equal(toolCardTitle('council_convene', { objective: 'x' }), 'council_convene')
-    assert.equal(toolCardTitle('mcp__srv__slow_poll'), 'mcp__srv__slow_poll')
-  })
-
-  it('已登记工具保持动词标题不变', () => {
-    assert.equal(toolCardTitle('bash', { command: 'npm test' }), 'Run(npm test)')
-    assert.equal(toolCardTitle('read_file', { file_path: 'src/a.ts' }), 'Read(a.ts)')
-  })
-
-  it('live 等待卡渲染真实标题：plan_task 不再显示 Tool', () => {
-    const lines = formatToolCardLive({
-      toolName: 'plan_task',
-      toolInput: { objective: '重构认证模块', execute: true },
-      elapsedMs: 204_000,
-      columns: 80,
-      tailLines: 3,
-    }, theme)
-    const header = stripAnsi(lines[0]!)
-    assert.ok(header.includes('Plan(重构认证模块)'), `标题含名字与目标: ${header}`)
-    assert.ok(header.includes('(3m24s)'), `耗时不丢: ${header}`)
-    assert.ok(!header.includes('Tool'), '不再是无名 Tool 卡')
   })
 })
 

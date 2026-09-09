@@ -159,3 +159,28 @@ export function parseEventsJsonlRaw(text: string): RawSessionEvent[] {
   events.sort((a, b) => a.seq - b.seq)
   return events
 }
+
+// ── esbuild 语法解析（写工具 syntax-check 的 worker 通道）──
+// 主线程永不 require esbuild（issue #61 族：Windows AV/EDR 下首次加载原生
+// 二进制可阻塞事件循环数分钟——worker 线程内阻塞只影响本任务，主线程的
+// 软超时照常生效并降级）。与上面纯函数不同：本任务带模块级缓存的副作用。
+import { createRequire } from 'node:module'
+
+interface EsbuildLike {
+  transform(content: string, options: unknown): Promise<unknown>
+}
+let _esbuild: EsbuildLike | null | undefined
+
+export async function esbuildTransformRaw(content: string, options: unknown): Promise<true> {
+  if (_esbuild === undefined) {
+    try {
+      const req = createRequire(import.meta.url)
+      _esbuild = req('esbuild') as EsbuildLike
+    } catch {
+      _esbuild = null
+    }
+  }
+  if (!_esbuild) throw new Error('esbuild unavailable in worker')
+  await _esbuild.transform(content, options)
+  return true
+}

@@ -319,7 +319,7 @@ function buildSessionStores(
   const session = new SessionContext()
   // Restore prior conversation from disk (sidecar restart recovery).
   // Matches TUI bootstrap.ts:1461 — loadOai returns [] for new sessions.
-  const historyRestore = restoreHistoryMessages(persist, session)
+  const historyRestore = restoreHistoryMessages(persist, session, cwd)
 
   // sidecar 工具装配——复用 bootstrap 的 createInteractiveToolRegistry，与 TUI 端
   // 共享一套装配链。Wave C 后所有工具（含 coordinator 依赖工具）均通过
@@ -784,7 +784,7 @@ export function buildManagedAgent(
     abort: () => agent.abort(),
     setApprovalMode: (mode) => {
       agent.setApprovalMode(mode)
-      // 自治联动大硬上限（AUTONOMOUS_HARD_CAP_TURNS=1000，orchestrator 解释 0），非自治恢复默认 200
+      // 自治联动无限轮次，非自治恢复默认 200
       agent.config.maxTurns = mode === 'dangerously-skip-permissions' ? 0 : 200
     },
     enterPlanMode: () => agent.enterPlanMode(),

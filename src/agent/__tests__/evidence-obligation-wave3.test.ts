@@ -144,19 +144,6 @@ describe('cognitive ledger obligation block (Wave 3)', () => {
   }
   const trace = { entries: [] } as never
 
-  it('source edit gate: target-less bugfix obligations never block edits (2026-08-31 benchmark misclassification)', () => {
-    const tracker = new ObligationTracker()
-    tracker.upsert({ family: 'bugfix', claim: '缺陷已被 RED 复现并修复：quiz 回答', targets: [], risk: 'high' })
-    const quizWrite = tracker.evaluateSourceEditGate('docs/dsh-eval-t1/answers.md')
-    assert.equal(quizWrite.block, false, 'empty targets must not match every edit — quiz output files stay writable')
-
-    const targeted = new ObligationTracker()
-    targeted.upsert({ family: 'bugfix', claim: 'fix loop', targets: ['src/agent/loop.ts'], risk: 'high' })
-    assert.equal(targeted.evaluateSourceEditGate('src/agent/loop.ts').block, true, 'targeted obligations still block')
-    assert.equal(targeted.evaluateSourceEditGate('src/agent/loop.ts').block, false, 'one block per obligation (latch)')
-    assert.equal(targeted.evaluateSourceEditGate('src/agent/unrelated.ts').block, false, 'unrelated files stay writable')
-  })
-
   it('non-empty obligation block replaces the generic verification-gap line', () => {
     const tracker = new ObligationTracker()
     tracker.upsert({ family: 'delivery', claim: '本任务修改的代码已通过相关验证', risk: 'high' })

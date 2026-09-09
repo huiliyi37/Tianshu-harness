@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRouter } from '../index.js'
-import { buildSessionRoutes, classifyArtifact } from '../session-routes.js'
+import { buildSessionRoutes, classifyArtifact, describeModelSwitchFailure } from '../session-routes.js'
 import { RuntimeSessionManager, type ManagedAgent } from '../session-manager.js'
 import type { AgentCallbacks } from '../../agent/loop-types.js'
 import type { Artifact } from '../../artifact/types.js'
 import type { OaiMessage } from '../../api/oai-types.js'
+import type { SessionRecord } from '../protocol.js'
+import type { Config } from '../../config/schema.js'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -372,6 +374,32 @@ test('S: POST /sessions rejects an invalid approvalMode (400)', async () => {
   assert.equal(res.status, 400)
 })
 
+test('S: POST /sessions accepts welcome-composer reasoningEffort/planMode/askMode', async () => {
+  const { manager, router } = setup()
+  const res = await router('POST', '/sessions', {
+    reasoningEffort: 'max',
+    planMode: 'planning',
+    askMode: 'off',
+  }, AUTH)
+  assert.equal(res.status, 201)
+  const rec = manager.getSession((res.body as { id: string }).id)!
+  assert.equal(rec.reasoningEffort, 'max')
+  assert.equal(rec.planMode, 'planning')
+  assert.equal(rec.askMode, 'off')
+})
+
+test('S: POST /sessions validates welcome-composer effort/plan/ask (400)', async () => {
+  const { router } = setup()
+  const badEffort = await router('POST', '/sessions', { reasoningEffort: 'ultra' }, AUTH)
+  assert.equal(badEffort.status, 400)
+  const badPlan = await router('POST', '/sessions', { planMode: 'maybe' }, AUTH)
+  assert.equal(badPlan.status, 400)
+  const badAsk = await router('POST', '/sessions', { askMode: 'sure' }, AUTH)
+  assert.equal(badAsk.status, 400)
+  const conflict = await router('POST', '/sessions', { planMode: 'planning', askMode: 'asking' }, AUTH)
+  assert.equal(conflict.status, 400)
+})
+
 test('S: POST /sessions/:id/approval-mode switches the level', async () => {
   const { manager, router } = setup()
   const s = manager.createSession({})
@@ -409,6 +437,14 @@ test('Effort: POST /effort switches the reasoning effort level', async () => {
   assert.equal((res.body as { effort: string }).effort, 'max')
   assert.equal(manager.getSession(s.id)!.reasoningEffort, 'max')
   assert.deepEqual(agents[0]!.reasoningEffortCalls, ['max'])
+})
+
+test('Effort: welcome-created session applies reasoning effort on first agent build', () => {
+  const { manager, agents } = setup()
+  const s = manager.createSession({ prompt: 'go', reasoningEffort: 'max', planMode: 'planning' })
+  assert.equal(s.reasoningEffort, 'max')
+  assert.deepEqual(agents[0]!.reasoningEffortCalls, ['max'], '首轮 run 构建 agent 时就要应用欢迎页选的推理档')
+  assert.deepEqual(agents[0]!.enterPlanModeCalls, [undefined], 'planning 模式同样在首轮 agent 构建时生效')
 })
 
 test('Effort: route validates the body (400) and 404s a missing session', async () => {
@@ -846,8 +882,115 @@ function setupPlus() {
   return { manager, agents, router }
 }
 
-test('GET /models lists provider models with current flag', async () => {
-  const { router } = setupPlus()
+test('B4: describeModelSwitchFailure 附因优先 reload config——快照无模型但 reload 后有模型无 key → key-missing', () => {
+  // 2026-09-07 审查：解析走 resolveModelSpecWithReload（磁盘 reload），附因若用
+  // 启动快照 config——Settings 新加 provider 后至 server 重启窗口内，reload 能
+  // 解析出模型但无 key（真实成因 key-missing），附因却基于旧快照报 unknown-model。
+  const snapshot = { provider: { providers: {} } } as unknown as Config
+  const reloaded = {
+    provider: {
+      providers: {
+        p: { apiKeyEnv: 'NEVER_SET', models: [{ id: 'm1', alias: 'M1', contextWindow: 128_000, maxTokens: 8192 }] },
+      },
+    },
+  } as unknown as Config
+  const idle = { id: 's', status: 'idle' } as unknown as SessionRecord
+
+  // 有 reloadConfig：附因用 reload 后 config → key-missing（旧实现只传快照 → unknown-model）
+  const r = describeModelSwitchFailure(idle, snapshot, 'm1', () => reloaded)
+  assert.match(r, /Model not found/)
+  assert.match(r, /no usable API key/, 'reload 后模型存在无 key → key-missing（旧实现快照报 no configured provider）')
+  // 对照：无 reloadConfig → 快照判定 unknown-model
+  const r2 = describeModelSwitchFailure(idle, snapshot, 'm1')
+  assert.match(r2, /no configured provider/)
+  // reloadConfig 抛错 → 回退快照不炸
+  const r3 = describeModelSwitchFailure(idle, snapshot, 'm1', () => { throw new Error('disk read failed') })
+  assert.match(r3, /no configured provider/)
+})
+
+test('B4 集成：POST /model 409 附因走 reloadConfig 注入链路（快照无模型 + reload 有模型无 key → key-missing）', async () => {
+  // 单元级已证 describeModelSwitchFailure 的 reload 优先；本条验证 route 注入链路：
+  // buildSessionRoutes 第 5 参 dependencies.reloadConfig → handler → 409 分类用
+  // reload 后 config。模拟「Settings 新加 provider 后 server 未重启」：
+  // 快照 config 无任何模型（启动时），reload config 有 model-x 但 provider 无 key。
+  const manager = new RuntimeSessionManager({
+    createAgent: () => new ModelFakeAgent(),
+    defaultCwd: '/tmp/work',
+    listModels: () => [
+      { id: 'model-a', alias: 'Model A', provider: 'p', contextWindow: 128000 },
+      { id: 'model-b', alias: 'Model B', provider: 'p', contextWindow: 256000 },
+    ],
+    defaultModelId: 'model-a',
+  })
+  const snapshot = { provider: { providers: {} } } as unknown as Config
+  const reloaded = {
+    provider: {
+      providers: {
+        p: { apiKeyEnv: 'NEVER_SET', models: [{ id: 'model-x', alias: 'Model X', contextWindow: 128000, maxTokens: 8192 }] },
+      },
+    },
+  } as unknown as Config
+  const router = createRouter(buildSessionRoutes(manager, TOKEN, undefined, snapshot, { reloadConfig: () => reloaded }))
+  const s = await router('POST', '/sessions', {}, AUTH)
+  const id = (s.body as { id: string }).id
+  const res = await router('POST', `/sessions/${id}/model`, { modelId: 'model-x' }, AUTH)
+  assert.equal(res.status, 409)
+  const err = (res.body as { error: string }).error
+  assert.match(err, /no usable API key/, 'reloadConfig 注入应生效：reload 后有模型无 key → key-missing（无注入时快照报 unknown-model）')
+})
+
+test('A1 集成：running 会话 POST /model → 409 状态文案（route→manager→分流全链路）', async () => {
+  // 单元矩阵已证 describeModelSwitchFailure 分流；本条验证 route 层真实接线：
+  // running 会话（带 prompt 创建 → FakeAgent.run 挂起）切模型 → switchModel 在
+  // manager 层早退 false → handler 查 getSession 分流给状态文案、无分类 hint。
+  // 旧实现（86f50cd21）此场景返回 'Session missing/running or model not found'
+  // ——文案等值断言在旧代码下必红。
+  const { router } = setup()
+  const created = await router('POST', '/sessions', { prompt: 'go' }, AUTH)
+  const id = (created.body as { id: string }).id
+  const res = await router('POST', `/sessions/${id}/model`, { modelId: 'model-x' }, AUTH)
+  assert.equal(res.status, 409)
+  const err = (res.body as { error: string }).error
+  assert.equal(err, 'Session is running — stop it before switching the model')
+  assert.ok(!err.includes('no usable API key'), 'running 场景不得附 key-missing hint')
+  assert.ok(!err.includes('no configured provider'), 'running 场景不得附 unknown-model hint')
+})
+
+test('A1: describeModelSwitchFailure 分流——running/missing 不附模型分类提示', () => {
+  // 86f50cd21 接线缺陷（2026-09-07 审查）：manager.switchModel 在 session
+  // missing/running 时直接 return false（session-manager 早退，不触碰模型解析），
+  // 但 409 无条件 classify 附因——running 会话切模型被附 key-missing/unknown-model
+  // 提示，把用户引向查 key 而实际原因是会话在跑。分流：状态问题给状态文案，
+  // 仅「会话存在且空闲 + 解析失败」才附分类提示。
+  const noKeyCfg = {
+    provider: {
+      providers: {
+        p: { apiKeyEnv: 'NEVER_SET', models: [{ id: 'm1', alias: 'M1', contextWindow: 128_000, maxTokens: 8192 }] },
+      },
+    },
+  } as unknown as Config
+  const running = { id: 's', status: 'running' } as unknown as SessionRecord
+  const idle = { id: 's', status: 'idle' } as unknown as SessionRecord
+
+  // missing：不附 hint
+  assert.equal(describeModelSwitchFailure(undefined, noKeyCfg, 'm1'), 'Session not found')
+  // running：不附 hint（旧实现无条件 classify → 误附 key-missing）
+  assert.equal(
+    describeModelSwitchFailure(running, noKeyCfg, 'm1'),
+    'Session is running — stop it before switching the model',
+  )
+  // idle + 模型存在但 provider 无 key → key-missing hint（引导查 Settings）
+  const keyMiss = describeModelSwitchFailure(idle, noKeyCfg, 'm1')
+  assert.match(keyMiss, /Model not found/)
+  assert.match(keyMiss, /no usable API key/)
+  // idle + 任何 provider 都无此模型 → unknown-model hint
+  const unknown = describeModelSwitchFailure(idle, noKeyCfg, 'ghost')
+  assert.match(unknown, /no configured provider/)
+  // idle + config 缺失（如单元测试宿主）：无 hint
+  assert.equal(describeModelSwitchFailure(idle, undefined, 'm1'), 'Model not found')
+})
+
+test('GET /models lists provider models with current flag', async () => {  const { router } = setupPlus()
   // 显式 model —— 空 body 时起始模型由项目配置默认 provider 决定（a976167f），
   // 在本机真实 ~/.rivet 配置下不可预测，current 标记断言需要确定起点。
   const s = await router('POST', '/sessions', { model: 'model-a' }, AUTH)

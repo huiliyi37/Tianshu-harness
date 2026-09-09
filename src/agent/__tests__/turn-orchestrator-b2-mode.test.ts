@@ -6,12 +6,6 @@
  * - planning 态完全不发收敛提醒（高轮次是任务性质，不是发散）
  * - 探寻型星域（tianji/tianxuan/pojun）即使被判 build 也降级为诊断文案
  *
- * 分层契约（2026-09-05，dec4bc993 回归收口）：轮询形状（同类工具连击）的
- * run 由 polling-storm guard 接管（warn→abort），B2 收敛提醒让位——两个机制
- * 盯同一病灶时不双发、不抢 functional SR 的 run 级配额。本套件的 B2 语义
- * 用例一律用 echo/printf 交替驱动（非只读 → build 态；不同轮询类 → 不触发
- * storm guard）；轮询形状的分层行为见文末「分层契约」用例。
- *
  * 集成测试：构造真实 AgentLoop + mock client 连续输出工具调用，
  * 驱动 turn >= 12 触发 B2，检查注入的 system-reminder 内容。
  */
@@ -167,9 +161,7 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
         const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
         if (callCount <= 30) {
           cb.onTextDelta('Committing...')
-          // 交替 echo/printf：非只读（build 态）但不同轮询类——本套件测 B2 语义，
-          // 轮询形状已由 storm guard 接管（见文件头分层注释）。
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, `${callCount % 2 === 0 ? 'echo' : 'printf'} step-${callCount}`))
+          cb.onContentBlock(makeToolUseBlock('call_1', 'echo probe-step'))
           cb.onStopReason('tool_use', usage)
         } else {
           cb.onTextDelta('Done.')
@@ -211,7 +203,7 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
         const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
         if (callCount <= 30) {
           cb.onTextDelta('Committing...')
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, `${callCount % 2 === 0 ? 'echo' : 'printf'} step-${callCount}`))
+          cb.onContentBlock(makeToolUseBlock('call_1', 'echo probe-step'))
           cb.onStopReason('tool_use', usage)
         } else {
           cb.onTextDelta('Done.')
@@ -254,7 +246,7 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
         const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
         if (callCount <= 29) {
           cb.onTextDelta('Building...')
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, `${callCount % 2 === 0 ? 'echo' : 'printf'} build-step-${callCount}`))
+          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, 'echo build-step'))
           cb.onStopReason('tool_use', usage)
         } else if (callCount === 30) {
           cb.onTextDelta('Changing course...')
@@ -301,9 +293,8 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
     registry.register(BASH_TOOL)
     registry.register(READ_FILE_TOOL)
 
-    // 14 次 productive bash（echo/printf 交替：非只读 → build 态，且不同轮询类
-    // 不触发 storm guard）→ 200K 下 turn >= 12 触发，
-    // 文案仍是「12+ 次」强收敛。用 echo/printf 而非 grep probe：grep 会被判 diagnostic
+    // 14 次 productive bash（echo 非只读 → build 态）→ 200K 下 turn >= 12 触发，
+    // 文案仍是「12+ 次」强收敛。用 echo 而非 grep probe：grep 会被判 diagnostic
     // 态走诊断文案，测不到 build 文案锚点。
     let callCount = 0
     const client = {
@@ -312,7 +303,7 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
         const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
         if (callCount <= 14) {
           cb.onTextDelta('Committing...')
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, `${callCount % 2 === 0 ? 'echo' : 'printf'} step-${callCount}`))
+          cb.onContentBlock(makeToolUseBlock('call_1', 'echo probe-step'))
           cb.onStopReason('tool_use', usage)
         } else {
           cb.onTextDelta('Done.')
@@ -356,7 +347,7 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
         const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
         if (callCount <= 30) {
           cb.onTextDelta('Idle...')
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, `${callCount % 2 === 0 ? 'echo' : 'printf'} idle-step-${callCount}`))
+          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, 'echo idle-step'))
           cb.onStopReason('tool_use', usage)
         } else {
           cb.onTextDelta('Done.')
@@ -430,53 +421,3 @@ describe('B2 turn-call-limit planMode/star-domain awareness (defect 2)', () => {
       'RED: 轨迹收敛（持续成功写入）时不得催收敛——轮数高是任务性质，不是发散')
   })
 })
-
-
-  // ── 分层契约（2026-09-05，dec4bc993 回归收口）──────────────────────
-  // 轮询形状的 run（同类轮询连击）由 polling-storm guard 接管（warn→abort），
-  // B2 收敛提醒让位（turn-orchestrator.ts 的 stormEngaged 门）——两个机制盯
-  // 同一病灶时不再双发/抢 functional SR 配额。
-  it('分层契约：轮询形状 run 由 storm guard 接管，B2 不重复提醒', async () => {
-    const session = new SessionContext()
-    const registry = new ToolRegistry()
-    registry.register(BASH_TOOL)
-    registry.register(READ_FILE_TOOL)
-
-    // 30 次同一命令（bash:echo 同类连击）→ 轮询形状：storm warn/abort 接管，
-    // B2 收敛提醒不得再发（functional SR 配额不被抢占）。
-    let callCount = 0
-    const client = {
-      stream: mock.fn(async (_req: unknown, cb: StreamCallbacks, _sig?: AbortSignal) => {
-        callCount++
-        const usage = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-        if (callCount <= 30) {
-          cb.onTextDelta('Polling...')
-          cb.onContentBlock(makeToolUseBlock(`call_${callCount}`, 'echo probe-step'))
-          cb.onStopReason('tool_use', usage)
-        } else {
-          cb.onTextDelta('Done.')
-          cb.onContentBlock(makeTextBlock('Done.'))
-          cb.onStopReason('end_turn', usage)
-        }
-      }),
-    } as unknown as StreamClient
-
-    const agent = new AgentLoop({
-      client,
-      promptEngine: makeEngine(),
-      toolRegistry: registry,
-      maxTurns: 60,
-      contextWindow: 1_000_000,
-      defaultDomain: 'tianliang',
-      compact: { enabled: false, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
-    } as any, session, TEST_CWD)
-
-    await agent.run('poll the same thing', makeCallbacks())
-
-    const reminders = remindersIn(session)
-    const storm = reminders.filter(r => r.includes('[polling-storm]'))
-    const convergence = reminders.filter(r => r.includes('28+ 次 API 调用'))
-    assert.ok(storm.length >= 1, '轮询形状 run 应收到 storm guard 的提醒（warn 先行）')
-    assert.equal(convergence.length, 0, 'B2 收敛提醒在轮询形状 run 让位（不双发、不抢配额）')
-  })
-

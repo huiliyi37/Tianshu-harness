@@ -97,7 +97,10 @@ export const WELL_KNOWN_DEFAULTS: Record<string, ProviderCapabilities> = {
   kimi: {
     supportsThinking: true,
     thinkingBlockType: 'enabled',
-    effortCap: { max: 'high' },
+    // 无 effortCap：官方 Kimi Code 文档（kimi-code/models.html）——k3 / k3-256k
+    // 的 reasoning_effort 支持 low|high|max，第三方工具传 max 即映射到 max。
+    // 旧值 {max:'high'} 会把用户显式选的 max 静默降成 high，K3 旗舰的 max 档
+    // 永远发不出去。K2.7 Code（kimi-for-coding）是 Thinking:ON、无档位。
     supportsCacheControl: false,
     stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
     hasToolJsonInContentBug: false,

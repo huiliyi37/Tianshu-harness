@@ -164,9 +164,6 @@ export interface GlanceBarInput {
   density?: 'compact' | 'full'
   /** 当前切入的 worker 视图徽章（例如 "◐ T1"）——非空时显示在左区。 */
   workerBadge?: string
-  /** Zen Mode（禅模式）徽章——相位 zen（读面收窄）时 app 传 '禅'；
-   *  晋升 full / 从未 arm / zen 禁用时 undefined（保守降级：无记录 ≠ 禅相位）。 */
-  zenBadge?: string
   /** 在跑子代理数（FleetRegistry 读模型）——>0 时右区显示 `◐ N`。 */
   fleetRunning?: number
   /** 终态未读子代理数——无在跑时右区显示 `✓ N`（通知徽章，查看后清除）。 */
@@ -192,13 +189,10 @@ export function formatGlanceLeft(input: GlanceBarInput, theme: RivetTheme): stri
   const accentColor = resolveStarDomainAccent(input.domainName, theme)
 
   const glyphPart = domainGlyph ? `${color(domainGlyph, accentColor)} ` : ''
-  // Zen 相位徽章：读面收窄期间常驻提示（禅模式的可见性契约——用户知道当前
-  // 处于专注相位，晋升后消失）。primary 色，与星域 glyph 相邻不抢层级。
-  const zenPart = input.zenBadge ? ` ${color(input.zenBadge, theme.primary)}` : ''
   // worker 视图徽章：切入子代理视图时提示当前输入路由目标
   const workerPart = input.workerBadge ? ` ${color(`[${input.workerBadge}]`, theme.secondary)}` : ''
   // 三阶色阶层次：accent(星域·最醒目) → secondary(分支·中亮) → dim(cwd·辅助)
-  return `${glyphPart}${color(domainLabel, accentColor)}${color(branchPart, theme.secondary)}${color(cwdPart, theme.dim)}${zenPart}${workerPart}`
+  return `${glyphPart}${color(domainLabel, accentColor)}${color(branchPart, theme.secondary)}${color(cwdPart, theme.dim)}${workerPart}`
 }
 
 /** 高占用成本提示：上下文 ≥ HANDOFF_NUDGE_RATIO 在底栏常驻建议开新会话——继续推进会触发压缩

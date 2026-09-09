@@ -155,7 +155,10 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
       // is attributable without reverse-engineering timestamp gaps.
       recordStreamAttemptAborted: info => {
         const sid = self.config.sessionId ?? 'anon'
-        const line = JSON.stringify({
+        // abort 也要带走面包屑（2026-09-06 补盲）：分歧探针此前只在成功路径
+        // （recordTurnCache）消费——abort 后面包屑滞留内存，被下一次成功请求
+        // 的日志行误领。此处即消费即附，归因到真正产生它的这次失败尝试。
+        const entry: Record<string, unknown> = {
           event: 'stream_attempt_aborted',
           t: Date.now(),
           model: self.config.promptEngine.getModel(),
@@ -164,21 +167,17 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
           elapsedMs: info.elapsedMs,
           errorName: info.errorName,
           errorMessage: info.errorMessage.slice(0, 300),
-        })
+        }
+        const divergence = self.config.promptEngine.consumePrefixDivergence?.()
+        if (divergence) entry.prefixDiverged = divergence
+        const wireDivergence = self.config.client.consumeWireDivergence?.()
+        if (wireDivergence) entry.wireDiverged = wireDivergence
+        const line = JSON.stringify(entry)
         import('node:fs/promises').then(fs => {
           const dir = join(getSessionDir(self.cwd), sid)
           return fs.mkdir(dir, { recursive: true })
             .then(() => fs.appendFile(join(dir, 'cache-log.jsonl'), line + '\n'))
         }).catch(() => {})
-      },
-      onTurnMetrics: (m) => {
-        self.lastTurnMetrics = m
-        // cockpit 平均输出速度累计：tps 已知时计解码段时长
-        if (m.tokensPerSecond !== undefined && m.tokensPerSecond > 0) {
-          self.decodeTokensSum += m.outputTokens
-          // 优先用未舍入的精确解码时长——tokensPerSecond 已按 0.1 舍入，反推有偏差。
-          self.decodeMsSum += m.decodeMs ?? (m.outputTokens / m.tokensPerSecond) * 1000
-        }
       },
       recordTurnCache: (turn, usage, streamObservability) => {
         self.session.recordTurnCache(turn, usage)
@@ -336,7 +335,6 @@ export function createTurnCompletionController(self: AgentLoop, callbacks?: Agen
         try { self.config.meridianIndexer?.getDb()?.saveBanditState(kind, json) } catch { /* append-only evidence — never disrupt turn */ }
       },
       getDoomLoopLevel: () => self.getDoomLoopLevel(),
-      getTurnMetrics: () => self.lastTurnMetrics ?? undefined,
     })
 }
 export function createToolExecutionController(self: AgentLoop): ToolExecutionController {
@@ -344,7 +342,6 @@ export function createToolExecutionController(self: AgentLoop): ToolExecutionCon
       config: self.config,
       cwd: self.cwd,
       harness: self.harness,
-      telemetryWriter: self.telemetryWriter,
       prewarm: self.prewarm,
       evidence: self.evidence,
       obligations: self.obligations,
@@ -361,12 +358,6 @@ export function createToolExecutionController(self: AgentLoop): ToolExecutionCon
       getDoomLoopLevel: () => self.getDoomLoopLevel(),
       isGoalActive: () => self.isGoalActive(),
       getPhaseHint: () => self.config.promptEngine.getPhaseHint(),
-      // Zen 解锁点：分派前上报面外工具名——loop 侧判定面外 → 晋升 full + 放行。
-      onZenEscape: name => self.onZenEscape(name),
-      // Zen 解锁声明（zen_unlock 虚拟工具被调用）：直接晋升 full（reason=tool）。
-      onZenUnlock: () => self.promoteZen('tool'),
-      // Zen 相位下未注册工具报错的可行动指引（幻觉调用不晋升）。
-      getZenUnregisteredHint: name => self.getZenUnregisteredHint(name),
       getSessionTurnCount: () => self.session.getTurnCount(),
       getSessionId: () => self.config.sessionId,
       addToolResults: results => { self.session.addToolResults(results) },
@@ -1181,7 +1172,6 @@ export function createTurnOrchestrator(self: AgentLoop): TurnOrchestrator {
 
     // === Config ===
     getMaxTurns: () => self.config.maxTurns,
-    getFilesModifiedCount: () => self.evidence.getState().filesModified.size,
     // 窗口感知提醒阈值（B1/B2）：1M 窗口下固定 12/4 轮太紧（会话 b1b4d856）。
     getContextWindow: () => self.getContextWindow(),
     // C3 — checkpoint brake applies only to auto-safe mode (high-risk tools

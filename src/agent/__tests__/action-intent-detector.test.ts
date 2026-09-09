@@ -160,6 +160,46 @@ describe('hasActionIntent', () => {
     assert.ok(!hasActionIntent('我现在把结果汇报完。之前我读取了那个文件，也写入了一段内容。'))
   })
 
+  // ── 名词性「更新」误触发回归（2026-09-09 现场）──
+  // 根因：报告句「应用内"更新说明"现在拿不到 3.16.0 的内容」里，"更新说明"是
+  // UI 文案名词、"现在"是时间状语，却被 TOOL_VERB 的裸"更新"与承诺词"现在"
+  // 同分句配对命中 → no-tool 轮注入 reminder（用户视角凭空多出一轮）。
+  it('名词性「更新说明」+ 时间状语「现在」不触发（现场原句）', () => {
+    assert.ok(!hasActionIntent('也就是说应用内"更新说明"现在拿不到 3.16.0 的内容。'))
+    assert.ok(!hasWriteActionIntent('也就是说应用内"更新说明"现在拿不到 3.16.0 的内容。'))
+  })
+  it('名词性「更新日志/更新记录」不触发（祈使收尾路径）', () => {
+    assert.ok(!hasActionIntent('更新日志里 3.16.0 出现 0 次。'))
+    assert.ok(!hasActionIntent('更新记录里没有这一条。'))
+  })
+  it('动词性「更新文档/更新计划」仍触发（豁免不吞真承诺）', () => {
+    assert.ok(hasActionIntent('接下来更新文档。'))
+    assert.ok(hasWriteActionIntent('接下来更新文档。'))
+    assert.ok(hasImperativeActionTail('更新计划，方向修正为源头量化 + 净删除'))
+  })
+
+  // ── 提议/建议/列举语境（2026-09-09 探针实测的三条误触发）──
+  // 三者都经「承诺词 × 工具动词」同分句配对命中，但语义上是把选项交回用户，
+  // 不是模型自己的行动承诺。豁免做在分句级：只压承诺词所在分句的语境，
+  // 同句别处的"建议"不吞掉真承诺。
+  it('提议语气不触发：「随时可以让我跑 typecheck」', () => {
+    assert.ok(!hasActionIntent('随时可以让我跑 typecheck。'))
+    assert.ok(!hasWriteActionIntent('随时可以让我跑 typecheck。'))
+  })
+  it('建议语气不触发：「建议下一步跑一下测试」', () => {
+    assert.ok(!hasActionIntent('建议下一步跑一下测试。'))
+    assert.ok(!hasActionIntent('我建议下一步更新文档。'))
+  })
+  it('列举语气不触发：「接下来可以做的事：更新文档」', () => {
+    assert.ok(!hasActionIntent('接下来可以做的事：更新文档。'))
+    assert.ok(!hasWriteActionIntent('接下来可以做的事：更新文档。'))
+  })
+  it('提议/建议/列举语境不吞真承诺', () => {
+    assert.ok(hasActionIntent('接下来修改 loop.ts。'))
+    assert.ok(hasWriteActionIntent('接下来更新文档。'))
+    assert.ok(hasActionIntent('让我 grep 一下 loop.ts 看看调用链'))
+  })
+
   // ── Edge cases ──
   it('仅"看"不触发（已从动词列表移除，误报太高）', () => {
     assert.ok(!hasActionIntent('让我看一下这个问题'))
@@ -201,6 +241,66 @@ describe('hasImperativeActionTail（动词开头的祈使收尾，4df36bcd）', 
   })
 })
 
+describe('hasImperativeActionTail 话题句误判（2026-09-09 全分支扫描）', () => {
+  // 现场：以「修复」开头的陈述句「修复针对的两类形态是——…」被判为祈使收尾，
+  // no-tool 轮被注入 reminder。全分支扫描：20 条话题句中 16 条误判，14 条真
+  // 祈使句全部正确。判据见源码 TOPIC_STATEMENT_RE（名词化后缀 + 动词后 8 字符内「的」）。
+  const TRUE_IMPERATIVES = [
+    '跑 typecheck + 测试。',
+    '运行测试套件。',
+    '执行迁移脚本。',
+    '修复 loop.ts 的空指针。',
+    '重写计划文件。',
+    '更新文档。',
+    '编辑 config.ts。',
+    '提交这些改动。',
+    '构建产物。',
+    '部署到 staging。',
+    '安装依赖。',
+    '重启服务。',
+    '验证一下结果。',
+    '重构 loop.ts。',
+    // 2026-09-09 审查反向用例：TOPIC_STATEMENT_RE 的「动词后 8 字符内出现『的』」
+    // 判据把这一类真祈使句全部吞掉（8e70ae3b4 引入的回归）。探针实测（同一份
+    // 源码仅换版本）：修复前 true、8e70ae3b4 之后 false。间隔 3~6 字符的短宾语
+    // 形态是原扫描样本的盲区——原样本唯一带「的」的「修复 loop.ts 的空指针」
+    // 间隔 10 字符，正好落在阈值外，所以当时「14 条真祈使全部正确」。
+    '更新配置的默认值。',
+    '修改文档里的示例。',
+    '重构 utils 的接口。',
+    '重写这一节的说明。',
+    '验证结果的正确性。',
+    // 2026-09-09 清单单一来源重构：写侧动作表补全后祈使路径也认裸「改」与
+    // 「删除」——此前这两个词只在写侧承诺表里，句首形态漏检（两条闸门判定相反）
+    '删除冗余的导入。',
+    '改这个文件。',
+  ]
+  const TOPIC_SENTENCES = [
+    '修复针对的两类形态是——报告里出现这类名词。',
+    '修复相关的讨论在另一份文档里。',
+    '修复方案还没定。',
+    '修复记录保存在日志里。',
+    '提交记录里有三条。',
+    '提交历史里的那次改动。',
+    '构建产物的时间是三天前。',
+    '验证相关的记录在文档里。',
+    '运行时的开销需要关注。',
+    '执行环境的限制。',
+    '编辑器的配置。',
+    '部署方案还没定。',
+    '重启后的行为需要确认。',
+    '重写相关的内容。',
+    '重构涉及三个模块。',
+    '跑测试的时间太长。',
+  ]
+  for (const sentence of TRUE_IMPERATIVES) {
+    it(`真祈使仍触发：${sentence}`, () => assert.ok(hasImperativeActionTail(sentence)))
+  }
+  for (const sentence of TOPIC_SENTENCES) {
+    it(`话题句不触发：${sentence}`, () => assert.ok(!hasImperativeActionTail(sentence)))
+  }
+})
+
 describe('hasWriteActionIntent（只读轮闸门用的写侧承诺）', () => {
   it('「接下来修改 turn-orchestrator.ts」触发', () => {
     assert.ok(hasWriteActionIntent('接下来修改 turn-orchestrator.ts 的 no-tool 路径'))
@@ -228,6 +328,77 @@ describe('hasWriteActionIntent（只读轮闸门用的写侧承诺）', () => {
   })
   it('跨句共现不触发：承诺词与工具动词分属不同句子', () => {
     assert.ok(!hasWriteActionIntent('我现在把结果汇报完。之前修改了那个文件。'))
+  })
+  it('名词性「提交」不触发：现场文本（现在×最近提交，逗号分句）', () => {
+    // 2026-09 会话现场：读侧承诺「现在读核心文档」+ 括号插入语里的名词
+    // 「最近提交」（指 git 记录）被判为写侧承诺，只读轮闸门误 fire。
+    assert.ok(!hasWriteActionIntent('顶层结构已见。现在读核心文档核实版本与定位（记忆里说 v3.14.0，最近提交又提到 3.15.0 回滚基线，需要以 package.json 为准）。'))
+  })
+  it('名词性「提交」不触发：同分句「现在看一下最近的提交记录」', () => {
+    // 分句级配对防线不够——本句无逗号，「现在」与名词「提交记录」同分句。
+    // 依赖名词语境豁免：紧邻前字「近」表明是名词指称。
+    assert.ok(!hasWriteActionIntent('现在看一下最近的提交记录。'))
+  })
+  it('名词性「提交」不触发：上一轮提交里已经改过', () => {
+    // 「上一轮提交」名词短语 + 「已经」完成态；「现在读取」是读侧承诺
+    assert.ok(!hasWriteActionIntent('现在读取配置，上一轮提交里已经改过这里。'))
+  })
+  it('名词性「提交」不触发（后置成分判别）：现在看看提交记录', () => {
+    // 2026-09-09 审查实测误杀：前字「看」不在清单，旧单向判别挡不住——
+    // 「提交记录」是指称性定语结构，由后置成分豁免兜住
+    assert.ok(!hasWriteActionIntent('现在看看提交记录。'))
+  })
+  it('名词性「提交」不触发（前字清单补全）：查最近一次提交的内容', () => {
+    // 前字「次」+ 后置「的」双豁免（2026-09-09 审查实测误杀）
+    assert.ok(!hasWriteActionIntent('现在查最近一次提交的内容。'))
+    assert.ok(!hasWriteActionIntent('这次代码提交首次引入了新协议。'))
+  })
+  it('动宾真承诺不再被名词豁免吞掉：「我来更新日志」（承诺词紧邻放行）', () => {
+    // 2026-09-09 审查实测假阴性：a5dc38a2e 的「更新日志」名词豁免把标准
+    // 动宾承诺一并吞掉——闸门静默失效比误伤更危险。承诺词紧邻动词=行动宣告
+    assert.ok(hasWriteActionIntent('我来更新日志。'))
+    assert.ok(hasWriteActionIntent('接下来更新内容，把结论写进去。'))
+  })
+  it('报告句的名词「更新说明」仍不触发（紧邻要求排除非动词前邻）', () => {
+    // a5dc38a2e 原案例不回归：「现在」前邻的是「拿不到」而非「更新」
+    assert.ok(!hasWriteActionIntent('应用内"更新说明"现在拿不到 3.16.0 的内容。'))
+  })
+  it('动词性「提交」仍触发：「接下来提交这些改动」', () => {
+    assert.ok(hasWriteActionIntent('接下来提交这些改动。'))
+  })
+  it('动词性「提交」仍触发：「我现在提交。」', () => {
+    assert.ok(hasWriteActionIntent('我现在提交。'))
+  })
+  it('分工句的真写承诺不被条件前缀吞掉：「不需要改，我来更新 loop.ts」', () => {
+    // 2026-09-09 审查反向用例：CONDITIONAL_PREFIX_RE 的前缀窗不排除逗号，与
+    // 同文件 PRECONDITION_WAIT_RE（字符类明确排除逗号，注释「逗号连接是分工
+    // 句式，不是等待」）及 hasSameSentencePair 的分句语义（按 [，,、；;] 切分）
+    // 相矛盾——「否定 + 逗号 + 我来 X」被整体判为假设句，真承诺静默漏检。
+    assert.ok(hasWriteActionIntent('不需要改，我来更新 loop.ts'))
+    assert.ok(hasWriteActionIntent('没必要争论了，接下来我重写这一节'))
+    assert.ok(hasWriteActionIntent('不必等我，我先修复空指针'))
+  })
+  it('假设句仍被条件前缀豁免（收紧逗号边界后不回归）', () => {
+    assert.ok(!hasWriteActionIntent('不需要改，除非你想让我也查一下 X'))
+    assert.ok(!hasWriteActionIntent('除非你想让我也审查 X'))
+  })
+  it('「接下来」与「马上/现在/接着」同权：写动词承诺两侧都触发', () => {
+    // IMPERATIVE_HEAD_RE / TOPIC_STATEMENT_RE 的前缀组缺「接下来」（而
+    // ACTION_PROMISE_PATTERN 含），叠加 WRITE_VERB_PATTERN 无「部署」——实测
+    // 「接下来部署到 staging」两侧全漏、「马上部署到 staging」两侧全中。
+    // 同动词同意图仅前缀不同而结果相反，属清单不同步而非设计。
+    assert.ok(hasActionIntent('接下来部署到 staging。'))
+    assert.ok(hasWriteActionIntent('接下来部署到 staging。'))
+    assert.ok(hasActionIntent('接下来提交这些改动。'))
+  })
+  it('写侧动作表补全：裸「改」「删除」在承诺路径与祈使路径一致', () => {
+    // 清单单一来源重构前：裸「改」只在写侧承诺表里（"我来改这个文件" 靠它），
+    // 「删除」在写侧表但不在祈使表——同一动作两条闸门判定相反。重构后三处
+    // 共用同一词表，句首形态与承诺形态一致。
+    assert.ok(hasWriteActionIntent('我来改这个文件'))
+    assert.ok(hasWriteActionIntent('不用你动手，我来改这个文件'))
+    assert.ok(hasImperativeActionTail('删除冗余的导入。'))
+    assert.ok(hasImperativeActionTail('改这个文件。'))
   })
 })
 

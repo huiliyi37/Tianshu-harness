@@ -1,5 +1,4 @@
 import { watch, existsSync, readFileSync, type FSWatcher } from 'node:fs'
-import { basename, dirname } from 'node:path'
 import { loadConfig, findProjectConfig } from './manager.js'
 import { userConfigPath } from './paths.js'
 import { resolveProfileName, profilePath } from './profile.js'
@@ -109,20 +108,7 @@ export function watchConfigForHooks(options: ConfigWatcherOptions): ConfigWatche
 
   for (const p of paths) {
     try {
-      // Linux inotify 直接 watch 单个文件在连续写入场景下会丢事件（CI 实测：
-      // 坏 JSON→恢复合法后不再触发回调）。标准解法是 watch 父目录按文件名过滤
-      // ——目录级 inotify 对文件内写入始终可靠。schedule 有 debounce + diff
-      // 双闸，多余事件（父目录内其他文件变更）无副作用。
-      const dir = dirname(p)
-      const base = basename(p)
-      try {
-        watchers.push(watch(dir, { persistent: false }, (_event, filename) => {
-          if (filename === undefined || filename === base) schedule()
-        }))
-      } catch {
-        // 目录 watch 不可用（权限/平台差异）时退回文件级 watch
-        watchers.push(watch(p, { persistent: false }, schedule))
-      }
+      watchers.push(watch(p, { persistent: false }, schedule))
     } catch (e) {
       debugLog(`[config-watcher] watch ${p} failed: ${e instanceof Error ? e.message : String(e)}`)
     }

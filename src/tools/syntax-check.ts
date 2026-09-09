@@ -6,47 +6,60 @@ import { getResolvedEnv } from './resolved-env.js'
 import type Parser from 'web-tree-sitter'
 
 // esbuild ships a native binary, so it can't be inlined into the tsup bundle.
-// Load it lazily via require so a packaged sidecar without esbuild on disk
-// degrades (skips the JS/TS parse check) instead of crashing at startup with
-// ERR_MODULE_NOT_FOUND. Resolved once, then cached (null = unavailable).
-//
-// We use the async `transform()` API so esbuild runs on its own worker thread
-// and never blocks the main event loop (plan: cpu-pool). The sync
-// `transformSync` version is kept as an inline fallback if async isn't
-// available (very old esbuild), but it is gated behind a 2 MB size limit.
+// It is loaded and executed exclusively inside the cpu-pool worker thread
+// (`esbuildTransformRaw`, src/workers/cpu-tasks.ts) — the main thread never
+// require()s it. Rationale (issue #61 族): on Windows with antivirus/EDR the
+// first require of the native binary can block the event loop for minutes;
+// the old "async load with 3s timeout" was ineffective because the require
+// executed synchronously before the timeout wrapper — the edit_file call
+// appeared to hang 5-10 minutes with the UI stuck on "thinking". The worker
+// channel makes the soft timeout real: pool unavailable/timed out → degrade
+// (skip the JS/TS parse check), never block the loop, never a false fatal.
 
-type TransformFn = (input: string, options: Record<string, unknown>) => Promise<unknown>
-type TransformSync = (input: string, options: Record<string, unknown>) => unknown
+import { cpuPool } from '../workers/cpu-pool.js'
 
-interface EsbuildModule {
-  transform: TransformFn
-  transformSync: TransformSync
+/** esbuild 语法解析的调用通道。null = 池不可用/已熔断（降级跳过检查，绝不误回滚）。 */
+type EsbuildTransform = (content: string, options: { loader: string; target: string; jsx: string }) => Promise<unknown>
+
+// 熔断器（issue #61 族）：worker 调用连续基础设施失败（超时/被杀/不可用）达到
+// 阈值 = 本进程环境病理（典型：Windows AV/EDR 把 esbuild 原生二进制的加载卡到
+// 分钟级）。熔断后剩余进程期跳过 TS/JS 解析检查——否则每次写都交一次软超时税。
+// 任何一次成功调用即复位计数；解析错误（语法本身）是业务信号，不计入。
+let esbuildInfraFailures = 0
+let esbuildBreakerTripped = false
+const ESBUILD_BREAKER_THRESHOLD = 2
+
+function isEsbuildInfraError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /timed out|terminated|unavailable/i.test(msg)
 }
 
-let _esbuildPromise: Promise<EsbuildModule | null> | undefined
+function getEsbuildCallTimeoutMs(): number {
+  // RIVET_ESBUILD_LOAD_TIMEOUT 保留为整次调用（含 worker 内加载）的软超时覆盖。
+  const v = Number.parseInt(process.env.RIVET_ESBUILD_LOAD_TIMEOUT ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : TRANSFORM_TIMEOUT_MS + 2000
+}
 
-async function loadEsbuildModule(): Promise<EsbuildModule | null> {
-  try {
-    const req = createRequire(import.meta.url)
-    return req('esbuild') as EsbuildModule
-  } catch {
-    return null
+function getEsbuildTransform(): EsbuildTransform | null {
+  if (esbuildBreakerTripped || !cpuPool.available) return null
+  return async (content, options) => {
+    try {
+      await cpuPool.run('esbuildTransformRaw', [content, options], getEsbuildCallTimeoutMs())
+      esbuildInfraFailures = 0
+    } catch (err) {
+      if (isEsbuildInfraError(err)) {
+        esbuildInfraFailures++
+        if (esbuildInfraFailures >= ESBUILD_BREAKER_THRESHOLD) esbuildBreakerTripped = true
+      }
+      throw err
+    }
   }
 }
 
-async function getEsbuild(): Promise<EsbuildModule | null> {
-  if (_esbuildPromise) return _esbuildPromise
-  _esbuildPromise = withTimeout(
-    loadEsbuildModule(),
-    'esbuild load',
-    getEsbuildLoadTimeoutMs(),
-  ).catch(() => null)
-  return _esbuildPromise
-}
-
-/** Test-only: clear the esbuild load cache so each test gets a fresh load attempt. */
+/** Test-only: clear the esbuild circuit-breaker state so each test starts clean. */
 export function _resetEsbuildCacheForTest(): void {
-  _esbuildPromise = undefined
+  esbuildInfraFailures = 0
+  esbuildBreakerTripped = false
 }
 
 /** Files larger than this skip CSS/HTML/JSON branch checks (O(n) scans). */
@@ -59,23 +72,6 @@ const EXTERNAL_PARSE_SIZE_LIMIT = 8 * 1024 * 1024 // 8 MB
  *  the tool call indefinitely (file is already written; losing syntax-check is
  *  a degradation, not a failure). */
 const TRANSFORM_TIMEOUT_MS = 5000
-
-/** Timeout for loading the esbuild module itself.
- *
- *  esbuild ships a native binary; on Windows with certain antivirus/EDR
- *  configurations the first require() of the native addon can block the event
- *  loop for minutes. Because the default 2-minute tool timeout uses setTimeout,
- *  a blocked event loop never fires it, so the edit_file call appears to hang
- *  for 5-10 minutes with the UI stuck on "thinking". Loading esbuild async with
- *  a short timeout keeps the event loop alive and lets us degrade gracefully
- *  (skip the parse check) when the binary is slow to arrive.
- *
- *  Override with RIVET_ESBUILD_LOAD_TIMEOUT (ms); set to 0/negative to fall
- *  back to the 3s default. */
-function getEsbuildLoadTimeoutMs(): number {
-  const v = Number.parseInt(process.env.RIVET_ESBUILD_LOAD_TIMEOUT ?? '', 10)
-  return Number.isFinite(v) && v > 0 ? v : 3000
-}
 
 /** Timeout for the tree-sitter Python parse (load + parse). Parsing is in-process
  *  and normally sub-millisecond, but the first wasm load can be slow on some
@@ -303,27 +299,22 @@ export async function syntaxCheck(filePath: string, content: string): Promise<st
 export async function checkSyntax(filePath: string, content: string): Promise<SyntaxCheckResult> {
   const ext = extname(filePath)
 
-  // ── TypeScript/JavaScript via esbuild async transform ──
+  // ── TypeScript/JavaScript via esbuild (cpu-pool worker 通道) ──
   if (ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.jsx' || ext === '.mjs' || ext === '.cjs') {
     if (content.length > EXTERNAL_PARSE_SIZE_LIMIT) return OK
     const loaderMap: Record<string, 'ts' | 'tsx' | 'js' | 'jsx'> = {
       '.ts': 'ts', '.tsx': 'tsx', '.js': 'js', '.jsx': 'jsx', '.mjs': 'js', '.cjs': 'js',
     }
     const loader = loaderMap[ext] ?? 'js'
-    const esbuild = await getEsbuild()
-    if (!esbuild) return OK
+    const transform = getEsbuildTransform()
+    if (!transform) return OK
     try {
-      if (esbuild.transform) {
-        await withTimeout(
-          esbuild.transform(content, { loader, target: 'esnext', jsx: 'automatic' }),
-          'esbuild transform',
-          TRANSFORM_TIMEOUT_MS,
-        )
-      } else {
-        esbuild.transformSync(content, { loader, target: 'esnext', jsx: 'automatic' })
-      }
+      await transform(content, { loader, target: 'esnext', jsx: 'automatic' })
       return OK
     } catch (err) {
+      // 基础设施失败（worker 超时/被杀/esbuild 缺失）与旧 !esbuild 同语义：
+      // 降级跳过解析检查——绝不把环境问题伪装成语法错误回滚好文件。
+      if (isEsbuildInfraError(err)) return OK
       if (!(err instanceof Error)) return OK
       const lines = err.message.split('\n')
       const errorLines = lines.filter(l => /ERROR:|error:/i.test(l))

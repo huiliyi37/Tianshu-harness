@@ -55,9 +55,6 @@ const inputSchema = z.object({
   /** 两阶段确认（星河收编 #7）：显式 confirm:false → 只展示波次分派方案不派发；
    *  confirm:true → 点火。缺省 undefined → 直接执行（现状行为，向后兼容）。 */
   confirm: z.boolean().optional(),
-  /** 最小波次通过率（0..1）：本波通过率低于该值时停止推进下一波。缺省 = 现状
-   *  （零通过才停）。共享工作树的半坏波不再默认继续污染下一波。 */
-  minPassRate: z.number().min(0).max(1).optional(),
 })
 
 /**
@@ -307,7 +304,7 @@ export function createTeamOrchestrateTool(
     async execute(params: ToolCallParams): Promise<ToolResult> {
       const parsed = inputSchema.safeParse(params.input)
       if (!parsed.success) return { content: `无效输入：${parsed.error.message}`, isError: true, errorKind: 'format_error' }
-      const { mode, objective, planPath, planMarkdown, planJson: explicitPlanJson, maxParallel, fromWave, autoAdvance, minPassRate } = parsed.data
+      const { mode, objective, planPath, planMarkdown, planJson: explicitPlanJson, maxParallel, fromWave, autoAdvance } = parsed.data
       // Bridge: auto-consume the plan stored by plan_task when planJson is omitted.
       const planJson = explicitPlanJson ?? consumePlan(params.sessionId)
       // Stale-plan hygiene: an explicit planJson takes priority, so drop any plan
@@ -467,15 +464,12 @@ export function createTeamOrchestrateTool(
 
       // D8 L2：从计划解析反目标与待验证假设，自动注入 worker 工单。
       // markdown 路径零额外 IO（已读进内存）；planJson 路径用契约自身的
-      // nonGoals/obligations（议事会「拒绝」裁决与暂缓/高危缓解承诺）与
-      // assumptions（T8：plan_task 从 markdown「待验证假设」章节提取的
-      // 结构化载体，storePlan 自动消费路径同样携带）。
+      // nonGoals/obligations（议事会「拒绝」裁决与暂缓/高危缓解承诺）。
       const planConstraints = markdown
         ? resolvePlanConstraints(params.cwd, { markdown })
         : planFromJson
           ? constraintsFromUnifiedPlan({
               nonGoals: planFromJson.nonGoals,
-              assumptions: planFromJson.assumptions,
               obligations: (planFromJson as PlanWithObligations).obligations?.map(o => ({ kind: o.kind, text: o.text })),
             })
           : undefined
@@ -492,11 +486,8 @@ export function createTeamOrchestrateTool(
             tasks,
             planMarkdown: markdown,
             planConstraints: planConstraints && planConstraints.length > 0 ? planConstraints : undefined,
-            // T5：计划文件指针随约束同路下传（worker 提示词「计划全文见：<path>」）。
-            ...(planPath ? { planRef: planPath } : {}),
             startWave: effectiveFromWave,
             autoAdvance: effectiveAutoAdvance,
-            ...(minPassRate !== undefined ? { minPassRate } : {}),
             maxParallel: maxParallel ?? options?.defaultMaxParallel,
             sessionId: params.sessionId,
             parentTurnId: params.toolUseId,

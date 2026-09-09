@@ -28,9 +28,6 @@ export interface TeamPlanSkeleton {
   mode: 'standard' | 'max'
   tasks: TeamTask[]
   createdAt: number
-  /** Optional repository-state fingerprint (e.g. git HEAD). When a load caller
-   *  provides one, entries without a matching fingerprint are treated as stale. */
-  repoFingerprint?: string
 }
 
 export const TEAM_PLAN_CACHE_PREFIX = 'team_plan_cache:'
@@ -56,50 +53,16 @@ export function extractPlanKeywords(text: string): string[] {
     .slice(0, 16)
 }
 
-function isRouteHint(value: unknown): value is NonNullable<TeamTask['routeHint']> {
-  return value === 'planner_strong'
-    || value === 'review_strong'
-    || value === 'executor_cheap'
-    || value === 'executor_strong'
-}
-
-/**
- * Validate the durable core of a cached task and normalize optional arrays.
- * Legacy rows missing `touchSet`/`verification` are repaired (touchSet ← files)
- * instead of passing validation and later crashing `groupTeamTasks`, which
- * reads `task.touchSet.length` directly.
- */
-function normalizeTask(raw: unknown): TeamTask | null {
-  if (!raw || typeof raw !== 'object') return null
-  const t = raw as Record<string, unknown>
-  if (typeof t.id !== 'string' || t.id.length === 0) return null
-  if (typeof t.objective !== 'string' || t.objective.length === 0) return null
-  if (typeof t.profile !== 'string' || typeof t.kind !== 'string') return null
-  if (!Array.isArray(t.files) || !Array.isArray(t.dependsOn)) return null
-  if (t.riskTier !== 'low' && t.riskTier !== 'medium' && t.riskTier !== 'high') return null
-
-  const files = t.files.filter((f): f is string => typeof f === 'string')
-  const verification = Array.isArray(t.verification)
-    ? t.verification.filter((v): v is string => typeof v === 'string')
-    : []
-  const touchSet = Array.isArray(t.touchSet)
-    ? t.touchSet.filter((f): f is string => typeof f === 'string')
-    : [...files]
-
-  return {
-    id: t.id,
-    title: typeof t.title === 'string' ? t.title : t.id,
-    objective: t.objective,
-    files,
-    profile: t.profile as TeamTask['profile'],
-    kind: t.kind as TeamTask['kind'],
-    verification,
-    dependsOn: t.dependsOn,
-    riskTier: t.riskTier,
-    touchSet,
-    ...(typeof t.groupId === 'string' ? { groupId: t.groupId } : {}),
-    ...(isRouteHint(t.routeHint) ? { routeHint: t.routeHint } : {}),
-  }
+function isValidTask(task: unknown): task is TeamTask {
+  if (!task || typeof task !== 'object') return false
+  const t = task as Record<string, unknown>
+  return typeof t.id === 'string' && t.id.length > 0
+    && typeof t.objective === 'string' && t.objective.length > 0
+    && typeof t.profile === 'string'
+    && typeof t.kind === 'string'
+    && Array.isArray(t.files)
+    && Array.isArray(t.dependsOn)
+    && (t.riskTier === 'low' || t.riskTier === 'medium' || t.riskTier === 'high')
 }
 
 function parseSkeleton(json: string): TeamPlanSkeleton | null {
@@ -109,22 +72,9 @@ function parseSkeleton(json: string): TeamPlanSkeleton | null {
     if (typeof parsed.objectiveHash !== 'string' || !Array.isArray(parsed.keywords)) return null
     if (parsed.mode !== 'standard' && parsed.mode !== 'max') return null
     if (!Array.isArray(parsed.tasks) || parsed.tasks.length === 0) return null
+    if (!parsed.tasks.every(isValidTask)) return null
     if (typeof parsed.createdAt !== 'number') return null
-    const tasks: TeamTask[] = []
-    for (const rawTask of parsed.tasks) {
-      const task = normalizeTask(rawTask)
-      if (!task) return null
-      tasks.push(task)
-    }
-    return {
-      schemaVersion: 1,
-      objectiveHash: parsed.objectiveHash,
-      keywords: parsed.keywords.filter((k): k is string => typeof k === 'string'),
-      mode: parsed.mode,
-      tasks,
-      createdAt: parsed.createdAt,
-      ...(typeof parsed.repoFingerprint === 'string' ? { repoFingerprint: parsed.repoFingerprint } : {}),
-    }
+    return parsed
   } catch {
     return null
   }
@@ -132,13 +82,7 @@ function parseSkeleton(json: string): TeamPlanSkeleton | null {
 
 export function saveTeamPlanSkeleton(
   store: TeamPlanCacheStore | undefined | null,
-  input: {
-    objective: string
-    mode: 'standard' | 'max'
-    tasks: TeamTask[]
-    timestamp?: number
-    repoFingerprint?: string
-  },
+  input: { objective: string; mode: 'standard' | 'max'; tasks: TeamTask[]; timestamp?: number },
 ): void {
   if (!store?.saveBanditState || input.tasks.length === 0) return
   const skeleton: TeamPlanSkeleton = {
@@ -148,7 +92,6 @@ export function saveTeamPlanSkeleton(
     mode: input.mode,
     tasks: input.tasks,
     createdAt: input.timestamp ?? Date.now(),
-    ...(input.repoFingerprint ? { repoFingerprint: input.repoFingerprint } : {}),
   }
   try {
     store.saveBanditState(teamPlanCacheKind(skeleton.objectiveHash), JSON.stringify(skeleton))
@@ -160,10 +103,6 @@ export function saveTeamPlanSkeleton(
 export interface LoadTeamPlanSkeletonOptions {
   maxAgeMs?: number
   now?: number
-  /** When provided, only entries saved under the same repository fingerprint
-   *  are fresh. Entries without a fingerprint are treated as stale (they were
-   *  written before repo-state pinning existed). Omitted = legacy behavior. */
-  repoFingerprint?: string
 }
 
 /**
@@ -179,10 +118,7 @@ export function loadTeamPlanSkeleton(
   if (!store?.loadBanditStatesByPrefix) return null
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
   const now = options.now ?? Date.now()
-  const fresh = (s: TeamPlanSkeleton): boolean =>
-    now - s.createdAt <= maxAgeMs
-    && s.mode === mode
-    && (!options.repoFingerprint || s.repoFingerprint === options.repoFingerprint)
+  const fresh = (s: TeamPlanSkeleton): boolean => now - s.createdAt <= maxAgeMs && s.mode === mode
 
   try {
     // Exact hash hit

@@ -28,9 +28,8 @@ import type { ImmuneHook } from './immune-hook.js'
 import type { LspManager } from '../lsp/manager.js'
 import { classifyFailure, isReadProbeInvocation, isTestRunInvocation, type FailureClass } from './failure-classifier.js'
 import { ToolAccumulator } from './tool-accumulator.js'
-import { ZEN_UNLOCK, ZEN_UNLOCK_RESULT, ZEN_UNLOCK_NOT_ZEN } from './zen-mode.js'
 import { guardLossyToolResult } from './negative-fact-detector.js'
-import { getToolStormLevel, recordToolPollingClass } from './trace-store.js'
+import { getToolStormLevel, type ToolStormLevel } from './trace-store.js'
 import { extractTrailingArtifactId, tierToolResult } from './tool-result-tiering.js'
 import {
   getInterventionLevel,
@@ -45,47 +44,10 @@ import { createRuntimeHookContext } from './runtime-hooks.js'
 import { toolTargetFromInput } from './tool-target.js'
 import { sanitizeToolOutput } from '../tools/output-sanitizer.js'
 
-/**
- * 收尾链界定（2026-09-05 写工具卡死链收口）：批内所有「工具执行完成之后」的
- * await——tiering / runPostTool 钩子 / 视觉桥描述——此前全部无界，任何一个楔死
- * 都让 executeBatch 永不 settle，UI 静默假死，用户杀进程即产生持久化孤儿。
- * bounded 超时后用 fallback 值放行（resolve 而非 reject——界定的是收尾优化，
- * 超时不能打断批），原 promise 继续在后台跑，其结果被丢弃。ms ≤ 0 = 不界定。
- */
-function boundMs(envName: string, fallback: number): number {
-  const raw = process.env[envName]
-  if (raw != null && raw.trim() !== '') {
-    const n = Number(raw)
-    if (Number.isFinite(n) && n >= 0) return n
-  }
-  return fallback
-}
-
-async function bounded<T>(label: string, ms: number, p: Promise<T>, fallback: () => T): Promise<T> {
-  if (!(ms > 0)) return p
-  let timer: ReturnType<typeof setTimeout> | null = null
-  try {
-    return await Promise.race([
-      p,
-      new Promise<T>((resolve) => {
-        timer = setTimeout(() => {
-          // eslint-disable-next-line no-console
-          console.error(`[tool-batch] ${label} exceeded ${ms}ms — proceeding with fallback (original still running in background)`)
-          resolve(fallback())
-        }, ms)
-      }),
-    ])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
-}
-
 export interface ToolExecutionDeps {
   config: AgentConfig
   cwd: string
   harness: TurnHarness
-  /** sensorium LITE 遥测出口（computer_use 动作指标默认落盘）。可缺省（测试）。 */
-  telemetryWriter?: import('./telemetry-writer.js').TelemetryWriter
   prewarm: PrewarmCache
   evidence: EvidenceTracker
   /** 证据义务状态机——tool pipeline 把 probe/失败/RED 编辑门接进义务状态。 */
@@ -157,7 +119,7 @@ export interface ToolExecutionDeps {
   getEstimatedTokens?: () => number
   /** Tool name history — for tool storm detection. */
   getToolNameHistory?: () => string[]
-  /** Record a named fingerprint (tool name + fingerprint). */
+  /** Record a named fingerprint (tool name + fingerprint) */
   recordToolNamedFingerprint?: (fingerprint: string, toolName: string) => void
   /** Capture an agent's departure mark (leave_mark tool) for 主控 to record at close. */
   onLeaveMark?: (mark: import('../tools/types.js').LeaveMarkInput) => void
@@ -193,15 +155,6 @@ export interface ToolExecutionDeps {
   onTddBlocked?: (target?: string) => void
   /** 遥测写入(缺口 B 输出裁剪计数等)。 */
   writeTelemetry?: (record: { kind: string } & Record<string, unknown>) => void
-  /** Zen 解锁点：分派前逐个上报 tool_use 名——zen 相位下面外调用由 loop 侧
-   *  晋升 full 并放行。依赖注入（未注入或 zen 禁用时恒放行）。 */
-  onZenEscape?: (toolName: string) => void
-  /** Zen 解锁声明（zen_unlock）：虚拟工具被调用时触发——loop 侧 promote('tool')。
-   *  与 onZenEscape 互斥触发（zen_unlock 不走面外上报）。 */
-  onZenUnlock?: (toolUseId: string) => boolean | void
-  /** Zen 相位下未注册工具报错的行动指引：返回非空文本时附加到 registry
-   *  Unknown tool 报错后面（幻觉调用不晋升，但给模型 zen_unlock 出路）。 */
-  getZenUnregisteredHint?: (toolName: string) => string | undefined
   beginToolBatchObservability?: (outputMeasured: boolean) => void
   recordSanitizedOutput?: (rawContent: string, sanitizedContent: string, filterId?: string) => void
   recordToolUiEvent?: () => void
@@ -297,7 +250,6 @@ export class ToolExecutionController {
       config: this.deps.config,
       cwd: this.deps.cwd,
       harness: this.deps.harness,
-      telemetryWriter: this.deps.telemetryWriter,
       prewarm: this.deps.prewarm,
       evidence: this.deps.evidence,
       obligations: this.deps.obligations,
@@ -356,29 +308,23 @@ export class ToolExecutionController {
       destructiveGate: this.deps.destructiveGate,
       onGateBlocked: this.deps.onGateBlocked,
       onTddBlocked: this.deps.onTddBlocked,
-      getZenUnregisteredHint: this.deps.getZenUnregisteredHint,
     }
   }
 
   async executeBatch(input: ToolExecBatchInput): Promise<ToolExecBatchResult> {
     const outputSanitizeEnabled = process.env.RIVET_OUTPUT_SANITIZE !== '0'
     this.deps.beginToolBatchObservability?.(outputSanitizeEnabled)
-    // 崩溃安全网（2026-09-05 写工具卡死链收口）：toolResults 与 committed 必须
-    // 活过 try 边界——管线的任何一处 throw（预算/tiering/storm/视觉桥…）都不得
-    // 把「已执行完工具的结果」一起带进孤儿窗口。finally 里 !committed 时补齐
-    // backfill 并落账，保证短进程死亡之外的任何异常路径都不会产生持久化孤儿。
-    const toolResults: ContentBlock[] = []
-    let committed = false
     try {
-    const callbacks: AgentCallbacks = this.deps.recordToolUiEvent
-    ? {
-        ...input.callbacks,
-        onToolResult: (...args) => {
-          this.deps.recordToolUiEvent?.()
-          input.callbacks.onToolResult(...args)
-        },
-      }
-    : input.callbacks
+      const callbacks: AgentCallbacks = this.deps.recordToolUiEvent
+      ? {
+          ...input.callbacks,
+          onToolResult: (...args) => {
+            this.deps.recordToolUiEvent?.()
+            input.callbacks.onToolResult(...args)
+          },
+        }
+      : input.callbacks
+    const toolResults: ContentBlock[] = []
     let checkpointCreatedThisTurn = input.checkpointCreatedThisTurn
     let traceStore = input.traceStore
     let importGraph = input.importGraph
@@ -394,24 +340,6 @@ export class ToolExecutionController {
     // 结构化失败分类侧信道：wire 块（tool_result）不携带 errorKind，
     // 按 tool_use_id 记录，postTool hook 的 vigor failureClass 优先消费。
     const errorKindByToolUse = new Map<string, FailureClass>()
-
-    // Zen 解锁点：分派循环前，逐个上报 tool_use——zen 相位下面外调用触发
-    // 晋升 full 后照常执行（放行语义）。promote 是同步状态翻转 + updateTools，
-    // 不阻断本批工具执行；onZenEscape 未注入或 zen 禁用时恒放行。
-    // zen_unlock 是虚拟工具（不在 registry）：收集其 id 供分派时拦截，触发
-    // onZenUnlock（晋升）而非面外上报。
-    const unlockIds = new Set<string>()
-    // 记录真正发生晋升的 id——full 相位幻觉调用 zen_unlock 时 promote 返回
-    // false，结果文案须区分（否则对模型谎报「禅模式已解除」）。
-    const unlockedToFull = new Set<string>()
-    for (const tu of input.toolUses) {
-      if (tu.name === ZEN_UNLOCK) {
-        unlockIds.add(tu.id)
-        if (this.deps.onZenUnlock?.(tu.id) !== false) unlockedToFull.add(tu.id)
-      } else {
-        this.deps.onZenEscape?.(tu.name)
-      }
-    }
 
     // Partition tools into concurrency-safe (parallelizable) and sequential groups.
     // Run contiguous blocks of safe tools in parallel for latency savings.
@@ -451,17 +379,6 @@ export class ToolExecutionController {
         // Sequential execution for non-safe tools
         const { tu } = indexed[cursor]!
         cursor++
-
-        // zen_unlock：虚拟解锁声明工具——不经过 executeToolUse（registry 无此工具），
-        // 直接构造成功结果（解锁已在分派前经 onZenUnlock 完成），并走与正常执行
-        // 一致的 onToolResult 回调（UI/遥测消费方可见解锁确认）。
-        if (unlockIds.has(tu.id)) {
-          const unlockMsg = unlockedToFull.has(tu.id) ? ZEN_UNLOCK_RESULT : ZEN_UNLOCK_NOT_ZEN
-          const unlockBlock: ContentBlock = { type: 'tool_result', tool_use_id: tu.id, content: unlockMsg }
-          toolResults.push(unlockBlock)
-          callbacks.onToolResult(tu.id, tu.name, unlockMsg)
-          continue
-        }
 
         const result = await executeToolUse(
           tu,
@@ -550,7 +467,6 @@ export class ToolExecutionController {
         const content = typeof tr.content === 'string' ? tr.content : ''
         this.accumulator.record({ toolName: tu.name, toolUseId: tu.id, content, turn: input.turn })
         this.deps.recordToolNamedFingerprint?.(fingerprintToolCall(tu.name, tu.input, 'running'), tu.name)
-        traceStore = recordToolPollingClass(traceStore, tu.name, tu.input)
       }
     }
     if (input.toolUses.length > 0) {
@@ -610,17 +526,13 @@ export class ToolExecutionController {
         // original, and saving a second (already budget-truncated) copy both
         // wastes disk and shadows the better artifact.
         const existingArtifactId = extractTrailingArtifactId(content)
-        const tiered = await bounded(
-          'tierToolResult', boundMs('RIVET_TIER_BOUND_MS', 10_000),
-          tierToolResult(
-            toolName,
-            content,
-            String(target),
-            this.deps.artifactStore,
-            ctxWin,
-            existingArtifactId,
-          ),
-          () => ({ content, tier: 0, originalChars: content.length }),
+        const tiered = await tierToolResult(
+          toolName,
+          content,
+          String(target),
+          this.deps.artifactStore,
+          ctxWin,
+          existingArtifactId,
         )
         if (tiered.tier > 0) {
           toolResults[i] = { ...tr, content: tiered.content }
@@ -701,9 +613,6 @@ export class ToolExecutionController {
       }
     }
     this.deps.addToolResults(toolResults)
-    // 提交后即使后续（视觉桥/runPostTool/会话状态）抛错，finally 安全网也不再
-    // 重复落账——历史已平衡，异常只影响批的返回路径。
-    committed = true
 
     // Vision channel: forward tool-carried screenshots to the model as a
     // TRAILING user message (append-only after the tool results — same
@@ -712,12 +621,6 @@ export class ToolExecutionController {
     // flood the context with megapixel base64.
     if (pendingImages.length > 0) {
       const images = pendingImages.slice(-2)
-      // W4-16 截尾信号：被丢弃的截图此前无任何痕迹——agent「截了图却看不见」
-      // 对模型与用户都不可解释。送达数 < 采集数时在注入文案里明示。
-      const droppedCount = pendingImages.length - images.length
-      const dropNote = droppedCount > 0
-        ? ` ${droppedCount} earlier screenshot(s) in this batch were dropped (only the 2 most recent are delivered).`
-        : ''
       // 寄存进会话 registry，这样 ask_image 能就**agent 自己截的图**追问，而不是只能
       // 问用户手动附的图。少了这一步，「截图 → 逐字念出报错那一行」在浏览器验证闭环
       // 里就断了（工具描述承诺可以问"本会话已发送的图片"，registry 里却没有它）。
@@ -729,7 +632,7 @@ export class ToolExecutionController {
       if (this.deps.getSupportsVision?.() === true && this.deps.addUserMessageWithImages) {
         this.deps.addUserMessageWithImages(
           '<system-reminder>Screenshot(s) from the tool call(s) above are attached. Use them to visually confirm UI state alongside any accessibility tree or DOM measurements; do not describe them back to the user unless asked.'
-          + `${askHint}${dropNote}</system-reminder>`,
+          + `${askHint}</system-reminder>`,
           images,
         )
       } else if (this.deps.describeToolImages && !input.abortSignal.aborted) {
@@ -741,29 +644,17 @@ export class ToolExecutionController {
         // tool results are already valid without the description.
         let description: string | null = null
         try {
-          description = await bounded(
-            'describeToolImages', boundMs('RIVET_VISION_DESCRIBE_BOUND_MS', 20_000),
-            this.deps.describeToolImages(images, input.abortSignal),
-            () => null,
-          )
+          description = await this.deps.describeToolImages(images, input.abortSignal)
         } catch { /* bridge unavailable — fall through to text-only results */ }
         if (description) {
           this.deps.addUserMessageWithImages?.(
             `<system-reminder>Screenshot(s) from the tool call(s) above, described by the configured vision model:\n${description}`
-            + `${askHint}${dropNote}</system-reminder>`,
+            + `${askHint}</system-reminder>`,
             [],
           )
         }
       }
       // No vision and no bridge: images are dropped, byte-identical to legacy.
-      // W4-16：无视觉通道时的静默丢弃要留痕——在最后一个 tool_result 文本尾部
-      // 追加一行，让「截了图但模型看不见」在对话里可解释（图仍是 artifact 可查）。
-      if (this.deps.getSupportsVision?.() !== true && !this.deps.describeToolImages) {
-        const lastResult = [...toolResults].reverse().find(r => r.type === 'tool_result')
-        if (lastResult && lastResult.type === 'tool_result') {
-          lastResult.content = `${lastResult.content}\n\n[vision] ${pendingImages.length} screenshot(s) from this batch were NOT delivered to the model (no vision channel). They remain viewable as artifacts; use ask_image with a vision model configured to interrogate them.`
-        }
-      }
     }
 
     const level = getInterventionLevel(this.deps.getPredictionAccumulator())
@@ -775,11 +666,7 @@ export class ToolExecutionController {
         || typeof tu.input?.path === 'string'
         || typeof tu.input?.command === 'string'
       const target = hasTargetField ? toolTargetFromInput(tu.name, tu.input as Record<string, unknown>) : undefined
-      // runPostTool 在 addToolResults 之后（结果已落账），楔死在这里不再产孤儿
-      // 但会让批永不 settle → UI 假死。同样界定。
-      await bounded(
-        'runPostTool', boundMs('RIVET_POSTTOOL_BOUND_MS', 15_000),
-        this.deps.runtimeHooks.runPostTool(
+      await this.deps.runtimeHooks.runPostTool(
         createRuntimeHookContext(
           this.deps.buildRuntimeSnapshot(),
           {
@@ -822,8 +709,6 @@ export class ToolExecutionController {
               ).class
             : undefined,
        },
-        ),
-        () => undefined,
       )
    }
 
@@ -867,40 +752,6 @@ export class ToolExecutionController {
       return { checkpointCreated: checkpointCreatedThisTurn, traceStore, importGraph, lastConflictCheckCount, latestRisk, artifactIdsEvicted, artifactIdsAccessed, endTurn: endTurn || undefined, toolCount: input.toolUses.length, errorCount }
     } finally {
       this.deps.endToolBatchObservability?.()
-      // 崩溃安全网：正常路径在上方 addToolResults 处落账并置 committed；走到
-      // 这里 !committed 意味着管线中途 throw（预算/tiering/storm/视觉桥等）——
-      // 把已收集的结果原样落账并补齐缺失的 backfill，绝不把「工具已执行完」的
-      // 结果留在孤儿窗口里。历史内容未经批末变换（预算裁剪/tiering），是可接受
-      // 的降级——比孤儿（下一会话冻写工具）便宜得多。自身再失败则只能放弃。
-      if (!committed) {
-        try {
-          const committedIds = new Set(
-            toolResults.filter(r => r.type === 'tool_result').map(r => r.tool_use_id),
-          )
-          for (const tu of input.toolUses) {
-            if (committedIds.has(tu.id)) continue
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: tu.id,
-              content: input.abortSignal.aborted
-                ? '[aborted] Tool execution was interrupted before this call completed.'
-                : '[skipped] Tool produced no result.',
-              is_error: true,
-            })
-          }
-          if (toolResults.length > 0) {
-            this.deps.addToolResults(toolResults)
-            this.deps.writeTelemetry?.({
-              kind: 'tool-batch-crash-commit',
-              turn: input.turn,
-              committed: toolResults.length,
-              toolUses: input.toolUses.length,
-            })
-          }
-        } catch {
-          // 终极兜底失败——只能放弃，交给加载侧的 preflight 修复。
-        }
-      }
     }
  }
 }

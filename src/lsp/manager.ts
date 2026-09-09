@@ -1,9 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { isAbsolute, resolve as resolvePath, relative as relativePath } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { createRpcClient, type RpcClient } from './rpc.js'
-import { PassThrough, type Readable, type Writable } from 'node:stream'
-
+import { createRpcClient, DEFAULT_LSP_REQUEST_TIMEOUT_MS, type RpcClient, type RpcClientOptions } from './rpc.js'
 interface Location {
   uri: string
   range: {
@@ -81,7 +79,11 @@ function languageId(filePath: string): string {
   return 'javascript'
 }
 
-export function createLspManager(spawnFn: SpawnFn, cwd: string): LspManager {
+export function createLspManager(
+  spawnFn: SpawnFn,
+  cwd: string,
+  rpcOptions: RpcClientOptions = {},
+): LspManager {
   let rpc: RpcClient | null = null
   let proc: ChildProcess | null = null
   let capabilities: ServerCapabilities | null = null
@@ -123,9 +125,14 @@ export function createLspManager(spawnFn: SpawnFn, cwd: string): LspManager {
       try {
         proc = spawnFn()
 
-        // stdin is writable (we send requests), stdout is readable (we receive responses)
-        const stdin = proc.stdin as Writable
-        const stdout = proc.stdout as Readable
+        // stdin is writable (we send requests), stdout is readable (we receive responses).
+        // A failed spawn (ENOENT on desktop's minimal PATH) yields null pipes;
+        // throw immediately instead of letting the RPC request hang forever.
+        const stdin = proc.stdin
+        const stdout = proc.stdout
+        if (!stdin || !stdout) {
+          throw new Error('LSP server spawn failed: no stdio pipes (check PATH / npx)')
+        }
 
         // Handle stderr — TypeScript language server logs diagnostics here
         if (proc.stderr) {
@@ -134,11 +141,21 @@ export function createLspManager(spawnFn: SpawnFn, cwd: string): LspManager {
           })
         }
 
-        proc.on('error', () => {
+        // 2026-09-08 wedge fix: process death must reject every in-flight
+        // RPC request. Merely flipping ready=false left callers (and the
+        // tool pipeline awaiting ensure()) waiting on promises that never settle.
+        proc.on('error', (err) => {
           ready = false
+          rpc?.abortAllPending(err instanceof Error ? err : new Error(String(err)))
+        })
+        proc.on('exit', (code, signal) => {
+          ready = false
+          rpc?.abortAllPending(new Error(`LSP server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`))
         })
 
-        rpc = createRpcClient(stdout, stdin)
+        rpc = createRpcClient(stdout, stdin, {
+          requestTimeoutMs: rpcOptions.requestTimeoutMs ?? DEFAULT_LSP_REQUEST_TIMEOUT_MS,
+        })
 
         const initResult = await rpc.request('initialize', {
           processId: process.pid,
@@ -165,11 +182,12 @@ export function createLspManager(spawnFn: SpawnFn, cwd: string): LspManager {
         // Wait for server to fully settle after initialization
         await new Promise(r => setTimeout(r, 200))
         ready = true
-      } catch (err) {
+      } catch {
         ready = false
+        try { rpc?.dispose() } catch { /* ignore */ }
+        rpc = null
         try { proc?.kill() } catch { /* ignore */ }
         proc = null
-        rpc = null
       }
     },
 
@@ -250,12 +268,11 @@ export function createLspManager(spawnFn: SpawnFn, cwd: string): LspManager {
       try {
         // Prefer pull model (LSP 3.17+ textDocument/diagnostic)
         if (capabilities?.diagnosticProvider) {
-          const result = await Promise.race([
-            rpc.request('textDocument/diagnostic', {
-              textDocument: { uri },
-            }) as Promise<{ items?: LspDiagnostic[] }>,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-          ])
+          // Pass the timeout into the RPC layer so a hung server also clears
+          // its pending entry — Promise.race alone kept the request alive.
+          const result = await rpc
+            .request('textDocument/diagnostic', { textDocument: { uri } }, timeoutMs)
+            .catch(() => null) as { items?: LspDiagnostic[] } | null
           if (result?.items) return result.items
         }
 

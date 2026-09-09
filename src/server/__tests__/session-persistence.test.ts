@@ -97,11 +97,12 @@ test('missing index.json is reconstructed from event tail', () => {
   }
 })
 
-test('saveRecord is atomic (no stray tmp left behind)', () => {
+test('saveRecord is atomic (no stray tmp left behind)', async () => {
   const dir = tmp()
   try {
     const p = new FileSessionPersistence(dir)
     p.saveRecord(rec('s1', { status: 'completed' }))
+    await p.flushAllAsync() // write-behind：latest-wins 异步链排空后断言
     const files = readdirSync(join(dir, 's1'))
     assert.ok(files.includes('index.json'))
     assert.ok(!files.includes('index.json.tmp'), 'tmp file must be renamed away')
@@ -110,7 +111,7 @@ test('saveRecord is atomic (no stray tmp left behind)', () => {
   }
 })
 
-test('critical events hit disk immediately, without waiting for the debounce flush', () => {
+test('critical events hit disk immediately, without waiting for the debounce flush', async () => {
   const dir = tmp()
   try {
     const p = new FileSessionPersistence(dir)
@@ -120,6 +121,8 @@ test('critical events hit disk immediately, without waiting for the debounce flu
     // …but a tool_result must be durable the moment append returns — this is
     // the crash window that used to lose the tail ("tool result lost").
     p.appendEvent('s1', ev(2, 'tool_result'))
+    // write-behind：critical 触发异步写链立即排空（毫秒级窗口换事件循环不死）。
+    await p.flushSessionAsync('s1')
     const raw = readFileSync(join(dir, 's1', 'events.jsonl'), 'utf8')
     const seqs = raw.trim().split('\n').map((l) => (JSON.parse(l) as SessionEvent).seq)
     // The critical flush drains the whole buffer (one batched write), so the
@@ -149,7 +152,7 @@ test('non-critical events stay buffered until debounce/flushSync (no per-delta w
   }
 })
 
-test('every critical type flushes immediately', () => {
+test('every critical type flushes immediately', async () => {
   const critical = [
     'user',
     'tool_result',
@@ -167,6 +170,8 @@ test('every critical type flushes immediately', () => {
     try {
       const p = new FileSessionPersistence(dir)
       p.appendEvent('s1', ev(1, type as SessionEvent['type']))
+      // write-behind：critical 触发异步写链——排空后必须在盘（毫秒级窗口）。
+      await p.flushSessionAsync('s1')
       assert.equal(
         existsSync(join(dir, 's1', 'events.jsonl')), true,
         `${type} must be on disk immediately`,

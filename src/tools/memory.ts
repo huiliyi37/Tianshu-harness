@@ -15,7 +15,6 @@ import { getKnowledgeIndex } from '../memory/knowledge-index.js'
 import { getRecallTracker } from '../memory/recall-efficacy.js'
 import { renderGateFeedbackHint } from '../memory/gate-ledger.js'
 import { readCommitFacts } from '../context/project-memory-writer.js'
-import { invalidateMemoryEntry } from '../memory/unified-memory.js'
 import { tokenizeRecallQuery } from '../memory/query-terms.js'
 import { createEmbeddingProvider, type EmbeddingProvider } from '../search/embedding-provider.js'
 import {
@@ -32,7 +31,6 @@ const DEFINITION: ToolDefinition = {
 - recall: 对项目知识库做混合检索（结构化条目 + knowledge/*.md + playbook 教训）。支持 kind/topic/source 过滤；默认只返回当前有效的条目（已被取代的知识需要 includeHistory）。
 - deep_recall: 跨历史会话**原文**的深召回——需要知识库里没有的细节（某次会话里的具体操作/报错/决定）时用；侧路蒸馏成答案 + 证据引用，原文不占上下文。费用高于 recall，优先 recall。
 - remember: 持久化一条 claim（决策、观察、验证事实、失败模式或项目规则）。session 作用域立即生效；project 作用域先入队，由会话结束时的质量门禁准入——返回 "pending quality gate" 表示该 claim 已被记录，不要重试。
-- forget: 把一条当前记忆显式失效。reason=resolved 表示用户确认旧问题已解决；reason=forgotten 表示用户主动遗忘。失效后默认召回与自动注入都不再返回，原文保留可审计。
 
 ### Claim kinds（remember 用）
 - decision — 已做出的架构或实现决策
@@ -43,7 +41,7 @@ const DEFINITION: ToolDefinition = {
   input_schema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['recall', 'remember', 'recall_feedback', 'deep_recall', 'forget'], description: 'recall: 搜索记忆；remember: 存储一条 claim；recall_feedback: 记录召回是否被采纳；deep_recall: 跨历史会话原文的深召回（侧路蒸馏，答案+证据引用）；forget: 显式失效一条当前记忆（resolved/forgotten）' },
+      action: { type: 'string', enum: ['recall', 'remember', 'recall_feedback', 'deep_recall'], description: 'recall: 搜索记忆；remember: 存储一条 claim；recall_feedback: 记录召回是否被采纳；deep_recall: 跨历史会话原文的深召回（侧路蒸馏，答案+证据引用）' },
       // recall params
       query: { type: 'string', description: '搜索关键词（对项目知识库做 BM25 + 结构化过滤的混合检索）。recall 必填。' },
       kind: { type: 'string', enum: ['user_constraint', 'user_preference', 'decision', 'file_observation', 'verification_fact', 'failure_pattern', 'security_finding', 'worker_finding', 'project_rule'], description: '按 claim 类型过滤' },
@@ -52,9 +50,8 @@ const DEFINITION: ToolDefinition = {
       limit: { type: 'number', default: 5, description: '返回的最大结果数' },
       includeHistory: { type: 'boolean', default: false, description: '在 recall 结果中包含已被取代/过期的知识条目（默认：只返回当前有效条目）' },
       includeCommitFacts: { type: 'boolean', default: false, description: '在 recall 结果中包含历史 commit 事实（query 形如 commit hash 时自动启用）' },
-      entryId: { type: 'string', description: 'recall_feedback 时的记忆 ID，可从 recall 结果中获得；forget 时必填。' },
+      entryId: { type: 'string', description: 'recall_feedback 时的记忆 ID，可从 recall 结果中获得' },
       outcome: { type: 'string', enum: ['adopted', 'rejected', 'contradicted'], description: 'recall_feedback 时的评估结果' },
-      reason: { type: 'string', enum: ['resolved', 'forgotten'], description: 'forget 时的失效原因：resolved=用户确认旧问题已解决；forgotten=用户主动遗忘。默认 forgotten。' },
       // remember params
       text: { type: 'string', description: 'claim 文本——简洁具体（1-3 句）。remember 必填。' },
       scope: { type: 'string', enum: ['session', 'project'], default: 'session', description: '生命周期：session（随会话消亡）或 project（跨会话存活）' },
@@ -189,10 +186,7 @@ export function createMemoryTool(store: ContextClaimStore, ctx?: MemoryContext):
           return { content: '错误：当前宿主未接线深召回的侧路模型通道——请改用 recall（知识库检索）。', isError: true }
         }
         // 原文不进主上下文：检索候选 → 侧路蒸馏 → 只回紧凑结果。
-        // 当前会话绝不作为 deep_recall 的「历史会话」证据（排除本会话回声）。
-        const candidates = collectTranscriptCandidates(ctx.sessionDir, query, {
-          excludeSessionIds: ctx.excludeSessionId ? [ctx.excludeSessionId] : [],
-        })
+        const candidates = collectTranscriptCandidates(ctx.sessionDir, query)
         if (candidates.length === 0) {
           return { content: `历史会话中没有与「${query}」相关的片段——deep_recall 无可蒸馏素材。` }
         }
@@ -219,14 +213,6 @@ export function createMemoryTool(store: ContextClaimStore, ctx?: MemoryContext):
           return { content: '错误：该 entryId 在本会话中没有被召回过。', isError: true }
         }
         return { content: `已记录召回反馈：${entryId} → ${outcome}。` }
-      }
-
-      if (action === 'forget') {
-        const entryId = typeof params.input.entryId === 'string' ? params.input.entryId.trim() : ''
-        if (!entryId) return { content: '错误：forget 需要提供 entryId（从 recall 结果获取）。', isError: true }
-        const reason = params.input.reason === 'resolved' ? 'resolved' : 'forgotten'
-        const result = invalidateMemoryEntry(ctx?.cwd ?? process.cwd(), entryId, reason)
-        return { content: result.ok ? `✅ ${result.message}` : `⚠️ ${result.message}`, isError: !result.ok }
       }
 
       // action === 'remember'

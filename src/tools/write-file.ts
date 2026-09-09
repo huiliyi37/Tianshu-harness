@@ -1,7 +1,7 @@
 import { appendFile, mkdir, rm, stat, readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { dirname, relative, extname } from 'path'
-import type { Tool } from './types.js'
+import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { validatePath } from './path-validate.js'
 import { syntaxCheck, checkSyntax } from './syntax-check.js'
 import { getFileReadMtime, recordSuccessfulEdit, incrementEditFailCount, resetEditFailCount } from './read-file.js'
@@ -16,6 +16,21 @@ import { writeMarkdownAsDocx } from './office-writer.js'
 import { formatActivePlanDraftReceipt, canonicalizePathForCompare } from '../agent/plan-mode.js'
 
 const MAX_WRITE_FILE_BYTES = 10 * 1024 * 1024 // 10MB — safety ceiling for single write_file call
+
+/** 总闸/用户打断后的迟到写防护（2026-09-08 写后挂起事故族）：工具级 120s
+ *  总闸 reject 后原 execute 仍在跑（JS 无强取消）——delegated fail-back 的
+ *  本地写可能在回合已按超时错误继续后才到达，覆盖模型后续方案。写盘入口
+ *  前检查 composed abortSignal，已放弃的调用不再落盘。正常快速写（ms 级）
+ *  在 abort 前完成，零影响。 */
+function abortedWrite(params: ToolCallParams): ToolResult | null {
+  if (params.abortSignal?.aborted) {
+    return {
+      content: '错误：写入已中止——本工具调用已超时或被中断，未执行磁盘写入。请 read_file 确认当前文件状态后重试。',
+      isError: true,
+    }
+  }
+  return null
+}
 
 // Rewrite-loop hint: repeated writes of the same path usually mean the model
 // lost track of what landed on disk (7 rewrites in the 2026-08-01 desktop
@@ -75,6 +90,8 @@ export const WRITE_FILE_TOOL: Tool = {
   },
 
   async execute(params) {
+    const abortedEarly = abortedWrite(params)
+    if (abortedEarly) return abortedEarly
     let filePath: string
     try {
       filePath = validatePath(params.cwd, params.input.file_path as string, 'write')
@@ -177,6 +194,8 @@ export const WRITE_FILE_TOOL: Tool = {
       }
       const eol = fileExists ? await detectFileEol(filePath) : null
       const chunk = applyEol(content, chooseEol(filePath, eol, getTargetEol()))
+      const abortedAppend = abortedWrite(params)
+      if (abortedAppend) return abortedAppend
       try {
         await appendFile(filePath, chunk)
       } catch (e) {
@@ -235,6 +254,11 @@ export const WRITE_FILE_TOOL: Tool = {
     const existingEol = fileExists ? await detectFileEol(filePath) : null
     const finalContent = applyEol(content, chooseEol(filePath, existingEol, getTargetEol()))
 
+    // 迟到写防护：总闸超时/打断后不再落盘（delegated fail-back 可能在回合
+    // 已继续后到达——覆盖模型后续方案的窗口）。
+    const abortedLanding = abortedWrite(params)
+    if (abortedLanding) return abortedLanding
+
     const land = await landingWriteFile(params, filePath, haveOldContentForDiff ? oldContentForDiff : '', finalContent)
     if (land.kind === 'delegated') {
       if (isDelegateRejected(land.delegated) || land.delegated.isError) {
@@ -282,11 +306,26 @@ export const WRITE_FILE_TOOL: Tool = {
     let warn = syntax.warning ?? ''
     let diff = ''
     let changedRanges: LineRange[] = []
+    // display-only 段整体软上界（2026-09-08 写后挂起事故族防御纵深）：
+    // buildFileDiff 内部已有 pool/inline 双层超时，此 race 兜底未来实现
+    // 变化引入的无界路径；超时走 catch → diff 跳过（文件已在盘上，仅卡
+    // 丢失展示层信息）。
+    const DISPLAY_ONLY_SOFT_TIMEOUT_MS = 5000
     try {
       const afterForDiff = toLf(content)
       if (haveOldContentForDiff) {
-        diff = await buildFileDiff(relative(params.cwd, filePath), oldContentForDiff, afterForDiff)
-        changedRanges = await computeChangedLineRanges(oldContentForDiff, afterForDiff)
+        const [d, cr] = await Promise.race([
+          Promise.all([
+            buildFileDiff(relative(params.cwd, filePath), oldContentForDiff, afterForDiff),
+            computeChangedLineRanges(oldContentForDiff, afterForDiff),
+          ]),
+          new Promise<never>((_, reject) => {
+            const t = setTimeout(() => reject(new Error(`display-only 段超过 ${DISPLAY_ONLY_SOFT_TIMEOUT_MS / 1000}s`)), DISPLAY_ONLY_SOFT_TIMEOUT_MS)
+            if (typeof t.unref === 'function') t.unref()
+          }),
+        ])
+        diff = d
+        changedRanges = cr
       }
     } catch (e) {
       warn = warn ? `${warn}\n(diff 已跳过：${(e as Error).message})` : `(diff 已跳过：${(e as Error).message})`

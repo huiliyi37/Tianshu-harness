@@ -108,6 +108,31 @@ test('restoreHistoryMessages: hard IO failure degrades to empty context with err
   assert.equal(session.getMessages().length, 0, 'context left empty, session still buildable')
 })
 
+test('restoreHistoryMessages: appends disk reconciliation note after a crash', () => {
+  const sessionId = 'disk-reconcile-session'
+  const cwd = join(tmpDir, 'work')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'fresh-product.ts'), 'export const done = true\n', 'utf-8')
+
+  const persist = new SessionPersist(sessionId, cwd)
+  persist.initMetadata({ cleanExit: false, updatedAt: Date.now() - 1_000 })
+  const seed: OaiMessage[] = [
+    { role: 'user', content: 'do work' },
+    { role: 'assistant', content: 'doing work' },
+  ]
+  writeFileSync(persist.getFilePath(), seed.map(m => appendChecksum(JSON.stringify(m)) + '\n').join(''), 'utf8')
+
+  const session = new SessionContext()
+  const info = restoreHistoryMessages(persist, session, cwd)
+
+  assert.equal(info.restored, 3, 'two history messages + one reconciliation note')
+  const msgs = session.getMessages()
+  const last = msgs.at(-1)!
+  assert.equal(last.role, 'user')
+  assert.match(String(last.content), /fresh-product\.ts/)
+  assert.match(String(last.content), /read_file/)
+})
+
 test('restoreHistoryMessages: handles tool_call/tool_result pairs correctly', () => {
   const sessionId = 'tool-session'
   const seed: OaiMessage[] = [

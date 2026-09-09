@@ -100,18 +100,6 @@ describe('classifyWaveStop', () => {
     assert.equal(classifyWaveStop(outcome, { abortSignal: aborted.signal }), true)
     assert.equal(classifyWaveStop(outcome, { abortSignal: new AbortController().signal }), false)
   })
-
-  it('minPassRate：通过率低于阈值 → 停止；达标/缺省 → 不停止', () => {
-    const partial = buildTeamOutcome(
-      mkSummary([mkResult('a', 'passed'), mkResult('b', 'failed'), mkResult('c', 'failed')], 3),
-      0,
-      mkRun(mkSummary([], 3)),
-    )
-    assert.equal(classifyWaveStop(partial, { minPassRate: 0.5 }), true, '1/3 < 0.5 必须停')
-    assert.equal(classifyWaveStop(partial, { minPassRate: 0.3 }), false, '1/3 ≥ 0.3 继续')
-    assert.equal(classifyWaveStop(partial), false, '缺省保持现状（零通过才停）')
-    assert.equal(classifyWaveStop(partial, { minPassRate: 0 }), false, '0 等价于不启用')
-  })
 })
 
 describe('aggregatePlanExecutorRuns', () => {
@@ -194,7 +182,7 @@ describe('executePlanWaves', () => {
         {
           mode: 'standard', objective, planMarkdown: PLAN,
           sessionId, reviewDepth: 0, cwd: dir, reviewGate: false,
-          onWave: (r, wave) => { wavesSeen.push([wave, r.summary.run?.results.length ?? 0]) },
+          onWave: (r, wave) => wavesSeen.push([wave, r.summary.run?.results.length ?? 0]),
         },
         makeDeps(async requests => ({ status: 'completed', results: requests.map(r => mkResult(r.parentTurnId)), packet: 'w' })),
       )
@@ -280,46 +268,6 @@ describe('executePlanWaves', () => {
     } finally {
       if (prevGate === undefined) delete process.env.RIVET_WAVE_GATE
       else process.env.RIVET_WAVE_GATE = prevGate
-      clearWaveResults(sessionId)
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it('minPassRate：波0 部分失败 → 停止推进波1', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'rivet-waves-minpass-'))
-    const sessionId = `waves-minpass-${Date.now()}`
-    const PARTIAL_PLAN = `
-### T0: Foundation
-修改 src/a.ts
-
-### T1: Broken A
-修改 src/b.ts
-
-### T2: Broken B
-修改 src/c.ts
-
-### T3: Dependent
-修改 src/d.ts
-dependsOn: T0
-`
-    try {
-      const { runs } = await executePlanWaves(
-        {
-          mode: 'standard', objective, planMarkdown: PARTIAL_PLAN,
-          sessionId, reviewDepth: 0, cwd: dir, reviewGate: false,
-          minPassRate: 0.5,
-        },
-        {
-          delegateBatch: async (requests: Array<{ parentTurnId: string; scope?: { files?: string[] } }>) => ({
-            status: 'completed',
-            results: requests.map(r => mkResult(r.parentTurnId, r.scope?.files?.[0] === 'src/a.ts' ? 'passed' : 'failed')),
-            packet: 'w',
-          }),
-        },
-      )
-      assert.equal(runs.length, 1, '1/3 通过率低于 0.5 → 波1 不派发')
-      assert.equal(runs[0]!.summary.run!.results.filter(r => r.status === 'passed').length, 1)
-    } finally {
       clearWaveResults(sessionId)
       rmSync(dir, { recursive: true, force: true })
     }

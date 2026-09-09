@@ -126,11 +126,8 @@ export class ObligationTracker {
       if (ob.state !== 'open' && ob.state !== 'attempted') continue
       if (hasRedEvidence(ob)) continue
       if (this.#redGateFired.has(ob.id)) continue
-      // 无目标义务（文件提取失败，多为问答/审查被误分类为 bugfix）不参与
-      // 编辑门——空 targets 匹配一切会让纯文本/报告文件被无意义拦截
-      //（2026-08-31 benchmark 实测：quiz 输出文件被拦、义务提醒循环拖死会话）。
-      const matches = ob.targets.length > 0
-        && ob.targets.some(t => normalized.includes(t) || t.includes(normalized))
+      const matches = ob.targets.length === 0
+        || ob.targets.some(t => normalized.includes(t) || t.includes(normalized))
       if (!matches) continue
       this.#redGateFired.add(ob.id)
       this.#set(recordAttempt(this.#store, ob.id, { failureClass: 'edit_before_red' }))

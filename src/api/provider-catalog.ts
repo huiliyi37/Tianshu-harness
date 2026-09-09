@@ -80,7 +80,8 @@ const CATALOG_META: Record<string, CatalogMeta> = {
     label: 'Kimi (Moonshot)',
     wire: { userAgent: 'KimiCLI/1.0' },
     notes: [
-      'Thinking block: {type: enabled} + reasoning_effort (capped at high)',
+      'Thinking block: {type: enabled} + reasoning_effort',
+      'K3 / K3-256K: reasoning_effort low|high|max (default high); K2.7 Code is Thinking:ON only',
       'No prefix cache support',
     ],
   },

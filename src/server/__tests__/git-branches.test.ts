@@ -1,14 +1,15 @@
 /**
- * P4 补线 — real git branch list + branch-aware session creation.
+ * P4 补线 — real git branch list（3.15 裁剪版：仅端点与列表，#3 worktree
+ * round-trip 依赖 main 的 worktreeBaseBranch 建会话能力，3.15 无宿主）。
  *
  * Anti-proof table:
  *   #1 "branches are hardcoded presets" → test 1 reads the real repo.
- *   #2 "worktree ignores the selected branch" → test 3 checks worktreeBranch.
+ *   #2 端点返回真实分支列表（欢迎页 branch picker 数据源）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RuntimeSessionManager, type ManagedAgent } from '../session-manager.js'
@@ -30,6 +31,8 @@ class BranchAgent implements ManagedAgent {
   getMessages(): OaiMessage[] { return [] }
   replaceMessages(): void {}
   rewindToMessages(): void {}
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  callbacks(_cb: Partial<AgentCallbacks>): void {}
 }
 
 function git(cwd: string, args: string[]): void {
@@ -78,25 +81,17 @@ test('#2 GET /git/branches returns the real list', async () => {
   }
 })
 
-test('#3 branch metadata + branch-based worktree round-trip', () => {
-  const dir = initRepo()
-  let wtPath: string | undefined
-  try {
-    const manager = new RuntimeSessionManager({ createAgent: () => new BranchAgent(), defaultCwd: dir })
-    const rec = manager.createSession({ cwd: dir, branch: 'dev' })
-    assert.equal(rec.branch, 'dev')
-
-    const wtRec = manager.createSession({
-      cwd: dir,
-      isolatedWorktree: true,
-      worktreeBaseBranch: 'feature/real-branch',
-    })
-    wtPath = wtRec.worktreePath
-    assert.equal(wtRec.worktreeBranch, 'feature/real-branch')
-    assert.ok(wtPath && existsSync(wtPath), 'worktree exists on disk')
-    assert.equal(wtRec.branch, 'feature/real-branch')
-  } finally {
-    if (wtPath) rmSync(wtPath, { recursive: true, force: true })
-    rmSync(dir, { recursive: true, force: true })
-  }
+test('#3 GET /git/branches rejects non-directory cwd (no arbitrary-path probing)', async () => {
+  const manager = new RuntimeSessionManager({ createAgent: () => new BranchAgent(), defaultCwd: tmpdir() })
+  const router = createRouter(buildSessionRoutes(manager, TOKEN))
+  // 不存在路径：修复前 spawnGit 以坏 cwd 启动失败被 catch 吞掉，返回
+  // notARepo 而非 4xx——调用者可借此探测任意路径是否是 git 仓库。
+  const missing = await router('GET', `/git/branches?cwd=${encodeURIComponent(join(tmpdir(), 'no-such-dir-xyz'))}`, {}, AUTH)
+  assert.equal(missing.status, 400)
+  // 文件而非目录：同样应拒绝。
+  const file = await router('GET', `/git/branches?cwd=${encodeURIComponent(import.meta.url)}`, {}, AUTH)
+  assert.equal(file.status, 400)
+  // 相对路径：无歧义目录锚点，拒绝。
+  const rel = await router('GET', `/git/branches?cwd=${encodeURIComponent('relative/path')}`, {}, AUTH)
+  assert.equal(rel.status, 400)
 })

@@ -155,6 +155,38 @@ describe('createRpcClient', () => {
     client.dispose()
   })
 
+  it('times out a request that never receives a response', async () => {
+    const { toServer, toClient } = connect()
+    const client = createRpcClient(toClient, toServer, { requestTimeoutMs: 25 })
+
+    await assert.rejects(
+      () => client.request('initialize', {}),
+      /LSP request initialize timed out after 0.025s/,
+    )
+    client.dispose()
+  })
+
+  it('abortAllPending rejects every in-flight request', async () => {
+    const { toServer, toClient } = connect()
+    const client = createRpcClient(toClient, toServer)
+
+    const pending = client.request('initialize', {})
+    client.abortAllPending(new Error('LSP process died'))
+
+    await assert.rejects(() => pending, /LSP process died/)
+    client.dispose()
+  })
+
+  it('dispose rejects pending requests instead of leaving them hanging', async () => {
+    const { toServer, toClient } = connect()
+    const client = createRpcClient(toClient, toServer)
+
+    const pending = client.request('initialize', {})
+    client.dispose()
+
+    await assert.rejects(() => pending, /RPC client disposed/)
+  })
+
   it('dispose does not throw', () => {
     const { toServer, toClient } = connect()
     const client = createRpcClient(toClient, toServer)

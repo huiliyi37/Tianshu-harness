@@ -39,6 +39,17 @@ describe('SessionPersist write-behind codec (P1)', () => {
     assert.equal(loaded[1]!.content, 'two')
   })
 
+  it('flush:true makes a critical record durable before append resolves', async () => {
+    const persist = new SessionPersist('codec-critical-flush', tempDir)
+    await persist.appendOaiWithChecksum({ role: 'user', content: 'one' })
+    await persist.appendOaiWithChecksum(
+      { role: 'tool', tool_call_id: 't1', content: 'written' },
+      { flush: true },
+    )
+    const raw = decodeTranscriptText(readFileSync(persist.getFilePath()))
+    assert.match(raw, /"written"/, 'critical tool result is on disk without waiting for the 200ms timer')
+  })
+
   it('explicit flushSessionBuffer drains the batch immediately', async () => {
     const persist = new SessionPersist('codec-explicit-flush', tempDir)
     await persist.appendOaiWithChecksum({ role: 'user', content: 'one' })

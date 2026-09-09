@@ -249,7 +249,7 @@ describe('Goal 计划倒计时自动批准（2026-07-24）', () => {
 
   type CapturingAgent = GoalFakeAgent & { callbacks?: AgentCallbacks }
 
-  function makePlanManager(opts: { delayMs: number; plans: PlanDocument[] }) {
+  function makePlanManager(opts: { delayMs: number; plans: PlanDocument[]; globalApprovalMode?: string }) {
     const goalTrackerRef: { current: GoalTracker | null } = { current: null }
     const agents: CapturingAgent[] = []
     const manager = new RuntimeSessionManager({
@@ -262,6 +262,7 @@ describe('Goal 计划倒计时自动批准（2026-07-24）', () => {
       defaultCwd: '/tmp',
       resolveGoalHandles: () => ({ goalTrackerRef, sessionDir } as GoalHandles),
       goalPlanAutoApproveMs: opts.delayMs,
+      globalApprovalMode: opts.globalApprovalMode as any,
       listPlans: async () => opts.plans,
     })
     return { manager, agents }
@@ -458,4 +459,51 @@ describe('Goal 计划倒计时自动批准（2026-07-24）', () => {
     const pending = manager.getEvents(id)!.events.filter((e) => e.type === 'plan_auto_approve_pending')
     assert.equal(pending.length, 0, '路由层不得把缺省值兜成 true')
   })
-});
+// ── 2026-09-05 完全读写档（skip）：审批零打扰——计划提交即自动批准 ──────────
+
+  test('skip 档（会话级 override）计划提交立即自动批准——不等 goal、不等倒计时、无需倒计时 UI', async () => {
+  const { manager, agents } = makePlanManager({ delayMs: 5000, plans: [submittedPlan()] })
+  const s = manager.createSession({ planAutoApproveUi: false, approvalMode: 'dangerously-skip-permissions' })
+  void manager.run(s.id, 'go')
+
+  const calls: Array<[string, string]> = []
+  ;(manager as unknown as { approvePlan: (id: string, slug: string) => Promise<{ ok: boolean }> }).approvePlan =
+    async (id, slug) => { calls.push([id, slug]); return { ok: true } }
+
+  await submitPlanViaTool(agents[0]!.callbacks!)
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(calls, [[s.id, 'p-1']], 'skip 档提交即批准（0 延迟），P1b UI 守卫不适用')
+})
+
+  test('skip 档（全局档、无 override）同样立即自动批准', async () => {
+  const { manager, agents } = makePlanManager({
+    delayMs: 5000,
+    globalApprovalMode: 'dangerously-skip-permissions',
+    plans: [submittedPlan()],
+  })
+  const s = manager.createSession({ planAutoApproveUi: false }) // 无 override
+  void manager.run(s.id, 'go')
+
+  const calls: Array<[string, string]> = []
+  ;(manager as unknown as { approvePlan: (id: string, slug: string) => Promise<{ ok: boolean }> }).approvePlan =
+    async (id, slug) => { calls.push([id, slug]); return { ok: true } }
+
+  await submitPlanViaTool(agents[0]!.callbacks!)
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(calls, [[s.id, 'p-1']])
+})
+
+  test('非 skip 档无 override 无 goal 仍不武装（旧行为回归锚点）', async () => {
+  const { manager, agents } = makePlanManager({
+    delayMs: 5000,
+    globalApprovalMode: 'auto-safe',
+    plans: [submittedPlan()],
+  })
+  const s = manager.createSession({ planAutoApproveUi: true })
+  void manager.run(s.id, 'go')
+
+  await submitPlanViaTool(agents[0]!.callbacks!)
+  const pending = manager.getEvents(s.id)!.events.filter((e) => e.type === 'plan_auto_approve_pending')
+  assert.equal(pending.length, 0, 'auto-safe 无 goal 不武装——零打扰只属于 skip 档')
+})
+})

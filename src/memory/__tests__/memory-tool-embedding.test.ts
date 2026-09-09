@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { ContextClaimStore } from '../../context/claim-store.js'
 import type { EmbeddingProvider } from '../../search/embedding-provider.js'
 import { createMemoryTool } from '../../tools/memory.js'
-import { appendMemoryEntry, readMemoryEntries } from '../unified-memory.js'
+import { appendMemoryEntry } from '../unified-memory.js'
 import { resetKnowledgeIndexCache } from '../knowledge-index.js'
 
 const roots: string[] = []
@@ -39,25 +39,5 @@ describe('memory tool embedding wiring', () => {
     })
     assert.equal(result.isError, undefined)
     assert.match(result.content, /Authentication policy/)
-  })
-
-  it('forget invalidates a current memory entry (resolved/forgotten lifecycle)', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'rivet-memory-tool-'))
-    roots.push(cwd)
-    const entry = appendMemoryEntry(cwd, {
-      text: 'Old login crash was fixed later in the same session',
-      kind: 'failure_pattern', confidence: 0.8, source: 'auto-capture', status: 'observed', tags: [],
-    })
-    const tool = createMemoryTool({} as ContextClaimStore, {
-      sessionId: 'test-session', getTurn: () => 1, cwd,
-    })
-
-    const result = await tool.execute({
-      input: { action: 'forget', entryId: entry.id, reason: 'resolved' }, toolUseId: 'tool-1', cwd,
-    })
-    assert.equal(result.isError, false)
-    assert.match(result.content, /已解决/)
-    assert.equal(readMemoryEntries(cwd)[0]!.status, 'expired')
-    assert.equal(readMemoryEntries(cwd)[0]!.invalidatedReason, 'resolved')
   })
 })

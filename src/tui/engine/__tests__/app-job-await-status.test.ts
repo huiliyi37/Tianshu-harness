@@ -109,9 +109,7 @@ test('有 running 后台任务 → chrome 渲染实时条；终态后消失', as
   app.handleJobEvent(started('a1', 'npm run dev'))
   await tick()
   const frame1 = history(out)
-  // 2026-08-25（f7f1e434a）起单行任务条并入活动带：running 任务以 `⚙ N` 徽章
-  // 前缀渲染在状态行（宽屏侧栏形态才走 formatJobsBar 单行条逃生门）。
-  assert.ok(/⚙ 1/.test(frame1), `有 running 应渲染活动带徽章: ${frame1}`)
+  assert.ok(frame1.includes('⚙ 1 后台任务'), `有 running 应渲染实时条: ${frame1}`)
   assert.ok(frame1.includes('npm run dev'), `实时条应含首个命令: ${frame1}`)
 
   // 终态：notifyJobTerminal 的 commitStatic 触发全量重绘——之后的输出切片

@@ -16,7 +16,6 @@ import {
   migrateObservationsToUnified,
   migrateLegacyMemoryToProject,
   supersedeMemoryEntry,
-  invalidateMemoryEntry,
   isCurrentEntry,
   renderMemoryBlock,
   validateKnowledgeChains,
@@ -186,28 +185,6 @@ describe('unified-memory', () => {
 
     const withHistory = recallMemoryEntries(TEST_DIR, 'bundler builds', 5, undefined, { includeHistory: true })
     assert.ok(withHistory.some(e => e.id === oldEntry.id), 'history available on explicit request')
-  })
-
-  it('invalidateMemoryEntry closes a current entry without deleting it (resolved/forgotten)', () => {
-    const entry = appendMemoryEntry(TEST_DIR, {
-      text: 'Old timeout issue was resolved by the user later',
-      kind: 'failure_pattern', confidence: 0.8, source: 'auto-capture', status: 'observed', tags: [],
-      topic: 'timeout',
-    })
-    const result = invalidateMemoryEntry(TEST_DIR, entry.id, 'resolved')
-    assert.equal(result.ok, true)
-    assert.equal(result.entry?.invalidatedReason, 'resolved')
-    assert.match(result.message, /已解决/)
-
-    const sealed = readMemoryEntries(TEST_DIR).find(e => e.id === entry.id)
-    assert.equal(sealed!.status, 'expired')
-    assert.ok(sealed!.validTo !== undefined)
-    assert.equal(isCurrentEntry(sealed!), false)
-    assert.ok(!recallMemoryEntries(TEST_DIR, 'timeout resolved', 5).some(e => e.id === entry.id))
-
-    const withHistory = recallMemoryEntries(TEST_DIR, 'timeout resolved', 5, undefined, { includeHistory: true })
-    assert.ok(withHistory.some(e => e.id === entry.id), '原文保留可审计')
-    assert.equal(invalidateMemoryEntry(TEST_DIR, entry.id, 'forgotten').ok, false, '重复失效幂等返回失败')
   })
 
   it('migrates legacy machine-dir entries to project store, skipping regex noise', () => {

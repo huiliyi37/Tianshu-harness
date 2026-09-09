@@ -231,6 +231,9 @@ async function bootAndRun(
       maxTokens: decision.maxTokens,
       staticCtx: { tools: applyDescriptionMode(workerRegistry.getDefinitions(), blocks.toolDescriptions), audience: 'subagent' as const },
       volatileCtx: { cwd, sessionMemoryBlock: init.memoryBlock, blockCaps: blocks.caps },
+      // 续跑/复核/重试继承上一轮冻结快照——历史 user 消息恢复原始字节，
+      // 前缀缓存只在新 user 边界断尾（缺省/坏数据引擎内降级为冷启动）。
+      inheritFrozenFrom: cfg.priorFrozenSnapshot,
     })
 
     // 5) 组装 WorkerSessionConfig（v1 降级项不注入）并执行。
@@ -277,6 +280,8 @@ async function bootAndRun(
         usage: run.usage,
         checkpoint: run.checkpoint,
         messages,
+        // 冻结快照随结果上行——导出失败不毁结果（下一轮退化为冷启动，与旧行为一致）。
+        frozenSnapshot: (() => { try { return promptEngine.exportFrozenSnapshot() } catch { return undefined } })(),
         turnCount: messages.length,
       },
     })

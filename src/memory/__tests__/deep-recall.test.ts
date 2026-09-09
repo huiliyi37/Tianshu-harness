@@ -1,6 +1,6 @@
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -39,28 +39,6 @@ describe('deep recall', () => {
     const capped = collectTranscriptCandidates(sessionDir, 'prefix cache 命中率', { maxCandidates: 1, maxTotalChars: 200 })
     assert.equal(capped.length, 1)
     assert.ok(capped[0]!.quote.length <= 340)
-  })
-
-  it('excludes the current session and worker transcripts from deep recall', () => {
-    seedSession('s-current', [
-      { role: 'user', content: 'prefix cache 的命中率为什么掉了' },
-      { role: 'assistant', content: '本会话已经查过：冻结锚在上一轮被改动' },
-    ], 1)
-    seedSession('worker-batch-0-x', [
-      { role: 'user', content: 'prefix cache 命中率下降，worker 侧排查' },
-      { role: 'assistant', content: 'worker 侧没有权限改 system prompt' },
-    ], 1)
-    seedSession('s-old', [
-      { role: 'user', content: 'prefix cache 命中率掉了的修复记录' },
-      { role: 'assistant', content: '最终修复是冻结锚保持字节稳定' },
-    ], 10)
-
-    const candidates = collectTranscriptCandidates(sessionDir, 'prefix cache 命中率', {
-      excludeSessionIds: ['s-current'],
-    })
-    assert.ok(candidates.some(c => c.sessionId === 's-old'), '历史会话仍可召回')
-    assert.ok(candidates.every(c => c.sessionId !== 's-current'), '当前会话不得作为历史证据')
-    assert.ok(candidates.every(c => c.sessionId.startsWith('worker-') === false), 'worker 派生会话不得作为历史证据')
   })
 
   it('returns nothing for termless queries or empty dirs', () => {

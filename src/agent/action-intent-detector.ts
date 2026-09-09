@@ -21,9 +21,35 @@ const ACTION_PROMISE_PATTERN =
  * 工具动词——模型描述打算使用的工具或操作。
  * 来源：phantom-continuation.ts TOOL_VERB_PATTERN，去掉了"看"（太常见，误报高）；
  * 后补"重写/更新/写入"等写动作词（4df36bcd 系列：宣布"更新计划"未命中旧模式）。
+ * 名词性「更新」豁免（2026-09-09 现场）："更新说明/更新日志"是 UI 文案与文档
+ * 指称，不是写动作——报告句「应用内"更新说明"现在拿不到 3.16.0 的内容」里
+ * 它与时间状语"现在"同分句配对成立，no-tool 轮被误注入 reminder。
  */
+/**
+ * 写侧动作词表（单一来源，2026-09-09 审查重构）——写侧承诺 / 祈使句首 / 工具
+ * 动词三处共用。这三处原本各写一份，实测抓到漂移：「部署/构建/安装/重启/验证」
+ * 只在祈使表里、「删除/落地/加上/补上」只在写侧表里，导致同一句「接下来部署到
+ * staging」在两条闸门上结果相反（祈使路径真、写侧假）。新增写动词只改这一处。
+ */
+const WRITE_VERB_STEMS = [
+  '修改', '编辑', '重写', '更新(?!说明|日志|记录|内容|公告|历史|列表|详情|检查)',
+  '写入', '写文件', '写一下', '写测试', '修复', '实现', '重构', '落地',
+  '删除', '删掉', '改一下', '改掉', '改(?!动|天|名|善|变|版|期|口|正|进)', '加上', '补上',
+  '构建', '部署', '安装', '重启', '验证',
+] as const
+
+/** 句首祈使专用（不进写侧承诺表）：裸动词，以及「提交」（有独立名词语境判别）。 */
+const IMPERATIVE_EXTRA = ['跑', '运行', '执行', '提交', '修(?:改|正|好|一下|掉|\\s)'] as const
+
+/** 工具动词（工具轮判定，含读操作与通用动作）。 */
+const TOOL_VERB_STEMS = [
+  'grep', 'ripgrep', 'read', 'edit', 'write', 'run', 'test', '(?<!Git\\s)bash',
+  'cat', 'ls', 'glob', 'fetch', 'curl', '查(?:看|找|阅)?', '搜索', '读取?',
+  '跑(?:一?下|测试)?', '运行', '执行', '看(?:一?下)?(?:代码|文件)',
+] as const
+
 const TOOL_VERB_PATTERN =
-  /(grep|ripgrep|read|edit|write|run|test|(?<!Git\s)bash|cat|ls|glob|fetch|curl|查(?:看|找|阅)?|搜索|读取?|修改|编辑|运行|执行|跑(?:一?下|测试)?|改一?下|写一?下|重写|写(?:入|文件)|更新(?:文件|计划|文档)?|看(?:一?下)?(?:代码|文件))/i
+  new RegExp(`(${[...TOOL_VERB_STEMS, ...WRITE_VERB_STEMS].join('|')})`, 'i')
 
 /**
  * 写侧动词——承诺的是写入/修改/测试类操作（区别于"查/搜/读"的只读调研）。
@@ -31,7 +57,31 @@ const TOOL_VERB_PATTERN =
  * 正常调研，不该被提醒；说"更新计划"却只发 grep 才是要拦的失败模式。
  */
 const WRITE_VERB_PATTERN =
-  /((?:edit|write|fix|patch|apply|commit|rewrite|update|implement|refactor)(?![a-z])|run\s+(?:the\s+)?tests?|typecheck|修改|编辑|重写|更新|写入|写文件|写一?下|提交|修复|实现|重构|落地|删除|删掉|改一?下|改掉|加上|补上|跑(?:一?下)?\s*(?:测试|typecheck)|运行测试|执行测试)/i
+  new RegExp(`((?:edit|write|fix|patch|apply|commit|rewrite|update|implement|refactor)(?![a-z])|run\\s+(?:the\\s+)?tests?|typecheck|${WRITE_VERB_STEMS.join('|')}|跑(?:一?下)?\\s*(?:测试|typecheck)|运行测试|执行测试)`, 'i')
+
+/**
+ * 动词性「提交」——裸「提交」从 WRITE_VERB_PATTERN 移出：名词用法（"最近提交"
+ * 指git记录、"上一轮提交里"指某次提交的内容）与动词无法在词级区分（2026-09
+ * 会话现场："现在读核心文档…最近提交又提到 3.15.0"被判写侧承诺，只读轮闸门
+ * 误fire）。名词语境双向判别（2026-09-09 审查补全，替代单向清单）：
+ *  - 后置成分：后面紧跟 记录/日志/历史/列表/信息/…/的 是指称性定语（"看看
+ *    提交记录""一次提交的内容"），前字清单挡不住的形态由它兜住；
+ *  - 前字清单扩到 次码该首每笔条这那（"最近一次提交""代码提交""首次提交"）。
+ * "接下来提交这些改动""我现在提交"仍触发。
+ */
+const WRITE_COMMIT_VERB_RE =
+  /(?<![近史前轮本已的录笔次码该首每笔条这那])提交(?!(?:记录|日志|历史|列表|信息|时间|次数|哈希|备注|说明|单号|状态|统计|的))/
+
+/**
+ * 承诺词紧邻修饰的「更新 X」——动宾真承诺，名词豁免不适用（2026-09-09 审查
+ * 补全）。a5dc38a2e 的名词豁免只该挡指称形态（报告句里的 UI 文案/文档名，
+ * 如「"更新说明"现在拿不到内容」）；「我来更新日志」「接下来更新内容」是
+ * 标准动宾承诺，词级清单分不出宾语位还是指称位——按语法角色放行：承诺词
+ * 紧邻动词前 = 行动宣告。紧邻要求天然排除报告句：原案例里"现在"前邻的是
+ * "拿不到"而非"更新"。豁免清单（可以让我/要不要我…ADVISORY）优先级更高，
+ * 提议形态仍不触发。
+ */
+const PROMISE_PREFIXED_VERB_RE = /(?:我来|我去|我先|这就|马上|接下来|下一步|我会|我将|让我)更新/
 
 /**
  * 祈使收尾：最后一句以裸动作动词开头、无任何承诺词（4df36bcd：
@@ -40,8 +90,43 @@ const WRITE_VERB_PATTERN =
  *  - 只看最后一句（。！？!?\n 切分），且句长 ≤ 80 字符（长句多为陈述）；
  *  - 句内含完成态标记（了/已/通过/done…）视为汇报而非承诺，不触发。
  */
+/** 句首祈使/承诺前缀（单一来源，IMPERATIVE / TOPIC 共用）。 */
+const ACTION_PREFIXES = ['先', '再', '然后', '接着', '继续', '马上', '立即', '下面', '现在', '接下来'] as const
+
+/** 祈使/话题守卫共用的句首动词集合。 */
+const IMPERATIVE_VERB_ALT = [...IMPERATIVE_EXTRA, ...WRITE_VERB_STEMS].join('|')
+
 const IMPERATIVE_HEAD_RE =
-  /^(?:(?:先|再|然后|接着|继续|马上|立即|下面|现在)\s*)?(?:跑|运行|执行|修(?:复|改|正|好|一下|掉|\s)|重写|更新|编辑|提交|构建|部署|安装|重启|验证|重构|(?:re)?run(?![a-z])|fix(?![a-z])|update(?![a-z])|rewrite(?![a-z])|commit(?![a-z])|build(?![a-z])|deploy(?![a-z])|verify(?![a-z]))/i
+  new RegExp(`^(?:(?:${ACTION_PREFIXES.join('|')})\\s*)?(?:${IMPERATIVE_VERB_ALT}|(?:re)?run(?![a-z])|fix(?![a-z])|update(?![a-z])|rewrite(?![a-z])|commit(?![a-z])|build(?![a-z])|deploy(?![a-z])|verify(?![a-z]))`, 'i')
+
+/**
+ * 话题/陈述句守卫（祈使收尾路径专用）——句首动词接名词化标记时，整句是在
+ * 谈论某个话题，不是祈使命令。2026-09-09 全分支扫描：20 条话题句中 16 条被
+ * 祈使路径误判（"修复针对的…""提交记录里…""构建产物的时间是…"），14 条真
+ * 祈使句全部正确。两类标记：
+ *  ① 动词后紧跟名词化后缀（针对/相关/方案/记录/历史/…）；
+ *  ② 动词后 8 字符内出现「的」且「的」后紧跟抽象中心语——"跑测试的时间太长"
+ *     命中；"更新配置的默认值"不命中（中心语是具体对象，整句是动宾结构）。
+ *     2026-09-09 审查修复：原判据只看「的」是否落在 8 字符内，把"更新配置的
+ *     默认值""修改文档里的示例""重构 utils 的接口"这类短宾语真祈使句全部吞掉
+ *     （探针实测 6 条全漏）。距离分不开两类——"跑测试的"的「的」在第 4 字符、
+ *     "更新配置的默认值"的「的」在第 5 字符——所以改看中心语。白名单只收抽象
+ *     名词；「说明/内容/方案/记录/历史」已在①的名词化后缀里，再作中心语白名单
+ *     会反噬真祈使句（"重写这一节的说明"），故不收。
+ */
+const NOMINAL_SUFFIXES = [
+  '针对', '相关', '方案', '记录', '历史', '说明', '日志', '内容', '涉及',
+  '方面', '思路', '策略', '流程', '范围', '原因', '版本', '方式', '状态',
+] as const
+
+const ABSTRACT_HEADS = [
+  '时间', '方式', '原因', '情况', '问题', '版本', '状态', '开销', '限制',
+  '行为', '环境', '配置', '改动', '成本', '代价', '收益', '影响', '边界',
+  '条件', '结论', '定义',
+] as const
+
+const TOPIC_STATEMENT_RE =
+  new RegExp(`^(?:(?:${ACTION_PREFIXES.join('|')})\\s*)?(?:${IMPERATIVE_VERB_ALT}|(?:re)?run(?![a-z])|fix(?![a-z])|update(?![a-z])|rewrite(?![a-z])|commit(?![a-z])|build(?![a-z])|deploy(?![a-z])|verify(?![a-z]))(?:(?:${NOMINAL_SUFFIXES.join('|')})|[^。！？!?\\n]{0,8}的(?:${ABSTRACT_HEADS.join('|')}))`, 'i')
 
 const COMPLETION_MARKER_RE =
   /(了|已|完成|完毕|通过|失败|成功|中断|报错|生效|即可|✓|✗|done\b|passed\b|failed\b|finished\b)/i
@@ -96,16 +181,41 @@ function splitSentences(text: string): string[] {
  * "接下来修改 loop.ts" 是承诺（同句），
  * "我现在汇报结果。之前我读取了那个文件" 是陈述（跨句）。
  */
+/**
+ * 分句切分：句内再按逗号/顿号/分号切——与 PRECONDITION_WAIT_RE 的既有纪律
+ * 一致（逗号连接是分工句式，不是同一承诺单元）。承诺词与工具动词分属同句
+ * 内不同分句时（"现在读核心文档…，最近提交又提到…"），配对不成立。
+ */
+function splitClauses(sentence: string): string[] {
+  return sentence.split(/[，,、；;]+/).map(s => s.trim()).filter(s => s.length > 0)
+}
+
+/** 分句内是否含写侧动词（WRITE_VERB 或动词性「提交」）。 */
+function clauseHasWriteVerb(clause: string): boolean {
+  return WRITE_VERB_PATTERN.test(clause) || WRITE_COMMIT_VERB_RE.test(clause)
+}
+
 function hasSameSentencePair(
   text: string,
   promisePattern: RegExp,
   verbPattern: RegExp,
 ): boolean {
   for (const sentence of splitSentences(text)) {
-    if (promisePattern.test(sentence) && verbPattern.test(sentence)) {
-      // 同句含强完成标记 → 完成态汇报（"上一轮已完成 write_file"）而非悬空承诺
-      if (STRONG_COMPLETION_RE.test(sentence)) continue
-      return true
+    for (const clause of splitClauses(sentence)) {
+      if (!promisePattern.test(clause)) continue
+      const verbHit =
+        (verbPattern === WRITE_VERB_PATTERN
+          ? clauseHasWriteVerb(clause)
+          : verbPattern.test(clause))
+        // 承诺词紧邻的「更新 X」按动宾承诺放行（名词豁免的语法角色补全）
+        || PROMISE_PREFIXED_VERB_RE.test(clause)
+      // 同分句含强完成标记 → 完成态汇报（"上一轮已完成 write_file"）而非悬空承诺
+      // 同分句是提议/建议/列举语境 → 把选项交回用户，非承诺（2026-09-09）
+      if (
+        verbHit
+        && !STRONG_COMPLETION_RE.test(clause)
+        && !ADVISORY_CLAUSE_RE.test(clause)
+      ) return true
     }
   }
   return false
@@ -120,6 +230,8 @@ export function hasImperativeActionTail(text: string): boolean {
   if (/[？?]$/.test(tail.trimEnd())) return false
   const sentence = lastSentence(tail)
   if (!sentence || sentence.length > 80) return false
+  // 话题/陈述句守卫：句首动词接名词化标记（"修复针对的…""编辑器的配置"）
+  if (TOPIC_STATEMENT_RE.test(sentence)) return false
   return IMPERATIVE_HEAD_RE.test(sentence) && !COMPLETION_MARKER_RE.test(sentence)
 }
 
@@ -133,11 +245,31 @@ export const DELIVERY_SIGNAL_RE =
   /(?:typecheck\s*[✓✗]|^\d+\s*passed|^\d+\/\d+\s*[✓✗]|任务完成[，。]|交付[。！]|commit\s+[0-9a-f]{7}|^[✓✗]\s|(?:^|\n)>?\s*(?:fix|feat|refactor|test|chore|docs|perf)[(:]\s|提交\s*[0-9a-f]{7}|^\d+\s*\/\s*\d+\s*(?:个|项)?(?:测试)?通过)/mi
 
 /**
+ * 提议/建议/列举语境——把选项或决定权交回用户，不是模型自己的行动承诺。
+ * 2026-09-09 探针实测的三条误触发都经「承诺词 × 工具动词」同分句配对命中：
+ * 「随时可以让我跑 typecheck」（提议）、「建议下一步跑一下测试」（建议）、
+ * 「接下来可以做的事：更新文档」（列举）。豁免做在**分句级**——只压承诺词
+ * 所在分句的语境，同句别处的"建议"不吞真承诺（"建议下一步更新文档"豁免，
+ * "接下来更新文档"仍触发）。
+ */
+const ADVISORY_CLAUSE_RE =
+  /(?:随时(?:都)?可以让我|可以让我|要不要我|需要的话(?:我|可以)|如需我|(?:^|我)建议|(?:^|我)推荐|接下来(?:可以|要|需要)?做(?:的)?(?:事|工作|选项)|可以做的事|可选(?:项)?[:：]|待办[:：])/i
+
+/**
  * 条件/否定前缀——在行动承诺词附近出现了"除非""不需要""不必"等时，
  * 是假设性/否定性表述（"除非你想让我也审查 X"），不是真正的行动承诺。
- * 只看尾部 120 字符内的前缀，避免跨段误匹配。
+ * 只看承诺词之前的前缀窗，两支分开（2026-09-09 审查修复）：
+ *  - 否定词（不需要/不必/不用/无需/没必要/没打算）只认紧邻——≤20 字符且
+ *    字符类排除逗号。理由与同文件 PRECONDITION_WAIT_RE 一致（"逗号连接是
+ *    分工句式"）："不需要改，我来更新 loop.ts" 否定的是宾语、承诺是模型
+ *    自己的，属真承诺，不该被当假设句吞掉。
+ *  - 假设连词（除非/如果/若）保留长窗且允许跨逗号——"不需要改，除非你想让
+ *    我也查一下 X" 的承诺确实挂在假设条件下。
+ * 合一版本的前缀窗跨逗号，把分工句整段判为假设句：探针实测 8 条样本
+ * 4/8 正确 → 拆分后 7/8（余下 1 条根因在 WRITE_VERB_PATTERN 缺裸「改」，
+ * 不在本守卫职责内）。
  */
-const CONDITIONAL_PREFIX_RE = /(?:除非|不需要|不必|不用|无需|没必要|没打算)\s*[^。！？!?\n]{0,150}?(?:让我|接下来|现在|我来|我[先去])/i
+const CONDITIONAL_PREFIX_RE = /(?:(?:不需要|不必|不用|无需|没必要|没打算)\s*[^。！？!?，,\n]{0,20}?(?:让我|接下来|现在|我来|我[先去])|(?:除非|如果|若)\s*[^。！？!?\n]{0,150}?(?:让我|接下来|现在|我来|我[先去]))/i
 
 /**
  * 检查文本尾部是否宣布了行动：显式承诺（"让我…"+工具动词）或祈使收尾。

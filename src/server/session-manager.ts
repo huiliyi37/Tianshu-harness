@@ -17,11 +17,11 @@
  *    across sessions (B4).
  */
 import type { AgentCallbacks, ApprovalMode } from '../agent/loop-types.js'
+import { touchActivity, markIdle } from '../agent/stall-observer.js'
 import { randomUUID } from 'node:crypto'
 import { debugLog } from '../utils/debug.js'
 import { collectPostBoundaryEditIds } from '../agent/file-history.js'
 import { loadConfig } from '../config/manager.js'
-import { applySandboxPolicyForApprovalMode } from '../tools/sandbox-profile.js'
 import type { DelegationActivity, Tool } from '../tools/types.js'
 import type { ApprovalResult } from '../agent/approval-edit.js'
 import type { HookEvent, HookResult } from '../hooks/user-hooks-runner.js'
@@ -31,6 +31,7 @@ import type { Artifact } from '../artifact/types.js'
 import { ArtifactStore } from '../artifact/store.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import { isAssistantWithTools, oaiMessageText, type OaiToolCall } from '../api/oai-types.js'
+import { buildUserAnchors, stripInjectedSuffix } from './rewind-anchors.js'
 import { toolArgSummary } from '../tui/tool-label.js'
 import { listPersistedResultRounds, loadPersistedResult, type PersistedResultRound } from '../agent/coordinator.js'
 import { loadWorkerSession } from '../agent/worker-session-persist.js'
@@ -55,8 +56,7 @@ import { COUNCIL_PANEL_UI_PREFIX } from '../tui/council-panel-model.js'
 import { containsRegisteredFrame } from '../tui/frame-codec.js'
 import { buildHandoffPrompt } from '../tui/handoff.js'
 import { handoffRecoveries } from '../agent/recovery-journal.js'
-import { getSessionDir, SessionPersist } from '../agent/session-persist.js'
-import { parseSessionPerformanceAsync } from '../cache/session-performance.js'
+import { getSessionDir } from '../agent/session-persist.js'
 import { WatchdogRecoveryPolicy } from '../agent/watchdog-recovery-policy.js'
 import { buildDomainPickerEntries, type DomainPickerEntry } from '../agent/domain-picker-entries.js'
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
@@ -66,16 +66,16 @@ import { skillRegistry, loadProjectSkills, listInstallableSkills, importSkillsIn
 import type { MissionStore } from './mission-store.js'
 import { join, resolve, dirname } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { existsSync, copyFileSync, statSync, mkdirSync, readFileSync } from 'node:fs'
-import { createWorktree, createWorktreeAtBranch, removeWorktree, listWorktrees, hasUnlandedWork, commitAll, revParseHead, getCurrentGitRef, squashMergeBranch, pushBranch, type WorktreeEntry } from '../agent/worktree.js'
+import { existsSync, copyFileSync, statSync, mkdirSync } from 'node:fs'
+import { createWorktree, removeWorktree, listWorktrees, hasUnlandedWork, commitAll, revParseHead, squashMergeBranch, pushBranch, type WorktreeEntry } from '../agent/worktree.js'
 import { createPr } from './gh-cli.js'
 import { getGitGraph, getWorkingTreeFiles, getFileDiff, getFileAtBase, listGitBranches } from '../tools/git.js'
 import type { WorkingTreeFile } from '../tools/git.js'
 import { SessionJobs, type JobEvent } from '../tools/job-store.js'
 import { parseAskUserQuestions } from '../tools/ask-user-question.js'
 import { grantApp as grantComputerUseApp } from '../tools/computer-use/app-grants.js'
-import { loadComputerUseImpl } from '../tools/computer-use/bridge.js'
 import { outOfWorkspaceFilePaths } from '../agent/tool-pipeline.js'
+import { applySandboxPolicyForApprovalMode } from '../tools/sandbox-profile.js'
 import {
   DELEGATE_CAPABILITY_TTL_MS,
   DELEGATE_TIMEOUT_MS,
@@ -94,7 +94,6 @@ import type {
   SessionRecord,
   ResolvedDomainRecord,
   PlanDraft,
-  LineComment,
 } from './protocol.js'
 import { redactValue, redactText, truncateUtf16Safe } from './redact.js'
 
@@ -157,6 +156,8 @@ export interface ModelOption {
   id: string
   alias: string
   provider: string
+  /** 展示 label（preset label ?? provider name）——桌面端分组标题源（2026-09-08）。 */
+  providerLabel?: string
   contextWindow?: number
   /** 擅长场景 — 预设定义处填充，透传到桌面模型选择器。 */
   description?: string
@@ -493,8 +494,6 @@ export interface GoalSnapshot {
 }
 
 export interface CreateSessionInput {
-  /** Explicit session id (P1-1 fork pre-generates it so worktree branches/owners can use it). */
-  id?: string
   cwd?: string
   title?: string
   prompt?: string
@@ -508,12 +507,14 @@ export interface CreateSessionInput {
   model?: string
   /** Override the star domain for this session (takes priority over project/global defaults). */
   domain?: string
+  /** Welcome-composer reasoning effort — applied to the agent on first build. */
+  reasoningEffort?: import('../agent/auto-reasoning.js').ReasoningEffort | 'auto'
+  /** Welcome-composer plan mode — mirrors POST /sessions/:id/plan-mode for first-run sessions. */
+  planMode?: PlanModeState
+  /** Welcome-composer ask mode — mirrors POST /sessions/:id/ask-mode for first-run sessions. */
+  askMode?: AskModeState
   /** Create an isolated git worktree for this session (parallel work without conflict). */
   isolatedWorktree?: boolean
-  /** P4 补线 — 会话关联的真实分支名（搜索索引/展示；普通会话不 checkout）。 */
-  branch?: string
-  /** P4 补线 — 隔离 worktree 的基分支：真实分支名 → detached worktree。 */
-  worktreeBaseBranch?: string
   /**
    * 无人值守运行（付费版 v1 · T2，auto-proceed 定时任务）：审批请求不挂起等人，
    * 立即拒绝并 fail-closed 中止本次运行（中止原因入事件流 + 走查工件）。
@@ -531,23 +532,6 @@ export interface CreateSessionInput {
    */
   planAutoApproveUi?: boolean
 }
-
-/** P1-1 — where a forked conversation should live. */
-export type ForkDestination = 'local' | 'same-worktree' | 'new-worktree'
-
-/** P1-1 — discriminated fork outcome so routes can map reasons onto 400/404/409. */
-export type ForkSessionResult =
-  | { ok: true; record: SessionRecord }
-  | {
-      ok: false
-      reason:
-        | 'not_found'
-        | 'running'
-        | 'invalid_message_index'
-        | 'same_worktree_unavailable'
-        | 'worktree_failed'
-      detail?: string
-    }
 
 /** Persisted snapshot of a session: a record + its full event log. */
 export interface PersistedSession {
@@ -688,6 +672,11 @@ export interface RuntimeSessionManagerOptions {
    *  窗口内用户任何参与即取消。0 = 关闭（纯手动审批）。Default 150000（2.5min，
    *  serve.ts 以 RIVET_GOAL_PLAN_AUTO_APPROVE_MS 覆盖）。 */
   goalPlanAutoApproveMs?: number
+  /** sidecar 启动时的全局审批档（ctx.config.agent.approval）。PUT
+   *  /config/approval 的广播回调经 applyGlobalApprovalMode 实时更新；会话级
+   *  override（session.approvalMode）恒优先。供 skip 感知门（如计划提交
+   *  自动批准）解析会话生效档位。 */
+  globalApprovalMode?: ApprovalMode
   /** Optional durable store. When set, sessions survive sidecar restarts. */
   persistence?: SessionPersistenceAdapter
   /**
@@ -1012,10 +1001,12 @@ export type DelegateResult =
   | { ok: true; workerId: string }
   | { ok: false; reason: 'not_found' | 'invalid' | 'unsupported' | 'limit' }
 
-/** Result of a one-click resume — `switched` means the fallback model took
- *  over (UI must disclose that the prefix cache will be rebuilt). */
+/** Result of a one-click resume — `switched` means a different model took
+ *  over (UI must disclose that the prefix cache will be rebuilt). `degraded`
+ *  marks the no-configured-fallback path: the run continues on the default
+ *  model with an explicit warning instead of fail-closing the session. */
 export type ResumeRunResult =
-  | { ok: true; model: string; switched: boolean }
+  | { ok: true; model: string; switched: boolean; degraded?: boolean; warning?: string }
   | { ok: false; code: 'not_found' | 'busy' | 'model_unavailable'; error: string }
 
 /** Injected user prompt for a resumed run — the model context was restored
@@ -1138,6 +1129,11 @@ function trimEventRing(events: SessionEvent[], maxEvents: number): SessionEvent[
 
 export class RuntimeSessionManager {
   private readonly sessions = new Map<string, InternalSession>()
+  /** In-flight lazy agent builds (per session id) — ensureAgent is not
+   *  concurrency-safe on its own: two callers seeing agent=null would each run
+   *  createAgent, and the later-resolving build could overwrite the winner.
+   *  Serializes builds; entries removed when the shared promise settles. */
+  private readonly agentBuilds = new Map<string, Promise<ManagedAgent>>()
   private readonly createAgent: AgentFactory
   private readonly defaultCwd: string
   private readonly now: () => number
@@ -1149,6 +1145,8 @@ export class RuntimeSessionManager {
   private readonly approvalTimeoutMs: number
   private readonly watchdogContinueDelayMs: number
   private readonly goalPlanAutoApproveMs: number
+  /** 当前全局审批档（构造取快照；applyGlobalApprovalMode 实时更新）。 */
+  private globalApprovalMode?: ApprovalMode
   private readonly persistence?: SessionPersistenceAdapter
   private readonly getRegistry?: () => SessionRegistry | undefined
   private readonly listModelsFn?: () => ModelOption[]
@@ -1200,6 +1198,7 @@ export class RuntimeSessionManager {
       ?? (Number.isFinite(envApprovalTimeout) && envApprovalTimeout >= 0 ? envApprovalTimeout : 0)
     this.watchdogContinueDelayMs = opts.watchdogContinueDelayMs ?? 5_000
     this.goalPlanAutoApproveMs = opts.goalPlanAutoApproveMs ?? 150_000
+    this.globalApprovalMode = opts.globalApprovalMode
     this.persistence = opts.persistence
     this.getRegistry = opts.getSessionRegistry
     this.listModelsFn = opts.listModels
@@ -2103,7 +2102,7 @@ export class RuntimeSessionManager {
   }
 
   createSession(input: CreateSessionInput = {}): SessionRecord {
-    const id = input.id ?? this.idGenerator()
+    const id = this.idGenerator()
     let cwd = input.cwd ?? this.defaultCwd
     let worktreeBranch: string | undefined
     let worktreePath: string | undefined
@@ -2111,12 +2110,7 @@ export class RuntimeSessionManager {
 
     if (input.isolatedWorktree) {
       try {
-        // P4 补线 — 指定基分支时创建 detached worktree（真实分支名保留在
-        // worktreeBranch 供搜索/展示）；未指定沿用唯一 rivet-hands 分支。
-        const baseBranch = input.worktreeBaseBranch?.trim()
-        const wt = baseBranch
-          ? createWorktreeAtBranch(cwd, baseBranch, id)
-          : createWorktree(cwd, id)
+        const wt = createWorktree(cwd, id)
         worktreeBranch = wt.branch
         worktreePath = wt.path
         cwd = wt.path
@@ -2149,14 +2143,6 @@ export class RuntimeSessionManager {
     if (input.model) sessionModel = input.model
     if (input.domain) sessionDomain = input.domain
 
-    // P1-3 — branch index for cross-session search. 显式选择优先（P4 补线）；
-    // worktree sessions carry their branch; normal sessions cache the current
-    // git ref once at creation (best-effort: detached HEAD falls back to hash).
-    let branch = input.branch?.trim() || worktreeBranch
-    if (!branch) {
-      try { branch = getCurrentGitRef(cwd) } catch { /* non-git cwd → no branch index */ }
-    }
-
     const session: InternalSession = {
       record: {
         id,
@@ -2173,7 +2159,9 @@ export class RuntimeSessionManager {
         worktreeBranch,
         worktreePath,
         baselineHead,
-        branch,
+        ...(input.planMode ? { planMode: input.planMode } : {}),
+        ...(input.askMode ? { askMode: input.askMode } : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         // P1b：随 record 持久化，sidecar 重启/rehydrate 后由恢复路径读回——
         // 否则重启后静默失去倒计时自动批准（fail-closed 但前后不一致）。
         ...(input.planAutoApproveUi === true ? { planAutoApproveUi: true } : {}),
@@ -2181,6 +2169,7 @@ export class RuntimeSessionManager {
       },
       agent: null,
       approvalMode: input.approvalMode,
+      reasoningEffort: input.reasoningEffort,
       events: [],
       // 新会话首个事件 seq=1；live 截尾（append splice）后 events[0] 会漂移，
       // 此值保持 1 使 replay_window 仍能暴露"头部在磁盘"。
@@ -2388,6 +2377,10 @@ export class RuntimeSessionManager {
             this.scanArtifacts(session)
             this.settleHandoffArchive(session)
             this.append(session, 'done', { status: session.record.status })
+            // run 收尾 done 已落盘（append 内 touchActivity 无条件置 idle:false）——
+            // 此后会话进入等待态（等用户下一条输入/harness 续轮），补 markIdle 收口：
+            // 交付后静默等待不被 stall-observer 误报；新 run 的首个事件 append 即自动解除。
+            markIdle(session.record.id)
             this.persistRecord(session)
             // Fast-path reconciliation; abort-specific delayed cleanup is
             // handled by the settlement-aware retry chain.
@@ -2431,6 +2424,9 @@ export class RuntimeSessionManager {
         }
         if (ownsDurability()) {
           this.append(session, 'done', { status: session.record.status })
+          // 同正常收尾：done 落盘后会话进等待态，补 markIdle（失败/中止 run 后
+          // 同样等待用户下一步，不属于 stall）。
+          markIdle(session.record.id)
           this.persistRecord(session)
         }
         runSettlement.resolve()
@@ -2503,19 +2499,19 @@ export class RuntimeSessionManager {
   /**
    * One-click resume for a run interrupted by a sidecar restart (resume_offer).
    *
-   * Cache-affinity contract (hard requirement): the resumed run MUST stay on
-   * the model and star domain the session was on before the restart — the
-   * conversation's prefix cache lives per model, and rebuilding it on a
-   * different model costs more than the resume saves. Behavior ladder:
+   * Cache-affinity contract: the resumed run should stay on the model and star
+   * domain the session was on before the restart — the prefix cache lives per
+   * model. Behavior ladder:
    *  - original model available → resume on it (domain restored via
    *    ensureAgent → applySelections from the persisted record.domain);
    *  - original model unavailable AND `resumeFallbackModel` is configured and
    *    available → resume on the fallback with an explicit model_switched
    *    event (`switched: true` in the result lets the UI say "cache will be
    *    rebuilt");
-   *  - otherwise fail closed (`model_unavailable`) — the UI degrades to a
-   *    "start a new session" entry. Never silently falls back to the default
-   *    model.
+   *  - otherwise degrade to the default model with an explicit warning
+   *    (`degraded: true`) instead of fail-closing — the 2026-09-08 report
+   *    found the old fail-closed error rendered as a dead-end while a normal
+   *    message on the same model would have resumed just fine.
    */
   async resumeRun(id: string): Promise<ResumeRunResult> {
     const session = this.sessions.get(id)
@@ -2525,42 +2521,83 @@ export class RuntimeSessionManager {
     const available = this.listModelsFn?.()
     // No injected model source (tests / minimal setups): trust the record —
     // there is nothing to validate against, and the factory resolves it.
-    const isAvailable = (m: string | undefined): m is string =>
-      !!m && (!available || available.some((o) => o.id === m || o.alias === m))
+    //
+    // Session records persist models as `provider:modelId` (switchModel writes
+    // that form to disambiguate providers sharing a wire id). Availability
+    // must parse the prefix — a bare id/alias comparison against
+    // "deepseek:deepseek-v4-flash" was the 2026-09-08 false-negative that
+    // made one-click resume claim the current model was gone.
+    const isAvailable = (m: string | undefined): m is string => {
+      if (!m) return false
+      if (!available) return true
+      const colon = m.indexOf(':')
+      const pinnedProvider = colon > 0 ? m.slice(0, colon) : undefined
+      const modelRef = pinnedProvider ? m.slice(colon + 1) : m
+      if (!modelRef) return false
+      return available.some((o) => {
+        if (pinnedProvider && o.provider !== pinnedProvider) return false
+        return o.id === modelRef || o.alias === modelRef || o.id === m || o.alias === m
+      })
+    }
     let target = original
     let switched = false
+    let degraded = false
+    let warning: string | undefined
     if (!isAvailable(original)) {
       const fallback = this.resumeFallbackModel
-      if (!isAvailable(fallback)) {
-        return {
-          ok: false,
-          code: 'model_unavailable',
-          error: original
-            ? `原模型 ${original} 当前不可用，且未配置续跑兜底模型（agent.resumeFallbackModel）——请开新会话继续`
-            : '会话未记录原模型，无法保证缓存亲和——请开新会话继续',
+      if (isAvailable(fallback)) {
+        target = fallback
+        switched = true
+      } else {
+        // 2026-09-08 fix: no configured fallback is a warning-degrade path,
+        // not a dead end. Continue on the default model and disclose the
+        // prefix-cache rebuild. Only fail when there is no default at all.
+        const fallbackLabel = fallback
+          ? `（续跑兜底 ${fallback} 也不可用）`
+          : '（未配置 agent.resumeFallbackModel）'
+        const defaultModel = this.defaultModelId
+        if (!isAvailable(defaultModel)) {
+          return {
+            ok: false,
+            code: 'model_unavailable',
+            error: original
+              ? `原模型 ${original} 当前不可用${fallbackLabel}，且默认模型也不可用——请开新会话继续`
+              : '会话未记录原模型，且默认模型不可用——请开新会话继续',
+          }
         }
+        target = defaultModel
+        switched = true
+        degraded = true
+        warning = `原模型 ${original ?? '(未记录)'} 当前不可用${fallbackLabel}，已按默认模型 ${defaultModel} 降级续跑，前缀缓存将全量重建`
       }
-      target = fallback
-      switched = true
     }
     if (switched) {
       if (session.agent) {
         // Live agent on the wrong model — hot-swap it (emits model_switched).
         if (!(await this.switchModel(id, target!))) {
-          return { ok: false, code: 'model_unavailable', error: `兜底模型 ${target} 切换失败——请开新会话继续` }
+          return { ok: false, code: 'model_unavailable', error: `目标模型 ${target} 切换失败——请开新会话继续` }
         }
       } else {
-        // Agent not built yet: point the record at the fallback so ensureAgent
-        // builds on it directly, and leave an audit event.
+        // Agent not built yet: point the record at the fallback/default so
+        // ensureAgent builds on it directly, and leave an audit event.
         this.ensureEvents(session)
         session.record.model = target
-        this.append(session, 'model_switched', { modelId: target, reason: 'resume-fallback', from: original ?? null })
+        this.append(session, 'model_switched', {
+          modelId: target,
+          reason: degraded ? 'resume-degraded-default' : 'resume-fallback',
+          from: original ?? null,
+        })
         this.persistRecord(session)
       }
     }
     const started = this.run(id, RESUME_PROMPT)
     if (!started) return { ok: false, code: 'busy', error: 'Session is already running' }
-    return { ok: true, model: session.record.model ?? target ?? '', switched }
+    return {
+      ok: true,
+      model: session.record.model ?? target ?? '',
+      switched,
+      ...(degraded ? { degraded, warning } : {}),
+    }
   }
 
   /**
@@ -2628,6 +2665,8 @@ export class RuntimeSessionManager {
 
   private ensureAgent(session: InternalSession): ManagedAgent | Promise<ManagedAgent> {
     if (session.agent) return session.agent
+    const inflight = this.agentBuilds.get(session.record.id)
+    if (inflight) return inflight
     this.ensureJobs(session)
     // Model affinity: a rehydrated session must come back on the model its
     // record carries (prefix-cache lives per model) — not the default model.
@@ -2651,13 +2690,42 @@ export class RuntimeSessionManager {
     // Test doubles return a ManagedAgent synchronously — keep that path sync so
     // existing tests don't need a microtask flush after every run().
     if (created && typeof (created as Promise<ManagedAgent>).then === 'function') {
-      return (created as Promise<ManagedAgent>).then(finish)
+      // Serialize concurrent lazy builds (rewind-points GET + run() can race on
+      // a rehydrated session): share one in-flight promise; drop the entry only
+      // when THIS build settles (reference guard so a newer build's slot is not
+      // removed by an older settle).
+      const pending = (created as Promise<ManagedAgent>).then(finish)
+      this.agentBuilds.set(session.record.id, pending)
+      // 锁清理不随构建成败。用双参 then 而非 finally：pending 的 rejection 由
+      // 调用方（listRewindPoints/run 的 try-catch）处理，但 finally 派生的新
+      // promise 会继承 rejection 且无人 await——void 掉即成 unhandled
+      // rejection（eperm-filter 全局 handler 打 stderr 噪声，构建失败路径）。
+      const clearSlot = () => {
+        if (this.agentBuilds.get(session.record.id) === pending) this.agentBuilds.delete(session.record.id)
+      }
+      void pending.then(clearSlot, clearSlot)
+      return pending
     }
     return finish(created as ManagedAgent)
   }
 
   private async ensureAgentAsync(session: InternalSession): Promise<ManagedAgent> {
     return await this.ensureAgent(session)
+  }
+
+  /** Ensure a session has a live agent (lazy build restoring disk history).
+   *  Public surface for rewind/edit routes that need message indices on
+   *  rehydrated sessions (issue #63). Returns false when the session is
+   *  missing or the build fails (cwd removed / config invalid). */
+  async ensureSessionAgent(id: string): Promise<boolean> {
+    const s = this.sessions.get(id)
+    if (!s) return false
+    try {
+      await this.ensureAgentAsync(s)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -3063,12 +3131,6 @@ export class RuntimeSessionManager {
     session.approvalMode = mode
     session.record.approvalMode = mode
     try { session.agent?.setApprovalMode?.(mode) } catch { /* non-fatal */ }
-    // 沙箱联动与 bootstrap 同一口径（applySandboxPolicyForApprovalMode：显式
-    // RIVET_SANDBOX 恒优先、幂等）：sidecar 以默认档启动、会话中途切到自治/
-    // 项目外只读时，内核写边界此刻才补上——否则整进程生命周期都无边界，mac/linux
-    // 上「沙箱 + 回滚兜底」的承诺落空。切回低档不撤销（fail-safe 方向，与
-    // bootstrap 的显式值优先语义一致）。
-    try { applySandboxPolicyForApprovalMode(mode) } catch { /* non-fatal */ }
     this.touch(session)
     this.persistRecord(session)
     return true
@@ -3083,6 +3145,7 @@ export class RuntimeSessionManager {
    * 此处不重复。返回实际套用的会话数（遥测/测试用）。
    */
   applyGlobalApprovalMode(mode: ApprovalMode): number {
+    this.globalApprovalMode = mode
     let applied = 0
     for (const session of this.sessions.values()) {
       if (session.approvalMode) continue
@@ -4377,49 +4440,6 @@ export class RuntimeSessionManager {
    * Returns the mount status, or undefined if the session/agent lacks enableTool
    * (lightweight doubles). No-op if gating is off (tool already visible).
    */
-  /**
-   * W4-15：@Computer 挂载后的后台系统权限探测。缺失「辅助功能 / 屏幕录制」
-   * 时经 steer 通道注入指引（下一 turn 边界送达模型，由模型转达用户）——
-   * 不再等截图/点击失败才发现。fire-and-forget：绝不阻塞 run，任何失败静默。
-   */
-  probeComputerUsePermissions(id: string): void {
-    void (async () => {
-      try {
-        const impl = await loadComputerUseImpl()
-        if (!impl) return
-        const perm = await impl.createPlatformDriver().checkPermissions()
-        if (perm.accessibility && perm.screenRecording) return
-        const missing = [
-          ...(perm.accessibility ? [] : ['辅助功能 (Accessibility)']),
-          ...(perm.screenRecording ? [] : ['屏幕录制 (Screen Recording)']),
-        ]
-        this.steer(
-          id,
-          `[系统提示] 当前缺少系统权限：${missing.join('、')}。computer_use 的截图/点击会失败或拿不到画面——请告知用户到 系统设置 → 隐私与安全性 授权后重启应用再试（详见 设置 → 集成 → 计算机控制）。`,
-        )
-      } catch { /* 权限探测是 best-effort——绝不影响 run */ }
-    })()
-  }
-
-  /**
-   * W-stats：单会话性能视图——直读 `<sid>/cache-log.jsonl`（解析/聚合在
-   * cache/session-performance.ts 纯模块）。轮尾注回放补数据与 Insights
-   * 会话下钻共用。读不到日志返回 undefined（路由层转 404）。
-   * 异步读 + 分片解析（2026-09-01 审查）：数 MB 日志不再把请求线程上的
-   * SSE/REST 饿死。
-   */
-  async getPerformance(id: string) {
-    const record = this.getSession(id)
-    if (!record) return undefined
-    let content = ''
-    try {
-      content = await readFile(join(getSessionDir(record.cwd), record.id, 'cache-log.jsonl'), 'utf8')
-    } catch {
-      return undefined
-    }
-    return { sessionId: record.id, cwd: record.cwd, ...await parseSessionPerformanceAsync(content) }
-  }
-
   async enableTool(id: string, name: string): Promise<{ status: string; cacheImpact: string } | undefined> {
     const session = this.sessions.get(id)
     if (!session) return undefined
@@ -4699,13 +4719,21 @@ export class RuntimeSessionManager {
    * List user messages that can be rewound to. Each entry has the message
    * index (for use with rewind()), the text content, and the event timestamp
    * (derived from the session event log, since OaiMessage has no ts field).
-   * Returns empty for sessions without a live agent (rehydrated/idle).
+   * Sessions without a live agent (rehydrated after sidecar restart) get one
+   * lazily built — issue #63: the desktop's edit-save ("保存并重发") resolves
+   * rewind points from this list, and an empty list made every edit fail on
+   * history sessions. Build failure (cwd removed / config invalid) degrades to
+   * the old empty list — the client toasts the resolve error.
    */
   async listRewindPoints(id: string): Promise<{ index: number; content: string; timestamp: number; seq?: number }[] | undefined> {
     const s = this.sessions.get(id)
     if (!s) return undefined
-    if (!s.agent) return []
-    const msgs = s.agent.getMessages()
+    if (!s.agent) {
+      try { await this.ensureAgentAsync(s) } catch { return [] }
+    }
+    const agent = s.agent
+    if (!agent) return []
+    const msgs = agent.getMessages()
     // Collect user events (seq + ts + text) so we can map each user message to
     // both its submission time AND the seq of its originating `user` event. The
     // seq lets the UI anchor previews/forks on the exact `u-${seq}` block the
@@ -4720,31 +4748,39 @@ export class RuntimeSessionManager {
       }
     }
     const entries: { index: number; content: string; timestamp: number; seq?: number }[] = []
-    // seq 锚点用子序列匹配:从游标起找首个文本相同的 user 事件。两个方向的
-    // 序数错位都能容忍——事件比消息多(压缩丢了早期消息)向前跳过;找不到
-    // (事件日志分叉/清理)则该条目退化为无 seq,游标不动,后续条目不受连带
-    // 污染。timestamp 保留历史行为:文本未命中时回退到序数配对的事件 ts。
-    let cursor = 0
-    let ordinal = 0
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i]!
-      if (m.role === 'user' && typeof m.content === 'string') {
-        let hit = -1
-        for (let k = cursor; k < userEvents.length; k++) {
-          if (userEvents[k]!.text === m.content) { hit = k; break }
-        }
-        const ue = hit >= 0 ? userEvents[hit]! : undefined
-        if (hit >= 0) cursor = hit + 1
-        entries.push({
-          index: i,
-          content: m.content,
-          timestamp: ue?.ts ?? userEvents[ordinal]?.ts ?? 0,
-          ...(ue !== undefined ? { seq: ue.seq } : {}),
-        })
-        ordinal++
-      }
+    // 只产出能对上 `user` 事件的条目（配对规则见 buildUserAnchors）：hook 注入
+    // 的独立 user 消息没有事件，用户消息里追加的注入段靠剥离后缀救回。混入
+    // 无锚点的条目会把桌面端的「序数降级」顶偏——points 与 blocks 的 user 块
+    // 同序是那条降级路径的前提，破掉它编辑重发就切到错误的消息索引
+    // （issue #63 残留：用户点「保存并重发」后消息错位/丢失）。
+    // content 用事件原文：前端 blocks 里的 user 文本就是事件文本，两者逐字节
+    // 相等，rewind 事件的 prompt 回退匹配才认得出来。
+    for (const [index, anchor] of buildUserAnchors(msgs, userEvents)) {
+      entries.push({ index, content: anchor.text, timestamp: anchor.ts, seq: anchor.seq })
     }
     return entries
+  }
+
+  /**
+   * `user` 事件列表（seq/ts/原文），rewind 锚点解析用。内存环被截尾（首事件
+   * seq > 1）时改读磁盘全量——长会话的早期 user 事件不在环里，只按环配对会
+   * 让 anchorSeq 静默缺失（前端退到文本回退，prompt 也只能靠剥离注入兜底）。
+   * rewind 是低频人工操作，同步读一次的代价可接受；读失败退回环。
+   */
+  private userEventListFor(s: InternalSession): { seq: number; ts: number; text: string }[] {
+    const ringTrimmed = s.events.length > 0 && s.events[0]!.seq > 1
+    let src: SessionEvent[] = s.events
+    const p = this.persistence
+    if (ringTrimmed && p?.loadEvents) {
+      try {
+        src = p.loadEvents.call(p, s.record.id)
+      } catch {
+        src = s.events
+      }
+    }
+    return src
+      .filter((e) => e.type === 'user')
+      .map((e) => ({ seq: e.seq, ts: e.ts, text: String((e.data as { text?: unknown }).text ?? '') }))
   }
 
   /**
@@ -4766,21 +4802,19 @@ export class RuntimeSessionManager {
     if (messageIndex < 0 || messageIndex >= msgs.length) return false
 
     const target = msgs[messageIndex]!
-    const prompt = typeof target.content === 'string' ? target.content : ''
+    const rawPrompt = typeof target.content === 'string' ? target.content : ''
 
-    // Resolve a duplicate-proof UI anchor: the seq of the `user` event that
-    // produced this rewound message. The rewound message is the N-th user-role
-    // string message; the N-th `user` event in the log carries the same text.
-    // Emit anchorSeq only when the ordinal lines up AND the text matches, so a
-    // trimmed/diverged log silently falls back to the client's text heuristic.
-    let userOrdinal = 0
-    for (let i = 0; i < messageIndex; i++) {
-      const m = msgs[i]!
-      if (m.role === 'user' && typeof m.content === 'string') userOrdinal++
-    }
-    const userEvents = s.events.filter(e => e.type === 'user')
-    const anchorEvent = userEvents[userOrdinal]
-    const anchorSeq = anchorEvent && anchorEvent.data.text === prompt ? anchorEvent.seq : undefined
+    // Resolve a duplicate-proof UI anchor with the same pairing the desktop
+    // resolves its rewind points with (buildUserAnchors): the seq of the `user`
+    // event that produced this rewound message. 旧的序数取法（第 N 条 user 消息
+    // → 第 N 个 user 事件）在 hook 注入独立 user 消息时会整体偏移，全等文本
+    // 匹配又会因注入追加必然落空——两条都会让 anchorSeq 缺失。
+    // prompt 同步换成事件原文：桌面端 event-reducer 在没有 anchorSeq 时按
+    // prompt 文本回退匹配 blocks，含注入的 content 匹配不上 → 界面不截断
+    // （用户看到的正是「保存并重发没反应」，issue #63 残留）。
+    const anchor = buildUserAnchors(msgs, this.userEventListFor(s)).get(messageIndex)
+    const prompt = anchor?.text ?? stripInjectedSuffix(rawPrompt)
+    const anchorSeq = anchor?.seq
 
     // Truncate messages to the selected point (full derived-state reset).
     s.agent.rewindToMessages(msgs.slice(0, messageIndex))
@@ -4805,322 +4839,6 @@ export class RuntimeSessionManager {
     }
 
     return true
-  }
-
-  /**
-   * P1-1 — fork a conversation into a new session.
-   *
-   * The new session owns a COPY of the source history prefix (events.jsonl +
-   * the model transcript `<id>.jsonl`), so it starts idle with full context and
-   * the next prompt continues from the fork point instead of starting cold.
-   * The source session is never mutated — only its buffered deltas are flushed
-   * so the copied prefix is durable.
-   *
-   * messageIndex semantics match listRewindPoints(): an index into the OAI
-   * message list, and the chosen message must be user-role. Omitted = header
-   * fork (prefix through the latest user event, i.e. the whole conversation).
-   */
-  async forkSession(
-    id: string,
-    opts: {
-      messageIndex?: number
-      destination?: ForkDestination
-      title?: string
-      source?: NonNullable<SessionRecord['forkSource']>
-    } = {},
-  ): Promise<ForkSessionResult> {
-    const src = this.sessions.get(id)
-    if (!src) return { ok: false, reason: 'not_found' }
-    if (src.running) return { ok: false, reason: 'running' }
-
-    // Make the copy boundary durable: drain coalescing buffers, then load the
-    // full disk log (bounded by maxEvents for the in-memory ring only).
-    this.ensureEvents(src)
-    this.flushDeltaBuf(src)
-    this.flushToolResultBuf(src)
-    this.persistence?.flushSync?.()
-
-    let allEvents = src.events
-    try {
-      const disk = this.persistence?.loadEvents?.(id)
-      if (disk && disk.length > 0) allEvents = disk
-    } catch { /* in-memory fallback below */ }
-    allEvents = [...allEvents].sort((a, b) => a.seq - b.seq)
-
-    const userEvents = allEvents.filter((e) => e.type === 'user')
-    let cutSeq: number | undefined
-    let anchorPrompt = ''
-
-    // Model-side history: read the OAI transcript directly (works for
-    // rehydrated sessions whose agent hasn't been rebuilt yet).
-    const sourcePersist = new SessionPersist(id, src.record.cwd)
-    let oaiAll: OaiMessage[]
-    try {
-      oaiAll = sourcePersist.loadOai()
-    } catch {
-      // Unreadable transcript → fork with an empty model context. The child
-      // still carries the UI history; warnIfHistoryLost will flag the mismatch
-      // on first run instead of the fork call crashing.
-      oaiAll = []
-    }
-    let oaiPrefix: OaiMessage[]
-
-    if (opts.messageIndex !== undefined) {
-      const idx = opts.messageIndex
-      const target = oaiAll[idx]
-      if (!target || target.role !== 'user') return { ok: false, reason: 'invalid_message_index' }
-      let userOrdinal = 0
-      for (let i = 0; i < idx; i++) {
-        if (oaiAll[i]?.role === 'user') userOrdinal++
-      }
-      const anchor = userEvents[userOrdinal]
-      if (!anchor) return { ok: false, reason: 'invalid_message_index' }
-      cutSeq = anchor.seq
-      anchorPrompt = String((anchor.data as { text?: unknown }).text ?? '')
-      oaiPrefix = oaiAll.slice(0, idx + 1)
-    } else {
-      const anchor = userEvents[userEvents.length - 1]
-      cutSeq = anchor?.seq
-      anchorPrompt = anchor ? String((anchor.data as { text?: unknown }).text ?? '') : ''
-      oaiPrefix = oaiAll
-    }
-
-    const eventsPrefix = cutSeq === undefined
-      ? []
-      : allEvents.filter((e) => e.seq <= cutSeq)
-
-    // Destination + title before creating the child so failures never leave
-    // a half-registered session behind.
-    const newId = this.idGenerator()
-    const destination = opts.destination ?? 'local'
-    let newCwd = src.record.cwd
-    let worktreeBranch: string | undefined
-    let worktreePath: string | undefined
-    let baselineHead: string | undefined
-
-    if (destination === 'same-worktree') {
-      if (!src.record.worktreePath || !existsSync(src.record.worktreePath)) {
-        return { ok: false, reason: 'same_worktree_unavailable' }
-      }
-      newCwd = src.record.worktreePath
-      worktreeBranch = src.record.worktreeBranch
-      worktreePath = src.record.worktreePath
-      try { baselineHead = revParseHead(newCwd) } catch { /* baseline stays undefined */ }
-    } else if (destination === 'new-worktree') {
-      const repoRoot = src.record.worktreePath ?? src.record.cwd
-      let wt: ReturnType<typeof createWorktree>
-      try {
-        wt = createWorktree(repoRoot, newId)
-      } catch (err) {
-        return { ok: false, reason: 'worktree_failed', detail: (err as Error)?.message ?? String(err) }
-      }
-      newCwd = wt.path
-      worktreeBranch = wt.branch
-      worktreePath = wt.path
-      try { baselineHead = revParseHead(newCwd) } catch { /* baseline stays undefined */ }
-    }
-
-    const rawBaseTitle = opts.title?.trim() || src.record.title?.trim() || src.record.id.slice(0, 8)
-    // Normalize away an existing "(n)" suffix so fork-of-fork chains number
-    // against the same base ("Foo (2)" → next is "Foo (3)", not "Foo (2) (2)").
-    const suffixMatch = /^(.*) \((\d+)\)$/.exec(rawBaseTitle)
-    const baseTitle = suffixMatch ? suffixMatch[1]! : rawBaseTitle
-    const forkTitleNumber = this.nextForkTitleNumber(baseTitle, id)
-    const title = `${baseTitle} (${forkTitleNumber})`
-
-    const created = this.createSession({
-      id: newId,
-      cwd: newCwd,
-      title,
-      approvalMode: src.record.approvalMode,
-      model: src.record.model,
-      domain: src.record.domain,
-      allowedTools: src.record.allowedTools,
-      planAutoApproveUi: src.record.planAutoApproveUi,
-    })
-    const child = this.sessions.get(created.id)
-    if (!child) {
-      // createSession registers synchronously — a missing child means an
-      // internal invariant broke. Report honestly instead of guessing.
-      return { ok: false, reason: 'worktree_failed', detail: 'forked session registration failed' }
-    }
-
-    child.record.forkedFromId = id
-    if (cutSeq !== undefined) child.record.forkedFromTurnSeq = cutSeq
-    child.record.forkTitleNumber = forkTitleNumber
-    child.record.forkSource = opts.source ?? 'header'
-    child.record.worktreeBranch = worktreeBranch
-    child.record.worktreePath = worktreePath
-    child.record.baselineHead = baselineHead
-
-    // 1) Desktop event log: persist the copied prefix under the new id, then
-    //    mirror it into the in-memory ring (tail-capped like any other session).
-    const maxSeq = eventsPrefix.length > 0 ? eventsPrefix[eventsPrefix.length - 1]!.seq : 0
-    child.seq = maxSeq
-    child.diskFirstSeq = eventsPrefix[0]?.seq ?? 1
-    child.events = eventsPrefix.length > this.maxEvents
-      ? eventsPrefix.slice(-this.maxEvents)
-      : [...eventsPrefix]
-    child.eventsLoaded = true
-    for (const ev of eventsPrefix) {
-      try { this.persistence?.appendEvent(created.id, ev) } catch { /* best-effort: live state is already set */ }
-    }
-    this.copyForkImages(id, created.id, eventsPrefix)
-    child.record.lastSeq = maxSeq
-
-    // 2) Timeline marker in the CHILD only (source log stays untouched).
-    this.append(child, 'fork', {
-      forkedFromId: id,
-      ...(cutSeq !== undefined ? { forkedFromTurnSeq: cutSeq } : {}),
-      anchorPrompt,
-      destination,
-    })
-    this.persistRecord(child)
-    this.persistence?.flushSync?.()
-
-    // 3) Model transcript: the agent restores from `<newCwd>/<newId>.jsonl`.
-    //    Write the prefix through the checksummed OAI path so the first run
-    //    carries real context instead of tripping warnIfHistoryLost.
-    const childPersist = new SessionPersist(created.id, newCwd)
-    for (const message of oaiPrefix) {
-      await childPersist.appendOaiWithChecksum(message)
-    }
-    await childPersist.flushSessionBuffer()
-
-    return { ok: true, record: { ...child.record } }
-  }
-
-  /** Best-effort copy of referenced vision attachments from source → child session. */
-  private copyForkImages(sourceId: string, childId: string, events: SessionEvent[]): void {
-    const images = new Set<string>()
-    for (const ev of events) {
-      const ids = (ev.data as { imageIds?: unknown }).imageIds
-      if (Array.isArray(ids)) {
-        for (const img of ids) {
-          if (typeof img === 'string') images.add(img)
-        }
-      }
-    }
-    for (const imgId of images) {
-      try {
-        const img = this.persistence?.readImage?.(sourceId, imgId)
-        if (!img) continue
-        this.persistence?.saveImage?.(childId, imgId, img.bytes.toString('base64'), img.mime)
-      } catch { /* best-effort: fork still succeeds without the attachment */ }
-    }
-  }
-
-  /** P1-1 — Codex-style fork title numbering: walk the forkedFrom chain and
-   *  return the next `base (n)` suffix. First fork is always (2). */
-  private nextForkTitleNumber(base: string, sourceId: string): number {
-    const re = /^(.*) \((\d+)\)$/
-    let max = 0
-    const seen = new Set<string>()
-    let cursor: string | undefined = sourceId
-    while (cursor && !seen.has(cursor)) {
-      seen.add(cursor)
-      const rec: SessionRecord | undefined = this.sessions.get(cursor)?.record
-      if (!rec) break
-      const m = re.exec(rec.title ?? '')
-      if (m) {
-        const n = Number(m[2])
-        if (m[1] === base && Number.isFinite(n) && n > max) max = n
-      } else if (rec.title === base) {
-        max = Math.max(max, 1)
-      }
-      cursor = rec.forkedFromId
-    }
-    // First fork is (2); (1) is reserved for the original conversation.
-    return Math.max(2, max + 1)
-  }
-
-  /** P1-2 — project line_comment events into the live comment list. */
-  listLineComments(id: string): LineComment[] | undefined {
-    const s = this.sessions.get(id)
-    if (!s) return undefined
-    this.ensureEvents(s)
-    const live = new Map<string, LineComment>()
-    for (const ev of s.events) {
-      if (ev.type !== 'line_comment') continue
-      const data = ev.data as { op?: unknown; comment?: LineComment }
-      if (data.op === 'add' && data.comment && typeof data.comment.id === 'string') {
-        live.set(data.comment.id, data.comment)
-      } else if (data.op === 'resolve' && typeof data.comment?.id === 'string') {
-        const cur = live.get(data.comment.id)
-        if (cur) live.set(cur.id, { ...cur, resolved: true })
-      } else if (data.op === 'delete' && typeof data.comment?.id === 'string') {
-        live.delete(data.comment.id)
-      }
-    }
-    return [...live.values()].sort((a, b) => a.createdAt - b.createdAt)
-  }
-
-  /** P1-2 — append a persistent user/agent line comment to the event log. */
-  addLineComment(
-    id: string,
-    input: { file: string; oldLine?: number; newLine?: number; comment: string; kind?: 'user' | 'agent'; author?: string },
-  ): LineComment | undefined {
-    const s = this.sessions.get(id)
-    if (!s) return undefined
-    this.ensureEvents(s)
-    const file = input.file.trim()
-    const text = input.comment.trim()
-    if (!file || !text) return undefined
-    if (input.oldLine === undefined && input.newLine === undefined) return undefined
-    const comment: LineComment = {
-      id: randomUUID(),
-      file,
-      oldLine: input.oldLine,
-      newLine: input.newLine,
-      comment: text,
-      kind: input.kind === 'agent' ? 'agent' : 'user',
-      ...(input.author?.trim() ? { author: input.author.trim() } : {}),
-      createdAt: this.now(),
-    }
-    this.append(s, 'line_comment', { op: 'add', comment })
-    return { ...comment }
-  }
-
-  /** P1-2 — resolve a line comment (kept in the log, rendered as done). */
-  resolveLineComment(id: string, commentId: string): boolean {
-    const s = this.sessions.get(id)
-    if (!s) return false
-    this.ensureEvents(s)
-    const exists = s.events.some(
-      (e) => e.type === 'line_comment' &&
-        (e.data as { op?: unknown }).op === 'add' &&
-        ((e.data as { comment?: { id?: string } }).comment?.id === commentId),
-    )
-    if (!exists) return false
-    this.append(s, 'line_comment', { op: 'resolve', comment: { id: commentId } })
-    return true
-  }
-
-  /** P1-2 — delete a line comment from the live projection (append-only log keeps the add). */
-  deleteLineComment(id: string, commentId: string): boolean {
-    const s = this.sessions.get(id)
-    if (!s) return false
-    this.ensureEvents(s)
-    const exists = s.events.some(
-      (e) => e.type === 'line_comment' &&
-        (e.data as { op?: unknown }).op === 'add' &&
-        ((e.data as { comment?: { id?: string } }).comment?.id === commentId),
-    )
-    if (!exists) return false
-    this.append(s, 'line_comment', { op: 'delete', comment: { id: commentId } })
-    return true
-  }
-
-  /** P1-3 — toggle session pin (record + append-only event for multi-window sync). */
-  setSessionPinned(id: string, pinned: boolean): SessionRecord | undefined {
-    const s = this.sessions.get(id)
-    if (!s) return undefined
-    this.ensureEvents(s)
-    if (s.record.pinned === pinned) return this.enrichRecord(s)
-    s.record.pinned = pinned
-    this.append(s, 'session_pinned', { pinned })
-    this.persistRecord(s)
-    return this.enrichRecord(s)
   }
 
   /** Best-effort file rollback for rewind. Surfaces result via event log. */
@@ -5448,7 +5166,7 @@ export class RuntimeSessionManager {
         }
         this.scanArtifacts(session)
       },
-      onTurnComplete: (usage, turnNumber, isFinal, evidenceSummary, metrics) => {
+      onTurnComplete: (usage, turnNumber, isFinal, evidenceSummary, continuationReason) => {
         if (!isActive()) return
         session.watchdogPolicy?.recordTurnComplete()
         this.append(session, 'turn_complete', {
@@ -5456,8 +5174,7 @@ export class RuntimeSessionManager {
           turnNumber,
           isFinal: !!isFinal,
           ...(isFinal && evidenceSummary ? { evidence: evidenceSummary } : {}),
-          // W-stats：最近一次模型请求的首字/输出速度（桌面 StatsLine 展示）。
-          ...(metrics ? { ttftMs: metrics.ttftMs, tokensPerSecond: metrics.tokensPerSecond, outputTokens: metrics.outputTokens } : {}),
+          ...(typeof continuationReason === 'string' && continuationReason ? { continuationReason } : {}),
         })
       },
       onError: (err) => {
@@ -5480,14 +5197,6 @@ export class RuntimeSessionManager {
         if (!isActive()) return
         session.record.currentPhase = phase
         this.append(session, 'phase', { phase, ...detail })
-      },
-      onZenPhaseChange: (phase, reason, stats) => {
-        if (!isActive()) return
-        this.append(session, 'zen_phase', {
-          phase,
-          ...(reason ? { reason } : {}),
-          ...(stats ? { armed: stats.armed, zenTurns: stats.zenTurns } : {}),
-        })
       },
       // R5 — structured course-correction → its own event so the desktop can
       // render a "改道" card inline (selective externalization of star-domain).
@@ -5634,15 +5343,19 @@ export class RuntimeSessionManager {
    * 窗口内用户任何参与（approve/reject/edit/prompt/steer/abort/显式路由）即取消。
    */
   private maybeArmPlanAutoApprove(session: InternalSession, slug: string): void {
-    // 计划提交的审批是**人工确认门**：即使完全读写档（skip）也等用户批准——
-    // 零打扰承诺不跨越计划门（2026-09-05 产品决定，撤销过的一版 skip 立即
-    // 自动批准）。goal 模式的倒计时自动批准保持原语义（goal 激活 + 倒计时
-    // UI + goalPlanAutoApproveMs；0 = 关闭，纯手动审批）。
-    const delayMs = this.goalPlanAutoApproveMs
-    if (delayMs <= 0) return
-    if (!this.isGoalActive(session)) return
-    // P1b fail-closed：客户端无自动批准倒计时 UI 时不武装定时器
-    if (!session.planAutoApproveUi) return
+    // 完全读写档（skip）：审批零打扰承诺——计划提交即自动批准，不等 goal、
+    // 不等倒计时（plan.ts 的「请在此等待」对 skip 会话是 0 秒）。生效档位：
+    // 会话级 override 优先，否则全局档（构造快照 + PUT 广播实时更新）。
+    const liveSkip = (session.approvalMode ?? this.globalApprovalMode) === 'dangerously-skip-permissions'
+    const delayMs = liveSkip ? 0 : this.goalPlanAutoApproveMs
+    // 注意：goalPlanAutoApproveMs 的 0 = 关闭（纯手动）；skip 档的 0 = 立即批准。
+    // 两者共用 delayMs 但语义不同——关闭守卫只对 goal 路径生效。
+    if (!liveSkip && delayMs <= 0) return
+    if (!liveSkip) {
+      if (!this.isGoalActive(session)) return
+      // P1b fail-closed：客户端无自动批准倒计时 UI 时不武装定时器
+      if (!session.planAutoApproveUi) return
+    }
     this.cancelPlanAutoApprove(session, 'superseded')
     const deadlineMs = this.now() + delayMs
     session.planAutoApproveSlug = slug
@@ -5651,9 +5364,10 @@ export class RuntimeSessionManager {
       session.planAutoApproveTimer = undefined
       session.planAutoApproveSlug = undefined
       if (!this.ownsSessionDurability(session)) return
-      // 触发前复核守卫：期间用户可能已驱动新 run / 归档 / 取消 goal。
+      // 触发前复核守卫：期间用户可能已驱动新 run / 归档 / 取消 goal
+      //（skip 档下 goal 无关，不参与复核）。
       if (session.running || session.record.archived) return
-      if (!this.isGoalActive(session)) return
+      if (!liveSkip && !this.isGoalActive(session)) return
       void this.approvePlan(session.record.id, slug).then((outcome) => {
         if (!outcome.ok) {
           this.append(session, 'plan_auto_approve_cancelled', { slug, reason: outcome.reason })
@@ -6043,6 +5757,9 @@ export class RuntimeSessionManager {
     opts?: { persistData?: Record<string, unknown> },
   ): void {
     if (!this.ownsSessionDurability(session)) return
+    // 无进展哨兵打点（stall-observer）：事件落盘 = 回合进展。回合死锁时
+    // jsonl 停止写入 → 此 touch 停止 → 观察器 90s 后告警并指认最后事件。
+    touchActivity(session.record.id, `evt:${type}`)
     if (type !== 'tool_result') {
       this.flushToolResultBuf(session)
       session.toolResultStream = undefined

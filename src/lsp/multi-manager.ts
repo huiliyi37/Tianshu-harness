@@ -34,7 +34,16 @@ export interface MultiLspOptions {
   which?: WhichFn
   /** Injected for tests; defaults to a real child-process spawn. */
   spawnFor?: (def: LspServerDef, cwd: string) => ChildProcess
+  /**
+   * Hard ceiling for lazy server initialize(). When exceeded the hung child is
+   * disposed and LSP degrades to null instead of wedging the turn.
+   */
+  initializeTimeoutMs?: number
 }
+
+export const DEFAULT_LSP_INITIALIZE_TIMEOUT_MS = 45_000
+/** Shortest wait used by post-edit diagnostics so a cold LSP never stalls an edit. */
+export const LSP_DIAGNOSTIC_READY_WAIT_MS = 2_000
 
 type LspSpawnFn = (cmd: string, args: string[], opts: Record<string, unknown>) => ChildProcess
 
@@ -65,8 +74,13 @@ export function defaultLspSpawn(
 export function createMultiLspManager(cwd: string, opts: MultiLspOptions = {}): LspManager {
   const which = opts.which ?? defaultWhich
   const spawnFor = opts.spawnFor ?? ((def, c) => defaultLspSpawn(def, c))
+  const initializeTimeoutMs = opts.initializeTimeoutMs ?? DEFAULT_LSP_INITIALIZE_TIMEOUT_MS
 
-  const managers = new Map<string, { mgr: LspManager; ready: Promise<void> }>()
+  interface LspEntry {
+    mgr: LspManager
+    ready: Promise<boolean>
+  }
+  const managers = new Map<string, LspEntry>()
   let availableCache: LspServerDef[] | null = null
 
   const getAvailable = (): LspServerDef[] => {
@@ -74,16 +88,58 @@ export function createMultiLspManager(cwd: string, opts: MultiLspOptions = {}): 
     return availableCache
   }
 
-  const ensure = async (def: LspServerDef): Promise<LspManager | null> => {
+  /**
+   * Lazily spawn + initialize a server, with TWO independent bounds:
+   *  - `ready` hard-stops initialize() at initializeTimeoutMs, disposes the
+   *    hung child, and resolves false (LSP degrades to null);
+   *  - each call may race `ready` with a shorter `waitMs` and continue without
+   *    LSP while a slow server keeps initializing in the background.
+   */
+  const ensure = async (def: LspServerDef, waitMs = initializeTimeoutMs): Promise<LspManager | null> => {
     let entry = managers.get(def.id)
     if (!entry) {
       const mgr = createLspManager(() => spawnFor(def, cwd), cwd)
-      const ready = mgr.initialize().catch(() => { /* server unavailable */ })
+      const ready = new Promise<boolean>((resolve) => {
+        let settled = false
+        const hardTimer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          // The initialize RPC may still be pending forever (spawn hung /
+          // process dead); killing + disposing rejects it through the rpc
+          // layer and releases the child.
+          try { mgr.dispose() } catch { /* best-effort */ }
+          resolve(false)
+        }, initializeTimeoutMs)
+        hardTimer.unref?.()
+
+        mgr.initialize().then(
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(hardTimer)
+            resolve(mgr.isReady())
+          },
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(hardTimer)
+            resolve(false)
+          },
+        )
+      })
       entry = { mgr, ready }
       managers.set(def.id, entry)
     }
-    await entry.ready
-    return entry.mgr.isReady() ? entry.mgr : null
+
+    const boundedWait = Number.isFinite(waitMs) && waitMs > 0 ? waitMs : initializeTimeoutMs
+    const ok = await Promise.race([
+      entry.ready,
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), boundedWait)
+        timer.unref?.()
+      }),
+    ])
+    return ok && entry.mgr.isReady() ? entry.mgr : null
   }
 
   const resolve = (filePath: string): LspServerDef | null => serverForFile(filePath, which)
@@ -123,7 +179,11 @@ export function createMultiLspManager(cwd: string, opts: MultiLspOptions = {}): 
     async getFileDiagnostics(filePath: string, timeoutMs?: number): Promise<LspDiagnostic[]> {
       const def = resolve(filePath)
       if (!def) return []
-      const mgr = await ensure(def)
+      // Post-edit diagnostics are best-effort: wait at most the diagnostic
+      // budget for the server to become ready, then continue without LSP.
+      // A slow cold start no longer blocks the tool result (2026-09-08 wedge).
+      const readyWaitMs = Math.min(timeoutMs ?? LSP_DIAGNOSTIC_READY_WAIT_MS, initializeTimeoutMs)
+      const mgr = await ensure(def, readyWaitMs)
       return mgr ? mgr.getFileDiagnostics(filePath, timeoutMs) : []
     },
     dispose(): void {

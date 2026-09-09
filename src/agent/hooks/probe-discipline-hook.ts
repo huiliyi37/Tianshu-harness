@@ -23,10 +23,12 @@ const READONLY_TOOLS = new Set([
   'web_fetch', 'web_search', 'git',
 ])
 
-/** 连续只读触发阈值：3 轮给足取证空间（正常定位常 1-2 轮读就够）。 */
-const PROBE_THRESHOLD = 3
-/** 注入冷却：同类型 advisory 至少间隔 8 次工具调用。 */
-const COOLDOWN_CALLS = 8
+/** 连续只读触发阈值：5 轮——正常定位 1-2 轮读就够，3 轮以内的深潜仍在取证
+ *  自然节奏；只有持续 5 轮只读仍无进展才值得提醒（2026-09-07 实机调参：
+ *  原 3 轮在诊断长链中过于频繁，噪音大于信号）。 */
+const PROBE_THRESHOLD = 5
+/** 注入冷却：同类型 advisory 至少间隔 12 次工具调用。 */
+const COOLDOWN_CALLS = 12
 
 /** 带观察锚点的只读——取证优先级高于裸推断。
  *  行号区间、上下文行、精确符号定位，都让结论落回可复核的观察；

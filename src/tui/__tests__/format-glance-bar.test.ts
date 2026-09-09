@@ -88,15 +88,3 @@ describe('formatGlanceLeft cwd display', () => {
     assert.ok(out.includes('天枢'))
   })
 })
-
-describe('formatGlanceLeft zen badge', () => {
-  it('renders 禅 badge when zenBadge provided', () => {
-    const out = stripAnsi(formatGlanceLeft(baseInput({ zenBadge: '禅' }), theme))
-    assert.ok(out.includes('禅'), `expected 禅 badge in: ${out}`)
-  })
-
-  it('omits badge when zenBadge undefined (conservative: no record ≠ zen)', () => {
-    const out = stripAnsi(formatGlanceLeft(baseInput({}), theme))
-    assert.equal(out.includes('禅'), false)
-  })
-})

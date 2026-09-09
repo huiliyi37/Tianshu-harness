@@ -15,7 +15,7 @@ import { extractObligations, attachObligations } from '../agent/council/council-
 import { runWaveReconvene, type ReconveneTaskRef } from '../agent/council/council-reconvene.js'
 import { serializeUnifiedPlan, unifiedPlanToTeamTasks } from '../agent/unified-plan.js'
 import { storePlan } from '../agent/plan-store.js'
-import { executePlanWaves, type PlanExecutorDeps } from '../agent/plan-executor.js'
+import { executePlan, type PlanExecutorDeps } from '../agent/plan-executor.js'
 import { createDelegationActivityMapper, terminalActivity } from './worker-activity-stream.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 
@@ -430,75 +430,78 @@ export function createCouncilConveneTool(
           const teamTasks = unifiedPlanToTeamTasks(unifiedPlan)
           if (teamTasks.length > 0) {
             const waveLines: string[] = []
+            let fromWave = 0
             let totalWaves = 1
             let workers = 0
-            await executePlanWaves(
-              {
-                mode: 'standard',
-                objective,
-                tasks: teamTasks,
-                startWave: 0,
-                autoAdvance: true,
-                sessionId: params.sessionId,
-                parentTurnIdForWave: wave => `${params.toolUseId ?? 'council-autoexec'}:w${wave}`,
-                reviewDepth: params.reviewDepth ?? 0,
-                cwd: params.cwd,
-                abortSignal: params.abortSignal,
-                // The review gate needs a single-delegate channel; skip it when
-                // the caller wired only the bare fanout surface.
-                reviewGate: Boolean(executorDeps.delegate),
-                onWave: async (run, wave) => {
-                  totalWaves = Math.max(1, run.summary.waves.length)
-                  const results = run.summary.run?.results ?? []
-                  workers += results.length
-                  for (const r of results) {
-                    waveLines.push(`- [wave ${wave + 1}/${totalWaves}] ${r.workOrderId}: ${r.status === 'passed' ? '✓' : r.status === 'failed' ? '✗' : '⚠'} ${r.summary}`)
-                  }
-                  const noteBlock = [run.notes.reviewNote, run.notes.scopeHealthNote, run.notes.waveGateNote, run.notes.deliverySynthesis]
-                    .map(n => n.trim()).filter(Boolean)
-                  if (noteBlock.length > 0) waveLines.push(...noteBlock.map(n => `  ${n.replace(/\n/g, '\n  ')}`))
-                  // W2d: surface structured gate failures so the user can see which
-                  // checks blocked the next wave — these were previously silently
-                  // discarded when autoExecute consumed only the text noteBlock.
-                  if (run.gate && !run.gate.passed) {
-                    waveLines.push(`  ⛔ 门禁未通过 (wave ${run.gate.wave + 1})`)
-                    for (const f of run.gate.failures.slice(0, 5)) {
-                      waveLines.push(`    ❌ ${f}`)
-                    }
-                    if (run.gate.failures.length > 5) waveLines.push(`    … (+${run.gate.failures.length - 5} more)`)
-                    // Phase 3 波间自动复议：按 provenance 只召回提案席 + 平衡柱做
-                    // 轻量诊断（advisory——契约修订仍是主控决策点，走豁免协议）。
-                    // 复议后停止推波：下一波入口门禁必拦，与其抛错不如把复议建议
-                    // 和续跑指引一起交回主控。
-                    const failedWaveTaskIds = new Set(run.summary.waves[wave]?.taskIds ?? [])
-                    const taskRefs: ReconveneTaskRef[] = unifiedPlan.tasks
-                      .filter(t => failedWaveTaskIds.size === 0 || failedWaveTaskIds.has(t.id))
-                      .map(t => ({
-                        id: t.id,
-                        title: t.title,
-                        detail: t.objective,
-                        ...(typeof t.metadata?.proposedBy === 'string' ? { proposedBy: t.metadata.proposedBy } : {}),
-                      }))
-                    const preReconveneBatches = batchResults.length
-                    const reconveneLines = await runWaveReconvene({
-                      objective,
-                      wave: run.gate.wave,
-                      failures: run.gate.failures,
-                      tasks: taskRefs,
-                      originalSeats: councilSeats,
-                      ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
-                    }, deps)
-                    // 复议席位 worker 的终态事件：复用同一回路，只发新增批次
-                    // （首轮席位的终态早已发过，重发会污染面板）。
-                    emitSeatTerminals(undefined, preReconveneBatches)
-                    waveLines.push('', ...reconveneLines)
-                    storePlan(planJson, params.sessionId)
-                    waveLines.push('', '⚠ 后续波已暂停（门禁硬拦）。计划已存入会话 — 按复议建议修订后调用 `team_orchestrate({ objective, fromWave })` 续跑。')
-                  }
+            do {
+              const run = await executePlan(
+                {
+                  mode: 'standard',
+                  objective,
+                  tasks: teamTasks,
+                  fromWave,
+                  sessionId: params.sessionId,
+                  parentTurnId: `${params.toolUseId ?? 'council-autoexec'}:w${fromWave}`,
+                  reviewDepth: params.reviewDepth ?? 0,
+                  cwd: params.cwd,
+                  abortSignal: params.abortSignal,
+                  // The review gate needs a single-delegate channel; skip it when
+                  // the caller wired only the bare fanout surface.
+                  reviewGate: Boolean(executorDeps.delegate),
                 },
-              },
-              executorDeps,
-            )
+                executorDeps,
+              )
+              totalWaves = Math.max(1, run.summary.waves.length)
+              const results = run.summary.run?.results ?? []
+              workers += results.length
+              for (const r of results) {
+                waveLines.push(`- [wave ${fromWave + 1}/${totalWaves}] ${r.workOrderId}: ${r.status === 'passed' ? '✓' : r.status === 'failed' ? '✗' : '⚠'} ${r.summary}`)
+              }
+              const noteBlock = [run.notes.reviewNote, run.notes.scopeHealthNote, run.notes.waveGateNote, run.notes.deliverySynthesis]
+                .map(n => n.trim()).filter(Boolean)
+              if (noteBlock.length > 0) waveLines.push(...noteBlock.map(n => `  ${n.replace(/\n/g, '\n  ')}`))
+              // W2d: surface structured gate failures so the user can see which
+              // checks blocked the next wave — these were previously silently
+              // discarded when autoExecute consumed only the text noteBlock.
+              if (run.gate && !run.gate.passed) {
+                waveLines.push(`  ⛔ 门禁未通过 (wave ${run.gate.wave + 1})`)
+                for (const f of run.gate.failures.slice(0, 5)) {
+                  waveLines.push(`    ❌ ${f}`)
+                }
+                if (run.gate.failures.length > 5) waveLines.push(`    … (+${run.gate.failures.length - 5} more)`)
+                // Phase 3 波间自动复议：按 provenance 只召回提案席 + 平衡柱做
+                // 轻量诊断（advisory——契约修订仍是主控决策点，走豁免协议）。
+                // 复议后停止推波：下一波入口门禁必拦，与其抛错不如把复议建议
+                // 和续跑指引一起交回主控。
+                const failedWaveTaskIds = new Set(run.summary.waves[fromWave]?.taskIds ?? [])
+                const taskRefs: ReconveneTaskRef[] = unifiedPlan.tasks
+                  .filter(t => failedWaveTaskIds.size === 0 || failedWaveTaskIds.has(t.id))
+                  .map(t => ({
+                    id: t.id,
+                    title: t.title,
+                    detail: t.objective,
+                    ...(typeof t.metadata?.proposedBy === 'string' ? { proposedBy: t.metadata.proposedBy } : {}),
+                  }))
+                const preReconveneBatches = batchResults.length
+                const reconveneLines = await runWaveReconvene({
+                  objective,
+                  wave: run.gate.wave,
+                  failures: run.gate.failures,
+                  tasks: taskRefs,
+                  originalSeats: councilSeats,
+                  ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+                }, deps)
+                // 复议席位 worker 的终态事件：复用同一回路，只发新增批次
+                // （首轮席位的终态早已发过，重发会污染面板）。
+                emitSeatTerminals(undefined, preReconveneBatches)
+                waveLines.push('', ...reconveneLines)
+                storePlan(planJson, params.sessionId)
+                waveLines.push('', '⚠ 后续波已暂停（门禁硬拦）。计划已存入会话 — 按复议建议修订后调用 `team_orchestrate({ objective, fromWave })` 续跑。')
+                fromWave++
+                break
+              }
+              fromWave++
+            } while (fromWave < totalWaves)
             parts.push('', `## 已自动执行（${workers} 个 worker，${totalWaves} 波）`)
             parts.push(...waveLines)
           }

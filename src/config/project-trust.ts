@@ -108,11 +108,6 @@ export function listTrustedProjects(): string[] {
   return Object.keys(readTrustStore().trusted)
 }
 
-/** 列出已授信项目及授信时间（realpath → ISO；桌面端总览/管理 UI 用）。 */
-export function listTrustedProjectEntries(): Array<{ path: string; trustedAt: string }> {
-  return Object.entries(readTrustStore().trusted).map(([path, trustedAt]) => ({ path, trustedAt }))
-}
-
 /** 单次进程内提示去重——hooks 每事件读取、config 可能 HMR 重载，避免刷屏。 */
 const noticed = new Set<string>()
 export function notifyUntrustedOnce(kind: 'hooks' | 'config', projectDir: string, strippedKeys?: string[]): void {

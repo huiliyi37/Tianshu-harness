@@ -27,7 +27,7 @@ import { readMemoryEntries, isCurrentEntry, validateKnowledgeChains, type Memory
 
 export interface KnowledgeSearchOptions {
   limit?: number
-  kind?: MemoryKind | readonly MemoryKind[]
+  kind?: MemoryKind | MemoryKind[]
   /** topic 子串过滤（结构化预过滤层）。 */
   topic?: string
   /** 默认只检索 current 叶子；true 含已封口历史。 */
@@ -36,9 +36,6 @@ export interface KnowledgeSearchOptions {
   source?: 'playbook'
   /** 并行工作区隔离：排除这些会话写入的条目。 */
   excludeSessionIds?: readonly string[]
-  /** 自动 STM 注入通道专用：false 时剔除 knowledge/*.md 分块（旧排查文档/复盘），
-   *  显式 memory recall 不受影响。缺省 true 保持既有混合检索行为。 */
-  includeMarkdown?: boolean
   /** 可选 LLM rerank（默认无——注入函数即启用）。 */
   rerank?: (query: string, hits: KnowledgeHit[]) => Promise<KnowledgeHit[]>
 }
@@ -109,9 +106,7 @@ export class KnowledgeIndex {
       const st = statSync(join(this.cwd, '.rivet', 'playbook.jsonl'))
       parts.push(`pb:${st.mtimeMs}:${st.size}`)
     } catch { parts.push('pb:-') }
-    // v2：修复「过滤查询曾把子集写进 FTS 投影」的历史污染——旧指纹 v1 不匹配
-    // 会强制重建一次全量投影；此后 SQLite 恒接收全量 documents，只做查询期过滤。
-    return `v2:${parts.join('|')}`
+    return parts.join('|')
   }
 
   ensureBuilt(): void {
@@ -193,7 +188,6 @@ export class KnowledgeIndex {
         topic: entry.topic,
         current: isCurrentEntry(entry),
         ts: entry.ts,
-        sessionId: entry.sessionId,
       })
     }
     for (const [id, chunk] of this.mdChunksById) {
@@ -235,9 +229,6 @@ export class KnowledgeIndex {
     const excludedSessions = new Set(options.excludeSessionIds ?? [])
     if (entry && entry.sessionId && excludedSessions.has(entry.sessionId)) return false
     if (!entry) {
-      // 自动注入通道不再把旧 md 排查文档/复盘当「当前任务相关记忆」灌给模型；
-      // 这些内容仍可经显式 memory recall 检索。
-      if (options.includeMarkdown === false && this.mdChunksById.has(id)) return false
       // md chunk / playbook：无结构化元数据——kind 过滤显式指定时只要结构化条目
       return !options.kind
     }
@@ -257,11 +248,17 @@ export class KnowledgeIndex {
 
     // 持久化 SQLite/FTS5 是 JSONL/Markdown 的可重建投影；不可用时严格
     // 降级到既有内存 BM25，不让原生能力影响 recall 正确性。
-    // SQLite 始终接收全量 documents 并自行按 options 过滤：若把过滤后的子集
-    // 写进 FTS 投影，同一个 source_fingerprint 会让后续全量 recall 永久漏掉
-    // 被过滤过的条目（projection 中毒）。
+    // 并行工作区隔离在 documents 进入 SQLite 前执行，保证 FTS 与内存 BM25
+    // 两条召回路径都不带在线其他会话的在途条目。
+    const excludedSessions = new Set(options.excludeSessionIds ?? [])
+    const documents = excludedSessions.size > 0
+      ? this.documents().filter(doc => {
+          const entry = this.entriesById.get(doc.id)
+          return !(entry && entry.sessionId && excludedSessions.has(entry.sessionId))
+        })
+      : this.documents()
     const sqliteHits = await this.persistent.search(
-      this.documents(),
+      documents,
       this.lastFingerprint,
       query,
       limit * 4,

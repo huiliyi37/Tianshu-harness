@@ -7,39 +7,9 @@ export const DEFAULT_CONFIG: Config = {
     default: 'deepseek',
     providers: {
       deepseek: cloneProviderPreset('deepseek'),
-      kimi: {
-        name: 'kimi',
-        apiKeyEnv: 'KIMI_API_KEY',
-        baseUrl: 'https://api.kimi.com/coding/v1',
-        protocol: 'openai' as const,
-        capabilities: {
-          cacheControl: false,
-          stripParams: [],
-          toolJsonBug: false,
-          prefixCache: 'none' as const,
-          prefixCompletion: false,
-        },
-        thinking: 'enabled',
-        maxTokens: 131072,
-        models: [
-          {
-            id: 'k3',
-            alias: 'k3',
-            contextWindow: 1_000_000,
-            maxTokens: 131072,
-            reasoningEffort: 'max',
-            tier: 'strong',
-          },
-          {
-            id: 'kimi-for-coding',
-            alias: 'kimi',
-            contextWindow: 256_000,
-            maxTokens: 64000,
-            reasoningEffort: 'high',
-          },
-        ],
-        unsupported: [],
-      },
+      // Kimi Code 订阅端点（api.kimi.com/coding/v1 + KIMI_API_KEY + k3）——
+      // 与预设 kimi 同源，避免「预设卡」与「内置供应商」两套端点/模型 id 漂移。
+      kimi: cloneProviderPreset('kimi'),
       glm: cloneProviderPreset('glm'),
       claude: {
         name: 'claude',

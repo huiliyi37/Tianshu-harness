@@ -117,7 +117,6 @@ describe('StarDomainRegistry — user domain loading', () => {
       '---',
       'name: 马超',
       'motto: 长驱直入，势不可挡',
-      'plain: 突击倾向：先侦察边界，再快速验证最可能的突破口，攻防演练里最能体现。',
       'decisionStyle: bold',
       'courageThreshold: 0.2',
       "keywords: ['网络', '渗透', '安全', 'attack', 'network']",
@@ -143,7 +142,6 @@ describe('StarDomainRegistry — user domain loading', () => {
       assert.equal(machao.systemPromptSuffix, '你是马超——突击手。快速渗透网络层，发现安全弱点。')
       assert.deepEqual(machao.keywords, ['网络', '渗透', '安全', 'attack', 'network'])
       assert.equal(machao.uiPersona.glyph, '⚔')
-      assert.match(machao.plain ?? '', /突击倾向/)
     } finally {
       cleanupTestDir(tmpBase)
     }

@@ -110,50 +110,6 @@ describe('groupTeamTasks', () => {
     assert.ok(wave.taskIds.includes('T1'))
   })
 
-  it('rewrites dependencies on tasks merged into source+test pairs', () => {
-    const waves = groupTeamTasks([
-      task('T1', ['src/a.ts']),
-      task('T2', ['src/a.test.ts']),
-      task('T3', ['docs/b.md'], { dependsOn: ['T2'] }),
-    ])
-
-    // T2 is merged into T1; T3's dependency must be remapped to T1 so it
-    // dispatches in the next wave instead of racing T1 in wave 0.
-    assert.equal(waves.length, 2)
-    assert.deepEqual(waves[0]!.taskIds, ['T1'])
-    assert.deepEqual(waves[1]!.taskIds, ['T3'])
-    assert.ok(!JSON.stringify(waves).includes('unknown dep'), 'consumed dependency must not surface as dangling')
-  })
-
-  it('rewrites conditional dependencies pointing at a merged test task', () => {
-    const waves = groupTeamTasks([
-      task('T1', ['src/a.ts']),
-      task('T2', ['src/a.test.ts']),
-      task('T3', ['docs/b.md'], {
-        dependsOn: [{ dependsOn: 'T2', onFailure: 'skip' }],
-      }),
-    ])
-
-    assert.equal(waves.length, 2)
-    assert.deepEqual(waves[0]!.taskIds, ['T1'])
-    assert.deepEqual(waves[1]!.taskIds, ['T3'])
-    assert.ok(!JSON.stringify(waves).includes('unknown dep'))
-  })
-
-  it('keeps the consumed test task\'s own dependencies on the merged survivor', () => {
-    const waves = groupTeamTasks([
-      task('T0', ['src/fixture.ts']),
-      task('T1', ['src/a.ts']),
-      task('T2', ['src/a.test.ts'], { dependsOn: ['T0'] }),
-    ])
-
-    // T2 merges into T1 but T2's dependency on T0 survives: T0 must run
-    // before the merged T1 instead of being dropped.
-    assert.equal(waves.length, 2)
-    assert.deepEqual(waves[0]!.taskIds, ['T0'])
-    assert.deepEqual(waves[1]!.taskIds, ['T1'])
-  })
-
   it('classifies wave risk as high if any task is high risk', () => {
     const waves = groupTeamTasks([
       task('T1', ['src/auth.ts'], { riskTier: 'high' }),

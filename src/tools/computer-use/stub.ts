@@ -28,8 +28,6 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
   const proEnabled = options.proEnabled ?? false
   const enabled = isComputerUseSupportedPlatform(platform) && proEnabled
   let real: Tool | undefined
-  /** W4-13：本会话 list_apps 已获批执行过（进程内，不落盘）。 */
-  let listAppsApproved = false
 
   return {
     definition: {
@@ -111,10 +109,7 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
         }
       }
       real ??= impl.createComputerUseTool({ proEnabled, platform })
-      const result = await real.execute(params)
-      // W4-13 镜像 pro 侧：list_apps 首次成功执行后本会话豁免审批。
-      if (params.input.action === 'list_apps' && result.isError !== true) listAppsApproved = true
-      return result
+      return real.execute(params)
     },
 
     requiresApproval(params: ToolCallParams): boolean {
@@ -122,10 +117,9 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
       const action = params.input.action as string
       if (NO_APPROVAL_ACTIONS.has(action)) return false
       if (ALWAYS_APPROVE_ACTIONS.has(action)) return true
-      // list_apps 无单一应用目标——恒门控（会暴露运行中应用清单），本会话
-      // 首准后豁免（W4-13，镜像 pro 侧）。
+      // list_apps 无单一应用目标——恒门控（会暴露运行中应用清单）。
       const app = typeof params.input.app === 'string' ? params.input.app.trim() : ''
-      if (!app) return !(action === 'list_apps' && listAppsApproved)
+      if (!app) return true
       // 应用级「始终允许」授权免提示（fail-closed 默认）。
       return !isAppGranted(app)
     },

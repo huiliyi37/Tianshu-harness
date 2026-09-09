@@ -1,23 +1,19 @@
 {
-  "version": "3.15.0",
-  "notes": "v3.15.0（稳定基线版）——回退到 v3.9.0 基线接管更新链：3.10–3.14 前缀缓存不稳定（命中率下降/反复碎裂）叠加滚动跟随与写工具挂起问题，本版回到实测稳定的 3.9 行为基线（仅版本号推进，无代码改动）。已知取舍：无 3.10+ 的修复（Linux 输入法 #55、滚动换代 #54、手机遥控、跨盘授权、写工具挂起、worker 冻结快照继承等）。根因修复验证通过后将在后续版本重新带回。",
-  "pub_date": "2026-09-06T15:12:44.335Z",
+  "version": "3.16.1",
+  "notes": "v3.16.1（修复版）——供应商「测试连接/测试模型调用」误报修复：只填 URL+Key 测连接不再误报（连通性验证与模型真测语义分层）、模型名带视觉词但网关不支持图片时按纯文本测、思考型网关 max_tokens 兼容。完整清单见 docs/releases/v3.16.1.md。",
+  "pub_date": "2026-09-09T09:40:22.438Z",
   "platforms": {
-    "windows-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.15.0/Tianshu_3.15.0_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1VKNTFicFFoTWltcjhhU0lwZjgrc2J5cGxmRHdHekNITzhLT1JnRmFNNkVLaHpUSnBOTkZET0VRRE50Q2tvZUc4VlZWMXRvVUlpcUNjeVU5NlAzU0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NjgzMDg1CWZpbGU6VGlhbnNodV8zLjE1LjBfeDY0LXNldHVwLmV4ZQpvc1VyYktKR0srdXJncG80UW9GU2NIclJJN1hLcWsxbk1rQzhxVEFWSlFMWTA0MXQycDJTd1M5WGRZaUxzczVlWjFoNzF2RXprQStWWEpiTjJ3QVdBZz09Cg=="
-    },
-    "linux-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.15.0/Tianshu_3.15.0_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2FIQkpYNzlNQnp3bGxpOHZkNTE5bjZDMDFQZkhiYnFTakQzZUtkdjRPd3E0cUVkRDhkRGFxa3gzTXlRY0JxRlh6Ly8zTExXMkJxWU9pQVYxbkQyZVFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4Njk1NTY2CWZpbGU6VGlhbnNodV8zLjE1LjBfYW1kNjQuQXBwSW1hZ2UKaGlPdGNZVUNOR3gxUVVNL1htQ084c3BvRFQ3djFxeTlwc21lOG9PWmx6ckYyaVF2Zi9hY09MYUxuaXJYNUg2R0diREQ0RHFleURSUkk4UzJycDM0REE9PQo="
-    },
     "darwin-aarch64": {
-      "url": "https://github.com/huiliyi37/Tianshu-Tui/releases/download/v3.15.0/Tianshu_3.15.0_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1dRaXBwUDYwRGMxWlltKzBlRGYyMUpBeTdDQjd5eURYTFM1dTM1RVpXQUFzdlBFMTQvRkt3SFMvajlDU1FGMUhSWVdwUnJkYW5hRkEwOTQ2ZGtudEFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NzA0OTk4CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CmJnSWJrT1FMN3dmUHNlQjRPL0hWTEdnTGxYdGkwdXFQbzR3SzEyR0lhMGFmRUJ0VVU5ZE0wWHJ4S0ZmWDB5WVlaaXdxT3F3T0RiYzdsWEtMSXI5ZkR3PT0K"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2NpTFgwem96cjdvREprUXBzbi8rMzc2VklsNEVsUmJpb1lMdmtRKzZaVlRGTGxGVEtrUWZCQU9hZGFmNVNsQXlEMVlMZ012UlY5V0xLSWkrRU0rbkFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM5NDE2CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6Cnl4SW5RK01DYTl6V2VTS3pEUUhwYVJ0a2dJZW9MMm9GdmhLY3pDdmY1VXNSbEhvNFJPOFZmL1pPd05LY0ZXRDF3L1pKR2JISlYxRzVwZGRYZHA3aEN3PT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.15.0/Tianshu_3.15.0_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1FCaUltRjBGd3Y0c1YrZmkwY1NVdjk1VWlSMFo2eEVQVnNyTHloekw4Zk1UbEl3QUxUR1FyUEhiTUhPT1dBS0tSejJTVCswZmxXdkJoTkV2V054SGdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NzA3NTU4CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CkRzWU5CVHNYbVMyQzJYaUs4Y0NpcDJTcWJRSUd0ZUhneE80Zndrd0dXaU5seGpZejdxV2Q2RDN3Wjg5QXZOQ3RvYktCOCtlQXk4RDJJdFpuNWxDMURnPT0K"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1RJcDh3Y2tnTk83Z3ZpSWhpdGNPc3E1WkpwMjJYcXlIWTJTWnErQVlFNCtnaUJQS2Q1THgvaWdQbzN3Sm9LTllQalJNbDBTd2ZJTnU2bTZ4bk1IbWdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM5NzcwCWZpbGU6VGlhbnNodS5hcHAudGFyLmd6ClRJa1BUbGdzNXlVVjZuVFBSZnMyMWg2L21KMXNSeTlEVWJNcVRsS2NtRjAzNGhlV2F3d2VWYmp1SjZNd1IzYVRRVnJYNW9Hd0l1WXRYTGgzZkM1L0RnPT0K"
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1gzc0c5b3R6S1JZaUs3Sll1OWJlM1IwT2J1ZWduMFQ3aVpjYTd6WFJsYXkzcnJwRW4rUUFKQ0EzUUVYdDlxdE4vekZMSWNvbHlrb3kwdFVKbTc4d3drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTQ2ODE4CWZpbGU6VGlhbnNodV8zLjE2LjFfeDY0LXNldHVwLmV4ZQpCY01sSVAzMHlWSEJFQlR3OGE2KzFTWlZWVUZiRnljaUNYMFVqKzJTN1NScmhXTHgyaktxZXl3T2txTmtXc0pQcGZsVUJnOXVROU1yOXRYdGhya3REZz09Cg=="
     }
   }
 }

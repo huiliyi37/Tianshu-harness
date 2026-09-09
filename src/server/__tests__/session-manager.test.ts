@@ -1529,6 +1529,17 @@ test('用户 abort（无 reason）与 convergence 中止不自动续跑', async 
   assert.deepEqual(agents[1]!.prompts, ['b'], 'convergence 中止不得续跑')
 })
 
+test('turn_complete forwards continuationReason to the event stream', async () => {
+  const { manager, agents } = makeManager()
+  const s = manager.createSession({ prompt: 'go' })
+  const a = agents[0]!
+  a.callbacks!.onTurnComplete({}, 1, false, undefined, 'obligation-verification')
+  a.finish()
+  await settle()
+  const ev = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'turn_complete').at(-1)
+  assert.equal(ev?.data.continuationReason, 'obligation-verification')
+})
+
 test('密集 stall（tiny-turn 循环）12 次后停手，事件含 stopReason=session-total', async () => {
   const { manager, agents } = makeManager()
   const s = manager.createSession({ prompt: 'go' })
@@ -1911,4 +1922,26 @@ test('archive and hardDelete both forget session stores (Wave 3)', async () => {
   // delete requires archived; hardDelete forgets again (idempotent).
   assert.equal(manager.deleteSession(s.id).ok, true)
   assert.deepEqual(forgotten, [s.id, s.id], 'hard-deleted session forgets unconditionally')
+})
+
+// ── stall-observer 收口回归（b3329e590 审查发现：run 收尾 done 事件在
+// markIdle 之后无条件 touchActivity，sidecar/desktop 下交付后等用户仍会被
+// 误报 stall——settlement 的 done 落盘后会话必须进入 idle）。───────────────
+test('stall-observer: run 收尾 done 落盘后会话进入 idle（交付后等用户不误报）', async () => {
+  const { _resetStallObserverForTest, getLastActivity, clearActivity } = await import('../../agent/stall-observer.js')
+  _resetStallObserverForTest()
+  const { manager, agents } = makeManager()
+  const s = manager.createSession({ prompt: 'go' }) // run 起跑 → append user/status → touch
+  try {
+    // run 进行中：条目存在且非 idle（观察器正常监控）
+    assert.equal(getLastActivity(s.id).idle, false, 'run 进行中不应 idle')
+    agents[0]!.finish() // run resolve → settlement 收尾 append done
+    await new Promise((r) => setTimeout(r, 0)) // settlement 微任务链跑完
+    await new Promise((r) => setImmediate(r))
+    const act = getLastActivity(s.id)
+    assert.equal(act.idle, true, `done 收尾后会话应 idle（实际 source=${act.source} idle=${act.idle}）`)
+    assert.equal(manager.getSession(s.id)!.status, 'completed')
+  } finally {
+    clearActivity(s.id)
+  }
 })

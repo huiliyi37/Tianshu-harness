@@ -3,7 +3,6 @@ import type { FailureClass } from './failure-classifier.js'
 import { shouldRetryToolFailure } from './retry-policy.js'
 import type { FailureJournal } from './failure-journal.js'
 import { toolTargetFromInput } from './tool-target.js'
-import type { ToolResult } from '../tools/types.js'
 
 export interface ToolExecution {
   id: string
@@ -20,10 +19,6 @@ export interface ToolExecutionResult {
   isError: boolean
   retried: boolean
   errorClass?: FailureClass
-  /** Wall time of the execute (incl. in-harness retries), for tool telemetry. */
-  durationMs?: number
-  /** Full ToolResult extras (e.g. computer_use metrics) preserved for telemetry. */
-  metrics?: import('../tools/types.js').ComputerUseActionMetrics
 }
 
 export interface TurnHarnessConfig {
@@ -69,7 +64,6 @@ export class TurnHarness {
                 ? `${result.content.slice(0, RETRY_CONTENT_CAP)}\n… [+${result.content.length - RETRY_CONTENT_CAP} chars truncated]`
                 : result.content
               result = {
-                ...result,
                 content: `${capped}\n\n[All ${this.config.maxRetries} retries failed. Error class: ${errorClass}. Consider alternative approach.]`,
                 isError: true,
               }
@@ -109,9 +103,6 @@ export class TurnHarness {
       } catch { /* non-critical — never block tool execution */ }
     }
 
-    // retry-cap 分支的重赋值会把 result 收窄成 { content, isError } 字面量——
-    // 断言回 ToolResult 才能带出 metrics（W2 遥测）。
-    const finalResult = result as ToolResult
-    return { content: finalResult.content, isError: finalResult.isError ?? false, retried, errorClass, durationMs, metrics: finalResult.metrics }
+    return { content: result.content, isError: result.isError ?? false, retried, errorClass }
   }
 }

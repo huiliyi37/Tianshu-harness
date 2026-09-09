@@ -191,18 +191,6 @@ export function verifyWorkerEvidence(result: WorkerResult, profile?: string, tra
   const unverifiedRisk = `unverified: ${result.changedFiles.length} file(s) changed without verified evidence`
 
   if (result.evidenceStatus !== 'verified') {
-    // completed-aborted 豁免（2026-09-05 team-76dc14a1 事故修复 B）：worker 被
-    // abort 斩杀时产物已按 scope 声明落盘，coordinator 按 fs 事实升级为 passed
-    // 并盖 deliveredOnAbort（系统侧盖章，worker 无法自报——ingest schema 不收）。
-    // 证据链确实被 abort 切断（没跑验证），所以保留 unverified + risk；但「未
-    // 验证」不等于「没交付」，不再按未验证改动翻 blocked（那会把已落盘的交付
-    // 重新误标成失败）。
-    if (result.deliveredOnAbort === true) {
-      return {
-        ...result,
-        risks: addRisk(result.risks, unverifiedRisk),
-      }
-    }
     return {
       ...result,
       status: 'blocked',

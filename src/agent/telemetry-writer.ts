@@ -44,11 +44,9 @@ export const ADVISORY_HOLDOUT_KIND = 'advisory-holdout'
  *  「没效果」：worker 中位 2 轮而 expect 窗口 2-4 轮，绝大多数 pending 在结束
  *  时未到期，实测 88 个 worker 只产出 3 条 outcome。这条汇总让盲区本身可见。 */
 export const ADVISORY_UNRESOLVED_KIND = 'advisory-unresolved'
-
-/** computer_use 单动作执行指标（W2，2026-08-31）：动作/耗时/树规模/截图字节
- *  默认落盘——动作耗时与成功率先于任何性能优化被度量，否则优化效果不可验证。
- *  数据源：tool-pipeline 在 computer_use 结果处写入（ToolResult.metrics）。 */
-export const COMPUTER_USE_ACTION_KIND = 'computer-use-action'
+/** meridian 索引队列单项软超时（2026-09-08 follow-up）：索引挂起被跳过时
+ *  记一条 lite 遥测，含 target/kind/累计次数。 */
+export const MERIDIAN_INDEX_ITEM_TIMEOUT_KIND = 'meridian-index-item-timeout'
 
 /** RIVET_DEBUG_TELEMETRY 未开时仍放行的轻量 kind 白名单（每条单行 <200B）。 */
 const LITE_KINDS: ReadonlySet<string> = new Set([
@@ -58,7 +56,7 @@ const LITE_KINDS: ReadonlySet<string> = new Set([
   ADVISORY_OUTCOME_KIND,
   ADVISORY_HOLDOUT_KIND,
   ADVISORY_UNRESOLVED_KIND,
-  COMPUTER_USE_ACTION_KIND,
+  MERIDIAN_INDEX_ITEM_TIMEOUT_KIND,
 ])
 
 export function createTelemetryWriter(cwd: string, sessionId?: string): TelemetryWriter {

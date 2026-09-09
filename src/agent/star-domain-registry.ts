@@ -308,15 +308,12 @@ function parseDomainCard(content: string, fallbackId: string): StarDomain {
   const name = sanitizeString(fm.name, 'name')
   const motto = sanitizeString(fm.motto, 'motto')
   const volatileBlock = sanitizeString(fm.volatileBlock, 'volatileBlock')
-  // Optional user-facing plain explanation; UI falls back to expertise/essence.
-  const plain = sanitizeString(fm.plain, 'plain') || undefined
 
   return {
     id: id as StarDomainId,
     name,
     motto,
     volatileBlock,
-    plain,
     decisionStyle: (decisionStyle ?? 'methodical') as StarDomain['decisionStyle'],
     courageThreshold: clamp(
       typeof fm.courageThreshold === 'number'

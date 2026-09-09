@@ -86,6 +86,26 @@ describe('runConfigCLI provider commands', () => {
     assert.match(stderr.join('\n'), /Invalid approval mode/)
   })
 
+  it('set-approval --unsandboxed enables full-permission mode (yolo + no write sandbox)', async () => {
+    const { stdout, io } = makeIo()
+    await runConfigCLI(['set-approval', 'dangerously-skip-permissions', '--unsandboxed'], io)
+
+    const cfg = loadConfig()
+    assert.equal(cfg.agent.approval, 'dangerously-skip-permissions')
+    assert.equal(cfg.agent.unsandboxed, true)
+    assert.match(stdout.join('\n'), /unsandboxed/)
+  })
+
+  it('set-approval --sandboxed clears unsandboxed (yolo 语义下沙箱仍需 RIVET_SANDBOX=1 显式开)', async () => {
+    const { stdout, io } = makeIo()
+    await runConfigCLI(['set-approval', 'dangerously-skip-permissions', '--unsandboxed'], io)
+    assert.equal(loadConfig().agent.unsandboxed, true)
+    await runConfigCLI(['set-approval', 'dangerously-skip-permissions', '--sandboxed'], io)
+    // --sandboxed = 关闭 unsandboxed 标记（此前死巷：无法把 unsandboxed 设回 false）
+    assert.equal(loadConfig().agent.unsandboxed, false)
+    assert.match(stdout.join('\n'), /RIVET_SANDBOX=1/)
+  })
+
   it('rejects invalid numeric model parameters', async () => {
     const { stderr, exits, io } = makeIo()
     await runConfigCLI(['set-model', 'deepseek', 'bad-model', 'not-a-number', '32000'], io)

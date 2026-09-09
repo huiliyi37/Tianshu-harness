@@ -629,31 +629,67 @@ test('resumeRun 沿用原模型建 agent 并注入续跑提示（缓存亲和）
   assert.equal(userEvents[userEvents.length - 1]!.data.text, RESUME_PROMPT, '续跑注入恢复提示而非空 prompt')
 })
 
-test('resumeRun fail-closed：原模型不可用且无兜底 → 拒绝并保持原状', async () => {
-  const factoryCalls: number[] = []
+test('resumeRun 识别 provider:modelId 记录（2026-09-08 假阴性回归）', async () => {
+  const factoryModels: (string | undefined)[] = []
+  const mem = new LazyMemoryPersistence(crashSeed('p:kimi-x', 'tianshu'))
+  const mgr = new RuntimeSessionManager({
+    createAgent: (_cwd, _id, _mode, modelId) => {
+      factoryModels.push(modelId)
+      return new NoopAgent()
+    },
+    persistence: mem,
+    listModels: () => [
+      { id: 'kimi-x', alias: 'kimi', provider: 'p' },
+      { id: 'v4-pro', alias: 'v4', provider: 'p' },
+    ],
+    defaultModelId: 'v4-pro',
+  })
+  const res = await mgr.resumeRun('crash')
+  assert.deepEqual(res, { ok: true, model: 'p:kimi-x', switched: false })
+  assert.deepEqual(factoryModels, ['p:kimi-x'], 'provider:modelId 原模型必须按记录原样续跑')
+})
+
+test('resumeRun 原模型不可用且无兜底 → 显式降级默认模型续跑（不再死路）', async () => {
+  const factoryModels: (string | undefined)[] = []
   const mem = new LazyMemoryPersistence(crashSeed('gone-model', 'tianshu'))
   const mgr = new RuntimeSessionManager({
-    createAgent: () => { factoryCalls.push(1); return new NoopAgent() },
+    createAgent: (_cwd, _id, _mode, modelId) => {
+      factoryModels.push(modelId)
+      return new NoopAgent()
+    },
     persistence: mem,
     listModels: () => [{ id: 'v4-pro', alias: 'v4', provider: 'p' }],
     defaultModelId: 'v4-pro',
   })
   const res = await mgr.resumeRun('crash')
-  assert.equal(res.ok, false)
-  assert.equal((res as { code: string }).code, 'model_unavailable')
-  assert.equal(factoryCalls.length, 0, '绝不静默落到默认模型建 agent')
-  assert.equal(mgr.getSession('crash')!.status, 'aborted', '会话保持中断态')
-  const userEvents = mgr.getEvents('crash', 0)!.events.filter((e) => e.type === 'user' && e.data.text !== 'do it')
-  assert.equal(userEvents.length, 0, '没有注入任何续跑消息')
+  assert.equal(res.ok, true)
+  assert.equal((res as { degraded: boolean }).degraded, true, '无兜底降级必须显式标记 degraded')
+  assert.deepEqual(factoryModels, ['v4-pro'], '降级续跑建在默认模型上，且没有拒绝用户')
+  const switched = mgr.getEvents('crash', 0)!.events.find((e) => e.type === 'model_switched')
+  assert.ok(switched, '降级切换必须留审计事件')
+  assert.equal(switched!.data.reason, 'resume-degraded-default')
 })
 
-test('resumeRun fail-closed：会话未记录原模型同样拒绝', async () => {
+test('resumeRun 会话未记录原模型 → 同样显式降级默认模型续跑', async () => {
   const mem = new LazyMemoryPersistence(crashSeed(undefined, 'tianshu'))
   const mgr = new RuntimeSessionManager({
     createAgent: () => new NoopAgent(),
     persistence: mem,
     listModels: () => [{ id: 'v4-pro', alias: 'v4', provider: 'p' }],
     defaultModelId: 'v4-pro',
+  })
+  const res = await mgr.resumeRun('crash')
+  assert.equal(res.ok, true)
+  assert.equal((res as { degraded: boolean }).degraded, true)
+})
+
+test('resumeRun 原模型/兜底/默认都不可用 → 仍 fail-closed', async () => {
+  const mem = new LazyMemoryPersistence(crashSeed('gone-model', 'tianshu'))
+  const mgr = new RuntimeSessionManager({
+    createAgent: () => new NoopAgent(),
+    persistence: mem,
+    listModels: () => [{ id: 'still-here', alias: '', provider: 'p' }],
+    defaultModelId: 'also-gone',
   })
   const res = await mgr.resumeRun('crash')
   assert.equal(res.ok, false)

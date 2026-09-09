@@ -11,10 +11,13 @@ const TEST_CONFIG: OpenAIClientConfig = {
 
 /** Access the private probe directly — stream() would require a network mock,
  *  and the probe's contract is purely about the fingerprint comparison. */
-function record(client: OpenAIClient, messages: Array<Record<string, unknown>>): void {
-  (client as unknown as { recordWireDivergence(m: Array<Record<string, unknown>>): void })
-    .recordWireDivergence(messages)
+function record(client: OpenAIClient, messages: Array<Record<string, unknown>>, tools?: unknown[]): void {
+  (client as unknown as { recordWireDivergence(m: Array<Record<string, unknown>>, t?: unknown[]): void })
+    .recordWireDivergence(messages, tools)
 }
+
+const TOOLS_A = [{ type: 'function', function: { name: 'read_file', description: 'read', parameters: { type: 'object', properties: {} } } }]
+const TOOLS_B = [{ type: 'function', function: { name: 'read_file', description: 'read v2', parameters: { type: 'object', properties: {} } } }]
 
 describe('wire-level prefix divergence probe', () => {
   const sys = { role: 'system', content: 'you are helpful' }
@@ -72,5 +75,33 @@ describe('wire-level prefix divergence probe', () => {
     assert.ok(d)
     assert.equal(d!.idx, 2)
     assert.equal(d!.approxCharPos, JSON.stringify(sys).length + JSON.stringify(u1).length)
+  })
+
+  // tools 数组维度（2026-09-06 补盲）：主会话 toolsUpdated 碎裂事件此前双探针皆净。
+  it('tools 定义变化记录 tools_changed（idx=-1/role=tools），优先于消息级分歧', () => {
+    const client = new OpenAIClient(TEST_CONFIG)
+    record(client, [sys, u1], TOOLS_A) // baseline
+    assert.equal(client.consumeWireDivergence(), null, 'baseline 报首次')
+    // 同一请求里消息也变了——tools 变化优先报告（它打的是整个前缀）。
+    record(client, [sys, { ...u1, content: 'hello CHANGED' }], TOOLS_B)
+    const d = client.consumeWireDivergence()
+    assert.ok(d)
+    assert.equal(d!.kind, 'tools_changed')
+    assert.equal(d!.idx, -1)
+    assert.equal(d!.role, 'tools')
+    // 工具变化消费后，下一轮基线已更新——同工具不再误报。
+    record(client, [sys, { ...u1, content: 'hello CHANGED' }], TOOLS_B)
+    assert.equal(client.consumeWireDivergence(), null)
+  })
+
+  it('tools 不变不误报；空 tools 与非空 tools 互切也算变化', () => {
+    const client = new OpenAIClient(TEST_CONFIG)
+    record(client, [sys, u1], TOOLS_A)
+    record(client, [sys, u1, a1], TOOLS_A)
+    assert.equal(client.consumeWireDivergence(), null, '同工具纯追加不记录')
+    record(client, [sys, u1, a1])
+    const d = client.consumeWireDivergence()
+    assert.ok(d)
+    assert.equal(d!.kind, 'tools_changed', 'tools 从有到无同样打前缀')
   })
 })

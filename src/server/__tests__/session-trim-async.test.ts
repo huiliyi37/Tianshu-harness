@@ -35,10 +35,10 @@ describe('FileSessionPersistence deferred trim', () => {
   it('appendEvent flush defers trim: file not trimmed until event loop yields', async () => {
     // 追加一条触发立即 flush（critical type）
     store.appendEvent(sid, { seq: 51, ts: 51, type: 'status', data: { pad: 'y'.repeat(20) } })
-    // flush 已完成（同步 appendFileSync），但 trim 被推迟——文件仍超限
+    // 写链由 queueMicrotask 启动——同步断言点上既未 append 也未 trim，文件仍超限
     assert.ok(statSync(file).size > 200, 'trim must NOT have run synchronously')
 
-    await yieldLoop() // setImmediate tick → 延迟裁剪执行
+    await store.flushSessionAsync(sid) // 等写链 append + 链内 trim 收尾
     const after = statSync(file).size
     assert.ok(after <= 200 + 512, `expected trimmed to ~200+marker, got ${after}`)
   })
@@ -55,8 +55,7 @@ describe('FileSessionPersistence deferred trim', () => {
     store.appendEvent(sid, { seq: 51, ts: 51, type: 'status', data: { pad: 'y'.repeat(20) } })
     // 同 tick 第二次 flush——pendingTrims 去重，不会排两个 trim 任务
     store.appendEvent(sid, { seq: 52, ts: 52, type: 'status', data: { pad: 'z'.repeat(20) } })
-    await yieldLoop()
-    await yieldLoop() // 多等一个 tick：若有第二个任务此时也已执行
+    await store.flushSessionAsync(sid)
     const markers = readFileSync(file, 'utf8')
       .trim()
       .split('\n')
@@ -68,10 +67,10 @@ describe('FileSessionPersistence deferred trim', () => {
 
   it('marker dedup: repeated trims keep exactly one marker', async () => {
     store.appendEvent(sid, { seq: 51, ts: 51, type: 'status', data: { pad: 'y'.repeat(20) } })
-    await yieldLoop()
-    // 再追加并再 yield：文件仍可能超限 → 再次 trim，但保留区尾部已是 marker → 不追加
+    await store.flushSessionAsync(sid)
+    // 再追加并再等链收尾：文件仍可能超限 → 再次 trim，但保留区尾部已是 marker → 不追加
     store.appendEvent(sid, { seq: 52, ts: 52, type: 'status', data: { pad: 'z'.repeat(20) } })
-    await yieldLoop()
+    await store.flushSessionAsync(sid)
     const markers = readFileSync(file, 'utf8')
       .trim()
       .split('\n')

@@ -86,4 +86,35 @@ describe('bash raw output recovery (bounded spool)', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('P1-3：锚行号与 rawPath 同源对齐（stderr 交错不再漂移）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-bash-spool-align-'))
+    try {
+      // stdout 40KB 无错误（触发截断→智能摘要）+ stderr 含错误行。旧实现扫纯 stdout
+      // 保尾窗口，锚行号相对 stdout 计——rawPath 是混流（保头），stderr 交错即漂移，
+      // @raw 行 N 直达定位误导。同源扫描后锚行号应能直达 rawPath 中的错误行。
+      const script =
+        `process.stderr.write('e1\\nERROR_MARKER_P13_xyz\\ne3\\n');` +
+        `process.stdout.write('y'.repeat(40000));`
+      const result = await BASH_TOOL.execute({
+        input: { command: `node -e "${script}"` },
+        toolUseId: 'bash-spool-align-test',
+        cwd: dir,
+      })
+      assert.equal(result.isError, false)
+      const m = result.content.match(/@raw 行 (\d+)/)
+      assert.ok(m, `智能摘要应输出锚行号，实际 content 片段: ${result.content.slice(0, 200)}`)
+      const raw = readFileSync(result.rawPath!, 'utf-8')
+      const rawLines = raw.split('\n')
+      const anchorLine = rawLines[Number(m![1]) - 1] ?? ''
+      assert.ok(
+        anchorLine.includes('ERROR_MARKER_P13_xyz'),
+        `锚行号 ${m![1]} 应指向 rawPath 中的错误行（同源混流），实际该行: ${anchorLine.slice(0, 80)}`,
+      )
+      // capNote 在文件末尾：不影响行号基准（前缀会整体 +1 偏移）
+      assert.ok(!rawLines[0]!.includes('capped'), 'capNote 不得占据文件首行（前缀会让锚行号偏移）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

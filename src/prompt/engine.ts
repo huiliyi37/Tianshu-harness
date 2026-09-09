@@ -29,6 +29,7 @@ import { createContextLayer, createContextLayerReport, type ContextLayerReport }
 import { debugLog } from '../utils/debug.js'
 import { skillRegistry } from '../skills/skill-loader.js'
 import { parseFrozenSnapshotData, type FrozenSnapshotData } from './frozen-snapshot.js'
+import { stableStringify } from '../api/stable-json.js'
 
 export type { PrefixFingerprint, DriftEvent, ContextLayerReport }
 export type { FrozenSnapshotData } from './frozen-snapshot.js'
@@ -113,6 +114,9 @@ export interface PromptEngineConfig {
   maxTokens: number
   staticCtx: StaticPromptContext
   volatileCtx: VolatileContext
+  /** Approval mode at construction (AgentConfig.approvalMode). Live changes go
+   *  through setApprovalMode(); only the unattended level renders a prompt note. */
+  approvalMode?: string
   habituationThreshold?: number
   attentionProfile?: { effectiveAttentionRatio: number; toolDensityThreshold: number; collapseAgeTurns: number }
   /** Prefix cache mode — 'deepseek-native' enables immediate promotion of
@@ -222,6 +226,10 @@ export class PromptEngine {
   private planModeState?: 'off' | 'planning' | 'approved'
   /** Ask Mode state — when 'asking', rendered into volatile appendix */
   private askModeState?: 'off' | 'asking'
+  /** Approval mode — rendered into the dynamic appendix as a permission note
+   *  when unattended (dangerously-skip-permissions). Live-updated via
+   *  setApprovalMode(); never frozen — the mode flips mid-session. */
+  private approvalMode?: string
   /** Active plan file path (relative) — shown in plan-mode block */
   private activePlanFilePath?: string | null
   /** One-shot: emit the plan-mode exit reminder on the next rendered turn. */
@@ -295,6 +303,7 @@ export class PromptEngine {
         this.collapseTokenStep = data.collapseTokenStep
       }
     }
+    this.approvalMode = config.approvalMode
     this.systemPrompt = buildSystemPrompt(config.staticCtx)
     this.frozenBase = buildStableVolatileBlock(config.volatileCtx)
     this.volatileBlock = this.frozenBase
@@ -560,7 +569,7 @@ export class PromptEngine {
               this.gitDirty = false
               this.userMessagesSinceGitRefresh = 0
             }
-            const dynamicCtx: VolatileContext = { ...this.config.volatileCtx, toolHistory, taskProgress: this.taskProgress, toolContext: this.toolContext, planCacheAdvisory: this.planCacheAdvisory, planTraceAppendix: this.planTraceAppendix, activePlanPointer: this.activePlanPointer, intentRetrievalRoute: this.intentRetrievalRoute, taskDepthAdvisory: this.taskDepthAdvisory, planMethodologyAdvisory: this.planMethodologyAdvisory, planExecutingBlock: this.planExecutingBlock, skillAdvisoryBlock: this.skillAdvisoryBlock ?? undefined, invokedSkillsBlock: skillRegistry.renderInvokedSkillsBlock([...this.invokedSkillNames], this.config.volatileCtx.cwd) ?? undefined, crossSessionMemoryBlock: this.crossSessionMemoryBlock ?? undefined, mentionContextBlock: this.mentionContextBlock ?? undefined, harnessAdvisoryBlock: this.harnessAdvisoryBlock, controlPlaneBlock: this.controlPlaneBlock, tersenessEscalate: this.tersenessEscalate, zenLean: this.zenLean || undefined, decisions: this.decisions, activeClaims: this.activeClaims, excludedPathAnchors: this.excludedPathAnchors.length > 0 ? this.excludedPathAnchors : undefined, goalAnchor: this.goalAnchor, playbookLessons: this.playbookLessons, onLessonsRendered: this.onLessonsRendered, sessionMemoryBlock: this.sessionMemoryOverride ?? this.config.volatileCtx.sessionMemoryBlock, crossSessionEvents: this.crossSessionEvents, companionPresence: this.companionPresence, sessionState: this.sessionStateText, worktreeReality: this.worktreeReality, planModeState: this.planModeState, askModeState: this.askModeState, activePlanFilePath: this.activePlanFilePath, planExitReminderPending: this.planExitReminderPending, cognitiveProjection: this.cognitiveProjection, ...(refreshGit ? { gitStatus: undefined } : {}) } as VolatileContext
+            const dynamicCtx: VolatileContext = { ...this.config.volatileCtx, toolHistory, taskProgress: this.taskProgress, toolContext: this.toolContext, planCacheAdvisory: this.planCacheAdvisory, planTraceAppendix: this.planTraceAppendix, activePlanPointer: this.activePlanPointer, intentRetrievalRoute: this.intentRetrievalRoute, taskDepthAdvisory: this.taskDepthAdvisory, planMethodologyAdvisory: this.planMethodologyAdvisory, planExecutingBlock: this.planExecutingBlock, skillAdvisoryBlock: this.skillAdvisoryBlock ?? undefined, invokedSkillsBlock: skillRegistry.renderInvokedSkillsBlock([...this.invokedSkillNames], this.config.volatileCtx.cwd) ?? undefined, crossSessionMemoryBlock: this.crossSessionMemoryBlock ?? undefined, mentionContextBlock: this.mentionContextBlock ?? undefined, harnessAdvisoryBlock: this.harnessAdvisoryBlock, controlPlaneBlock: this.controlPlaneBlock, tersenessEscalate: this.tersenessEscalate, decisions: this.decisions, activeClaims: this.activeClaims, excludedPathAnchors: this.excludedPathAnchors.length > 0 ? this.excludedPathAnchors : undefined, goalAnchor: this.goalAnchor, playbookLessons: this.playbookLessons, onLessonsRendered: this.onLessonsRendered, sessionMemoryBlock: this.sessionMemoryOverride ?? this.config.volatileCtx.sessionMemoryBlock, crossSessionEvents: this.crossSessionEvents, companionPresence: this.companionPresence, sessionState: this.sessionStateText, worktreeReality: this.worktreeReality, planModeState: this.planModeState, askModeState: this.askModeState, approvalMode: this.approvalMode, activePlanFilePath: this.activePlanFilePath, planExitReminderPending: this.planExitReminderPending, cognitiveProjection: this.cognitiveProjection, ...(refreshGit ? { gitStatus: undefined } : {}) } as VolatileContext
             // One-shot: the plan-mode exit reminder is snapshotted into dynamicCtx
             // above; clear it so it renders on this turn only, not every subsequent turn.
             if (this.planExitReminderPending) this.planExitReminderPending = false
@@ -922,6 +931,13 @@ export class PromptEngine {
   }
 
   updateTools(tools: ToolDefinition[]): void {
+    // 字节级幂等守卫（2026-09-06 缓存碎裂根修 P2）：MCP 重连/插件重复注册/
+    // applyFace 重挂会以同一份工具定义反复重进这里——字节不变时跳过替换与
+    // 计数，fingerprint 与请求字节完全不动（此前每次调用都 bump
+    // toolsUpdateCount 并重算指纹，同名工具重注册也会把前缀打碎）。
+    // 上线字节按数组序序列化（buildOaiRequest 的 .map 保序），比较必须同序——
+    // 纯重排也视为变化（保守，与旧行为一致地重建）。
+    if (stableStringify(tools) === stableStringify(this.config.staticCtx.tools)) return
     this.config.staticCtx.tools = tools
     this.fingerprint = computeFingerprint(this.systemPrompt, tools, this.volatileBlock)
     this.toolsUpdateCount++
@@ -1139,16 +1155,6 @@ export class PromptEngine {
     this.planExecutingBlock = block
   }
 
-  /** Zen Mode（禅模式）：相位 zen 时裁剪 CVM 动态注入块（sensorium/策略/知识
-   *  碎片/星域提醒/遥测），保留 git-status/recent-commits/项目指令/计划指针。
-   *  由 loop 在相位变化时调用（arm → true；promote → false）。Cache-safe：
-   *  只影响 dynamic appendix，不触碰冻结前缀。 */
-  private zenLean = false
-
-  setZenLean(lean: boolean): void {
-    this.zenLean = lean
-  }
-
   getPlanExecutingBlock(): string | null {
     return this.planExecutingBlock
   }
@@ -1251,6 +1257,12 @@ export class PromptEngine {
   /** Update ask-mode state — rendered into volatile appendix (never frozen). */
   setAskModeState(state: 'off' | 'asking' | undefined): void {
     this.askModeState = state
+  }
+
+  /** Update the approval mode — rendered into the dynamic appendix as a
+   *  permission note when unattended (never frozen). */
+  setApprovalMode(mode: string | undefined): void {
+    this.approvalMode = mode
   }
 
   /** Active plan file path for incremental plan writing in plan mode. */

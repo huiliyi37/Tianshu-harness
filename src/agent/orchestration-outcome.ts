@@ -185,18 +185,6 @@ export interface GalaxyOrchestrationOutcome {
   /** 派发维度终态（含 autoReview 追加的审查维度）；failed 是未通过维度的
    *  报告行标签（dimension 名，与 formatter 渲染行同源）。 */
   dimensions: { total: number; passed: number; failed: string[] }
-  /** MoE P0 路由轨迹：每个派发路由的 planned label / 请求模型 / 实际模型 /
-   *  终态。缺省（旧结果）时消费方继续用 dimensions 聚合面。 */
-  routes?: Array<{
-    workOrderId: string
-    label: string
-    requestedModel?: string
-    /** 实际模型。缺失时不回填 requestedModel（伪装成已知路由），改置 modelFallback。 */
-    model?: string
-    /** true = 实际模型未知（worker 未回报）；请求模型见 requestedModel。 */
-    modelFallback?: boolean
-    status: string
-  }>
 }
 
 /**
@@ -219,24 +207,7 @@ export interface StarflowOrchestrationOutcome {
   }>>
 }
 
-/** summon_expert（SEA 专家席）回给上游的结构化事实。 */
-export interface ExpertOrchestrationOutcome {
-  kind: 'expert'
-  runId?: string
-  expert: string
-  profile: string
-  authority: string
-  methodPacks: { capsules: string[]; generals: string[] }
-  momentKind?: string
-  resumeHit: boolean
-  model?: string
-  status: string
-  passed: number
-  total: number
-}
-
 export type OrchestrationOutcome =
-  | ExpertOrchestrationOutcome
   | TeamOrchestrationOutcome
   | CouncilOrchestrationOutcome
   | GalaxyOrchestrationOutcome

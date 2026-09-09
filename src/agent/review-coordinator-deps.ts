@@ -197,7 +197,17 @@ function mapSquadronInfraFailures(run: CoordinatorRun): ReviewInfraFailure[] {
   const failures: ReviewInfraFailure[] = []
   for (const result of run.results) {
     if (result.status === 'passed') continue
-    failures.push({ kind: classifyInfraFailure(result), claim: result.summary })
+    // parse-salvaged（status='blocked' 但 findings 非空）：报告坏了但发现活着——
+    // 摘要透传给主控（F1，2026-09-06）；findings 不进 SquadronResult.findings，
+    // 避免 unverified 内容参与 blocking 判定。
+    const salvaged = result.status === 'blocked' && result.findings.length > 0
+      ? result.findings.slice(0, 8).map(f => ({ claim: f.claim, confidence: f.confidence }))
+      : undefined
+    failures.push({
+      kind: classifyInfraFailure(result),
+      claim: result.summary,
+      ...(salvaged !== undefined ? { salvagedFindings: salvaged } : {}),
+    })
   }
   return failures
 }

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { renderDomainPicker, renderDomainGenesisCard, genesisCardMaxScroll } from '../overlay.js'
 import type { DomainPickerData, DomainGenesisCardData } from '../overlay.js'
 import { STAR_GENESIS } from '../../../agent/star-genesis-data.js'
-import { DOMAIN_SHARED_CAPABILITY_NOTE, DOMAIN_SWITCH_CACHE_NOTE } from '../../../agent/domain-picker-entries.js'
+import { DOMAIN_SWITCH_CACHE_NOTE } from '../../../agent/domain-picker-entries.js'
 import { getTheme } from '../../theme.js'
 
 const theme = getTheme()
@@ -94,16 +94,6 @@ describe('renderDomainPicker — 别名行内 · 提示词精华入详情区', (
     assert.ok(lines.some(l => l.includes('Auto')), '详情区显示 Auto')
     assert.ok(lines.some(l => l.includes('按任务匹配')), '别名 fallback 正常')
   })
-
-    it('外层只讲一次共有能力，详情区展示本域具体特质', () => {
-      const data = pickerData()
-      const entry = data.entries[1]!
-      data.entries[1] = { ...entry, plain: '交付纪律：动手前先核对计划锚点，任务多就分波做，每波跑真验证再收口。' }
-      const lines = renderDomainPicker(data, 90, 24, theme).map(stripAnsi)
-      assert.ok(lines.some(l => l.includes(DOMAIN_SHARED_CAPABILITY_NOTE)), '共有能力说明应在详情区出现')
-      assert.ok(lines.some(l => l.includes('特质说明：交付纪律')), '本域特质说明应优先展示')
-      assert.ok(!lines.some(l => l.includes('称量者与高处的眼')), 'plain 在场时不再展示诗意 essence，避免两种口径抢注意力')
-    })
 })
 
 function cardData(scroll = 0): DomainGenesisCardData {

@@ -29,7 +29,6 @@ import { isProFeatureEnabled } from './config/pro-license.js'
 import { lastSessionPointerDir, rivetHome, stateDir } from './config/paths.js'
 import { setTargetConventions, applyConfiguredGitBashPath } from './platform.js'
 import { AgentLoop } from './agent/loop.js'
-import { resolveZenConfig } from './agent/zen-mode.js'
 import { createAgentConfig, createMainAgentConfigInput } from './agent/create-agent-config.js'
 import { SessionContext } from './agent/context.js'
 import { SessionPersist, evictOldSessions, getSessionDir } from './agent/session-persist.js'
@@ -38,7 +37,12 @@ import { memoryBackfillEnabled, runMemoryBackfill } from './memory/backfill.js'
 import { migrateSessionFiles } from './agent/session-cd.js'
 import { decideStartupSession, RESUME_FRESHNESS_MS } from './agent/session-recovery.js'
 import { runResumePreflightOai } from './context/resume-preflight.js'
-import { createWriteEvidenceProbe } from './context/write-evidence-probe.js'
+import {
+  createWriteEvidenceProbe,
+  findRecentUnrecordedWrites,
+  formatDiskReconciliationNote,
+  shouldReconcileDisk,
+} from './context/write-evidence-probe.js'
 import { FileHistory } from './agent/file-history.js'
 import { PromptEngine } from './prompt/engine.js'
 import { subagentPromptBlocks } from './prompt/block-policy.js'
@@ -49,9 +53,8 @@ import { BROWSER_DEBUG_TOOL } from './tools/browser-debug/tool.js'
 import { defaultStore as defaultTodoStore } from './tools/todo.js'
 import { TodoStore } from './tools/todo-store.js'
 import { createCoordinatorDelegateAdapter, createDelegateTaskTool } from './tools/delegate-task.js'
-import { createSummonExpertTool } from './tools/summon-expert.js'
 import { createUndoTool } from './tools/undo.js'
-import { maybeWarnNoSandbox, applySandboxPolicyForApprovalMode } from './tools/sandbox-profile.js'
+import { maybeWarnNoSandbox, applySandboxPolicyForApprovalMode, applyUnsandboxedEnvDefault } from './tools/sandbox-profile.js'
 import { applyConfiguredPathGrants, applyDefaultDependencyReadGrants, applyRivetRuntimeReadGrants, loadPersistedGrants } from './tools/path-grants.js'
 import { createCoordinatorBatchDelegateAdapter, createDelegateBatchTool } from './tools/delegate-batch.js'
 import { createGalaxyTool } from './tools/galaxy.js'
@@ -469,12 +472,8 @@ export function createInteractiveToolRegistry(
   // 域工具档位：defaultDomain 钉定某域且该域配置了 toolPreset 时按域装配
   // （如 taiyi 域默认 taiyi 档）。运行期 /domain 切换不改（装配已过）。
   const toolPreset = resolveToolPreset(cwd, config.agent.defaultDomain)
-  // zen structuredRead 读面：显式配置时面内结构化读工具不受 preset 排除
-  // （默认 minimal → false → 装配字节零变化，frozen 前缀缓存安全）。
-  const zenStructuredRead = config.tools?.zen?.faceMode === 'structuredRead'
   const reg = createDefaultToolRegistry([], {
     preset: toolPreset,
-    zenStructuredRead,
     desktopTools: config.agent.desktopTools,
     todoStore: refs.todoStore,
     // Computer Use（桌面 GUI 自动化）：EXTENDED 层，注册≠主控可见（tool gating
@@ -504,26 +503,6 @@ export function createInteractiveToolRegistry(
       () => refs.claimStore ?? undefined,
       () => refs.sessionId ?? undefined,
       () => refs.getProblemAttackStore?.() ?? null,
-      // B1 worker 归属回流：passed 的 changedFiles 写回主控 ledger + ownership——
-      // 修复 worker 写入不在 owned 集（交付需 adopt 补交）的机制根因。
-      (files) => {
-        for (const f of files) {
-          refs.taskLedger?.record({ type: 'file_write', path: f })
-          refs.ownershipLedger?.registerOwned(f)
-        }
-      },
-    ))
-  }
-
-  // summon_expert —— 强专家代理（SEA）：full 档专属 + EXTENDED 层。
-  // 首批只开放只读诊断席；surgeon 写席 fail-closed。
-  if (presetIncludes(toolPreset, 'summon_expert')) {
-    reg.register(createSummonExpertTool(
-      createCoordinatorDelegateAdapter(() => refs.coordinator),
-      {
-        allowSurgeon: false,
-        routingStore: refs.meridianIndexer?.getDb(),
-      },
     ))
   }
 
@@ -541,13 +520,6 @@ export function createInteractiveToolRegistry(
       () => refs.claimStore ?? undefined,
       () => refs.sessionId ?? undefined,
       () => refs.getProblemAttackStore?.() ?? null,
-      // B1 worker 归属回流（同 delegate_task 语义）。
-      (files) => {
-        for (const f of files) {
-          refs.taskLedger?.record({ type: 'file_write', path: f })
-          refs.ownershipLedger?.registerOwned(f)
-        }
-      },
     ))
   }
 
@@ -696,18 +668,17 @@ export function createInteractiveToolRegistry(
     reg.register(BROWSER_DEBUG_TOOL)
   }
 
-  // repo_graph — meridian 图查询。preset full 含；RIVET_REPO_GRAPH=1 强制开启；
-  // zen structuredRead 读面豁免（面内工具必须在注册表里，否则读面名存实亡）。
-  if (presetIncludes(toolPreset, 'repo_graph') || process.env.RIVET_REPO_GRAPH === '1' || zenStructuredRead) {
+  // repo_graph — meridian 图查询。preset full 含；RIVET_REPO_GRAPH=1 强制开启。
+  if (presetIncludes(toolPreset, 'repo_graph') || process.env.RIVET_REPO_GRAPH === '1') {
     reg.register(createRepoGraphTool(() => refs.meridianIndexer))
   }
 
   // related_tests — override the no-indexer default with a meridian-aware factory
-  if (presetIncludes(toolPreset, 'related_tests') || zenStructuredRead) {
+  if (presetIncludes(toolPreset, 'related_tests')) {
     reg.register(createRelatedTestsTool(() => refs.meridianIndexer))
   }
 
-  if (presetIncludes(toolPreset, 'semantic_search') || zenStructuredRead) reg.register(SEMANTIC_SEARCH_TOOL)
+  if (presetIncludes(toolPreset, 'semantic_search')) reg.register(SEMANTIC_SEARCH_TOOL)
   // APPLY_PATCH: EXTENDED layer — overlap with hash_edit covers >90% of
   // use cases; kept here (interactive) for edge cases (e.g. git-format patches).
   // taiyi 排除（16 核心集已有 edit_file/hash_edit 覆盖编辑面）。
@@ -932,6 +903,10 @@ export function createAgentRuntime(deps: {
     onStatusLine: deps.onStatusLine,
     allowedTools: deps.allowedTools,
     wireContext,
+    // CLI meridian 接线（2026-09-06）：serve 路径经 serve-agent.ts:341 直连，CLI 此前
+    // 漏接——refs.meridianIndexer（bootstrapInteractiveSession :2102 构造）从未进
+    // agent config → tool-pipeline 写工具收尾走 importGraph fallback 每会话全量扫仓。
+    meridianIndexer: deps.refs?.meridianIndexer ?? null,
   }))
 
   // Model capability cards（统一口径在 model/capability.ts——v4-flash 特例也在那里）
@@ -1028,17 +1003,10 @@ export function createAgentRuntime(deps: {
     totalShadowSamples: g.evidence.totalShadowSamples,
   }))
 
-  // Zen Mode 配置解析接线：config.tools.zen（schema 已声明 zen 键——zod 校验
-  // 结构错误在加载期 fail-loud，不再 strip 静默吞没）。未配置 → resolveZenConfig
-  // (undefined) = 默认开启（读面四件套 + 8 turn 预算 + 短消息分诊 + appendix
-  // 收敛）；关闭方式：tools.zen.enabled = false（生产路径生效，2026-08-29 HIGH 修复）。
-  const zenConfig = resolveZenConfig((config.tools as { zen?: unknown }).zen)
-
   const agent = new AgentLoop(
     {
       ...agentCfg,
       toolRegistry,
-      zen: zenConfig,
       // P2: CVM 管线装配配置——磁盘 Config.hooks 填入 AgentLoop 选项
       // （createRuntimeHooksPipeline 经 resolveDisabledHookIds 消费；
       // 交互模式热更见 config-watcher）。
@@ -1389,9 +1357,19 @@ export interface ResolvedModelTarget {
   contextWindow?: number
 }
 export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | 'provider' | 'apiKey' | 'auth'>, modelId: string, targetProvider?: string): ResolvedModelTarget | { error: string } | null {
+  // Accept the `provider:modelId` / `provider:alias` form used by desktop
+  // session records. Before this parse, "deepseek:deepseek-v4-flash" never
+  // matched any provider model entry (id was compared with the prefix still
+  // attached) — the same false negative behind the 2026-09-08 resume failure.
+  const colon = modelId.indexOf(':')
+  const pinnedProvider = colon > 0 ? modelId.slice(0, colon) : undefined
+  const modelRef = pinnedProvider ? modelId.slice(colon + 1) : modelId
+  const providerFilter = targetProvider ?? pinnedProvider
+  if (!modelRef) return null
+
   for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
-    if (targetProvider && provName !== targetProvider) continue
-    const found = prov.models.find(m => m.id === modelId || m.alias === modelId)
+    if (providerFilter && provName !== providerFilter) continue
+    const found = prov.models.find(m => m.id === modelRef || m.alias === modelRef)
     if (!found) continue
     let provider = ctx.provider
     let apiKey = ctx.apiKey
@@ -1607,6 +1585,23 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
 
   const rawMsgs = targetPersist.loadOai()
   const preflight = runResumePreflightOai(rawMsgs, { writeProbe: createWriteEvidenceProbe(ctx.cwd) })
+  // 2026-09-08 磁盘对账：崩溃后工作区可能领先于会话记录。把近期、且历史里
+  // 从未提及的产物主动告诉模型——先 read_file 核实，避免把已完成工作重做。
+  //
+  // 只在**上次非正常退出**时扫（与 serve 侧 restoreHistoryMessages 同一判据，
+  // 见 shouldReconcileDisk）：findRecentUnrecordedWrites 是同步全树遍历
+  // （readdirSync + 逐文件 statSync，实测本仓 5000 文件 270~447ms 阻塞事件
+  // 循环），正常切换会话不该付这个成本。
+  const resumeMeta = targetPersist.loadMetadata()
+  let messagesToRestore = preflight.messages
+  if (shouldReconcileDisk(resumeMeta)) {
+    const recentSinceMs = resumeMeta?.updatedAt ? resumeMeta.updatedAt - 10 * 60 * 1000 : undefined
+    const recentWrites = findRecentUnrecordedWrites(ctx.cwd, preflight.messages, { sinceMs: recentSinceMs })
+    const diskNote = formatDiskReconciliationNote(recentWrites)
+    if (diskNote) {
+      messagesToRestore = [...preflight.messages, { role: 'user' as const, content: diskNote }]
+    }
+  }
 
   // 目标会话无 model 记录（旧会话）时保留当前模型。
   let currentModelId: string | undefined
@@ -1698,7 +1693,7 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
   }
 
   // 载入历史 —— 新 AgentLoop 的持久化监听会把 replace 镜像回 targetPersist。
-  ctx.session.replaceMessages(preflight.messages)
+  ctx.session.replaceMessages(messagesToRestore)
 
   // pointer + registry + 缓存 sessionId 一并切到 targetId,使下次 --continue 命中它。
   try { writeFileSync(lastSessionPointerFile(ctx.cwd), targetId) } catch { /* ignore */ }
@@ -1711,7 +1706,7 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
 
   return {
     ok: true,
-    messageCount: preflight.messages.length,
+    messageCount: messagesToRestore.length,
     repaired: preflight.repaired,
     safe: preflight.safe,
   }
@@ -1874,6 +1869,10 @@ export async function switchAgentCwd(ctx: BootstrapContext, target: string): Pro
   try {
     ctx.meridianIndexer = new MeridianIndexer(newCwd)
     ctx.refs.meridianIndexer = ctx.meridianIndexer
+    // P1-2：agent.config.meridianIndexer 在第 5 步 createAgentRuntime 时钉死（早于本步
+    // refs 更新），不替换则写工具仍查旧 cwd 的 meridian.db（恒空且不回落）。随 refs
+    // 一起换新实例——tool-pipeline 经 loop-factory 读 config.meridianIndexer。
+    agent.config.meridianIndexer = ctx.meridianIndexer
   } catch { /* 索引器重建失败不阻断切换（repo 工具降级为空图） */ }
   try {
     ctx.domainKnowledgeStore = new DomainKnowledgeStore(join(newCwd, '.rivet', 'knowledge'))
@@ -1952,14 +1951,11 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   setTargetConventions(config.editor.platform, config.editor.eol)
   applyConfiguredGitBashPath(config.env.gitBashPath)
 
-  // YOLO removes the approval boundary, so the kernel write boundary becomes
-  // the only one. Turn the sandbox on before the startup notice is computed.
-  // Exception: agent.unsandboxed — 「完全权限」档显式关沙箱，设
-  // RIVET_SANDBOX=0 后 applySandboxPolicyForApprovalMode 看到显式值即 no-op。
-  if (config.agent.unsandboxed) {
-    process.env.RIVET_SANDBOX = '0'
-  }
-  applySandboxPolicyForApprovalMode(config.agent.approval)
+  // 2026-09-07 语义：yolo = 完全权限（免审批 + 无写沙箱），approval 不再驱动沙箱。
+  // agent.unsandboxed 保留为显式豁免（RIVET_SANDBOX=0）；沙箱只由 RIVET_SANDBOX=1 显式开启。
+  // P1-1：显式 RIVET_SANDBOX 永远赢——仅当 env 未显式设置时才从 config 落默认。
+  applyUnsandboxedEnvDefault(config.agent.unsandboxed === true)
+  applySandboxPolicyForApprovalMode(config.agent.approval) // 兼容保留；函数当前为 no-op
 
   // Announce the command sandbox's protection level up-front. Stays silent when
   // a real kernel boundary is active; warns loudly (esp. on native Windows, or

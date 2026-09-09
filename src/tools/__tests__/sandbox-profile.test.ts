@@ -17,6 +17,7 @@ import {
   sandboxRequested,
   sandboxCoversCommand,
   applySandboxPolicyForApprovalMode,
+  applyUnsandboxedEnvDefault,
   _resetSandboxWarningLatch,
   _resetSandboxBackendCache,
 } from '../sandbox-profile.js'
@@ -415,10 +416,13 @@ describe('sandboxCoversCommand', () => {
 })
 
 describe('applySandboxPolicyForApprovalMode', () => {
-  it('turns the sandbox on for YOLO when nothing was set', () => {
+  it('leaves the sandbox OFF for YOLO — yolo = full-permission (unattended full-disk access)', () => {
+    // 产品语义（2026-09-07 用户决策）：yolo 即「完全权限」档——免审批 + 无写沙箱，
+    // 全自动场景可全盘读写（如 CLI 写 ~/.supabase）。沙箱只在显式 RIVET_SANDBOX=1 时开。
     const env = {} as NodeJS.ProcessEnv
     applySandboxPolicyForApprovalMode('dangerously-skip-permissions', env)
-    assert.equal(env.RIVET_SANDBOX, '1')
+    assert.equal(env.RIVET_SANDBOX, undefined)
+    assert.equal(sandboxRequested(env), false)
   })
 
   it('leaves non-YOLO modes alone', () => {
@@ -444,6 +448,31 @@ describe('applySandboxPolicyForApprovalMode', () => {
     const env = {} as NodeJS.ProcessEnv
     applySandboxPolicyForApprovalMode('dangerously-skip-permissions', env)
     applySandboxPolicyForApprovalMode('dangerously-skip-permissions', env)
-    assert.equal(env.RIVET_SANDBOX, '1')
+    // yolo 不再驱动沙箱——反复切换也不产生 RIVET_SANDBOX
+    assert.equal(env.RIVET_SANDBOX, undefined)
+  })
+})
+
+describe('applyUnsandboxedEnvDefault', () => {
+  it('drops RIVET_SANDBOX=0 default when unsandboxed and env unset', () => {
+    const env = {} as NodeJS.ProcessEnv
+    applyUnsandboxedEnvDefault(true, env)
+    assert.equal(env.RIVET_SANDBOX, '0')
+    assert.equal(sandboxRequested(env), false)
+  })
+
+  it('does nothing when not unsandboxed', () => {
+    const env = {} as NodeJS.ProcessEnv
+    applyUnsandboxedEnvDefault(false, env)
+    assert.equal(env.RIVET_SANDBOX, undefined)
+  })
+
+  it('never overrides an explicit RIVET_SANDBOX — explicit env always wins', () => {
+    // P1-1 回归：bootstrap 曾无条件把 config.unsandboxed 落成 RIVET_SANDBOX=0，
+    // 踩掉用户显式设置的 RIVET_SANDBOX=1（与 docstring「显式 env 永远赢」矛盾）。
+    const on = { RIVET_SANDBOX: '1' } as NodeJS.ProcessEnv
+    applyUnsandboxedEnvDefault(true, on)
+    assert.equal(on.RIVET_SANDBOX, '1')
+    assert.equal(sandboxRequested(on), true)
   })
 })

@@ -20,8 +20,14 @@ export function attachSessionPersistListener(deps: {
   session.setMutationListener((m) => {
     if (m.type === 'append') {
       const msg = m.message
+      // 2026-09-08 crash-recovery fix: shrink the hard-kill loss window to
+      // the in-flight record. Tool calls, their results, and user turns are
+      // flushed immediately; streaming assistant deltas keep the 200ms batch.
+      const toolCalls = (msg as { tool_calls?: Array<unknown> }).tool_calls
+      const flushNow = msg.role === 'user' || msg.role === 'tool' ||
+        (msg.role === 'assistant' && !!toolCalls && toolCalls.length > 0)
       writeChain = writeChain
-        .then(() => persist.appendOaiWithChecksum(msg))
+        .then(() => persist.appendOaiWithChecksum(msg, { flush: flushNow }))
         .then(() => {
           // P0-1 trace: verify every message triggers persistence
           debugLog(`[persist] append message role=${msg.role}`)

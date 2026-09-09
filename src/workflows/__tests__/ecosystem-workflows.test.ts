@@ -138,10 +138,7 @@ describe('ecosystem workflow helpers', () => {
     // W-C7 完成后引导:planJson model-handoff —— 询问执行,确认后 content 内嵌的
     // council-plan-json 原样作为 team_orchestrate 的 planJson 交接(不经 /team 重解析)。
     assert.ok(resolved?.prompt.includes('council-plan-json'))
-    assert.ok(resolved?.prompt.includes('已把可执行计划写入会话存储'))
-    assert.ok(resolved?.prompt.includes('team_orchestrate({ objective:'))
-    assert.ok(resolved?.prompt.includes('自动消费'))
-    assert.ok(!resolved?.prompt.includes('planJson 参数'))
+    assert.ok(resolved?.prompt.includes('planJson 参数'))
     assert.ok(resolved?.prompt.includes('主动询问用户是否执行'))
   })
 

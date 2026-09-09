@@ -44,15 +44,6 @@ describe('stop-reason', () => {
     it('labels max-turns as a possibly-incomplete guard stop', () => {
       assert.match(describeStopReason({ source: 'max-turns', turn: 50, voluntary: false }), /最大轮次/)
     })
-
-    it('labels tool-storm as a polling guard stop with the detected class', () => {
-      const text = describeStopReason({
-        source: 'tool-storm', turn: 14, voluntary: false, detail: 'job ×6',
-      })
-      assert.match(text, /^⏹/)
-      assert.match(text, /轮询风暴/)
-      assert.match(text, /job ×6/)
-    })
   })
 
   describe('stopReasonAbortTag', () => {

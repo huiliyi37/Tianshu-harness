@@ -27,39 +27,19 @@ interface GrantsFile {
   apps: ComputerUseGrant[]
 }
 
-/** True when the most recent read found the grants file corrupt (unreadable
- *  JSON / malformed shape). Reads are fail-closed (treated as empty), but the
- *  user's "always allow" grants are effectively lost — surfaced via
- *  GET /config/computer-use so the UI can say so instead of letting apps
- *  silently re-prompt. */
-let lastReadCorrupted = false
-
-/** Last grants-file read hit corruption (see module doc). */
-export function isGrantsFileCorrupted(): boolean {
-  return lastReadCorrupted
-}
-
 function readGrantsFile(path: string): GrantsFile {
-  if (!existsSync(path)) {
-    lastReadCorrupted = false
-    return { version: 1, apps: [] }
-  }
+  if (!existsSync(path)) return { version: 1, apps: [] }
   try {
     const raw = readFileSync(path, 'utf-8')
     const parsed = JSON.parse(raw) as Partial<GrantsFile>
-    if (!parsed || !Array.isArray(parsed.apps)) {
-      lastReadCorrupted = true
-      return { version: 1, apps: [] }
-    }
+    if (!parsed || !Array.isArray(parsed.apps)) return { version: 1, apps: [] }
     // Defensive: keep only well-formed entries.
     const apps = parsed.apps.filter(
       (g): g is ComputerUseGrant => !!g && typeof g.app === 'string' && g.app.length > 0,
     )
-    lastReadCorrupted = false
     return { version: 1, apps }
   } catch {
-    // Corrupt file — treat as empty (fail-closed: no grants) and flag it.
-    lastReadCorrupted = true
+    // Corrupt file — treat as empty (fail-closed: no grants).
     return { version: 1, apps: [] }
   }
 }

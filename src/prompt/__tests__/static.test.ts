@@ -30,6 +30,15 @@ describe('buildSystemPrompt', () => {
     assert.ok(prompt.includes('</tool-usage>'))
   })
 
+  it('可读性校准（回流 main 634af35bb）：散文纪律收窄到交付报告 + 面向阅读回复的分点引导', () => {
+    const prompt = buildSystemPrompt({ tools: [] })
+    // 2026-09-05 可读性校准：交付报告散文纪律收窄 + 面向阅读回复的主动分点
+    // （用户截图反馈模型回复不分点不易读）。两个方向的措辞都必须有落点。
+    assert.ok(prompt.includes('交付报告不用列表能说的用散文'), '散文纪律必须收窄到交付报告')
+    assert.ok(prompt.includes('面向阅读的回复'), '面向阅读回复的分点引导必须有落点')
+    assert.ok(prompt.includes('主动分点'), '分点引导必须落在输出纪律')
+  })
+
   it('teaches parallel fan-out of independent探索 tools', () => {
     const prompt = buildSystemPrompt({ tools: [] })
     assert.ok(prompt.includes('并行'), '应含并行指令')
@@ -120,10 +129,6 @@ describe('buildSystemPrompt', () => {
     assert.ok(prompt.includes('涉及文件'), '收束必须包含commit+文件信息')
     assert.ok(prompt.includes('后续建议'), '收束必须包含后续建议段落')
     assert.ok(!prompt.includes('自我设限'), '"NEVER narrate session limits"条已于 2026-07-19 应用户要求整条移除')
-    // 2026-09-05 可读性校准：交付报告散文纪律收窄 + 面向阅读回复的分点引导
-    // （用户截图反馈模型回复不分点不易读）。两个方向的措辞都必须有落点。
-    assert.ok(prompt.includes('交付报告不用列表能说的用散文'), '散文纪律必须收窄到交付报告')
-    assert.ok(prompt.includes('面向阅读的回复'), '面向阅读回复的分点引导必须有落点')
   })
 
   it('wraps security in <security> tags', () => {

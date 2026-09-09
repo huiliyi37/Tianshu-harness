@@ -9,6 +9,7 @@
  * 需要环境变量：
  *   DEEPSEEK_API_KEY — DeepSeek API key
  *   DEEPSEEK_BASE_URL — (可选) 默认 https://api.deepseek.com
+ *   DEEPSEEK_MODEL — (可选) 模型名，默认 deepseek-chat（3.15 回流验证用 deepseek-v4-flash）
  */
 
 import { PromptEngine } from '../src/prompt/engine.js'
@@ -39,13 +40,15 @@ const TOOLS = [
   },
 ]
 
+const MODEL = process.env.DEEPSEEK_MODEL ?? 'deepseek-chat'
+
 // ── PromptEngine 初始化 ─────────────────────────────────────────
 
 const cwd = process.cwd()
 const snapshot = createVolatileSnapshot({ cwd })
 
 const engine = new PromptEngine({
-  model: 'deepseek-chat',
+  model: MODEL,
   maxTokens: 1024,
   staticCtx: { tools: TOOLS },
   volatileCtx: snapshot,
@@ -73,6 +76,21 @@ const PROMPTS = [
   '这个项目用了什么技术栈',
   '解释一下 src/prompt/engine.ts 的作用',
   '总结一下我们刚才的对话',
+  'src/prompt/volatile-snapshot.ts 的职责是什么',
+  'src/cache 目录下有哪些文件',
+  'tool-pipeline.ts 的入口怎么找',
+  '这个仓库的测试怎么跑',
+  'loop.ts 和 coordinator.ts 的分工',
+  '怎么看会话的缓存命中率',
+  '列出最近 5 个提交',
+  'src/tools 下最大的文件是哪个',
+  'AGENTS.md 里缓存排查指南讲什么',
+  '解释一下 createVolatileSnapshot 的输入',
+  'src/server 的入口在哪个文件',
+  'describe 一下 block-policy 的三个档位',
+  '这个项目用什么测试框架',
+  'frozenUserMerged 是做什么的',
+  '我们的会话数据存在哪里',
 ]
 
 const CONTEXT_WINDOW = 128_000
@@ -105,7 +123,7 @@ async function sendTurn(turn: number, userText: string): Promise<TurnResult> {
       'Authorization': `Bearer ${API_KEY}`,
     },
     body: stableStringify({
-      model: 'deepseek-chat',
+      model: MODEL,
       messages: request.messages,
       max_tokens: 256,
       stream: false,
@@ -154,7 +172,7 @@ async function sendTurn(turn: number, userText: string): Promise<TurnResult> {
 async function main() {
   console.log('🧊 冰鉴缓存验证 — 5 轮对话测试')
   console.log(`   Provider: DeepSeek (${BASE_URL})`)
-  console.log(`   Model: deepseek-chat`)
+  console.log(`   Model: ${MODEL}`)
   console.log(`   Volatile snapshot gitStatus: ${snapshot.gitStatus ? '✅ captured' : '⚠️ empty'}`)
   console.log('')
 
@@ -199,25 +217,31 @@ async function main() {
   // ── 总结 ──────────────────────────────────────────────────────
 
   if (results.length >= 2) {
+    // 主指标 = 收敛段（末 5 轮）累计命中率——短会话早期轮（input 小、单次
+    // user 边界注入占比大）会系统性拉低 Turn 2+ 均值；miss 每轮近似恒定、
+    // input 线性增长，命中率单调收敛——收敛段才是可跨版本对照的稳态值
+    // （v0/v1 基线对照用，2026-09-06）。
+    const convergence = results.slice(-5)
     const turn2Plus = results.slice(1)
-    const totalHit = turn2Plus.reduce((s, r) => s + r.cacheHitTokens, 0)
-    const totalMiss = turn2Plus.reduce((s, r) => s + r.cacheMissTokens, 0)
-    const totalRate = totalHit + totalMiss > 0
-      ? (totalHit / (totalHit + totalMiss) * 100).toFixed(1)
-      : '0.0'
+    const agg = (rs: typeof results) => {
+      const totalHit = rs.reduce((s, r) => s + r.cacheHitTokens, 0)
+      const totalMiss = rs.reduce((s, r) => s + r.cacheMissTokens, 0)
+      return totalHit + totalMiss > 0 ? (totalHit / (totalHit + totalMiss) * 100).toFixed(1) : '0.0'
+    }
+    const convRate = agg(convergence)
+    const totalRate = agg(turn2Plus)
     const allPrefixStable = turn2Plus.every(r => r.prefixStable)
 
     console.log('')
-    console.log(`📊 Turn 2+ 平均缓存命中率: ${totalRate}%`)
+    console.log(`📊 收敛段(末5轮)命中率: ${convRate}%   |   Turn 2+ 平均: ${totalRate}%`)
     console.log(`🔒 前缀稳定性: ${allPrefixStable ? '全部稳定 ✅' : '存在不稳定 ⚠️'}`)
-    console.log(`🎯 目标: ≥ 60% (合格) / ≥ 80% (良好) / ≥ 90% (优秀)`)
+    console.log(`🎯 对照判据: 收敛段 ≥ 90% (健康) / ≥ 95% (优秀)；v0/v1 对照看 Δ`)
 
-    const rate = parseFloat(totalRate)
-    if (rate >= 90) console.log('✅ 优秀 — 冰鉴缓存引擎运行正常')
-    else if (rate >= 80) console.log('✅ 良好 — 缓存工作正常，长会话会更高')
-    else if (rate >= 60) console.log('⚠️ 合格 — 缓存基本工作，可能有优化空间')
-    else if (rate >= 20) console.log('⚠️ 偏低 — 缓存有效但命中率不及预期')
-    else console.log('❌ 缓存可能未生效 — 检查前缀稳定性')
+    const rate = parseFloat(convRate)
+    if (rate >= 95) console.log('✅ 优秀 — 收敛段命中率 ≥95%，缓存健康')
+    else if (rate >= 90) console.log('✅ 健康 — 收敛段命中率 ≥90%')
+    else if (rate >= 80) console.log('⚠️ 关注 — 收敛段 ≥80% 但未达健康线，查注入成本')
+    else console.log('❌ 偏低 — 收敛段 <80%，缓存可能碎裂或注入异常')
   }
 }
 

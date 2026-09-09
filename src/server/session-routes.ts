@@ -11,14 +11,6 @@
  *   GET    /sessions/:id                               one record
  *   POST   /sessions/:id/prompt                        start a run
  *   POST   /sessions/:id/steer                         queue mid-run guidance (T3)
- *   POST   /sessions/:id/fork                          fork conversation (P1-1)
- *   GET    /sessions/:id/comments                      list line comments (P1-2)
- *   POST   /sessions/:id/comments                      add line comment (P1-2)
- *   POST   /sessions/:id/comments/:commentId/resolve   resolve line comment (P1-2)
- *   DELETE /sessions/:id/comments/:commentId           delete line comment (P1-2)
- *   POST   /sessions/:id/pin                           toggle session pin (P1-3)
- *   POST   /sessions/:id/snapshot/export               build redacted snapshot (P1-4)
- *   POST   /sessions/:id/snapshot/import               validate local snapshot (P1-4)
  *   POST   /sessions/:id/abort                         abort
  *   GET    /sessions/:id/events?since=N                replay tail (B3)
  *   GET    /sessions/:id/files?q=&limit=                @file mention picker (D2)
@@ -32,7 +24,6 @@
  *   GET    /sessions/:id/jobs/:jobId/logs              background job output
  *   POST   /sessions/:id/jobs/:jobId/kill              terminate a background job
  *   GET    /worktrees                                  list git worktrees
- *   GET    /git/branches?cwd=...                       list real local branches (P4)
  *   GET    /github/prs                                 list open PRs (via gh CLI)
  *   GET    /github/prs/:number                         PR detail with comments/files
  *   GET    /github/prs/:number/checks                  CI checks overview (gh pr checks)
@@ -51,6 +42,7 @@ import type { ApprovalMode } from '../agent/loop-types.js'
 import type { ReasoningEffort } from '../agent/auto-reasoning.js'
 import type { PlanDocument } from '../plan/plan-store.js'
 import type { Config } from '../config/schema.js'
+import type { SessionRecord } from './protocol.js'
 import { computeUsageCost, findModelPricing } from '../utils/pricing.js'
 import { getRollbackPreview, rollbackToCheckpoint, makeOwnershipGuard } from '../agent/checkpoint.js'
 import { listProjectFiles, rankFiles, listDirEntries } from './file-list.js'
@@ -60,9 +52,9 @@ import { resolveAppPromptInput } from '../tui/slash-commands.js'
 import { getPaletteCommands } from '../tui/command-palette.js'
 import { RECOMMENDED_MAX_SKILLS } from '../skills/skill-loader.js'
 import { validatePath } from '../tools/path-validate.js'
-import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { extname, relative, join } from 'node:path'
+import { extname, relative, join, isAbsolute } from 'node:path'
 import { tmpdir } from 'node:os'
 import { extractDocumentText, EXTRACTION_CAVEAT } from '../tools/doc-extract.js'
 import type { HookEntry, HookEvent, HooksConfig } from '../hooks/user-hooks-runner.js'
@@ -70,7 +62,6 @@ import { loadHooksConfig, VALID_EVENTS } from '../hooks/user-hooks-runner.js'
 import { buildDistillPrompt } from '../prompt/rpa-distill.js'
 import { isProFeatureEnabled } from '../config/pro-license.js'
 import { searchSessionTranscripts } from './session-search.js'
-import { buildSessionSnapshot, SNAPSHOT_VERSION } from './session-snapshot.js'
 import { listCheckpoints, loadCheckpoint, buildResumeFromCheckpoint } from '../agent/wave-checkpoint.js'
 import { storePlan } from '../agent/plan-store.js'
 import {
@@ -78,6 +69,7 @@ import {
   TIANSHU_PROTOCOL_VERSION,
   parseDelegateKinds,
 } from './delegation-protocol.js'
+import { classifyModelSpecMiss } from './serve.js'
 
 const PROTOCOL_HEADERS: Record<string, string> = {
   [TIANSHU_PROTOCOL_HEADER]: String(TIANSHU_PROTOCOL_VERSION),
@@ -87,6 +79,13 @@ export type ArtifactKind = 'plan' | 'task-list' | 'walkthrough' | 'diff' | 'scre
 
 type SessionRouteDependencies = {
   searchSessionTranscripts?: typeof searchSessionTranscripts
+  /**
+   * B4（2026-09-07 审查）：模型切换失败附因的 config 刷新源。解析走
+   * resolveModelSpecWithReload（磁盘 reload），附因若用启动快照 config 会在
+   * Settings 新加 provider 后至 server 重启窗口内报错类——serve 注入
+   * `() => resolveServeContext().config`；缺省时退回快照（向后兼容）。
+   */
+  reloadConfig?: () => Config
 }
 
 /** Vision upload guards — provider-safe formats and a per-image byte ceiling. */
@@ -97,8 +96,6 @@ const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 
 /** Cap on a single CI check log payload returned to the desktop (tail-kept). */
 const MAX_CHECK_LOG_CHARS = 200_000
-/** P1-4 — imported snapshot files must be small enough to preview synchronously. */
-const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 /** Per-image decoded byte cap (safety net; the client compresses to ~256KB). */
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024
 const ACCEPTED_IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,.+$/i
@@ -141,6 +138,49 @@ const APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set<ApprovalMode>([
 ])
 const isApprovalMode = (v: unknown): v is ApprovalMode =>
   typeof v === 'string' && APPROVAL_MODES.has(v as ApprovalMode)
+
+/** Reasoning-effort levels accepted at session creation (same set as POST /sessions/:id/effort). */
+const REASONING_EFFORTS: ReadonlySet<string> = new Set(['off', 'low', 'medium', 'high', 'max', 'auto'])
+const isReasoningEffort = (v: unknown): v is string =>
+  typeof v === 'string' && REASONING_EFFORTS.has(v)
+const isPlanModeState = (v: unknown): v is 'off' | 'planning' =>
+  v === 'off' || v === 'planning'
+const isAskModeState = (v: unknown): v is 'off' | 'asking' =>
+  v === 'off' || v === 'asking'
+
+/**
+ * A1（2026-09-07 审查）：POST /sessions/:id/model 失败的分流文案。
+ * manager.switchModel 在 session missing/running 时直接 return false（早退，
+ * 不触碰模型解析）——若无条件 classifyModelSpecMiss 附因，running 会话切模型
+ * 会被误附「provider 无 key / 模型未配置」，把用户引向查 key 而实际原因是
+ * 会话状态。分流：missing/running 给状态文案（不带 hint），仅「会话存在且
+ * 空闲 + switchModel 失败（= 解析失败）」才附分类提示。
+ */
+export function describeModelSwitchFailure(
+  rec: SessionRecord | undefined,
+  config: Config | undefined,
+  modelId: string,
+  reloadConfig?: () => Config,
+): string {
+  if (!rec) return 'Session not found'
+  if (rec.status === 'running') return 'Session is running — stop it before switching the model'
+  // B4：附因优先用 reload 的最新 config（409 是低频失败路径，reload 成本可接受），
+  // reload 失败回退快照——与解析侧 resolveModelSpecWithReload 的 reload 同源对齐。
+  let cfg = config
+  if (reloadConfig) {
+    try { cfg = reloadConfig() ?? config } catch { /* reload 失败保持快照 */ }
+  }
+  let hint = ''
+  if (cfg) {
+    try {
+      const miss = classifyModelSpecMiss(cfg, modelId)
+      hint = miss === 'key-missing'
+        ? ' — model found but its provider has no usable API key (check Settings → provider key)'
+        : ' — no configured provider lists this model id/alias'
+    } catch { /* 分类失败保持原文案 */ }
+  }
+  return `Model not found${hint}`
+}
 
 export function classifyArtifact(a: Artifact): ArtifactKind {
   const tool = a.tool.toLowerCase()
@@ -265,9 +305,21 @@ export function buildSessionRoutes(
       // from SSE/stream issues. See docs/dev/render-debug-playbook.md.
       const __dbg = process.env.RIVET_DEBUG_RENDER === '1'
       const __t0 = __dbg ? Date.now() : 0
-      const data = (body ?? {}) as { cwd?: string; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; planAutoApproveUi?: unknown; images?: unknown }
+      const data = (body ?? {}) as { cwd?: string; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; reasoningEffort?: unknown; planMode?: unknown; askMode?: unknown; planAutoApproveUi?: unknown; images?: unknown }
       if (data.approvalMode !== undefined && !isApprovalMode(data.approvalMode)) {
         return { status: 400, body: { error: 'Invalid "approvalMode"' } }
+      }
+      if (data.reasoningEffort !== undefined && !isReasoningEffort(data.reasoningEffort)) {
+        return { status: 400, body: { error: 'Invalid "reasoningEffort" (off|low|medium|high|max|auto)' } }
+      }
+      if (data.planMode !== undefined && !isPlanModeState(data.planMode)) {
+        return { status: 400, body: { error: 'Invalid "planMode" (off|planning)' } }
+      }
+      if (data.askMode !== undefined && !isAskModeState(data.askMode)) {
+        return { status: 400, body: { error: 'Invalid "askMode" (off|asking)' } }
+      }
+      if (data.planMode === 'planning' && data.askMode === 'asking') {
+        return { status: 400, body: { error: 'planMode and askMode are mutually exclusive' } }
       }
       // 新建即携带图片（欢迎页/新建对话框粘图）——与 /prompt 同一份校验。
       const imagesCheck = validateImagesPayload(data.images)
@@ -285,6 +337,9 @@ export function buildSessionRoutes(
         isolatedWorktree: data.isolatedWorktree === true,
         model: typeof data.model === 'string' && data.model.trim() ? data.model.trim() : undefined,
         domain: typeof data.domain === 'string' && data.domain.trim() ? data.domain.trim() : undefined,
+        reasoningEffort: data.reasoningEffort as ReasoningEffort | 'auto' | undefined,
+        planMode: data.planMode as 'off' | 'planning' | undefined,
+        askMode: data.askMode as 'off' | 'asking' | undefined,
         // P1b：客户端自报「我有自动批准倒计时 UI」。缺省即 fail-closed，
         // 不武装定时器——宿主看不见倒计时就不该被静默自动批准。
         planAutoApproveUi: data.planAutoApproveUi === true,
@@ -515,8 +570,14 @@ export function buildSessionRoutes(
       if (typeof data.modelId !== 'string' || !data.modelId.trim()) {
         return { status: 400, body: { error: 'Missing or invalid "modelId"' } }
       }
-      if (!(await manager.switchModel(params!.id!, data.modelId.trim()))) {
-        return { status: 409, body: { error: 'Session missing/running or model not found' } }
+      const modelId = data.modelId.trim()
+      if (!(await manager.switchModel(params!.id!, modelId))) {
+        // A1（2026-09-07 审查）：switchModel 在 session missing/running 时直接
+        // return false（session-manager 早退，不触碰模型解析）——此前无条件
+        // classify 附因会把用户引向查 key/模型配置，而实际原因是会话状态
+        // （86f50cd21 接线缺陷）。分流见 describeModelSwitchFailure。
+        const rec = manager.getSession(params!.id!)
+        return { status: 409, body: { error: describeModelSwitchFailure(rec, config, modelId, dependencies.reloadConfig) } }
       }
       return { status: 200, body: manager.getSession(params!.id!) }
     }, apiToken),
@@ -841,8 +902,6 @@ export function buildSessionRoutes(
       // 非 darwin 平台工具未注册，enableTool 静默 no-op。
       if (/@computer\b/i.test(prompt)) {
         await manager.enableTool(params!.id!, 'computer_use')
-        // W4-15：后台权限探测——缺失时经 steer 注入指引（不阻塞 run）。
-        manager.probeComputerUsePermissions(params!.id!)
       }
 
       // 文档附件：落盘 → extractDocumentText 抽取文本 → 前置进 prompt。
@@ -869,15 +928,24 @@ export function buildSessionRoutes(
     }, apiToken),
 
     // Phase 3 可靠性 — 一键续跑（resume_offer 卡片的服务端入口）。
-    // 缓存亲和 fail-closed：原模型不可用且未配置 agent.resumeFallbackModel 时
-    // 返回 409/model_unavailable，UI 降级为「开新会话」入口——绝不静默换默认模型。
+    // 缓存亲和：原模型不可用 → 兜底模型；兜底也不可用 → 默认模型显式降级
+    // （body 带 degraded/warning，UI 给出「前缀缓存重建」提示而非死路）。
     'POST /sessions/:id/resume': withAuth(async (_body, params) => {
       const result = await manager.resumeRun(params!.id!)
       if (!result.ok) {
         const status = result.code === 'not_found' ? 404 : 409
         return { status, body: { error: result.error, code: result.code } }
       }
-      return { status: 200, body: { resumed: true, model: result.model, switched: result.switched } }
+      return {
+        status: 200,
+        body: {
+          resumed: true,
+          model: result.model,
+          switched: result.switched,
+          degraded: result.degraded ?? false,
+          warning: result.warning,
+        },
+      }
     }, apiToken),
 
     // T3 — mid-run steering. Queues user guidance into a RUNNING session's steer
@@ -976,15 +1044,6 @@ export function buildSessionRoutes(
     // Cockpit snapshot — aggregated runtime state (safety/verify/context/model)
     // for the desktop cockpit panel. Reads agent in-memory state via the pure
     // buildCockpitSnapshot function (same source as the TUI /cockpit command).
-    // W-stats：单会话性能视图（cache-log 轮级 TTFT/输出速度/命中率）——
-    // 轮尾注回放补数据与 Insights 会话下钻共用。读不到日志 → 404。
-    // getPerformance 为异步（大日志分片解析，不阻塞事件循环）。
-    'GET /sessions/:id/performance': withAuth(async (_body, params) => {
-      const perf = await manager.getPerformance(params!.id!)
-      if (!perf) return { status: 404, body: { error: 'Performance log not found' } }
-      return { status: 200, body: perf }
-    }, apiToken),
-
     'GET /sessions/:id/cockpit': withAuth((_body, params) => {
       const agent = manager.getAgentForSession(params!.id!)
       if (!agent) return { status: 404, body: { error: 'Session agent not built yet' } }
@@ -1697,168 +1756,26 @@ export function buildSessionRoutes(
     }, apiToken),
 
     // ── Rewind: truncate conversation to a prior message index ──
-    'POST /sessions/:id/rewind': withAuth((body, params) => {
+    'POST /sessions/:id/rewind': withAuth(async (body, params) => {
       const data = (body ?? {}) as { messageIndex?: number; rollbackFiles?: boolean }
       if (typeof data.messageIndex !== 'number' || data.messageIndex < 0) {
         return { status: 400, body: { error: 'Missing or invalid "messageIndex"' } }
       }
+      const rec = manager.getSession(params!.id!)
+      if (!rec) return { status: 404, body: { error: 'Session not found' } }
+      // Issue #63: rehydrated sessions (sidecar restart) have no live agent —
+      // build one (restores disk history) so rewind works on history sessions.
+      // Build failure (cwd removed / config invalid) is explicit, not folded
+      // into the generic 409 below.
+      const ensured = await manager.ensureSessionAgent(params!.id!)
+      if (!ensured) {
+        return { status: 409, body: { error: 'Session agent unavailable (cwd missing or config invalid)' } }
+      }
       const ok = manager.rewind(params!.id!, data.messageIndex, { rollbackFiles: data.rollbackFiles === true })
       if (!ok) {
-        const rec = manager.getSession(params!.id!)
-        if (!rec) return { status: 404, body: { error: 'Session not found' } }
-        return { status: 409, body: { error: 'Session is running, has no agent, or index out of range' } }
+        return { status: 409, body: { error: 'Session is running or index out of range' } }
       }
       return { status: 200, body: { ok: true, ...manager.getSession(params!.id!) } }
-    }, apiToken),
-
-    // ── Fork (P1-1): copy the conversation into a new idle session ──
-    'POST /sessions/:id/fork': withAuth(async (body, params) => {
-      const data = (body ?? {}) as {
-        messageIndex?: number
-        destination?: 'local' | 'same-worktree' | 'new-worktree'
-        title?: string
-        source?: 'header' | 'message' | 'slash' | 'command'
-      }
-      if (
-        data.messageIndex !== undefined &&
-        (typeof data.messageIndex !== 'number' || data.messageIndex < 0)
-      ) {
-        return { status: 400, body: { error: 'Missing or invalid "messageIndex"' } }
-      }
-      if (
-        data.destination !== undefined &&
-        data.destination !== 'local' &&
-        data.destination !== 'same-worktree' &&
-        data.destination !== 'new-worktree'
-      ) {
-        return { status: 400, body: { error: 'Invalid "destination" (local | same-worktree | new-worktree)' } }
-      }
-      const result = await manager.forkSession(params!.id!, {
-        ...(data.messageIndex !== undefined ? { messageIndex: data.messageIndex } : {}),
-        ...(data.destination !== undefined ? { destination: data.destination } : {}),
-        ...(data.title !== undefined ? { title: data.title } : {}),
-        ...(data.source !== undefined ? { source: data.source } : {}),
-      })
-      if (result.ok) return { status: 200, body: { session: result.record } }
-      switch (result.reason) {
-        case 'not_found':
-          return { status: 404, body: { error: 'Session not found' } }
-        case 'running':
-          return { status: 409, body: { error: 'Session is running — stop it before forking' } }
-        case 'invalid_message_index':
-          return { status: 400, body: { error: 'messageIndex does not point at a user message' } }
-        case 'same_worktree_unavailable':
-          return { status: 409, body: { error: 'Source session has no worktree to fork into' } }
-        case 'worktree_failed':
-          return { status: 409, body: { error: 'Failed to create worktree for fork', detail: result.detail } }
-      }
-    }, apiToken),
-
-    // ── P1-2: persistent diff line comments ──
-    'GET /sessions/:id/comments': withAuth((_body, params) => {
-      const comments = manager.listLineComments(params!.id!)
-      if (!comments) return { status: 404, body: { error: 'Session not found' } }
-      return { status: 200, body: { comments } }
-    }, apiToken),
-
-    'POST /sessions/:id/comments': withAuth((body, params) => {
-      const data = (body ?? {}) as {
-        file?: string
-        oldLine?: number
-        newLine?: number
-        comment?: string
-        kind?: 'user' | 'agent'
-        author?: string
-      }
-      if (!data.file || !data.comment) {
-        return { status: 400, body: { error: 'Missing "file" or "comment"' } }
-      }
-      const comment = manager.addLineComment(params!.id!, {
-        file: data.file,
-        oldLine: data.oldLine,
-        newLine: data.newLine,
-        comment: data.comment,
-        kind: data.kind,
-        author: data.author,
-      })
-      if (!comment) {
-        const rec = manager.getSession(params!.id!)
-        if (!rec) return { status: 404, body: { error: 'Session not found' } }
-        return { status: 400, body: { error: 'Comment must anchor on oldLine or newLine' } }
-      }
-      return { status: 200, body: { comment } }
-    }, apiToken),
-
-    'POST /sessions/:id/comments/:commentId/resolve': withAuth((_body, params) => {
-      const ok = manager.resolveLineComment(params!.id!, params!.commentId!)
-      if (!ok) {
-        const rec = manager.getSession(params!.id!)
-        if (!rec) return { status: 404, body: { error: 'Session not found' } }
-        return { status: 404, body: { error: 'Comment not found' } }
-      }
-      return { status: 200, body: { ok: true } }
-    }, apiToken),
-
-    'DELETE /sessions/:id/comments/:commentId': withAuth((_body, params) => {
-      const ok = manager.deleteLineComment(params!.id!, params!.commentId!)
-      if (!ok) {
-        const rec = manager.getSession(params!.id!)
-        if (!rec) return { status: 404, body: { error: 'Session not found' } }
-        return { status: 404, body: { error: 'Comment not found' } }
-      }
-      return { status: 200, body: { ok: true } }
-    }, apiToken),
-
-    // ── P1-3: toggle session pin (sorting only — never enters agent context) ──
-    'POST /sessions/:id/pin': withAuth((body, params) => {
-      const data = (body ?? {}) as { pinned?: boolean }
-      if (typeof data.pinned !== 'boolean') {
-        return { status: 400, body: { error: 'Missing or invalid "pinned" (boolean)' } }
-      }
-      const record = manager.setSessionPinned(params!.id!, data.pinned)
-      if (!record) return { status: 404, body: { error: 'Session not found' } }
-      return { status: 200, body: { ok: true, ...record } }
-    }, apiToken),
-
-    // ── P1-4: redacted read-only snapshot export/import ──
-    'POST /sessions/:id/snapshot/export': withAuth(async (body, params) => {
-      const id = params!.id!
-      const record = manager.getSession(id)
-      if (!record) return { status: 404, body: { error: 'Session not found' } }
-      const data = (body ?? {}) as { includeReasoning?: boolean; includeFileChanges?: boolean }
-      const events = manager.getEvents(id, 0)?.events ?? []
-      const { snapshot, findings } = await buildSessionSnapshot(record, events, {
-        includeReasoning: data.includeReasoning === true,
-        includeFileChanges: data.includeFileChanges === true,
-      })
-      return { status: 200, body: { snapshot, findings } }
-    }, apiToken),
-
-    'POST /sessions/:id/snapshot/import': withAuth((body, params) => {
-      const record = manager.getSession(params!.id!)
-      if (!record) return { status: 404, body: { error: 'Session not found' } }
-      const data = (body ?? {}) as { path?: string }
-      const path = typeof data.path === 'string' ? data.path.trim() : ''
-      if (!path) return { status: 400, body: { error: 'Missing "path"' } }
-      let stat: ReturnType<typeof statSync>
-      try { stat = statSync(path) } catch { return { status: 400, body: { error: 'Snapshot file not found or unreadable' } } }
-      if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) {
-        return { status: 400, body: { error: 'Snapshot file invalid or too large' } }
-      }
-      let parsed: { version?: unknown; meta?: unknown; messages?: unknown; redaction?: unknown }
-      try {
-        parsed = JSON.parse(readFileSync(path, 'utf8')) as typeof parsed
-      } catch {
-        return { status: 400, body: { error: 'Snapshot file is not valid JSON' } }
-      }
-      if (
-        parsed.version !== SNAPSHOT_VERSION ||
-        typeof parsed.meta !== 'object' || parsed.meta === null ||
-        !Array.isArray(parsed.messages)
-      ) {
-        return { status: 400, body: { error: 'Unsupported snapshot version or shape' } }
-      }
-      return { status: 200, body: { snapshot: parsed } }
     }, apiToken),
 
     // ── Precise rewind: preview the agent-edited files a per-message code
@@ -1900,6 +1817,17 @@ export function buildSessionRoutes(
     'GET /git/branches': withAuth(async (_body, params) => {
       const cwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
       if (!cwd) return { status: 400, body: { error: 'Missing "cwd" query param' } }
+      // cwd 必须解析到已存在目录——否则 spawnGit 以坏 cwd 启动失败被 listGitBranches
+      // 的 catch 吞成 notARepo 200，调用者可借任意路径探测「是否为 git 仓库」
+      // （2026-09-07 审查发现）。绝对路径 + statSync 目录确认后放行。
+      if (!isAbsolute(cwd)) return { status: 400, body: { error: 'cwd must be an absolute path' } }
+      try {
+        if (!statSync(cwd).isDirectory()) {
+          return { status: 400, body: { error: 'cwd is not a directory' } }
+        }
+      } catch {
+        return { status: 400, body: { error: 'cwd does not exist' } }
+      }
       const result = await manager.getGitBranches(cwd)
       return { status: 200, body: result }
     }, apiToken),

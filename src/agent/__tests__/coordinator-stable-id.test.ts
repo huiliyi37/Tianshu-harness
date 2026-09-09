@@ -21,8 +21,6 @@ describe('deriveStableWorkOrderId', () => {
     // delegate_batch 用 `${toolUseId}:batch:${i}`，dependsOn 解析为 batch:N。
     assert.equal(deriveStableWorkOrderId('tu_x:batch:0'), 'batch:0')
     assert.equal(deriveStableWorkOrderId('tu_x:batch:2'), 'batch:2')
-    // SEA 专家席：expert:<seaId> 是驻场 order id（跨进程复用）。
-    assert.equal(deriveStableWorkOrderId('tu_sea:expert:root_cause'), 'expert:root_cause')
   })
 
   it('普通 parentTurnId 返回 undefined（调用方回退 wo_<uuid>）', () => {

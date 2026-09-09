@@ -83,4 +83,28 @@ Here is the result:
     assert.equal(result.workOrderId, 'wo-src')
     assert.equal(result.sourcesReviewed, 7)
   })
+
+  it('F2：字符串值内裸引号整包直解——不再 throw 进 salvage（2026-09-06 审查 infra 归因）', () => {
+    // review worker 的真实故障形态：content 含裸引号致整包 schema 失败、salvage 只恢复部分
+    const modelOutput = `审查完成。
+\`\`\`json
+{
+  "workOrderId": "wo-review",
+  "status": "failed",
+  "summary": "发现 2 个问题",
+  "findings": [
+    {"claim": "path 误用 ref 校验", "evidence": "他说"path 参数含空格会误拒"", "confidence": "medium"},
+    {"claim": "count 无 range 必失败", "evidence": "缺省值为空串", "confidence": "medium"}
+  ],
+  "risks": ["低危"],
+}
+\`\`\`
+`
+    const result = parseWorkerResult(modelOutput, 'wo-review')
+    assert.equal(result.workOrderId, 'wo-review')
+    assert.equal(result.findings.length, 2, '两条 finding 都应整包解析成功（不再 salvage 丢条）')
+    assert.equal(result.findings[0]!.evidence, '他说"path 参数含空格会误拒"')
+    assert.equal(result.findings[1]!.claim, 'count 无 range 必失败')
+    assert.deepEqual(result.risks, ['低危'])
+  })
 })

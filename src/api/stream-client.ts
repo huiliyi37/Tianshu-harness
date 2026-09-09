@@ -44,10 +44,12 @@ export interface StreamCallbacks {
  *  but a wireDiverged record = send-layer byte churn; clean on both = provider-
  *  side rendering/落盘 behavior. */
 export interface WireDivergence {
-  /** Index into the wire messages array (0 = system message). */
+  /** Index into the wire messages array (0 = system message). -1 = 非消息维度（tools）。 */
   idx: number
   role: string
-  kind: 'message_changed' | 'message_removed'
+  /** tools_changed：工具定义数组变化（不进 messages，消息级探针隐形——
+   *  它打的是整个前缀的 system+tools 段，优先于消息级分歧报告）。 */
+  kind: 'message_changed' | 'message_removed' | 'tools_changed'
   prevCount: number
   newCount: number
   /** Approximate char offset of the diverged message's start in the wire payload. */

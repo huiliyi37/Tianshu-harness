@@ -231,22 +231,6 @@ export function createWorktreeAt(cwd: string, wtPath: string, commitish: string,
   return { path: wtPath, branch: '(detached)' }
 }
 
-/**
- * P4 补线 — 从真实分支创建隔离 worktree：在 tmpdir 建 detached worktree，
- * commitish 取所选分支名；record.worktreeBranch 保留所选分支名用于搜索/展示。
- */
-export function createWorktreeAtBranch(cwd: string, branch: string, sessionId: string): CreatedWorktree {
-  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '-')
-  const wtPath = mkdtempSync(join(tmpdir(), `rivet-wt-${safeSessionId.slice(0, 8)}-branch-`))
-  try {
-    createWorktreeAt(cwd, wtPath, branch, sessionId)
-    return { path: wtPath, branch }
-  } catch (err) {
-    try { rmSync(wtPath, { recursive: true, force: true }) } catch {}
-    throw err
-  }
-}
-
 /** Async createWorktreeAt — same contract (including the owner marker), event loop stays free during checkout. */
 export async function createWorktreeAtAsync(cwd: string, wtPath: string, commitish: string, sessionId?: string): Promise<CreatedWorktree> {
   mkdirSync(dirname(wtPath), { recursive: true })

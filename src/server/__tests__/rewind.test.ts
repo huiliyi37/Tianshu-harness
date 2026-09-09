@@ -53,6 +53,44 @@ function makeMessages(): OaiMessage[] {
   ]
 }
 
+/**
+ * Agent that mirrors each run into user+assistant messages, so the event log's
+ * `user` events line up 1:1 with user messages (the real prompt flow). rewind
+ * points only carry a seq anchor when such a pairing exists — messages injected
+ * out-of-band (RewindableAgent + makeMessages) have no event and are therefore
+ * deliberately absent from the list (fail-closed: the desktop toasts instead of
+ * cutting at a wrong index).
+ */
+class TurnMirrorAgent implements ManagedAgent {
+  messages: OaiMessage[] = []
+  run(prompt: string, _cb: AgentCallbacks): Promise<void> {
+    this.messages.push({ role: 'user', content: prompt })
+    this.messages.push({ role: 'assistant', content: 'ok' })
+    return Promise.resolve()
+  }
+  abort(): void {}
+  listArtifacts(): Artifact[] { return [] }
+  readArtifact(): Promise<string | null> { return Promise.resolve(null) }
+  getMessages(): OaiMessage[] { return this.messages }
+  replaceMessages(m: OaiMessage[]): void { this.messages = m }
+  rewindToMessages(m: OaiMessage[]): void { this.messages = m }
+}
+
+/** Three mirrored turns: messages [u,a,u,a,u,a], three `user` events. */
+async function makeMirrorSession(): Promise<{ manager: RuntimeSessionManager; id: string }> {
+  const manager = new RuntimeSessionManager({
+    createAgent: () => new TurnMirrorAgent(),
+    defaultCwd: '/tmp',
+  })
+  const s = manager.createSession({ prompt: 'Hello' })
+  await new Promise(r => setTimeout(r, 10))
+  manager.run(s.id, 'Do task A')
+  await new Promise(r => setTimeout(r, 10))
+  manager.run(s.id, 'Now do B')
+  await new Promise(r => setTimeout(r, 10))
+  return { manager, id: s.id }
+}
+
 function setup() {
   const agents: RewindableAgent[] = []
   const manager = new RuntimeSessionManager({
@@ -79,8 +117,7 @@ async function makeSession(manager: RuntimeSessionManager, agents: RewindableAge
 }
 
 test('#1 listRewindPoints returns only user messages with string content', async () => {
-  const { manager, agents } = setup()
-  const id = await makeSession(manager, agents)
+  const { manager, id } = await makeMirrorSession()
 
   const points = (await manager.listRewindPoints(id))!
   assert.equal(points.length, 3, 'should find 3 user messages')
@@ -91,9 +128,10 @@ test('#1 listRewindPoints returns only user messages with string content', async
   assert.equal(points[0]!.index, 0)
   assert.equal(points[1]!.index, 2)
   assert.equal(points[2]!.index, 4)
-  // Messages here are injected out-of-band (no matching `user` events), so the
-  // ordinal/text guard must omit seq → client falls back to its heuristic.
-  assert.ok(points.every(p => p.seq === undefined), 'diverged log exposes no seq')
+  // Every entry carries the seq of its originating `user` event — the desktop
+  // anchors the edit-resend on `u-${seq}`.
+  const seqs = manager.getEvents(id, 0)!.events.filter(e => e.type === 'user').map(e => e.seq)
+  assert.deepEqual(points.map(p => p.seq), seqs, 'each point exposes its user event seq')
 })
 
 test('#2 rewind truncates messages to the selected index', async () => {
@@ -138,47 +176,22 @@ test('#4 rewind appends a rewind event to the event log (append-only)', async ()
 })
 
 test('#4b rewind emits an anchorSeq matching the rewound user event', async () => {
-  // Agent that mirrors each run into user+assistant messages, so the event
-  // log's `user` events line up 1:1 with user messages (the real prompt flow).
-  // Only then can the manager resolve a duplicate-proof UI anchor.
-  class TurnMirrorAgent implements ManagedAgent {
-    messages: OaiMessage[] = []
-    run(prompt: string, _cb: AgentCallbacks): Promise<void> {
-      this.messages.push({ role: 'user', content: prompt })
-      this.messages.push({ role: 'assistant', content: 'ok' })
-      return Promise.resolve()
-    }
-    finish(): void {}
-    abort(): void {}
-    listArtifacts(): Artifact[] { return [] }
-    readArtifact(): Promise<string | null> { return Promise.resolve(null) }
-    getMessages(): OaiMessage[] { return this.messages }
-    replaceMessages(m: OaiMessage[]): void { this.messages = m }
-    rewindToMessages(m: OaiMessage[]): void { this.messages = m }
-  }
-  const manager = new RuntimeSessionManager({
-    createAgent: () => new TurnMirrorAgent(),
-    defaultCwd: '/tmp',
-  })
-  const s = manager.createSession({ prompt: 'Hello' })
-  await new Promise(r => setTimeout(r, 10))
-  manager.run(s.id, 'Do task A')
-  await new Promise(r => setTimeout(r, 10))
-  manager.run(s.id, 'Now do B')
-  await new Promise(r => setTimeout(r, 10))
+  // Only a 1:1 event/message pairing lets the manager resolve a duplicate-proof
+  // UI anchor — see TurnMirrorAgent.
+  const { manager, id } = await makeMirrorSession()
 
   // messages: [u Hello, a ok, u Do task A, a ok, u Now do B, a ok]
-  const points = (await manager.listRewindPoints(s.id))!
+  const points = (await manager.listRewindPoints(id))!
   assert.deepEqual(points.map(p => [p.index, p.content]), [[0, 'Hello'], [2, 'Do task A'], [4, 'Now do B']])
 
   // Each point exposes the seq of its originating `user` event — the desktop
   // timeline uses it to anchor preview/fork on the exact `u-${seq}` block, so
   // preview equals the post-fork state.
-  const userEventSeqs = manager.getEvents(s.id, 0)!.events.filter(e => e.type === 'user').map(e => e.seq)
+  const userEventSeqs = manager.getEvents(id, 0)!.events.filter(e => e.type === 'user').map(e => e.seq)
   assert.deepEqual(points.map(p => p.seq), userEventSeqs, 'point.seq matches its user event seq')
 
-  assert.ok(manager.rewind(s.id, 2), 'rewind to "Do task A" should succeed')
-  const events = manager.getEvents(s.id, 0)!.events
+  assert.ok(manager.rewind(id, 2), 'rewind to "Do task A" should succeed')
+  const events = manager.getEvents(id, 0)!.events
   const rewindEvent = events.find(e => e.type === 'rewind')!
   const userEvent = events.find(e => e.type === 'user' && e.data.text === 'Do task A')!
   assert.equal(rewindEvent.data.messageIndex, 2)
@@ -208,8 +221,8 @@ test('#5 rewind with invalid index returns false', async () => {
 })
 
 test('#6 GET /sessions/:id/rewind-points returns points via HTTP route', async () => {
-  const { manager, router, agents } = setup()
-  const id = await makeSession(manager, agents)
+  const { manager, id } = await makeMirrorSession()
+  const router = createRouter(buildSessionRoutes(manager, TOKEN))
 
   const res = await router('GET', `/sessions/${id}/rewind-points`, {}, AUTH)
   assert.equal(res.status, 200)
@@ -228,12 +241,34 @@ test('#7 POST /sessions/:id/rewind truncates via HTTP route', async () => {
 })
 
 test('#8 POST /rewind returns 409 when session is running', async () => {
-  const { manager, router, agents } = setup()
-  const id = await makeSession(manager, agents)
-  manager.run(id, 'busy')
+  // HangingRunAgent keeps the session running until aborted. The route became
+  // async (lazy agent build for rehydrated sessions) — without a hanging run
+  // the auto-run would settle during the awaited build and the running guard
+  // would never be observed (regression caught when #63's lazy-build landed).
+  class HangingRunAgent extends RewindableAgent {
+    run(_prompt: string, cb: AgentCallbacks): Promise<void> {
+      this.callbacks = cb
+      return new Promise<void>(() => {})
+    }
+  }
+  const agents: HangingRunAgent[] = []
+  const manager = new RuntimeSessionManager({
+    createAgent: () => {
+      const a = new HangingRunAgent()
+      agents.push(a)
+      return a
+    },
+    defaultCwd: '/tmp',
+  })
+  const routes = buildSessionRoutes(manager, TOKEN)
+  const router = createRouter(routes)
+  const s = manager.createSession({ prompt: 'init' }) // auto-run hangs → session stays running
+  await new Promise(r => setTimeout(r, 10))
+  agents[0]!.messages = makeMessages()
 
-  const res = await router('POST', `/sessions/${id}/rewind`, { messageIndex: 2 }, AUTH)
-  assert.equal(res.status, 409)
+  const res = await router('POST', `/sessions/${s.id}/rewind`, { messageIndex: 2 }, AUTH)
+  assert.equal(res.status, 409, 'rewind must be rejected while session is running')
+  assert.equal(agents[0]!.messages.length, 6, 'messages must be untouched while running')
 })
 
 test('#9 [反证 #2] SessionContext.rewindToMessages resets turnCount + turnCacheHistory + files', () => {
@@ -262,17 +297,12 @@ test('#9 [反证 #2] SessionContext.rewindToMessages resets turnCount + turnCach
   assert.equal(ctx.getFilesModified().length, 0, 'filesModified should be cleared')
 })
 
-test('#10 timestamp from event log', async () => {
-  // Messages injected out-of-band (no 'user' events) → timestamp falls back to 0.
-  const { manager, agents } = setup()
-  const id = await makeSession(manager, agents)
+test('#10 timestamp comes from the paired user event', async () => {
+  const { manager, id } = await makeMirrorSession()
   const points = (await manager.listRewindPoints(id))!
 
-  // makeSession creates via createSession({ prompt: 'init' }) which fires a
-  // real run → the event log contains a 'user' event for the first message.
-  // The remaining messages are injected out-of-band → their timestamps are 0.
-  assert.ok(points.length >= 3, 'should have at least 3 user messages')
-  assert.ok(points[0]!.timestamp > 0, 'first user msg (from real run) should have timestamp > 0')
+  assert.equal(points.length, 3, 'only messages with a matching user event are listed')
+  assert.ok(points.every(p => p.timestamp > 0), 'each point carries its user event timestamp')
 })
 
 test('#11 rewind with rollbackFiles does not crash', async () => {
@@ -286,4 +316,123 @@ test('#11 rewind with rollbackFiles does not crash', async () => {
   assert.ok(ok, 'rewind with rollbackFiles should return true')
   // Messages should still be truncated even if file rollback failed silently.
   assert.equal(agents[agents.length - 1]!.messages.length, 2, 'messages truncated')
+})
+
+test('#12 listRewindPoints lazily builds an agent for a no-agent session (rehydrated)', async () => {
+  // Issue #63 root cause: a rehydrated session (sidecar restart) has no live
+  // agent; the old `if (!s.agent) return []` made every "保存并重发" edit-save
+  // fail after an app restart. listRewindPoints must ensure the agent — which
+  // restores disk history — instead of returning an empty list.
+  const agents: RewindableAgent[] = []
+  let restoreMessages: OaiMessage[] = []
+  const manager = new RuntimeSessionManager({
+    createAgent: () => {
+      const a = new RewindableAgent()
+      if (restoreMessages.length > 0) a.messages = [...restoreMessages]
+      agents.push(a)
+      return a
+    },
+    defaultCwd: '/tmp',
+  })
+  // History-only session: no prompt → no auto-run → agent stays null.
+  const s = manager.createSession({ title: 'history-only' })
+  assert.equal(agents.length, 0, 'precondition: no agent built yet')
+  restoreMessages = makeMessages() // what the agent restores from disk
+
+  const points = (await manager.listRewindPoints(s.id))!
+  assert.equal(agents.length, 1, 'must lazily build the agent instead of returning []')
+  // 这些消息是 out-of-band 注入的（没有 `user` 事件）→ 无 seq 可锚定，按新语义
+  // 不产出条目（宁可前端报「回退点未就绪」，也不切到错误的消息索引）。真实
+  // rehydrate 会话的事件日志在磁盘上（getAllEventsAsync 全量读），配得上。
+  assert.equal(points.length, 0, '无事件锚点的消息不进 rewind 点')
+})
+
+test('#13 POST /rewind succeeds on a no-agent session via lazy build', async () => {
+  const agents: RewindableAgent[] = []
+  let restoreMessages: OaiMessage[] = []
+  const manager = new RuntimeSessionManager({
+    createAgent: () => {
+      const a = new RewindableAgent()
+      if (restoreMessages.length > 0) a.messages = [...restoreMessages]
+      agents.push(a)
+      return a
+    },
+    defaultCwd: '/tmp',
+  })
+  const routes = buildSessionRoutes(manager, TOKEN)
+  const router = createRouter(routes)
+  const s = manager.createSession({ title: 'history-only' })
+  assert.equal(agents.length, 0, 'precondition: no agent built yet')
+  restoreMessages = makeMessages()
+
+  const res = await router('POST', `/sessions/${s.id}/rewind`, { messageIndex: 2 }, AUTH)
+  assert.equal(res.status, 200, 'rewind must lazily build the agent and truncate')
+  assert.equal(agents.length, 1, 'one agent built on demand')
+  assert.equal(agents[0]!.messages.length, 2, 'messages truncated to index 2')
+})
+
+test('#14 concurrent listRewindPoints share one lazy agent build (agentBuilds lock)', async () => {
+  // Production createAgent is async (dynamic serve-agent import); every other
+  // harness stub returns synchronously, so ensureAgent's promise branch — the
+  // agentBuilds lock (set / inflight share / finally cleanup) — was never
+  // executed. Two concurrent callers on an agent-less session must trigger
+  // exactly ONE build and both observe the same agent.
+  const agents: RewindableAgent[] = []
+  const resolvers: ((a: RewindableAgent) => void)[] = []
+  const manager = new RuntimeSessionManager({
+    createAgent: () => {
+      const a = new RewindableAgent()
+      agents.push(a)
+      return new Promise<ManagedAgent>((res) => { resolvers.push(() => res(a)) })
+    },
+    defaultCwd: '/tmp',
+  })
+  const s = manager.createSession({ title: 'concurrent' })
+  assert.equal(agents.length, 0, 'precondition: no agent built yet')
+
+  const p1 = manager.listRewindPoints(s.id)
+  const p2 = manager.listRewindPoints(s.id)
+  // Let both calls reach ensureAgent (first triggers the build, second must
+  // hit the in-flight lock instead of starting a second createAgent).
+  await new Promise(r => setTimeout(r, 5))
+  assert.equal(agents.length, 1, 'exactly one build started for two concurrent callers')
+
+  // Resolve the build → both callers complete against the same agent.
+  const agent = agents[0]!
+  agent.messages = makeMessages()
+  resolvers[0]!(agent)
+  const [r1, r2] = await Promise.all([p1, p2])
+  assert.equal(r1!.length, 0, 'out-of-band 消息无事件锚点（本用例主体是锁与共享）')
+  assert.deepEqual(r2, r1, 'second caller shares the same agent (same points)')
+
+  // Once the agent exists, a follow-up call short-circuits (no second build).
+  const r3 = await manager.listRewindPoints(s.id)
+  assert.equal(agents.length, 1, 'settled agent is reused, no rebuild')
+  assert.deepEqual(r3, r1, 'same points again')
+})
+
+test('#15 failed lazy build does not leak an unhandled rejection (lock cleanup)', async () => {
+  // createAgent rejects (cwd removed / config invalid) → listRewindPoints
+  // catches → []. But if the lock cleanup is `void pending.finally(...)`, the
+  // derived promise inherits the rejection and nobody awaits it → an
+  // unhandledRejection fires (the eperm-filter global handler prints stderr
+  // noise on every failed build; Node default would crash). Cleanup must use a
+  // two-arg then so the derived promise settles either way.
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const manager = new RuntimeSessionManager({
+      createAgent: () => Promise.reject(new Error('cwd missing')),
+      defaultCwd: '/tmp',
+    })
+    const s = manager.createSession({ title: 'broken' })
+    const points = await manager.listRewindPoints(s.id)
+    assert.equal(points!.length, 0, 'build failure degrades to empty list (no throw)')
+    // Give the unhandledRejection check a chance to fire if the lock cleanup leaked.
+    await new Promise(r => setTimeout(r, 20))
+    assert.equal(unhandled.length, 0, 'no unhandled rejection leaked from the lock cleanup')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
 })

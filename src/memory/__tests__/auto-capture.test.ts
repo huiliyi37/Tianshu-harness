@@ -40,7 +40,6 @@ describe('auto-capture 记忆形成', () => {
     assert.equal(verdicts?.length, 1)
     assert.equal(verdicts![0]!.worth, true)
     assert.equal(verdicts![0]!.kind, 'decision')
-    assert.equal(verdicts![0]!.resolved, false)
     // 结构性意外 → fail-closed null
     assert.equal(parseCaptureOutput('not json', 1), null)
   })
@@ -64,20 +63,6 @@ describe('auto-capture 记忆形成', () => {
       { index: 0, worth: true, summary: '  ', kind: 'failure_pattern' as const, confidence: 0.8 },
     ])
     assert.equal(noWrite, 0)
-  })
-
-  it('resolved failure_pattern carries the resolved tag for later recall', () => {
-    const cwd = root()
-    const candidates = [
-      { tool: 'run_tests', success: false, summary: '跑测试', result: '1 failed' },
-      { tool: 'write_file', success: true, summary: '改 src/a.ts', result: 'fixed' },
-    ]
-    const written = applyCaptureVerdicts(cwd, 'session-1', candidates, [
-      { index: 0, worth: true, summary: '临时目录 EPERM 坑', kind: 'failure_pattern', confidence: 0.8, resolved: true },
-    ])
-    assert.equal(written, 1)
-    const entry = readMemoryEntries(cwd)[0]!
-    assert.ok(entry.tags.includes('resolved'), '会话内已解决的坑要打 resolved 标记')
   })
 
   it('enabled by default, opt-out via env', () => {

@@ -340,6 +340,98 @@ describe('InputHandler · Shift+Tab and Alt+letter (领航星 2026-06-28)', () =
   })
 })
 
+describe('InputHandler · kitty CSI-u 全量解码（flag 1 后所有非文本键的编码形态）', () => {
+  // start() 发 \x1B[>1u 后，kitty/Ghostty/WezTerm/Alacritty/WT 1.22+ 把所有
+  // 不产生文本的键改用 CSI u 编码。旧实现只认 13;2u/9;2u 两形，其余落
+  // unknown——Esc/Ctrl+C/Ctrl+P/Ctrl+J 控制面整体失效（2026-09-09 审查 P1）。
+  function collect(): { stdin: ReturnType<typeof makeStdin>; handler: InputHandler; keys: KeyPress[] } {
+    const stdin = makeStdin()
+    const handler = new InputHandler({ stdin })
+    const keys: KeyPress[] = []
+    handler.onAnyKey((k) => { keys.push(k) })
+    return { stdin, handler, keys }
+  }
+
+  it('Esc (\\x1B[27u) → escape（非 unknown）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[27u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'escape')
+    handler.dispose()
+  })
+
+  it('Ctrl+C (\\x1B[99;5u) → ctrl_c 且 ctrl=true（打断链路保命键）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[99;5u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'ctrl_c')
+    assert.equal(keys[0]!.ctrl, true)
+    handler.dispose()
+  })
+
+  it('Ctrl+J (\\x1B[106;5u) → ctrl_j（换行提示承诺的键位）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[106;5u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'ctrl_j')
+    assert.equal(keys[0]!.ctrl, true)
+    handler.dispose()
+  })
+
+  it('Ctrl+P (\\x1B[112;5u) → ctrl_p（命令面板）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[112;5u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'ctrl_p')
+    handler.dispose()
+  })
+
+  it('Ctrl+I (\\x1B[105;5u) → tab——CTRL_CODES 单源映射自动对齐历史同码语义', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[105;5u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'tab')
+    assert.equal(keys[0]!.ctrl, true)
+    handler.dispose()
+  })
+
+  it('Ctrl+M (\\x1B[109;5u) → return（Enter 与 Ctrl+M 同键）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[109;5u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'return')
+    handler.dispose()
+  })
+
+  it('Backspace (\\x1B[127u) → backspace', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[127u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'backspace')
+    handler.dispose()
+  })
+
+  it('Ctrl+Shift+A (\\x1B[97;6u) → ctrl_a 且 shift=true（mods 6 = shift+ctrl）', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[97;6u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'ctrl_a')
+    assert.equal(keys[0]!.ctrl, true)
+    assert.equal(keys[0]!.shift, true)
+    handler.dispose()
+  })
+
+  it('修饰位含 Alt（\\x1B[99;7u = ctrl+alt+c）→ meta=true', () => {
+    const { stdin, handler, keys } = collect()
+    stdin.emitData('\x1B[99;7u')
+    assert.equal(keys.length, 1)
+    assert.equal(keys[0]!.name, 'ctrl_c')
+    assert.equal(keys[0]!.ctrl, true)
+    assert.equal(keys[0]!.meta, true)
+    handler.dispose()
+  })
+})
+
 describe('InputHandler · CPR（cursor position report）通道', () => {
   it('\\x1B[{row};{col}R 路由给 onCpr，不产生按键', () => {
     const stdin = makeStdin()
@@ -378,6 +470,38 @@ describe('InputHandler · CPR（cursor position report）通道', () => {
 
     stdin.emitData('a\x1B[10;5Rb')
     assert.deepEqual(reports, [[10, 5]])
+    assert.equal(keys.length, 2)
+    assert.equal(keys[0]!.char, 'a')
+    assert.equal(keys[1]!.char, 'b')
+    handler.dispose()
+  })
+})
+
+describe('InputHandler · kitty 能力查询回包通道', () => {
+  it('\\x1B[?<flags>u 路由给 onKittyFlags，不作为按键派发', () => {
+    const stdin = makeStdin()
+    const handler = new InputHandler({ stdin })
+    const keys: KeyPress[] = []
+    const flagsSeen: number[] = []
+    handler.onAnyKey((k) => { keys.push(k) })
+    handler.onKittyFlags((f) => { flagsSeen.push(f) })
+
+    stdin.emitData('\x1B[?1u')
+    assert.deepEqual(flagsSeen, [1], '回包 flags 应路由到专用通道')
+    assert.equal(keys.length, 0, '能力回包不是用户按键')
+    handler.dispose()
+  })
+
+  it('夹在按键流中的回包只消费不派发，前后按键不受影响', () => {
+    const stdin = makeStdin()
+    const handler = new InputHandler({ stdin })
+    const keys: KeyPress[] = []
+    const flagsSeen: number[] = []
+    handler.onAnyKey((k) => { keys.push(k) })
+    handler.onKittyFlags((f) => { flagsSeen.push(f) })
+
+    stdin.emitData('a\x1B[?1ub')
+    assert.deepEqual(flagsSeen, [1])
     assert.equal(keys.length, 2)
     assert.equal(keys[0]!.char, 'a')
     assert.equal(keys[1]!.char, 'b')

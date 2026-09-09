@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# 批量 push 时取消中间态的 in-flight run——多提交一推送只跑最后一轮
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -39,28 +34,11 @@ jobs:
       - name: Build
         run: npm run build
 
-  changes:
-    # windows-smoke 是 2× 倍率的 Windows runner——只在 src/tools 变更时才值得跑。
-    # 其余变更（desktop/docs/workflows 等）直接跳过，省 8-12 额度分钟/次 push。
-    runs-on: ubuntu-latest
-    outputs:
-      tools: ${{ steps.filter.outputs.tools }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            tools:
-              - 'src/tools/**'
-
   windows-smoke:
     # Real-execution smoke for the Windows command path (Git Bash on the runner).
     # windows-latest ships Git for Windows, so this exercises the actual
     # spawn → stdio pipe → output capture → file side-effect chain that unit
     # tests on Linux cannot reach. Guards the "exit=0, empty stdout" regression.
-    needs: changes
-    if: ${{ needs.changes.outputs.tools == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

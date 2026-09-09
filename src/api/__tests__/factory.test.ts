@@ -88,6 +88,34 @@ describe('createProviderClient', () => {
     assert.equal(capturedHeaders['User-Agent'], 'KimiCLI/1.0')
   })
 
+  // 官方 Kimi Code 文档：k3 / k3-256k 的 reasoning_effort 支持 low|high|max。
+  // 曾经的 effortCap {max:'high'} 会把用户选的 max 静默降成 high——这里钉住
+  // 实际发出的请求体，防止再次被钳制。
+  it('kimi 的 reasoning_effort=max 原样发出（K3 系原生支持 max）', async () => {
+    const capabilities = resolveCapabilities('kimi')
+    const client = createProviderClient(kimiProvider, capabilities, { ...runtimeParams, model: 'k3', reasoningEffort: 'max' })
+    const originalFetch = globalThis.fetch
+    let capturedBody: Record<string, unknown> = {}
+    globalThis.fetch = mock.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          controller.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+
+    await client.stream(
+      { model: 'k3', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 },
+      { onTextDelta: () => {}, onThinkingDelta: () => {}, onContentBlock: () => {}, onStopReason: () => {}, onError: error => { throw error } },
+    )
+
+    globalThis.fetch = originalFetch
+    assert.equal(capturedBody['reasoning_effort'], 'max')
+  })
+
   it('creates OpenAIClient for openai protocol', () => {
     const openaiProvider: ProviderConfig = {
       ...deepseekProvider,

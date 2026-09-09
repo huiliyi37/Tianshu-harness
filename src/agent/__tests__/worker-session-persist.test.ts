@@ -220,45 +220,4 @@ describe('worker-session-persist', () => {
     const leftovers = readdirSync(dir).filter((f) => f !== `${id}.session.jsonl`)
     assert.deepEqual(leftovers, [], 'temp/rename artifacts should be cleaned up')
   })
-
-  // ── 2026-09-02 审查修复：专家驻场按项目隔离 + Windows 安全文件名 ──
-
-  it('expert bench id 落盘为项目隔离文件名（无冒号，Windows 安全）', () => {
-    const home = mkdtempSync(join(tmpdir(), 'rivet-home-'))
-    const benchId = 'expert:root_cause'
-    saveWorkerSession(benchId, 'troubleshooter', 'bench', makeMessages(), home)
-
-    const dir = join(home, '.rivet', 'subagents')
-    const files = readdirSync(dir)
-    assert.equal(files.length, 1)
-    const file = files[0]!
-    assert.ok(file.startsWith('expert-root_cause@'), `文件名必须把 : 换成 - 并带项目后缀，实际 ${file}`)
-    assert.ok(!file.includes(':'), 'Windows 非法字符不得出现在文件名')
-
-    // 逻辑 id 不变：仍按 expert:root_cause 读写
-    const loaded = loadWorkerSession(benchId, home)
-    assert.ok(loaded, '按逻辑 id 必须能读回驻场记录')
-    assert.equal(loaded!.workOrderId, benchId)
-  })
-
-  it('team/batch 等普通 order id 文件名布局不变', () => {
-    const home = mkdtempSync(join(tmpdir(), 'rivet-home-'))
-    saveWorkerSession('batch-0-x7f3a', 'code_scout', 'normal', makeMessages(), home)
-    assert.ok(existsSync(workerSessionPath('batch-0-x7f3a', home)), '普通 id 维持原路径')
-  })
-
-  it('trimMessagesToTokenBudget：超限从最旧侧裁剪，至少保留最后一条', async () => {
-    const { trimMessagesToTokenBudget } = await import('../worker-session-persist.js')
-    const big = (content: string): OaiMessage => ({ role: 'user', content })
-    // 每条约 400 token 级别的体积（估算器按 ~4 字符/token 量级）
-    const messages = Array.from({ length: 10 }, (_, i) => big(`history-${i}: ${'z'.repeat(1600)}`))
-
-    const kept = trimMessagesToTokenBudget(messages, 2000)
-    assert.ok(kept.length < messages.length, '超限必须裁剪')
-    assert.equal(kept[kept.length - 1], messages[messages.length - 1], '最新一条必须保留（同引用）')
-    assert.ok(!kept.some(m => String(m.content ?? '').includes('history-0:')), '最旧的必须先丢')
-
-    assert.deepEqual(trimMessagesToTokenBudget(messages, 0), messages, '非法预算原样返回')
-    assert.deepEqual(trimMessagesToTokenBudget(messages, 10 ** 9), messages, '预算充足不裁剪')
-  })
 })

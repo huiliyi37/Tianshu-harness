@@ -43,6 +43,18 @@ export const ANSI = {
   /** 显示光标 */
   SHOW_CURSOR: '\x1B[?25h',
   /**
+   * Kitty keyboard protocol flag 1（disambiguate escape codes）。
+   * 开启后 Shift+Enter 等带修饰键以 CSI-u 送达（如 `\x1B[13;2u`），
+   * 应用才能区分 Shift+Enter 与普通 Enter；不支持的终端静默忽略。
+   * 对齐公开仓（tianshu-public app attach 同款）。
+   */
+  KITTY_KEYBOARD_DISAMBIGUATE_ON: '\x1B[>1u',
+  /** 弹出 Kitty keyboard protocol（退出时恢复终端默认，与 ON 成对）。 */
+  KITTY_KEYBOARD_OFF: '\x1B[<u',
+  /** 查询当前 kitty keyboard protocol flags——支持的终端回 `\x1B[?<flags>u`，
+   *  收到回包即证明 Shift+Enter 等修饰键可区分（能力探测，无回包则视为不支持）。 */
+  KITTY_KEYBOARD_QUERY: '\x1B[?u',
+  /**
    * DECSCUSR：光标形状设为稳态竖条（不闪）。
    * 终端原生光标闪烁会叠加在应用自管的 DECTCEM 翻转上，导致闪烁频率不稳、
    * 静止光标也在闪——输入类 overlay 激活期间统一切到稳态竖条，

@@ -5,7 +5,7 @@ import type { TeamTask } from '../agent/team-plan.js'
 import type { TeamWave } from '../agent/team-grouping.js'
 import type { WorkerResult } from '../agent/work-order.js'
 import type { FleetWorkerView } from './fleet-registry.js'
-import { encodeFrame, decodeFrame, registerFramePrefix, stripFrames } from './frame-codec.js'
+import { encodeFrame, decodeFrame, registerFramePrefix } from './frame-codec.js'
 
 export const TEAM_PANEL_UI_PREFIX = 'rivet:team-panel:v1:'
 
@@ -154,15 +154,6 @@ export function decodeTeamPanelModel(value: string): TeamPanelModel | null {
   return decodeFrame(value, TEAM_PANEL_UI_PREFIX, (p): p is TeamPanelModel =>
     p != null && typeof p === 'object' && Array.isArray((p as TeamPanelModel).waves) && Array.isArray((p as TeamPanelModel).tasks),
   )
-}
-
-/**
- * 从 team_orchestrate 的流式 chunk / 累加文本中剥离编码帧行，保留进度行。
- * 用途：帧被拦截进 liveTeamModel 后，同 chunk 混入的进度文本仍应进累加器
- * 作 live tail；decode 失败的撕裂帧也经此剥离，raw 串不漏进 tail。
- */
-export function stripTeamPanelFrames(text: string): string {
-  return stripFrames(text, TEAM_PANEL_UI_PREFIX)
 }
 
 export function starFor(authority: string): { name: string; glyph: string; colorKey: 'primary' | 'secondary' | 'success' | 'warning' | 'error' } {

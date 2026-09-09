@@ -127,9 +127,6 @@ const MINIMAL_EXCLUDES: ReadonlySet<string> = new Set([
   // 编排（重 + 日常低频）。team_orchestrate 2026-07-29 移除——它是唯一
   // 多 worker 波次编排入口，主控必须可见（T3 修复：随 tool-tiers 升入 CORE）。
   'council_convene',
-  // 专家席（SEA）：full 档专属 + EXTENDED 层——诊断席经建议卡/显式召唤出场，
-  // 不进 minimal 常驻视野。
-  'summon_expert',
   // browser 系
   'browser_debug',
   // 重而冷门 / 零使用（2026-07-19 会话使用率审计）
@@ -176,7 +173,6 @@ const TAIYI_EXCLUDES: ReadonlySet<string> = new Set([
   'apply_patch',
   'recall_capsule',
   'ask_user_question',
-  'summon_expert',
 ])
 
 /** 判断某工具在给定档位下是否注册。 */

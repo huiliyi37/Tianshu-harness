@@ -18,9 +18,6 @@ function fixture(): CockpitSnapshot {
     nextAction: null,
     safety: { doomLoopLevel: 'none', riskLevel: 'low', riskReasons: [], suggestedAction: 'SAFE-ACTION', recentFingerprints: 0 },
     verification: { filesRead: 1, filesModified: 2, runs: [], deliveryStatus: 'verified', impactedFiles: 0, impactedTests: 0 },
-    expertSignals: [],
-    expertBench: [],
-    zen: { phase: 'full', armed: false, zenTurns: 0, faceMode: 'minimal', face: [] },
     trace: { events: [{ id: 'e1', turn: 1, kind: 'tool', name: 'read', status: 'completed', durationMs: 5 }], totalEvents: 1 },
     context: { estimatedTokens: 100, maxTokens: 1000, rounds: 2, compactionState: 'ok', brokenRounds: 0, layers: [], claimCounts: {} as never },
     model: {

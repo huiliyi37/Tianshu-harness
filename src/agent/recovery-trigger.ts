@@ -314,14 +314,10 @@ export function classifySessionIntegrity(
     actions.push('These tool_results may pollute context — consider trimming')
   }
 
-  if (input.wasRepaired && input.syntheticResultsInserted > 0) {
-    hasIssue = true
-    evidence.push(
-      `Session was repaired: ${input.syntheticResultsInserted} synthetic tool_result(s) inserted`,
-    )
-    actions.push('Verify that the repaired context is consistent')
-    actions.push('If behavior is unexpected, start a fresh session')
-  }
+  // A repaired session is a RESOLVED condition, not an integrity issue. The
+  // orphan counts above are computed from the same repaired message list the
+  // request builder sends, so when repair healed everything both counts are
+  // zero and no recovery trigger should fire (2026-09-08 abort→orphan chain).
 
   // Also flag very large sessions with known issues
   if (input.messageCount > 500 && (input.orphanToolUseCount > 0 || input.orphanToolResultCount > 0)) {

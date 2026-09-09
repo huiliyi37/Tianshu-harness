@@ -525,10 +525,10 @@ export class AdvisoryBus {
   private applyTone(e: AdvisoryEntry): string {
     if (!this.toneAdapter) return e.content
     try {
-      return this.toneAdapter(e.content, { key: e.key, category: e.category, tier: e.tier })
-    } catch {
-      return e.content
-    }
+      const toned = this.toneAdapter(e.content, { key: e.key, category: e.category, tier: e.tier })
+      // toneAdapter 脏值（undefined/非串，30 轮 goal 收束实证）回退原文
+      return typeof toned === 'string' ? toned : e.content
+    } catch { return e.content }
   }
 
   /** Lift 消费端：注入成熟 lift 查询（AdvisoryReadback.getMatureLift）。
@@ -1264,8 +1264,8 @@ export class AdvisoryBus {
   }
 }
 
-function escapeXml(text: string): string {
-  return text
+function escapeXml(text: string | null | undefined): string {
+  return (text ?? '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')

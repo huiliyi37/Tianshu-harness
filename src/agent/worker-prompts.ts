@@ -259,14 +259,6 @@ export function buildWorkerPrompt(order: WorkOrder, _authoritySuffix?: string, o
     `允许的工具：${order.allowedTools.join(', ')}`,
     `禁止的工具：${order.disallowedTools.join(', ')}`,
   )
-  // T6 计划指针注入：objective 只携带章节+checklist 摘要，段落级契约
-  // （接口契约/反目标/待验证假设）在计划全文——worker 需要时 read_file 自取。
-  if (order.planRef) {
-    parts.push(
-      '',
-      `计划全文见：${order.planRef}——执行语义以计划为准；objective 之外的细节（接口契约、反目标、待验证假设等段落）用 read_file 读取该文件获取。`,
-    )
-  }
 
   // 信任边界（来源：codex-security 调研，2026-08）——worker 是 headless 且
   // 写工有 bash/run_tests，仓库内恶意文本诱导执行仓库内脚本的场景只能靠

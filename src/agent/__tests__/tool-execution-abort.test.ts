@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { ToolExecutionController, type ToolExecutionDeps, type ToolExecBatchInput } from '../tool-execution.js'
 import { createPredictionAccumulator } from '../prediction-error.js'
 import { createTurnBudget } from '../turn-budget.js'
-import type { ContentBlock } from '../../api/types.js'
 
 /**
  * Regression guard for the dropped-abortSignal bug (root-cause analysis
@@ -392,110 +391,5 @@ describe('executeBatch mid-batch abort keeps completed results', () => {
     assert.ok(firstResult, `first tool's completed result must be committed (outcome=${outcome}, collected=${collected.length})`)
     assert.ok(typeof firstResult.content === 'string' && firstResult.content.includes('result-of-first'), 'first result content must be the real tool output, not a placeholder')
     assert.ok(secondResult, 'second tool must also have a backfilled/aborted result so tool_calls pairing stays balanced')
-  })
-})
-
-describe('ToolExecutionController crash-commit safety net（批中途 throw 不产生孤儿）', () => {
-  function makeNetController(depsOver: Record<string, unknown>) {
-    const base = {
-      config: {
-        toolRegistry: {
-          execute: async () => ({ content: 'result-of-tool', isError: false }),
-          get: () => ({
-            definition: { input_schema: {} },
-            isConcurrencySafe: () => false,
-            timeoutMs: () => 5000,
-          }),
-          needsApproval: () => false,
-          resolveName: (n: string) => n,
-        },
-        hooks: null,
-        lspEnabled: false,
-        contextClaimStore: undefined,
-        sessionId: 'test-session',
-        contextWindow: 200_000,
-        promptEngine: { getModel: () => 'test-model' },
-      },
-      cwd: '/tmp/test',
-      harness: {
-        executeTool: async ({ execute }: any) => {
-          const r = await execute()
-          return { content: r.content, isError: r.isError ?? false, retried: false }
-        },
-      },
-      prewarm: { get: () => null, invalidate: () => {} },
-      evidence: {
-        getState: () => ({ filesModified: new Set<string>() }),
-        trackFileRead: () => {}, trackFileModified: () => {},
-      },
-      repairHintTracker: { recordSuccess: () => {}, recordFailure: () => {} },
-      repairPipeline: { run: (input: any) => ({ output: input, telemetry: [] }) },
-      runtimeHooks: { runPostTool: async () => {} },
-      contextInjection: { setCerebellarHint: () => {}, clearCerebellarHint: () => {} },
-      trajectory: { getEntries: () => [] },
-      getPredictionAccumulator: () => createPredictionAccumulator(),
-      setPredictionAccumulator: () => {},
-      getVigorState: () => ({}),
-      setVigorState: () => {},
-      getDoomLoopLevel: () => 'none' as const,
-      getSessionTurnCount: () => 1,
-      getSessionId: () => 'test-session',
-      addToolResults: () => {},
-      recordToolHistory: () => {},
-      buildRuntimeSnapshot: () => ({}),
-      requestThetaCheck: () => {},
-      getAutoReasoning: () => false,
-      getReasoningEffort: () => undefined,
-      setClientReasoningEffort: () => {},
-      getSensorium: () => null,
-      getReliabilityDecision: () => null,
-      getTurnBudget: () => createTurnBudget(0),
-    } as unknown as ToolExecutionDeps
-    const deps = { ...base, ...depsOver } as unknown as ToolExecutionDeps
-    return new ToolExecutionController(deps)
-  }
-
-  function makeNetInput(): ToolExecBatchInput {
-    return {
-      toolUses: [{ id: 't1', name: 'demo_tool', input: {} }],
-      callbacks: { onToolResult: () => {} } as any,
-      turn: 1,
-      checkpointCreatedThisTurn: false,
-      abortSignal: new AbortController().signal,
-      traceStore: { events: [], toolFingerprints: [] } as any,
-      importGraph: null,
-      lastConflictCheckCount: 0,
-      latestRisk: { level: 'none', reasons: [], suggestedAction: '' } as any,
-    }
-  }
-
-  it('提交前的管线 throw：finally 安全网仍然落账已收集的结果（孤儿窗口关闭）', async () => {
-    const committed: ContentBlock[][] = []
-    const telemetry: any[] = []
-    const controller = makeNetController({
-      // getEstimatedTokens 在批末 context-pressure 段被调用——此刻结果已收集、
-      // 尚未落账，正是历史上孤儿窗口的典型抛点。
-      getEstimatedTokens: () => { throw new Error('boom-mid-pipeline') },
-      addToolResults: (r: ContentBlock[]) => { committed.push(r) },
-      writeTelemetry: (t: any) => { telemetry.push(t) },
-    })
-
-    await assert.rejects(controller.executeBatch(makeNetInput()), /boom-mid-pipeline/)
-    assert.equal(committed.length, 1, 'finally 安全网必须补一次落账')
-    const flat = committed[0]!
-    const real = flat.find(r => r.type === 'tool_result' && r.tool_use_id === 't1')
-    assert.ok(real, '已执行完的工具结果必须在安全网里落账')
-    assert.equal((real as any).content, 'result-of-tool')
-    assert.ok(telemetry.some(t => t.kind === 'tool-batch-crash-commit'), '崩溃落账要留遥测痕迹')
-  })
-
-  it('正常路径只落账一次（committed 旗标防 finally 重复提交）', async () => {
-    const committed: ContentBlock[][] = []
-    const controller = makeNetController({
-      getEstimatedTokens: () => 1000,
-      addToolResults: (r: ContentBlock[]) => { committed.push(r) },
-    })
-    await controller.executeBatch(makeNetInput())
-    assert.equal(committed.length, 1)
   })
 })

@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { appendFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { assertValidSessionId } from '../validation.js'
@@ -83,17 +84,109 @@ export class ContextClaimStore {
       if (existsSync(this.path)) this.readEvents()
       const checkpointSnapshot = this.loadFromCheckpoint()
       if (checkpointSnapshot) this.nextSeq = Math.max(this.nextSeq, checkpointSnapshot.lastEventSeq + 1)
+      // 全新会话无盘可读：事件视图初始化为空——不依赖在途行先落盘。
+      if (!this.cachedEvents) this.cachedEvents = []
+      if (this.lastFileSize < 0) this.lastFileSize = 0
     }
     const withSeq: ContextClaimEvent = { ...event, seq: event.seq ?? this.nextSeq }
     const line = JSON.stringify(withSeq) + '\n'
-    appendFileSync(this.path, line, 'utf-8')
+    const bytes = Buffer.byteLength(line)
+    // 内存同步更新（读路径立即一致）；行入异步写链——同步 appendFileSync 在
+    // OneDrive/AV/EDR 栈上可卡分钟级并冻结事件循环（issue #61 族写路径同步
+    // IO 治理）。崩溃窗口 = 内存队列的毫秒级。pendingBytes 让 readEvents 的
+    // 外部修改检测把「磁盘合法滞后于内存」与「真外部修改」区分开。
+    this.pendingLines.push(line)
+    this.pendingBytes += bytes
+    this.kickWriteChain()
     this.nextSeq = Math.max(this.nextSeq, (withSeq.seq ?? 0) + 1)
-    if (this.cachedEvents) {
-      this.cachedEvents.push(withSeq)
-      this.lastFileSize += Buffer.byteLength(line)
-    }
+    this.cachedEvents.push(withSeq)
+    this.lastFileSize += bytes
     if (!this.checkpointing && this.checkpointEveryEvents !== undefined && this.checkpointEveryEvents > 0 && this.cachedEvents !== null && this.cachedEvents.length >= this.checkpointEveryEvents) {
-      this.checkpoint()
+      // checkpoint 排入写链按序执行（快照由内存态派生，不依赖在途行先落盘）。
+      this.checkpointQueued = true
+      this.kickWriteChain()
+    }
+  }
+
+  // ── 写链（claims.jsonl 唯一写者）─────────────────────────────────────
+  private pendingLines: string[] = []
+  /** 在途未写字节数：readEvents 外部修改检测的「磁盘合法滞后」基线。 */
+  private pendingBytes = 0
+  private writeChain: { running: boolean; again: boolean } = { running: false, again: false }
+  private checkpointQueued = false
+
+  private kickWriteChain(): void {
+    if (this.writeChain.running) {
+      this.writeChain.again = true
+      return
+    }
+    queueMicrotask(() => {
+      if (this.writeChain.running) return
+      this.writeChain.running = true
+      void this.runWriteChain()
+    })
+  }
+
+  private async runWriteChain(): Promise<void> {
+    try {
+      for (;;) {
+        this.writeChain.again = false
+        const lines = this.pendingLines
+        const wantCheckpoint = this.checkpointQueued
+        this.checkpointQueued = false
+        if (lines.length === 0 && !wantCheckpoint) break
+        if (lines.length > 0) {
+          this.pendingLines = []
+          const text = lines.join('')
+          try {
+            await appendFile(this.path, text, 'utf-8')
+            this.pendingBytes -= Buffer.byteLength(text)
+          } catch {
+            this.pendingLines = [...lines, ...this.pendingLines]
+            await new Promise((r) => setTimeout(r, 250))
+            continue
+          }
+        }
+        if (wantCheckpoint) await this.checkpointOnChain()
+        if (!this.writeChain.again && this.pendingLines.length === 0 && !this.checkpointQueued) break
+      }
+    } finally {
+      this.writeChain.running = false
+      this.writeChain.again = false
+      if (this.pendingLines.length > 0 || this.checkpointQueued) this.kickWriteChain()
+    }
+  }
+
+  /** checkpoint 的链内异步版：快照由内存态派生（cachedEvents/cachedClaims 在
+   *  appendEvent 时同步更新），文件写全部异步，截断与后续 append 由链保序。 */
+  private async checkpointOnChain(now = Date.now()): Promise<void> {
+    this.checkpointing = true
+    try {
+      const snapshot = checkpointClaims(this.listClaims(), now, this.maxEventSeq(this.readEvents()))
+      const tmpSnapshot = `${this.snapshotPath}.tmp`
+      await writeFile(tmpSnapshot, JSON.stringify(snapshot, null, 2) + '\n', 'utf-8')
+      await rename(tmpSnapshot, this.snapshotPath)
+      const tmpLog = `${this.path}.tmp`
+      await writeFile(tmpLog, '', 'utf-8')
+      await rename(tmpLog, this.path)
+      this.cachedEvents = []
+      this.cachedClaims = loadClaimSnapshot(snapshot, now)
+      this.lastProcessedLineCount = 0
+      this.lastFileSize = 0
+      this.pendingBytes = 0 // 截断点在链尾——在途行已落盘，滞后基线归零
+    } finally {
+      this.checkpointing = false
+    }
+  }
+
+  /** 等写链排空（测试/收口用）。 */
+  async flushWrites(timeoutMs = 10_000): Promise<void> {
+    this.kickWriteChain()
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      if (!this.writeChain.running && this.pendingLines.length === 0 && !this.checkpointQueued) return
+      if (Date.now() > deadline) return
+      await new Promise((r) => setTimeout(r, 10))
     }
   }
 
@@ -225,8 +318,9 @@ export class ContextClaimStore {
   }
 
   exportSession(): string {
-    if (!existsSync(this.path)) return ''
-    return readFileSync(this.path, 'utf-8')
+    const disk = existsSync(this.path) ? readFileSync(this.path, 'utf-8') : ''
+    // 在途未写行同属本会话事件流——导出必须包含（write-behind 后磁盘合法滞后）。
+    return disk + this.pendingLines.join('')
   }
 
   /**
@@ -237,6 +331,23 @@ export class ContextClaimStore {
    * - Load = read snapshot + replay incr events
    */
   checkpoint(now = Date.now()): ClaimStoreCheckpointResult {
+    // 写链兼容（2026-09-06 write-behind）：同步调用点（测试/管理路径）上链
+    // 尚未经 queueMicrotask 启动——先把滞留行同步排空再快照截断，语义与旧
+    // 同步版完全一致。链在跑时（生产异步上下文）改走链内排队，结果按当前
+    // 内存态即算（快照内容一致，文件随后由链收尾）。
+    if (this.writeChain.running) {
+      this.checkpointQueued = true
+      this.kickWriteChain()
+      const snapshot = checkpointClaims(this.listClaims(), now, this.maxEventSeq(this.readEvents()))
+      return { snapshotPath: this.snapshotPath, claimCount: snapshot.claims.length, truncatedPath: this.path }
+    }
+    if (this.pendingLines.length > 0) {
+      try {
+        appendFileSync(this.path, this.pendingLines.join(''), 'utf-8')
+        this.pendingLines = []
+        this.pendingBytes = 0
+      } catch { /* 滞留行交给链重试 */ }
+    }
     this.checkpointing = true
     try {
       const snapshot = checkpointClaims(this.listClaims(), now, this.maxEventSeq(this.readEvents()))
@@ -292,12 +403,19 @@ export class ContextClaimStore {
   }
 
   private readEvents(): ContextClaimEvent[] {
-    if (!existsSync(this.path)) return []
     if (this.cachedEvents) {
+      if (!existsSync(this.path)) {
+        // 全新会话（全量在途未写）= 一致，返回内存事件流；曾有落盘却被外部
+        // 删除 = 保持旧语义返回空。
+        return this.lastFileSize === this.pendingBytes ? this.cachedEvents : []
+      }
       // Check if file was externally modified by comparing byte size.
-      // This avoids the readFileSync in the common case (all events flow through appendEvent).
+      // write-behind 后磁盘合法滞后于内存——已落盘字节 = lastFileSize − 在途，
+      // 只有磁盘 ≠ 已落盘字节才是真外部修改。
       const size = statSync(this.path).size
-      if (size === this.lastFileSize) return this.cachedEvents
+      if (size === this.lastFileSize - this.pendingBytes) return this.cachedEvents
+    } else if (!existsSync(this.path)) {
+      return []
     }
     const content = readFileSync(this.path, 'utf-8')
     this.lastFileSize = Buffer.byteLength(content)

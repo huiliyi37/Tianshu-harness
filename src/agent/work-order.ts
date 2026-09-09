@@ -8,8 +8,8 @@ import { profileRegistry, tierTimeoutMultiplier } from './profile-registry.js'
 import { starDomainRegistry } from './star-domain-registry.js'
 import { resolveAuthorityReason } from './star-domain.js'
 import { progressiveTimeout } from './timeout-ladder.js'
-import { PLAN_CONSTRAINT_PREFIX } from './plan-constraints.js'
 import { repairInvalidJsonEscapes } from '../api/json-escape-repair.js'
+import { repairJsonSyntax } from '../api/json-syntax-repair.js'
 
 export const READ_ONLY_WORKER_TOOLS = ['read_file', 'read_section', 'glob', 'grep', 'diff', 'inspect_project', 'repo_map', 'repo_graph', 'related_tests'] as const
 
@@ -169,11 +169,6 @@ const workOrderSchema = z.object({
   delegationDepth: z.number().int().min(0).default(0),
   /** Star domain authority for cognitive injection (V3 Component A). */
   authority: z.string().optional(),
-  /** 计划文件路径（plan_task/team_orchestrate 派发时注入）——worker 上下文
-   *  渲染「计划全文见 <path>」，执行语义以计划为准，超出 objective 的细节
-   *  （接口契约/反目标等段落）read_file 自取。修复契约传导断点：objective
-   *  只携带 checklist 摘要、worker 无路径取回计划原文（T5，2026-08-30）。 */
-  planRef: z.string().optional(),
   /** Why this authority was chosen (≤60 chars). Omitted when authority unset. */
   authorityReason: z.string().max(60).optional(),
   /** Team planner risk tier for shadow-only model tier recommendation. */
@@ -285,11 +280,7 @@ export const workerResultSchema = z.object({
    * Why the worker failed — enables recovery-strategy differentiation.
    *
    * status × failureReason 消费矩阵（2026-08-25 收口）：
-   * - caller_aborted → status 'blocked'：父会话主动取消，消费方不得重试。
-   *   例外（2026-09-05 completed-aborted）：abort 收尾时产物已按 scope 声明
-   *   落盘的，coordinator 升级为 status 'passed' + deliveredOnAbort:true
-   *   （证据钉死 unverified）——failureReason 保留 caller_aborted/timeout
-   *   供下游区分「被 abort 杀掉的已交付」与「干净通过」。见 upgradeAbortedDelivery。
+   * - caller_aborted → status 'blocked'：父会话主动取消，消费方不得重试、不得按完成态展示。
    * - timeout / max_turns → 预算耗尽：可续跑信号（hands-session 内部先续跑，
    *   放弃后才对外；消费方见二者不应自动再续）。
    * - worker_blocked → 环境/闸门阻断：环境中性，不计能力惩罚。
@@ -343,14 +334,6 @@ export const workerResultSchema = z.object({
   /** M2 时间账：worker 从进全局并发门到 settle 的墙钟（含等槽排队），由
    *  coordinator 在 settle 后补账——非 worker 自报字段，不进 ingest schema。 */
   durationMs: z.number().optional(),
-  /** completed-aborted 语义（2026-09-05 team-76dc14a1 事故修复）：worker 被
-   *  abort（父信号/预算超时）斩杀时，其 scope 声明的产物已按预期写盘——
-   *  coordinator 按 fs 事实（存在 + 非空 + 本次运行有新写入）把它从
-   *  blocked/failed 升级为 passed，并用本字段盖章。证据链被 abort 切断
-   *  （没跑验证），evidenceStatus 恒为 unverified。
-   *  刻意不进 ingest schema（同 objective/groupId 纪律）——worker 无法自报
-   *  此标记绕过 verifyWorkerEvidence 的未验证改动闸门。 */
-  deliveredOnAbort: z.boolean().optional(),
 })
 
 const workerResultIngestSchema = z.object({
@@ -455,8 +438,6 @@ export interface CreateReadOnlyWorkOrderInput {
   delegationDepth?: number
   /** Star domain authority for cognitive injection (V3 Component A). */
   authority?: string
-  /** 计划文件路径——worker 上下文注入「计划全文见 <path>」（T5）。 */
-  planRef?: string
   /** Team planner risk tier for shadow-only model tier recommendation. */
   riskTier?: 'low' | 'medium' | 'high'
   /** B2: current session turn for progressive timeout calculation. */
@@ -465,8 +446,6 @@ export interface CreateReadOnlyWorkOrderInput {
   modelOverride?: { provider: string; model: string }
   /** 瑶光门 tier 下限：路由结果不得低于此档。只抬升不降级。 */
   tierFloor?: 'cheap' | 'balanced' | 'strong'
-  /** 专家席在 profile 工具面之上追加的工具（仍过 authority 白名单）。 */
-  extraAllowedTools?: string[]
   /** 写工显式 opt-in 批级共享信息素（星河收编 #3）。 */
   batchStigmergy?: boolean
 }
@@ -497,19 +476,6 @@ const MAX_TASK_CONSTRAINTS = 12
  *  渲染器必须自己保证产出 ≤ 此值并带截断指针，避免此处无声再切一刀。 */
 export const MAX_TASK_CONSTRAINT_CHARS = 400
 
-/** 证据类约束（summon_expert 的 [evidence] 包）单条上限——与 summon-expert
- *  侧切片同一口径（单源，防两层裁剪互相缩水）。独立于任务级 400/12 条预算：
- *  证据包是多行整体，按任务级切会把 10 条线索砍成 ~370 字符。 */
-export const MAX_EVIDENCE_CONSTRAINT_CHARS = 4000
-const EVIDENCE_CONSTRAINT_PREFIX = '[evidence]'
-
-/** extraAllowedTools 不可解除的默认禁用核心：写/执行通道（bash/write/edit）
- *  与自召（delegate_*）。专家授予只能解除「读 flavored」限制（如 run_tests），
- *  不能借 toolGrants 打通写通道——写行为仍只走 write 工单 + worktree 隔离。 */
-const NON_OVERRIDABLE_DISALLOWED: ReadonlySet<string> = new Set([
-  'bash', 'write_file', 'edit_file', 'delegate_task', 'delegate_batch',
-])
-
 /**
  * Profile discipline plus the dispatcher's task-level constraints.
  *
@@ -517,60 +483,23 @@ const NON_OVERRIDABLE_DISALLOWED: ReadonlySet<string> = new Set([
  * report-shape discipline, and a caller supplying task constraints is adding a
  * requirement, not waiving those. Blank and duplicate entries are dropped so a
  * caller echoing a boilerplate line cannot double it.
- *
- * 约束分三级预算：计划级（[计划 前缀，不截断不计数）、证据级（[evidence] 前缀，
- * 独立 4000 上限带截断指针）、任务级（400 字符 × 12 条）。
  */
 function withTaskConstraints(base: string[], task?: string[]): string[] {
   if (!task?.length) return base
   const seen = new Set(base)
   const extra: string[] = []
-  // T7 预算分级两遍扫描：计划级条目（[计划 前缀）独立预算——不参与任务级
-  // 12 条限制、不截断（计划级契约是执行语义的权威来源，截断会丢反目标/
-  // 待验证假设）。先全收计划级，再任务级（限 12 条）——顺序无关。
   for (const raw of task) {
-    if (!raw.startsWith(PLAN_CONSTRAINT_PREFIX)) continue
-    if (!seen.has(raw)) {
-      seen.add(raw)
-      extra.push(raw)
-    }
-  }
-  // 证据级：独立预算。超限切一刀并留截断指针（不无声消失）。
-  for (const raw of task) {
-    if (!raw.startsWith(EVIDENCE_CONSTRAINT_PREFIX)) continue
-    const item = raw.length > MAX_EVIDENCE_CONSTRAINT_CHARS
-      ? `${raw.slice(0, MAX_EVIDENCE_CONSTRAINT_CHARS)}…[evidence 截断@${MAX_EVIDENCE_CONSTRAINT_CHARS}]`
-      : raw
-    if (!seen.has(item)) {
-      seen.add(item)
-      extra.push(item)
-    }
-  }
-  let taskCount = 0
-  for (const raw of task) {
-    if (raw.startsWith(PLAN_CONSTRAINT_PREFIX) || raw.startsWith(EVIDENCE_CONSTRAINT_PREFIX)) continue
     const item = raw.trim().slice(0, MAX_TASK_CONSTRAINT_CHARS)
     if (!item || seen.has(item)) continue
     seen.add(item)
     extra.push(item)
-    if (++taskCount >= MAX_TASK_CONSTRAINTS) break
+    if (extra.length >= MAX_TASK_CONSTRAINTS) break
   }
   return [...base, ...extra]
 }
 
 export function createReadOnlyWorkOrder(input: CreateReadOnlyWorkOrderInput): WorkOrder {
   const id = input.id ?? `wo_${randomUUID()}`
-  // 约束样板与禁用清单都要认 extraAllowedTools：显式授予的读 flavored 工具
-  // （如 root_cause 席的 run_tests）不能在 prompt 里同时出现在「允许」和
-  // 「禁止」两份清单——模型会自律放弃，授予变死字。写/执行/自召核心不可解除。
-  const grants = new Set(input.extraAllowedTools ?? [])
-  const testsGranted = grants.has('run_tests')
-  const disallowedBase = input.profile === 'adversarial_verifier'
-    ? ['bash', 'write_file', 'edit_file', 'delegate_task', 'delegate_batch'] // run_tests NOT disallowed — it's the verifier's primary weapon
-    : [...PHASE1_DISALLOWED_WORKER_TOOLS]
-  // 授予在 union 前就过滤不可解除核心——执行侧只按 allowedTools 过滤，光留在
-  // disallowedTools（prompt 层）挡不住注册表执行。
-  const grantable = [...grants].filter(t => !NON_OVERRIDABLE_DISALLOWED.has(t))
   return workOrderSchema.parse({
     id,
     parentTurnId: input.parentTurnId,
@@ -589,18 +518,18 @@ export function createReadOnlyWorkOrder(input: CreateReadOnlyWorkOrderInput): Wo
         : [
             'Return only evidence-backed claims.',
             'Do not suggest edits as completed changes.',
-            testsGranted
-              ? 'Do not request write, edit, or bash tools.'
-              : 'Do not request write, edit, bash, or test execution tools.',
+            'Do not request write, edit, bash, or test execution tools.',
           ],
       input.constraints,
     ),
     allowedTools: (() => {
       const profileDef = profileRegistry.get(input.profile)
       const tools = profileDef?.allowedTools ? [...profileDef.allowedTools] : [...READ_ONLY_WORKER_TOOLS]
-      return toolsForAuthority([...new Set([...tools, ...grantable])], input.authority)
+      return toolsForAuthority(tools, input.authority)
     })(),
-    disallowedTools: disallowedBase.filter(t => NON_OVERRIDABLE_DISALLOWED.has(t) || !grants.has(t)),
+    disallowedTools: input.profile === 'adversarial_verifier'
+      ? ['bash', 'write_file', 'edit_file', 'delegate_task', 'delegate_batch'] // run_tests NOT disallowed — it's the verifier's primary weapon
+      : [...PHASE1_DISALLOWED_WORKER_TOOLS],
     dedupeKey: input.groupId
       ? `${input.kind}:group:${input.groupId}:${input.authority ?? 'default'}:${input.parentTurnId}:${input.scope.files?.join(',') || input.objective}`
       : `${input.kind}:${input.scope.files?.join(',') || input.objective}`,
@@ -624,7 +553,6 @@ export function createReadOnlyWorkOrder(input: CreateReadOnlyWorkOrderInput): Wo
     delegationDepth: input.delegationDepth ?? 0,
     authority: input.authority,
     authorityReason: resolveAuthorityReason(input.objective, input.authority),
-    planRef: input.planRef,
     riskTier: input.riskTier,
     modelOverride: input.modelOverride,
     tierFloor: input.tierFloor,
@@ -653,7 +581,7 @@ export function createWriteWorkOrder(input: CreateWriteWorkOrderInput): WorkOrde
       const writeProfile = input.profile ?? 'patcher'
       const profileDef = profileRegistry.get(writeProfile)
       const tools = profileDef?.allowedTools ? [...profileDef.allowedTools] : [...WRITE_WORKER_TOOLS]
-      return toolsForAuthority([...new Set([...tools, ...(input.extraAllowedTools ?? [])])], input.authority)
+      return toolsForAuthority(tools, input.authority)
     })(),
     disallowedTools: ['delegate_task', 'delegate_batch'],
     dedupeKey: input.groupId
@@ -686,7 +614,6 @@ export function createWriteWorkOrder(input: CreateWriteWorkOrderInput): WorkOrde
     delegationDepth: input.delegationDepth ?? 0,
     authority: input.authority,
     authorityReason: resolveAuthorityReason(input.objective, input.authority),
-    planRef: input.planRef,
     riskTier: input.riskTier,
     modelOverride: input.modelOverride,
     tierFloor: input.tierFloor,
@@ -839,13 +766,29 @@ function extractJsonParseError(error: unknown): string {
 
 function parseJsonCandidate(candidate: string): unknown {
   // 先尝试直接解析；失败后 repair 非法 JSON 转义序列（如 Windows 路径
-  // "F:\x" 中的 \x）再试一次。worker 输出含裸反斜杠是高频故障模式。
+  // "F:\x" 中的 \x）与语法故障（裸引号/尾逗号）再试。worker 输出含裸
+  // 反斜杠/裸引号是高频故障模式（2026-09-06 审查 infra 归因：content 字段
+  // 含「他说"好的"」裸引号致 7/11 findings 仅存 4；repair re-ask 实证无效——
+  // 同模型同预算同提示词 = 同失败——语法故障应本地机械修，不重问模型）。
   try {
     return JSON.parse(candidate) as unknown
   } catch {
-    const repaired = repairInvalidJsonEscapes(candidate)
-    if (repaired !== null) return JSON.parse(repaired) as unknown
-    throw new Error('JSON parse failed even after escape repair')
+    const escapeRepaired = repairInvalidJsonEscapes(candidate)
+    const syntaxRepaired = repairJsonSyntax(candidate)
+    const attempts = [
+      escapeRepaired,
+      syntaxRepaired,
+      escapeRepaired !== null ? repairJsonSyntax(escapeRepaired) : null,
+    ]
+    for (const repaired of attempts) {
+      if (repaired === null || repaired === candidate) continue
+      try {
+        return JSON.parse(repaired) as unknown
+      } catch {
+        /* try next repair */
+      }
+    }
+    throw new Error('JSON parse failed even after escape/syntax repair')
   }
 }
 

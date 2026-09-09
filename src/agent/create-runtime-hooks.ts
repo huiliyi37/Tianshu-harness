@@ -39,7 +39,6 @@ import { createTypecheckReminderHook } from './hooks/typecheck-reminder-hook.js'
 import { createTodoReminderHook } from './hooks/todo-reminder-hook.js'
 import { createBackgroundJobsHook } from './hooks/background-jobs-hook.js'
 import { createMonitorHook } from './hooks/monitor-hook.js'
-import { createDetachedPlanHook } from './hooks/detached-plan-hook.js'
 import { createEditToolAdvisoryHook } from './hooks/edit-tool-advisory-hook.js'
 import { createSecurityPatternHook } from './hooks/security-pattern-hook.js'
 import { isSecurityGuidanceEnabled } from '../config/security-guidance-config.js'
@@ -80,7 +79,7 @@ import { isStarSoulEnabled } from './star-soul-gate.js'
 import type { PlaybookStore } from './playbook-store.js'
 import type { RetrospectInput } from './retrospect.js'
 import type { DoomLoopLevel } from './trace-store.js'
-import type { TelemetryWriter } from './telemetry-writer.js'
+import { MERIDIAN_INDEX_ITEM_TIMEOUT_KIND, type TelemetryWriter } from './telemetry-writer.js'
 import type { EvidenceState } from './evidence.js'
 import type { TaskLedgerSummary } from './task-ledger.js'
 import type { ChronicleEntry } from './chronicle.js'
@@ -497,7 +496,20 @@ export function createDefaultRuntimeHooks(deps: RuntimeHookDeps): RuntimeHook[] 
 
   if (deps.meridianIndexer !== undefined) {
     const indexerRef = deps.meridianIndexer
-    hooks.push(createMeridianHook({ getIndexer: () => indexerRef }))
+    const meridianHooks = createMeridianHook({
+      getIndexer: () => indexerRef,
+      onItemTimeout: deps.telemetryWriter
+        ? (target, indexKind, timeoutCount) => deps.telemetryWriter!.write({
+            kind: MERIDIAN_INDEX_ITEM_TIMEOUT_KIND,
+            target,
+            indexKind,
+            timeoutCount,
+            at: Date.now(),
+          })
+        : undefined,
+    })
+    hooks.push(meridianHooks.postTool)
+    hooks.push(meridianHooks.postSession)
   }
 
   if (deps.physarumFileAccess) {
@@ -944,12 +956,6 @@ export function createDefaultRuntimeHooks(deps: RuntimeHookDeps): RuntimeHook[] 
   // Monitor events — preTurn delivery of subscribed job-output events (requires bus + registry).
   if (deps.advisoryBus && deps.getMonitors) {
     hooks.push(createMonitorHook({ advisoryBus: deps.advisoryBus, getMonitors: deps.getMonitors }))
-  }
-
-  // Detached plan runs — plan_task(execute) 超时「脱离等待」转后台后的
-  // settle 通知 + 运行中 awareness（registry 为模块级 session 分桶，无需额外依赖）。
-  if (deps.advisoryBus) {
-    hooks.push(createDetachedPlanHook({ advisoryBus: deps.advisoryBus, sessionId: deps.sessionId }))
   }
 
   if (deps.companionPresenceEnabled && deps.companionPresenceCwd && deps.sessionId) {

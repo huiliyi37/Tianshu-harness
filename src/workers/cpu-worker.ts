@@ -12,7 +12,7 @@
 
 import { parentPort } from 'node:worker_threads'
 // @ts-ignore — tsx dev worker uses .ts extension; tsup bundles this file separately
-import { diffUnifiedRaw, diffStructuredRaw, diffLinesRaw, parseEventsJsonlRaw, parseEventsTailRaw } from './cpu-tasks.ts'
+import { diffUnifiedRaw, diffStructuredRaw, diffLinesRaw, parseEventsJsonlRaw, parseEventsTailRaw, esbuildTransformRaw } from './cpu-tasks.ts'
 
 type TaskFn = (...args: any[]) => unknown
 
@@ -22,6 +22,7 @@ const tasks: Record<string, TaskFn> = {
   diffLinesRaw: diffLinesRaw as TaskFn,
   parseEventsJsonlRaw: parseEventsJsonlRaw as TaskFn,
   parseEventsTailRaw: parseEventsTailRaw as TaskFn,
+  esbuildTransformRaw: esbuildTransformRaw as TaskFn,
 }
 
 parentPort?.on('message', (msg: { id: number; task: string; args: unknown[] }) => {
@@ -30,14 +31,17 @@ parentPort?.on('message', (msg: { id: number; task: string; args: unknown[] }) =
     parentPort?.postMessage({ id: msg.id, ok: false, error: `unknown task: ${msg.task}` })
     return
   }
-  try {
-    const result = fn(...(msg.args as [any, any, any, any]))
-    parentPort?.postMessage({ id: msg.id, ok: true, result })
-  } catch (err) {
-    parentPort?.postMessage({
-      id: msg.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
+  // 任务可以是同步纯函数或 async（esbuildTransformRaw）——统一 Promise 化。
+  Promise.resolve()
+    .then(() => fn(...(msg.args as [any, any, any, any])))
+    .then((result) => {
+      parentPort?.postMessage({ id: msg.id, ok: true, result })
     })
-  }
+    .catch((err) => {
+      parentPort?.postMessage({
+        id: msg.id,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
 })

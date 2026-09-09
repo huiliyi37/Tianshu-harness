@@ -37,6 +37,10 @@ export type ReviewInfraFailureKind = 'worker' | 'json' | 'timeout' | 'skip'
 export interface ReviewInfraFailure {
   kind: ReviewInfraFailureKind | string
   claim: string
+  /** parse-salvaged 恢复的发现（unverified）——infra 归因时透传价值供主控止损，
+   *  不参与 blocking 判定（803d897d 教训：死防线不得冒充通过，反之亦然：
+   *  有价值的发现不得被「DID NOT RUN」一行吞掉）。2026-09-06 F1。 */
+  salvagedFindings?: { claim: string; confidence?: string }[]
 }
 
 export interface SquadronResult {
@@ -244,10 +248,19 @@ export async function routeReviewWorkflow(
         : infraFailures.some(f => f.kind === 'timeout')
           ? '审查超时'
           : 'infra failure'
+      // F1（2026-09-06）：parse-salvaged 的发现是「报告坏了但活着」的价值——透传
+      // claims 而非只报一行 DID NOT RUN。仍标 unverified、不参与阻塞（803d897d）。
+      const salvaged = infraFailures.flatMap(f => f.salvagedFindings ?? [])
+      const base = `review DID NOT run (${kindLabel}${attempts > 1 ? '; retry also failed' : ''}): ${summarizeInfraFailures(infraFailures)}`
+      const evidence = salvaged.length > 0
+        ? `review 报告解析失败，salvaged ${salvaged.length} 条发现（unverified，不参与阻塞判定）：\n${salvaged
+            .map(s => `- [${s.confidence ?? '?'}] ${s.claim}`)
+            .join('\n')}\n—— ${base}`
+        : base
       return {
         tier: 'auto',
         verdict: 'inconclusive',
-        evidence: `review DID NOT run (${kindLabel}${attempts > 1 ? '; retry also failed' : ''}): ${summarizeInfraFailures(infraFailures)}`,
+        evidence,
         rounds: attempts,
         infraFailures,
       }

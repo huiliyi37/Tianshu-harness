@@ -111,3 +111,19 @@ test('#4 shift+return 翻转粘滞换行模式（对齐公开仓 newlineMode）'
   stdin.dataHandler!(SHIFT_RETURN)
   assert.equal(inputLine.newlineMode, false, '再按 shift+return 退出换行模式（双向翻转，防永远置位）')
 })
+
+test('#5 start() 请求 kitty 键盘消歧协议（>1u + ?u 能力探测），restore 弹栈还原（<u）——Shift+Enter 能被终端以 CSI-u 送达的前提', () => {
+  const { app } = makeApp()
+  const out = (app as unknown as { stdout: { chunks: string[] } }).stdout
+  out.chunks = []
+  // start() 在欢迎块渲染后由 main 调用；直接调用以断言协议序列写入
+  app.start()
+  assert.ok(out.chunks.some(c => c.includes('\x1B[>1u')), 'start 必须请求 kitty 键盘消歧（否则终端把 Shift+Enter 当普通 Enter 提交）')
+  assert.ok(out.chunks.some(c => c.includes('\x1B[?u')), 'start 须发 ?u 能力探测（收到回包才在 footer 提示 shift+enter——不支持终端上该键与 Enter 同码，提示即谎言）')
+  assert.ok(out.chunks.some(c => c.includes('\x1B[?2004h')), 'bracketed paste 照常开启')
+
+  out.chunks = []
+  app.restoreTerminalSync()
+  assert.ok(out.chunks.some(c => c.includes('\x1B[<u')), 'restore 必须弹出 kitty keyboard protocol（与 >1u 成对）')
+  assert.ok(out.chunks.some(c => c.includes('\x1B[?2004l')), 'bracketed paste 照常关闭')
+})

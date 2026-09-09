@@ -1,10 +1,9 @@
 /**
  * T9 输入框贴底测试（问题2 回归）：
  *
- * 契约（2026-08-27 起，1f80c77d4 引入 prompt footer 后修订）：输入框
- * （topBorder + inputLines + botBorder）之后**允许且仅允许一行 prompt footer**
- * （键位提示，`normal · / 命令 · …`，对齐公开仓）；状态行（metrics + 权限模式）、
- * slash 提示、文件补全等其余辅助行全部在输入框上方。
+ * 契约：输入框（topBorder + inputLines + botBorder）必须是 live region 渲染帧
+ * 的**最后一行**——滚动到底时输入框极限位置在界面最下方（Claude Code 风格）。
+ * 状态行（metrics + 权限模式）、slash 提示、文件补全等辅助行全部在输入框上方。
  *
  * RED 基线：修复前输入框 botBorder 之后仍渲染状态行（`test ⚡- 0s ... ⏵ auto-safe`）。
  */
@@ -21,7 +20,7 @@ function lastFrameLines(out: { chunks: string[] }): string[] {
   return stripAnsi(last).split('\n').filter(l => l.trim() !== '')
 }
 
-test('botBorder 之后仅允许一行 prompt footer，无状态行/其余提示行', async () => {
+test('输入框（botBorder）应为渲染帧最后一行：其后无状态行/提示行', async () => {
   const { app, out, stdin } = makeApp({ rows: 24 })
   app.onSubmit(() => {})
 
@@ -35,11 +34,10 @@ test('botBorder 之后仅允许一行 prompt footer，无状态行/其余提示�
   const botIdx = lines.findIndex(l => /^[╰└]/.test(l))
   assert.ok(botIdx >= 0, `应能找到输入框 botBorder，帧行: ${lines.join(' | ')}`)
   const afterBot = lines.slice(botIdx + 1)
-  // footer 形态：mode 段（normal/insert）开头 + ` · ` 分隔的键位提示（format/prompt-footer.ts）
-  const isFooter = (l: string) => /^(normal|insert) · /.test(l)
-  assert.ok(
-    afterBot.length <= 1 && afterBot.every(isFooter),
-    `botBorder 之后只允许一行 prompt footer，实际: ${afterBot.join(' | ')}`,
+  assert.equal(
+    afterBot.length,
+    0,
+    `输入框之后不应有其他行（状态行等应在输入框上方），实际: ${afterBot.join(' | ')}`,
   )
 })
 

@@ -27,6 +27,16 @@ const TS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx']
 const ALL_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go']
 const IGNORE_PATTERNS = ['node_modules', 'dist', '.git', '.rivet']
 
+/** probeFile 结果：skip = 不可索引/越界/正在索引；unchanged = hash 未变
+ *  （已记 access）；parse = 需要入队重解析（未写任何索引数据）。 */
+export type MeridianProbeStatus = 'skip' | 'unchanged' | 'parse'
+
+export interface MeridianIndexOptions {
+  /** meridian-hook 队列专用：1-hop import 递归前让出事件循环。
+   *  默认 false，保持 backfill/工具路径行为不变。 */
+  yieldBetweenImports?: boolean
+}
+
 /**
  * 可索引判定（扩展名白名单 + IGNORE_PATTERNS + attention 静默层）——
  * 懒建（indexFile）与后台全量索引（meridian-backfill）共用的单一来源，
@@ -145,6 +155,10 @@ export class MeridianIndexer {
   private behavior: MeridianBehavior
   private initialized = false
   private indexing = new Set<string>()
+  /** invalidateFile 并发守卫（共享 indexer 场景）：同 rel 只跑一个解析，
+   *  并发到达标 pending，首个完成后重跑一轮，保证最终落到最新内容。 */
+  private invalidating = new Set<string>()
+  private pendingInvalidations = new Set<string>()
   /** 后台全量索引（meridian-backfill）每实例只调度一次的 flag。 */
   backfillScheduled = false
 
@@ -156,6 +170,31 @@ export class MeridianIndexer {
 
   getDb(): MeridianDb { return this.db }
 
+  /**
+   * 廉价探针（meridian-hook read_file 热路径，2026-09-08 阻塞修复）：
+   * 与 indexFile 前缀完全同序地完成 path 校验 → indexable → db available →
+   * 读文件 → sha256 → needsParse。hash 未变时写 recordAccess 并返回
+   * 'unchanged'；需要重解析时返回 'parse'，由 hook 将完整 indexFile 入队，
+   * 不在 postTool 链上执行 tree-sitter/事务。此方法只做同步 IO + 一次
+   * SELECT，不触碰 parser，不写库（unchanged 的 access_log 除外）。
+   */
+  probeFile(filePath: string): MeridianProbeStatus {
+    const rel = this.toRepoRelative(filePath)
+    if (rel === null) return 'skip'
+    if (this.indexing.has(rel)) return 'skip'
+    if (!this.isIndexable(rel)) return 'skip'
+    if (!this.db.available) return 'skip'
+    const absPath = resolve(this.cwd, rel)
+    if (!existsSync(absPath)) return 'skip'
+    const source = readFileSync(absPath, 'utf-8')
+    const hash = createHash('sha256').update(source).digest('hex').slice(0, 16)
+    if (!this.db.needsParse(rel, hash)) {
+      this.db.recordAccess(rel)
+      return 'unchanged'
+    }
+    return 'parse'
+  }
+
   private async ensureInit(): Promise<void> {
     if (!this.initialized) {
       await initParser()
@@ -163,7 +202,7 @@ export class MeridianIndexer {
     }
   }
 
-  async indexFile(filePath: string): Promise<void> {
+  async indexFile(filePath: string, options: MeridianIndexOptions = {}): Promise<void> {
     const rel = this.toRepoRelative(filePath)
     if (rel === null) return
     if (this.indexing.has(rel)) return
@@ -198,7 +237,12 @@ export class MeridianIndexer {
       // framework extraction below resolves handlers/components by name.
       for (const resolved of resolvedImports) {
         if (!this.indexing.has(resolved)) {
-          await this.indexFile(resolved)
+          if (options.yieldBetweenImports) {
+            // 队列项内部让出：import 密集大文件不再把多个同步 parse 连成
+            // 一个超长微任务链；timer/HTTP 可在每次 1-hop 递归前插入。
+            await new Promise<void>(resolve => setTimeout(resolve, 0))
+          }
+          await this.indexFile(resolved, options)
         }
       }
 
@@ -235,6 +279,26 @@ export class MeridianIndexer {
     const rel = this.toRepoRelative(filePath)
     if (rel === null) return
     if (!this.isIndexable(rel)) return
+
+    // 并发守卫（共享 indexer）：同 rel 已有解析在跑时只标 pending，由当前
+    // 持有者完成后重跑一轮——避免并发双解析，同时保证并发写后的最终内容
+    // 仍会落到 DB（跳过守卫会让后写会话的索引结果丢失到前一个解析）。
+    if (this.invalidating.has(rel)) {
+      this.pendingInvalidations.add(rel)
+      return
+    }
+    this.invalidating.add(rel)
+    try {
+      do {
+        this.pendingInvalidations.delete(rel)
+        await this.invalidateFileCore(rel)
+      } while (this.pendingInvalidations.has(rel))
+    } finally {
+      this.invalidating.delete(rel)
+    }
+  }
+
+  private async invalidateFileCore(rel: string): Promise<void> {
     const absPath = resolve(this.cwd, rel)
     if (!existsSync(absPath)) return
 
@@ -328,12 +392,23 @@ export class MeridianIndexer {
 
   /** Resolve same-file-unresolved call sites against cross-file symbols by name.
    *  Unique match → inferred; multiple matches → ambiguous on every candidate.
-   *  Confidence drives the CONFIDENCE_MULTIPLIER discount in the graph layer. */
+   *  Confidence drives the CONFIDENCE_MULTIPLIER discount in the graph layer.
+   *
+   *  2026-09-08：不再 getAllSymbols 全表物化 + 逐 call 内存 filter——收集本次
+   *  全部 callee name 后一次 getSymbolsByNames 批量拉取（走 idx_symbols_name），
+   *  内存只建 name → symbols Map；同名多命中 ambiguous 语义不变。 */
   private buildCallEdges(fromFile: string, calls: CallSite[]): void {
     if (calls.length === 0) return
-    const allSymbols = this.db.getAllSymbols()
+    const names = [...new Set(calls.map(c => c.name))]
+    const symbolsByName = new Map<string, MeridianSymbol[]>()
+    for (const symbol of this.db.getSymbolsByNames(names)) {
+      if (symbol.filePath === fromFile) continue
+      const list = symbolsByName.get(symbol.name)
+      if (list) list.push(symbol)
+      else symbolsByName.set(symbol.name, [symbol])
+    }
     for (const call of calls) {
-      const matches = allSymbols.filter(s => s.name === call.name && s.filePath !== fromFile)
+      const matches = symbolsByName.get(call.name) ?? []
       if (matches.length === 0) continue
       if (matches.length === 1) {
         const target = matches[0]

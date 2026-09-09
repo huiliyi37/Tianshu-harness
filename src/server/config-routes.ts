@@ -20,7 +20,6 @@
  *   PUT    /config/permission-dirs          set standing directory grants; additions apply immediately
  *   GET    /config/path-grants              approval-time remembered dirs for a workspace (?cwd=)
  *   DELETE /config/path-grants              revoke one remembered dir (?cwd=&path=); effective immediately
- *   （project-trust 四端点见 config-routes-project-trust.ts——子模块外提）
  *   GET    /config/vision-model             vision bridge model (provider/model/prompt/maxTokens/fallback)
  *   PUT    /config/vision-model             set/clear the vision bridge
  *   GET    /config/vision-auto-bridge       auto-pick a vision bridge when unconfigured (opt-in)
@@ -95,13 +94,13 @@ import { modelConfigSchema, type ModelConfig } from '../config/schema.js'
 import { queryDeepSeekBalance, type BalanceResult } from '../api/balance-client.js'
 import { discoverVisionModels, validateVisionModel } from '../api/vision-model-onboarding.js'
 import { probeProviderKey } from '../api/key-probe.js'
+import { probeProvider } from '../api/provider-probe.js'
 import { resolveApiKey } from '../api/factory.js'
 import { getDeepSeekUserSummary, getDeepSeekCostReport } from '../api/deepseek-platform-client.js'
-import { listGrantedApps, revokeApp, isGrantsFileCorrupted } from '../tools/computer-use/app-grants.js'
+import { listGrantedApps, revokeApp } from '../tools/computer-use/app-grants.js'
 import { computerUseModulePresent, isComputerUseSupportedPlatform, loadComputerUseImpl } from '../tools/computer-use/bridge.js'
 import { isProFeatureEnabled } from '../config/pro-license.js'
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
-import { buildProjectTrustRoutes } from './config-routes-project-trust.js'
 
 function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
   return async (body, params, headers, res) => {
@@ -110,6 +109,35 @@ function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
     }
     return handler(body, params, headers, res)
   }
+}
+
+/** /config/providers/test-key 与 /config/providers/test 共用的 key+baseUrl
+ *  解析链（2026-09-09 审查 P2 收口：两端点曾逐字重复，独立演化会静默分叉——
+ *  将来任一端点加能力改这里即可）。优先级：显式 body 覆盖 → 存量 provider
+ *  配置（resolveApiKey 物化 keyRef/apiKeyEnv）→ preset baseUrl（preset 带
+ *  每 provider 正确端点，如 zhipu-vision 用 PaaS 而非 coding 端点）。 */
+function resolveProviderProbeTarget(
+  provider: string,
+  apiKey: string | undefined,
+  baseUrlOverride: string | undefined,
+): { apiKey: string; baseUrl: string } | { error: string } {
+  // apiKey 可选：缺省时用该 provider 的存储 Key（keyRef 物化 / apiKeyEnv）——
+  // 已配置 provider 上的「拉取模型列表/测试调用」不应要求用户重输 Key。
+  let resolvedKey = apiKey
+  if (!resolvedKey) {
+    const stored = loadConfig().provider.providers[provider]
+    if (stored) {
+      try { resolvedKey = resolveApiKey(stored) } catch { resolvedKey = undefined }
+    }
+  }
+  if (!resolvedKey) return { error: 'apiKey is required (or set a key on the provider first)' }
+  let baseUrl = baseUrlOverride
+  if (!baseUrl) {
+    const cfg = loadConfig()
+    baseUrl = cfg.provider.providers[provider]?.baseUrl ?? resolvePresetBaseUrl(provider)
+  }
+  if (!baseUrl) return { error: `cannot resolve baseUrl for provider "${provider}"` }
+  return { apiKey: resolvedKey, baseUrl }
 }
 
 interface ParsedVisionCredentials {
@@ -163,18 +191,8 @@ export interface ProviderListItem {
   slowThinking?: boolean
 }
 
-export function buildConfigRoutes(
-  apiToken?: string,
-  hooks?: {
-    /** 全局审批档位落盘后的实时广播（2026-09-05 跨盘审批链修复）：更新启动
-     *  快照 + 对无 per-session override 的存活 agent 套用新档，否则 UI 显示
-     *  「完全读写」而 agent 仍按启动旧档询问。 */
-    onApprovalConfigChanged?: (approval: string) => void
-  },
-): Record<string, RouteHandler> {
+export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigChanged?: (approval: string) => void }): Record<string, RouteHandler> {
   return {
-    // project-trust 授权路由子模块（见 config-routes-project-trust.ts）
-    ...buildProjectTrustRoutes(apiToken),
     'GET /config/providers': withAuth(() => {
       const cfg = loadConfig()
       const defaultName = cfg.provider.default
@@ -430,28 +448,60 @@ export function buildConfigRoutes(
         protocol?: 'openai' | 'anthropic'
       }
       if (!provider) return { status: 400, body: { error: 'provider is required' } }
-      // apiKey 可选：缺省时用该 provider 的存储 Key（keyRef 物化 / apiKeyEnv）——
-      // 已配置 provider 上的「从接口拉取模型列表」不应要求用户重输 Key。
-      let resolvedKey = apiKey
-      if (!resolvedKey) {
-        const stored = loadConfig().provider.providers[provider]
-        if (stored) {
-          try { resolvedKey = resolveApiKey(stored) } catch { resolvedKey = undefined }
-        }
-      }
-      if (!resolvedKey) return { status: 400, body: { error: 'apiKey is required (or set a key on the provider first)' } }
-      // Resolve baseUrl: explicit override (custom provider being created) wins,
-      // then stored config, then preset (preset has the right endpoint per provider
-      // — e.g. zhipu-vision uses api/paas/v4, not the coding endpoint).
-      let baseUrl = override
-      if (!baseUrl) {
-        const cfg = loadConfig()
-        const stored = cfg.provider.providers[provider]
-        baseUrl = stored?.baseUrl ?? resolvePresetBaseUrl(provider)
-      }
-      if (!baseUrl) return { status: 400, body: { error: `cannot resolve baseUrl for provider "${provider}"` } }
-      const result = await probeProviderKey(resolvedKey, baseUrl, protocol ?? 'openai')
+      const target = resolveProviderProbeTarget(provider, apiKey, override)
+      if ('error' in target) return { status: 400, body: { error: target.error } }
+      const result = await probeProviderKey(target.apiKey, target.baseUrl, protocol ?? 'openai')
       return { status: 200, body: result }
+    }, apiToken),
+
+    // Completion 级「测试模型调用」真测（2026-09-09 用户需求）：与 test-key 的
+    // /models 零 token 探测区分——本端点发最小 chat completion，验证模型真的能
+    // 完成一次对话（模型名错/配额/网关 404 只在 completion 层暴露）。探测消耗
+    // 约几 token（probeProvider 最小 prompt）。key/baseUrl 解析链与 test-key
+    // 同源（resolveProviderProbeTarget 共享 helper，防两端点漂移）。
+    //
+    // 语义分层（2026-09-09 用户反馈「能对话但测试没用」）：UI 的「测试连接」
+    // 按钮在模型 id 输入框之前，用户只填 URL+key 就点测试是高频路径。规则：
+    //  - model 有值 → completion 真测，ok=completionOk（含 vision 三态，显式
+    //    false 压制「模型名含视觉词 → 图片探测」启发式）；
+    //  - model 未填 → skipCompletion 只验 /models（URL+key 连通性）——不再
+    //    盲测 models[0]（撞 embedding/未开通型号会误报，且用户此时要测的是
+    //    「URL 连接」）：/models 200 → ok=true + completionSkipped（UI 提示
+    //    「未测模型对话」）；/models 失败 → ok=false 带原因。
+    'POST /config/providers/test': withAuth(async (body) => {
+      const { provider, apiKey, baseUrl: override, protocol, model, vision } = body as {
+        provider?: string
+        apiKey?: string
+        baseUrl?: string
+        protocol?: 'openai' | 'anthropic'
+        model?: string
+        vision?: boolean
+      }
+      if (!provider) return { status: 400, body: { error: 'provider is required' } }
+      const target = resolveProviderProbeTarget(provider, apiKey, override)
+      if ('error' in target) return { status: 400, body: { error: target.error } }
+      const report = await probeProvider({
+        baseUrl: target.baseUrl, apiKey: target.apiKey, protocol: protocol ?? 'openai',
+        providerName: provider, probeModel: model || undefined, vision,
+        skipCompletion: !model,
+      })
+      const completionSkipped = !report.probedModel
+      const ok = report.completionOk || (completionSkipped && report.modelsOk)
+      return {
+        status: 200,
+        body: {
+          ok,
+          completionOk: report.completionOk,
+          completionSkipped,
+          modelsOk: report.modelsOk,
+          latencyMs: report.latencyMs,
+          probedModel: report.probedModel,
+          models: report.models,
+          // 成功且未测 completion 时不带 error（UI 走「未测」提示而非报错）；
+          // 失败路径首个错误优先（/models 失败详情或 completion 失败原因）。
+          ...(ok ? {} : (report.errors[0] ? { error: report.errors[0] } : {})),
+        },
+      }
     }, apiToken),
 
     'POST /config/providers/:name/default': withAuth((_body, params) => {
@@ -678,18 +728,12 @@ export function buildConfigRoutes(
         return { status: 400, body: { error: 'approval is required' } }
       }
       try {
-        const snapshot = setApprovalConfig({ approval, unsandboxed })
-        // 活体沙箱联动（与 bootstrap 的 config→env 同语义，立即生效不用重启）：
-        // unsandboxed 显式 true → RIVET_SANDBOX=0 关内核边界；显式 false → 撤掉
-        // 显式值回退到按档策略（applySandboxPolicyForApprovalMode 在切 yolo 时
-        // 重新置 1）。undefined = 不动该维度。
-        if (unsandboxed === true) process.env.RIVET_SANDBOX = '0'
-        else if (unsandboxed === false) delete process.env.RIVET_SANDBOX
-        // 实时广播给快照与存活 agent（无 hook 的调用方——测试/CLI——行为不变）
-        if (hooks?.onApprovalConfigChanged && snapshot.approval) {
-          try { hooks.onApprovalConfigChanged(snapshot.approval) } catch { /* 广播失败不影响落盘结果 */ }
+        const result = setApprovalConfig({ approval, unsandboxed })
+        // 实时广播给启动快照与存活 agent（无 hook 的调用方——测试/CLI——行为不变）
+        if (hooks?.onApprovalConfigChanged && typeof approval === 'string') {
+          try { hooks.onApprovalConfigChanged(approval) } catch { /* 广播失败不影响落盘结果 */ }
         }
-        return { status: 200, body: { ok: true, ...snapshot } }
+        return { status: 200, body: { ok: true, ...result } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
       }
@@ -801,17 +845,15 @@ export function buildConfigRoutes(
       const proRequired = platformOk && !proEnabled
       const available = platformOk && proEnabled
       const grants = listGrantedApps().map(g => ({ app: g.app, grantedAt: g.grantedAt }))
-      // 授权文件曾损坏（读取 fail-closed 当空表）——UI 据此提示「始终允许」可能丢失。
-      const grantsFileCorrupted = isGrantsFileCorrupted()
       if (!available) {
-        return { status: 200, body: { available: false, proRequired, platform: process.platform, permissions: null, grants, grantsFileCorrupted } }
+        return { status: 200, body: { available: false, proRequired, platform: process.platform, permissions: null, grants } }
       }
       let permissions: { accessibility: boolean; screenRecording: boolean; detail: string } | null = null
       try {
         const impl = await loadComputerUseImpl()
         if (impl) permissions = await impl.createPlatformDriver().checkPermissions()
       } catch { /* probe failure → permissions unknown, UI shows a hint */ }
-      return { status: 200, body: { available: true, proRequired: false, platform: process.platform, permissions, grants, grantsFileCorrupted } }
+      return { status: 200, body: { available: true, proRequired: false, platform: process.platform, permissions, grants } }
     }, apiToken),
 
     // Codex-style standing directory grants for the desktop settings UI.

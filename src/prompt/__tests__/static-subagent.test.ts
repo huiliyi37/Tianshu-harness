@@ -11,12 +11,11 @@ import {
 import type { ToolDefinition } from '../../api/types.js'
 
 /** sha256 of buildSystemPrompt({ tools: [] }) as of 2026-09-05（可读性校准：
- *  「不用列表能说的用散文」收窄为交付报告纪律，面向阅读的回复新增主动
- *  分点引导——用户截图反馈模型回复不分点不易读）。
+ *  散文纪律收窄到交付报告 + 面向阅读回复的主动分点引导——回流 main 634af35bb）。
  *  The sub-agent refactor must never move this: the main-controller prompt is
  *  the frozen head of every prefix-cached request, and a byte change
  *  invalidates every session. */
-const MAIN_PROMPT_SHA256 = '031b868270606d185da25b3d8c1e98b6297051de7d04a2309318c88602a83bd2'
+const MAIN_PROMPT_SHA256 = '26043390ef70024e9718bc0429f339414874f284cd935d994ce455a87a274374'
 
 function tool(name: string): ToolDefinition {
   return { name, description: '', input_schema: { type: 'object', properties: {} } } as ToolDefinition

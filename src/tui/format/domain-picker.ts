@@ -8,7 +8,7 @@
  */
 import { color } from '../engine/ansi.js'
 import type { RivetTheme } from '../theme.js'
-import { DOMAIN_SHARED_CAPABILITY_NOTE, DOMAIN_SWITCH_CACHE_NOTE } from '../../agent/domain-picker-entries.js'
+import { DOMAIN_SWITCH_CACHE_NOTE } from '../../agent/domain-picker-entries.js'
 import {
   frameTop as formatBorder,
   frameBottom as formatBottomBorder,
@@ -34,8 +34,6 @@ export interface DomainPickerEntry {
   alias?: string
   /** 职责标语（如 破夜指引 · 洞察全景）——缺省时回退 motto */
   tagline?: string
-  /** 本域特质说明（共有能力见外层 DOMAIN_SHARED_CAPABILITY_NOTE）；缺省时回退 expertise/essence */
-  plain?: string
   /** 次要元信息（dim）：decisionStyle · keywords */
   meta: string
   /** 选中项的一段式 essence 预览（不转储整段 volatileBlock） */
@@ -120,15 +118,12 @@ export function renderDomainPicker(data: DomainPickerData, width: number, height
       : '─'
   lines.push(padLine(` ${color(sepChar.repeat(Math.max(0, innerWidth - 1)), currentAccent)}`, width, theme))
 
-  // 详情区：别名徽章 → 职责标语 + 创始星 → motto → 特质说明（plain 优先，
-  // 旧条目/custom 域缺 plain 时回退 expertise/essence）多行
+  // 详情区：别名徽章 → 职责标语 + 创始星 → motto → 提示词精华（essence 多行）
   const previewLines: string[] = []
   if (current) {
     const glyph = current.uiPersona?.glyph ?? '●'
     const aliasPart = current.alias ? ` · ${current.alias}` : ''
     previewLines.push(color(`  ${glyph}  ${current.name}${aliasPart}`, currentAccent, { bold: true }))
-    // 外层共同描述只显示一次：能力全量保留，域与域的差别在点亮的倾向。
-    previewLines.push(` ${color(DOMAIN_SHARED_CAPABILITY_NOTE, theme.dim)}`)
 
     const founderPart = current.founder ? ` · 创始星 ${current.founder}` : ''
     const taglineText = current.tagline ? `${current.tagline}${founderPart}` : (current.founder ? `创始星 ${current.founder}` : (current.meta || ''))
@@ -137,11 +132,8 @@ export function renderDomainPicker(data: DomainPickerData, width: number, height
     previewLines.push(` ${color(`「${current.motto}」`, theme.dim)}`)
     previewLines.push(` ${color('─'.repeat(Math.max(0, innerWidth - 2)), theme.dim)}`)
 
-    // 外层已说明共有能力，这里只展示本域点亮的倾向；
-    // 没有 plain 的旧条目/custom 域保持原来的 expertise/essence 预览。
-    const desc = current.plain
-      ? `特质说明：${current.plain}`
-      : current.essence || current.expertise || ''
+    // 提示词精华：motto + volatileBlock 首行（entry.essence），按宽折行填满剩余详情区
+    const desc = current.essence || current.expertise || ''
     const wrappedDesc = wrapToWidth(desc, innerWidth - 1, Math.max(1, detailRows - previewLines.length))
     for (const d of wrappedDesc) {
       if (previewLines.length < detailRows) {

@@ -4,11 +4,8 @@ import { taskGraphToUnifiedPlan, unifiedPlanToTeamTasks, serializeUnifiedPlan, r
 import type { DelegationCoordinator } from '../agent/coordinator.js'
 import { executePlanWaves, type PlanExecutorDeps, type PlanExecutorWavesResult } from '../agent/plan-executor.js'
 import { extractRequiredSkills } from '../agent/skill-gate.js'
-import { extractPlanConstraints } from '../agent/plan-constraints.js'
 import { storePlan } from '../agent/plan-store.js'
 import { classifyTaskDepth, type TaskContract } from '../context/task-contract.js'
-import { deriveTeamGroupId } from '../agent/wave-checkpoint.js'
-import { trackDetachedPlanRun } from '../agent/detached-plan-registry.js'
 import { setTodos } from './todo.js'
 import type { TodoItem } from './todo-store.js'
 import { readFile } from 'node:fs/promises'
@@ -16,33 +13,6 @@ import type { TaskGraph, TaskGraphNode } from '../agent/task-graph.js'
 
 const BASE_TEMPLATE_PATH = 'docs/superpowers/plans/2026-06-28-plan-methodology-base.md'
 const LIGHTWEIGHT_TEMPLATE_PATH = 'docs/superpowers/plans/2026-06-14-plan-methodology-lightweight.md'
-
-// ── 执行等待上限与脱离等待（2026-09-05 team-76dc14a1 事故修复）──────────────
-// 旧语义：execute:true 硬编码 600s，withToolTimeout 到点经 composedSignal 级联
-// abort 进执行器，编排与 worker 连坐斩杀（T4 日文产物已落盘仍被误标 failed）。
-// 新语义：到点「脱离等待」——工具立即返回，底层 executePlanWaves 在后台继续推进
-// （worker 不被 abort），每波 checkpoint 照常落盘，settle 时经 detached-plan
-// hook 在下个对话轮通知主会话（detached-plan-registry.ts）。
-/** execute:true 的默认等待上限：30 分钟（多波编排的稳态墙钟，替代 600s 硬编码）。 */
-export const PLAN_EXECUTE_DEFAULT_TIMEOUT_MS = 1_800_000
-/** pipeline 级联 abort 的兜底宽限：内部脱离计时恒先触发，此后 pipeline 才武装——
- *  只有内部计时器失灵时级联 abort 才会兜底开枪。 */
-export const PLAN_EXECUTE_PIPELINE_GRACE_MS = 60_000
-
-/**
- * execute:true 等待上限解析（优先级：input.executeTimeoutMs 参数 > 环境变量
- * RIVET_PLAN_EXECUTE_TIMEOUT_MS > 30min 默认值）。非法值（非正数/非数字）
- * 落到下一优先级，绝不静默归零或爆掉。
- */
-export function resolvePlanExecuteTimeoutMs(
-  input?: unknown,
-  envRaw: string | undefined = process.env.RIVET_PLAN_EXECUTE_TIMEOUT_MS,
-): number {
-  if (typeof input === 'number' && Number.isFinite(input) && input > 0) return Math.floor(input)
-  const env = Number.parseInt(envRaw ?? '', 10)
-  if (Number.isFinite(env) && env > 0) return env
-  return PLAN_EXECUTE_DEFAULT_TIMEOUT_MS
-}
 
 // ── Plan file detection & checklist parsing (plan_task → team_orchestrate fast path) ──
 
@@ -135,43 +105,8 @@ export function parseChecklistSections(markdown: string): Array<{
   return out
 }
 
-/**
- * T9 段落级契约提取：parseChecklistSections 只取 checkbox 项——段落级契约
- * （「接口契约」「瑶光反证」等独立段落，zen 案例实证：契约在段落里 worker
- * 看不到 → 各自发挥）丢失。检测语义标记段落，提取标题+正文（预算截断）供
- * 注入任务 objective。
- * 标记口径：`**接口契约**` 或 `**接口契约（` 开头的行 / `### 接口契约` 标题。
- */
-const CONTRACT_MARKER = /^\*\*(接口契约|瑶光反证|反证\/复现|需求提炼)[^*]*\*\*|^#{2,4}\s*(接口契约|瑶光反证)/m
-const CONTRACT_BUDGET = 2000
-
-export function extractContractBlocks(markdown: string): string[] {
-  const blocks: string[] = []
-  const lines = markdown.split('\n')
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]!
-    if (CONTRACT_MARKER.test(line)) {
-      const buf: string[] = [line.trim()]
-      i++
-      while (i < lines.length) {
-        const l = lines[i]!
-        if (/^#{2,3}\s+/.test(l) || CONTRACT_MARKER.test(l)) break
-        if (l.trim() !== '') buf.push(l.trim())
-        i++
-      }
-      const text = buf.join('\n')
-      blocks.push(text.length > CONTRACT_BUDGET ? `${text.slice(0, CONTRACT_BUDGET)}…` : text)
-      continue
-    }
-    i++
-  }
-  return blocks
-}
-
 /** 章节感知建图：每个含 checklist 的章节 → 一个 patcher 任务（正交分片）。
- *  任务 objective 携带章节标题 + 全部 checklist 项 + 段落级契约块，worker
- *  逐条执行。 */
+ *  任务 objective 携带章节标题 + 全部 checklist 项，worker 逐条执行。 */
 function buildTasksFromSections(
   sections: Array<{
     heading: string
@@ -179,17 +114,13 @@ function buildTasksFromSections(
     files: string[]
   }>,
   objective: string,
-  contractBlocks: string[] = [],
 ): TaskGraph {
-  const contractText = contractBlocks.length > 0
-    ? `\n\n段落级契约（以计划全文为准）：\n${contractBlocks.join('\n\n')}`
-    : ''
   const nodes: TaskGraphNode[] = sections.map((sec, i) => {
     const checklistText = sec.items.map(it => `- [ ] ${it.text}`).join('\n')
     return {
       id: `P${i + 1}`,
       title: sec.heading.slice(0, 80),
-      objective: `${sec.heading}\n\n${checklistText}${contractText}\n\n只执行本 task，不扩展范围，不重写计划。`,
+      objective: `${sec.heading}\n\n${checklistText}\n\n只执行本 task，不扩展范围，不重写计划。`,
       profile: 'patcher' as const,
       kind: 'patch_proposal' as const,
       files: sec.files,
@@ -255,7 +186,6 @@ export function createPlanTaskTool(deps: {
 
 适用于需要结构化规划的多步骤工作（重构、功能开发）。每个分片是完整自包含的单元（实现 + 跑 tsc/lint/相关测试到绿），由一个有能力的 flash 端到端负责——不是垂直角色流水线（不拆独立的 lint/type/import/test/verify 步骤）。列出范围文件让规划器按模块切出正交分片以并行执行；同模块文件留在同一分片。
 设 execute: true 自动完成所有可推进波次——共享多波驱动 executePlanWaves 从 wave 0 逐波推进至计划末波或停止判据（与 team_orchestrate 同一执行路径）。worker 直接写入共享工作区——用 git diff 审查聚合结果。
-等待上限（executeTimeoutMs，默认 30 分钟）到点不是失败：编排脱离等待转入后台继续推进（worker 不被中止、逐波 checkpoint 落盘、完成时下轮提醒），可用 executePlanWaves fromWave=N 续跑收尾。
 
 输出为 UnifiedPlan JSON——传给 team_orchestrate 的 planJson 参数做多波次续跑。`,
       input_schema: {
@@ -268,10 +198,6 @@ export function createPlanTaskTool(deps: {
             description: '范围文件。列出涉及的文件/模块，让规划器按模块切正交分片，而不是揉成一个整块。',
           },
           execute: { type: 'boolean', description: '生成后立即执行计划（默认 false）' },
-          executeTimeoutMs: {
-            type: 'number',
-            description: '仅 execute:true：等待编排完成的墙钟上限（毫秒）。到点不杀执行——工具转入后台继续推进（worker 不中断、逐波 checkpoint 落盘、完成时主会话收到提醒）。默认 1800000（30 分钟），环境变量 RIVET_PLAN_EXECUTE_TIMEOUT_MS 可兜底覆盖。',
-          },
         },
         required: ['objective'],
       },
@@ -294,29 +220,18 @@ export function createPlanTaskTool(deps: {
       // 技能门禁：读到计划文件时提取点名 skill，透传给 executePlan 入口硬拦
       // （tasks 路径没有 planMarkdown，executePlan 无从自行提取）。
       let requiredSkills: string[] | undefined
-      // T5/T8：计划文件命中时顺带提取计划指针与「待验证假设」——planRef 注入工单
-      // （worker read_file 自取计划原文），assumptions 挂 UnifiedPlan 结构化载体
-      // （planJson 路径经 constraintsFromUnifiedPlan 成为工单约束）。
-      let planFileRef: string | undefined
-      let planAssumptions: string[] | undefined
       const planPath = extractPlanPath(objective, files)
       if (planPath) {
         try {
           const markdown = await readFile(planPath, 'utf-8')
-          planFileRef = planPath
           requiredSkills = extractRequiredSkills(markdown)
-          planAssumptions = extractPlanConstraints(markdown)
-            .filter(c => c.kind === 'assumption')
-            .map(c => c.text)
           // 章节感知切分（2026-07-26 用户指令：不再按 checklist 逐项切）：
           // 有 H2/H3 章节 → 每章节一个正交任务；无章节 → 通用规划路径。
           // 逐项 checklist 切分已移除——碎片化会导致同文件任务串行与
           // scope.files 缺失（coordinator 派发闸拦截）。
           const sections = parseChecklistSections(markdown)
           if (sections.length > 0) {
-            // T9：段落级契约（接口契约/瑶光反证等）注入任务 objective——修复
-            // checkbox-only 提取导致的契约丢失（worker 各自发挥的断点之一）。
-            graph = buildTasksFromSections(sections, objective, extractContractBlocks(markdown))
+            graph = buildTasksFromSections(sections, objective)
           } else {
             graph = decomposeObjective({ objective, files })
           }
@@ -344,9 +259,6 @@ export function createPlanTaskTool(deps: {
 
       // Step 2: convert to UnifiedPlan
       const plan = taskGraphToUnifiedPlan(graph)
-      // T8：假设走结构化载体随 JSON 落盘（storePlan）与展示（renderUnifiedPlanSummary
-      // 之外的消费方）——team_orchestrate 自动消费 planJson 时假设不再丢失。
-      if (planAssumptions && planAssumptions.length > 0) plan.assumptions = planAssumptions
 
       // Step 3: validate
       const validation = validateUnifiedPlan(plan)
@@ -394,22 +306,14 @@ export function createPlanTaskTool(deps: {
         if (params.onOutput) {
           params.onOutput(`\n📋 计划已分解为 ${tasks.length} 个任务，正在派发 worker 执行…\n`)
         }
-        // 转后台后工具流已关闭，进度/活动回调继续触发——包成 best-effort，
-        // 一次写流的异常绝不能杀死后台编排。
-        const safeOutput = (chunk: string) => { try { params.onOutput?.(chunk) } catch { /* detached */ } }
-        const safeWorkerActivity: NonNullable<typeof params.onWorkerActivity> = (activity) => {
-          try { params.onWorkerActivity?.(activity) } catch { /* detached */ }
-        }
         // executePlanWaves 按 startWave 逐波推进、自动判定停止、聚合每波结果；
         // 中间波不提前触发末波 review（isLastWave 由真实 wave 序号判定）。
-        const execution = executePlanWaves(
+        const { run }: PlanExecutorWavesResult = await executePlanWaves(
           {
             mode: 'standard',
             objective,
             tasks,
             requiredSkills,
-            // T5：计划文件命中时注入计划指针，worker 收到「计划全文见：<path>」。
-            ...(planFileRef ? { planRef: planFileRef } : {}),
             startWave: 0,
             autoAdvance: true,
             maxParallel: 3,
@@ -423,7 +327,7 @@ export function createPlanTaskTool(deps: {
             onProgress: params.onOutput
               ? (completed, total) => {
                   const done = Math.max(0, Math.min(completed, total))
-                  safeOutput(`✦ plan progress: ${done}/${total} workers done\n`)
+                  params.onOutput!(`✦ plan progress: ${done}/${total} workers done\n`)
                 }
               : undefined,
             onWorkerSettled: params.onWorkerActivity
@@ -434,7 +338,7 @@ export function createPlanTaskTool(deps: {
                     : result.status === 'blocked' ? 'blocked'
                     : result.status === 'escalated' ? 'escalated'
                     : 'completed'
-                  safeWorkerActivity({
+                  params.onWorkerActivity!({
                     workOrderId: result.workOrderId,
                     parentToolId: params.toolUseId,
                     status,
@@ -444,50 +348,6 @@ export function createPlanTaskTool(deps: {
           },
           deps.getExecutorDeps(),
         )
-
-        // 脱离等待（2026-09-05 修复）：到点立即返回，底层继续在后台推进——
-        // 不再级联 abort 斩杀编排（旧 600s 硬超时会在 T4 日文已落盘时连坐杀死
-        // worker 并误标 failed）。内部计时恒先于 pipeline 兜底（timeoutMs 加
-        // PLAN_EXECUTE_PIPELINE_GRACE_MS），所以走到这里说明编排还活着。
-        const executeTimeoutMs = resolvePlanExecuteTimeoutMs(params.input.executeTimeoutMs)
-        const startedAt = Date.now()
-        let timeoutTimer: ReturnType<typeof setTimeout> | undefined
-        type RaceOutcome =
-          | { kind: 'ok'; value: PlanExecutorWavesResult }
-          | { kind: 'fail'; error: unknown }
-          | { kind: 'timeout' }
-        const raced: RaceOutcome = await Promise.race([
-          execution.then<RaceOutcome, RaceOutcome>(
-            value => ({ kind: 'ok', value }),
-            error => ({ kind: 'fail', error }),
-          ),
-          new Promise<RaceOutcome>(resolve => {
-            timeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), executeTimeoutMs)
-            // 脱离等待不该把进程钉住——会话自然退出时后台执行随之终止。
-            timeoutTimer.unref?.()
-          }),
-        ])
-        if (timeoutTimer) clearTimeout(timeoutTimer)
-
-        if (raced.kind === 'timeout') {
-          const groupId = deriveTeamGroupId(objective)
-          trackDetachedPlanRun(
-            { sessionId: params.sessionId, objective, groupId, startedAt, timeoutMs: executeTimeoutMs },
-            execution,
-          )
-          const secs = Math.round(executeTimeoutMs / 1000)
-          return {
-            content: `${renderUnifiedPlanSummary(plan)}\n\n` +
-              `⏱ 执行等待已达上限（${secs}s）——已转入后台继续执行：编排与 worker 均未中断，每波完成仍写 checkpoint。\n` +
-              `- 进度：worker 活动照常流入面板；checkpoint 在 .rivet/checkpoints/${groupId}.json（lastCompletedWave = 最后完成波），也可 git status 实查落盘。\n` +
-              `- 完成通知：执行结束时下个对话轮会收到系统提醒（含成败与摘要）。\n` +
-              `- 续跑/收尾：等完成通知；或用 executePlanWaves fromWave=N 续跑（N = lastCompletedWave + 1），也可 team_orchestrate({ objective }) 让会话内已存计划自动消费续跑。\n` +
-              `- 会话结束（退出 / Esc 中止）才会真正终止后台执行。`,
-          }
-        }
-        if (raced.kind === 'fail') throw raced.error
-
-        const { run } = raced.value
         const guidance = buildMethodologyGuidance(objective, files ?? [])
         const todoNote = leafNodes.length > 0
           ? `\n\n✅ Todo list 已同步 (${leafNodes.length} 项)。`
@@ -504,13 +364,9 @@ export function createPlanTaskTool(deps: {
     requiresApproval: () => true,
     isConcurrencySafe: () => false,
     isEnabled: () => true,
-    // execute:true 的等待上限可配（input.executeTimeoutMs > env
-    // RIVET_PLAN_EXECUTE_TIMEOUT_MS > 默认 30min）——到点语义是「脱离等待转
-    // 后台」而非级联 abort（见 execute 内 race 与 detached-plan-registry）。
-    // +GRACE 让内部脱离计时恒先于 pipeline 的 withToolTimeout 兜底开枪；
-    // 纯规划路径（execute!==true）保持 120s 语义不变。
-    timeoutMs: (params?: ToolCallParams) => params?.input?.execute === true
-      ? resolvePlanExecuteTimeoutMs(params.input?.executeTimeoutMs) + PLAN_EXECUTE_PIPELINE_GRACE_MS
-      : 120_000,
+    // Align with team_orchestrate (600s): execute:true runs the full plan
+    // executor loop (multi-worker dispatch + gates + review), and 120s
+    // (the tool default) physically cannot complete it. T2 fix, 2026-07-29.
+    timeoutMs: (params?: ToolCallParams) => params?.input?.execute === true ? 600_000 : 120_000,
   }
 }

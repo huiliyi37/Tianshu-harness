@@ -25,21 +25,41 @@ describe('formatPromptFooter', () => {
     assert.ok(plain.includes('ctrl+p 面板'), `hint: ${plain}`)
   })
 
-  it('换行模式提示 换行中/enter 换行/shift+enter 退出', () => {
-    const [line] = formatPromptFooter({ ...base, newlineMode: true }, theme)
+  it('换行模式提示 换行中/enter 换行；shift+enter 退出仅在 kitty 终端显示', () => {
+    const [supported] = formatPromptFooter({ ...base, newlineMode: true, shiftEnterAvailable: true }, theme)
+    const plainOk = stripAnsi(supported ?? '')
+    assert.ok(plainOk.includes('换行中'), `hint: ${plainOk}`)
+    assert.ok(plainOk.includes('enter 换行'), `hint: ${plainOk}`)
+    assert.ok(plainOk.includes('shift+enter 退出'), `kitty 终端显示退出键: ${plainOk}`)
+
+    // 非 kitty 终端：Shift+Enter 与 Enter 同码，按了也退不出——提示即谎言，裁掉
+    const [unsupported] = formatPromptFooter({ ...base, newlineMode: true }, theme)
+    const plainNo = stripAnsi(unsupported ?? '')
+    assert.ok(plainNo.includes('换行中'), `hint: ${plainNo}`)
+    assert.ok(!plainNo.includes('shift+enter'), `非 kitty 终端不提示不可用键: ${plainNo}`)
+  })
+
+  it('agentBusy 时提示输入能力键（换行），不再显示打断键', () => {
+    const [line] = formatPromptFooter({ ...base, agentBusy: true, shiftEnterAvailable: true }, theme)
+    const plain = stripAnsi(line ?? '')
+    assert.ok(plain.includes('ctrl+j 换行'), `hint: ${plain}`)
+    assert.ok(plain.includes('shift+enter 换行模式'), `kitty 终端显示: ${plain}`)
+    assert.ok(!plain.includes('/ 命令'), `busy 不提示命令: ${plain}`)
+    assert.ok(!plain.includes('esc 打断'), '打断键是常识且打断有损，不占提示位')
+
+    // 非 kitty 终端：shift+enter 与 Enter 同码（按了即提交），提示会误导
+    const [unsupported] = formatPromptFooter({ ...base, agentBusy: true }, theme)
+    const plainNo = stripAnsi(unsupported ?? '')
+    assert.ok(plainNo.includes('ctrl+j 换行'), 'ctrl+j 是 C0 码，全终端可用恒提示')
+    assert.ok(!plainNo.includes('shift+enter'), `非 kitty 终端裁掉 shift+enter: ${plainNo}`)
+  })
+
+  it('agentBusy + 换行模式：提示换行态而非 busy 通用提示', () => {
+    const [line] = formatPromptFooter({ ...base, agentBusy: true, newlineMode: true, shiftEnterAvailable: true }, theme)
     const plain = stripAnsi(line ?? '')
     assert.ok(plain.includes('换行中'), `hint: ${plain}`)
     assert.ok(plain.includes('enter 换行'), `hint: ${plain}`)
     assert.ok(plain.includes('shift+enter 退出'), `hint: ${plain}`)
-    assert.ok(!plain.includes('/ 命令'), '换行模式不再提示正常 hints')
-  })
-
-  it('agentBusy 时提示打断键，不再显示命令提示', () => {
-    const [line] = formatPromptFooter({ ...base, agentBusy: true }, theme)
-    const plain = stripAnsi(line ?? '')
-    assert.ok(plain.includes('esc 打断'), `hint: ${plain}`)
-    assert.ok(plain.includes('ctrl+c 打断'), `hint: ${plain}`)
-    assert.ok(!plain.includes('/ 命令'), `busy 不提示命令: ${plain}`)
   })
 
   it('approvalPending 时提示审批动作', () => {

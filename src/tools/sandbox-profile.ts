@@ -406,15 +406,13 @@ export function isSandboxActive(env: NodeJS.ProcessEnv = process.env): boolean {
 /**
  * Couple the sandbox to the approval mode.
  *
- * The two are orthogonal axes — "who gets asked" vs "what can be written" —
- * but their defaults are not independent: YOLO removes the approval boundary,
- * which makes the kernel write boundary the only one left. So YOLO turns the
- * sandbox ON rather than off (mirrors Codex, where --full-auto means
- * no-approvals + workspace-write sandbox, and going truly unbounded requires a
- * separate, deliberately longer flag).
+ * 2026-09-07 语义变更（用户产品决策）：YOLO = 「完全权限」档——免审批 + 无写沙箱，
+ * 全自动无人值守场景可全盘读写（此前 Codex 式"YOLO 免审批 + 自动开沙箱兜底"被否决：
+ * 沙箱把 ~/.supabase 等外部路径写入拦死，与全自动冲突）。沙箱现在只由显式
+ * RIVET_SANDBOX=1 开启（或 =learn 采集模式）；approval 模式不再影响沙箱。
  *
- * An explicit RIVET_SANDBOX always wins — RIVET_SANDBOX=0 is the escape hatch
- * for users who genuinely want no boundary.
+ * 保留逃生语义：显式 RIVET_SANDBOX 永远赢（本函数对已设置的环境变量 no-op）。
+ * 想要沙箱兜底的 YOLO 用户：RIVET_SANDBOX=1（或桌面端保持沙箱开关）。
  *
  * Idempotent; safe to call again on a mid-session mode switch.
  *
@@ -427,8 +425,22 @@ export function applySandboxPolicyForApprovalMode(
   approvalMode: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (env.RIVET_SANDBOX !== undefined) return // explicit setting wins
-  if (approvalMode === 'dangerously-skip-permissions') env.RIVET_SANDBOX = '1'
+  // Approval mode no longer drives the sandbox (yolo = full permission).
+  // Sandbox is opt-in via explicit RIVET_SANDBOX=1 only.
+  void approvalMode
+}
+
+/**
+ * Config-declared full-permission (agent.unsandboxed) → env default.
+ *
+ * P1-1（2026-09-07 审查）：bootstrap 曾无条件把 config.unsandboxed 落成
+ * RIVET_SANDBOX=0，踩掉用户显式设置的 RIVET_SANDBOX=1——与上方
+ * 「显式 RIVET_SANDBOX 永远赢」的逃生语义矛盾。本函数仅当 env 未显式设置
+ * 时才落默认 '0'；显式环境变量（含 =1/=learn/=0）一律保留。
+ * Idempotent; safe to call at every bootstrap / config reload.
+ */
+export function applyUnsandboxedEnvDefault(unsandboxed: boolean, env: NodeJS.ProcessEnv = process.env): void {
+  if (unsandboxed && env.RIVET_SANDBOX === undefined) env.RIVET_SANDBOX = '0'
 }
 
 /**

@@ -34,11 +34,48 @@ describe('meridian db', () => {
     assert.equal(symbols[0]!.name, 'hello')
   })
 
+  it('getSymbolsByNames returns one batch for a name set and matches getAllSymbols for the same set', () => {
+    db.upsertFile({
+      filePath: 'src/a.ts', contentHash: 'h1',
+      symbols: [
+        { id: 'src/a.ts:hello:1', name: 'hello', kind: 'function', filePath: 'src/a.ts', line: 1, exported: true, contentHash: 'h1' },
+        { id: 'src/a.ts:other:2', name: 'other', kind: 'function', filePath: 'src/a.ts', line: 2, exported: false, contentHash: 'h1' },
+      ],
+      edges: [], imports: [], calls: [],
+    })
+    db.upsertFile({
+      filePath: 'src/b.ts', contentHash: 'h2',
+      symbols: [{ id: 'src/b.ts:hello:1', name: 'hello', kind: 'function', filePath: 'src/b.ts', line: 1, exported: false, contentHash: 'h2' }],
+      edges: [], imports: [], calls: [],
+    })
+    const got = db.getSymbolsByNames(['hello', 'missing', 'hello'])
+    assert.deepEqual(got.map(s => s.id).sort(), ['src/a.ts:hello:1', 'src/b.ts:hello:1'])
+    const expected = db.getAllSymbols().filter(s => s.name === 'hello').map(s => s.id).sort()
+    assert.deepEqual(got.map(s => s.id).sort(), expected, 'name-set batch must equal getAllSymbols for the same names')
+    assert.deepEqual(db.getSymbolsByNames([]), [])
+    assert.deepEqual(db.getSymbolsByNames(['missing']), [])
+  })
+
   it('skips re-parse when hash matches', () => {
     assert.equal(db.needsParse('src/foo.ts', 'hash1'), true)
     db.upsertFile({ filePath: 'src/foo.ts', contentHash: 'hash1', symbols: [], edges: [], imports: [], calls: [] })
     assert.equal(db.needsParse('src/foo.ts', 'hash1'), false)
     assert.equal(db.needsParse('src/foo.ts', 'hash2'), true)
+  })
+
+  it('hasFiles probes cold-start emptiness without full scans (P1-2)', () => {
+    // 冷库（新 clone 首启）files 表为空——hasFiles 用 LIMIT 1 轻量探测，
+    // 供 tool-pipeline 区分「空库需落回 importGraph」与「索引有数据」。
+    assert.equal(db.hasFiles(), false)
+    db.upsertFile({
+      filePath: 'src/foo.ts',
+      contentHash: 'h1',
+      symbols: [],
+      edges: [],
+      imports: [],
+      calls: [],
+    })
+    assert.equal(db.hasFiles(), true)
   })
 
   it('stores and retrieves edges', () => {

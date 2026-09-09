@@ -76,46 +76,6 @@ describe('team orchestrator skeleton', () => {
     assert.ok(request!.objective.includes('只执行本 task'))
   })
 
-  it('injects unseen task verification commands into delegation constraints', () => {
-    const t = task('T1', ['src/a.ts'])
-    t.verification = ['npm test', 'npx tsc --noEmit']
-    t.objective = 'Implement T1\n验收: npm test'
-
-    const [request] = teamTasksToDelegationRequests([t], 'parent')
-
-    assert.ok(request!.constraints, 'verification 必须进入 request.constraints')
-    const joined = request!.constraints!.join('\n')
-    assert.ok(joined.includes('npx tsc --noEmit'), 'worker 必须看到验收命令')
-    assert.ok(joined.includes('exit code'), '约束必须要求汇报执行结果')
-    assert.ok(!joined.includes('npm test'), 'objective 已携带的命令不重复注入')
-  })
-
-  it('injects pre-parsed task verification into dispatched wave requests', async () => {
-    let captured: DelegationRequest[] = []
-    await runTeamSkeleton({
-      mode: 'standard',
-      objective: 'execute plan',
-      tasks: [{
-        id: 'T1',
-        title: 'Parser',
-        objective: '修改 parser（objective 不含验收命令）',
-        files: ['src/agent/team-plan.ts'],
-        profile: 'patcher',
-        kind: 'patch_proposal',
-        verification: ['npm test'],
-        dependsOn: [],
-        riskTier: 'low',
-        touchSet: ['src/agent/team-plan.ts'],
-      }],
-    }, {
-      delegateBatch: async (requests) => { captured = requests; return run('delegated') },
-    })
-
-    const parserRequest = captured.find(r => r.scope.files?.[0] === 'src/agent/team-plan.ts')
-    assert.ok(parserRequest, 'T1 应被派发')
-    assert.ok(parserRequest!.constraints?.some(c => c.includes('npm test')), '预解析任务的验证命令必须下传 worker')
-  })
-
   it('onPlanReady 在 dispatch 之前触发，携带 waves/tasks 且无 run', async () => {
     const order: string[] = []
     let planReady: { summary: TeamRunSummary; wave: number } | null = null

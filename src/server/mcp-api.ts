@@ -172,6 +172,20 @@ export function buildMcpRoutes(
       }
     }, token),
 
+    // GET /mcp/servers/:id — full stored config for the edit form. Issue #63:
+    // connection states carry no command/args/env, so the settings UI had no
+    // prefill source and custom servers could only be deleted and re-added.
+    // env values are returned as stored — local sidecar, same trust domain as
+    // the config file itself.
+    'GET /mcp/servers/:id': withAuth((_, params) => {
+      const serverId = params?.id
+      if (!serverId) return { status: 400, body: { error: 'server id is required' } }
+      const servers = cloneMcpServers()
+      const cfg = servers[serverId]
+      if (!cfg) return { status: 404, body: { error: `MCP server "${serverId}" not found` } }
+      return { status: 200, body: { serverId, ...cfg } }
+    }, token),
+
     // DELETE /mcp/servers/:id — remove an MCP server from config.
     'DELETE /mcp/servers/:id': withAuth(async (_, params) => {
       const serverId = params?.id

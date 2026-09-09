@@ -1,6 +1,5 @@
 import { CollapsedReadSearchBuffer, isCollapsibleTool, type CollapsedReadSearchGroup } from '../format/collapsed-read-search.js'
 import { CollapsedBashBuffer, type CollapsedBashGroup } from '../format/collapsed-bash.js'
-import { CollapsedPollingBuffer, type CollapsedPollingGroup } from '../format/collapsed-polling.js'
 import { capToolAccumulator, TOOL_ACCUMULATOR_MAX_BYTES } from './tool-accumulator.js'
 
 export interface PendingToolMeta {
@@ -31,8 +30,6 @@ export class ToolGroupController {
   private toolGroupBuffer = new CollapsedReadSearchBuffer()
   private bashGroupBuffer = new CollapsedBashBuffer()
   private lastCollapsedBashGroup: CollapsedBashGroup | null = null
-  private pollingGroupBuffer = new CollapsedPollingBuffer()
-  private lastCollapsedPollingGroup: CollapsedPollingGroup | null = null
 
   // ── pendingTools ──
   setPending(id: string, meta: PendingToolMeta): void {
@@ -133,54 +130,6 @@ export class ToolGroupController {
 
   detachBashEntry(id: string): import('../format/collapsed-bash.js').CollapsedBashEntry | null {
     return this.bashGroupBuffer.detachEntry(id)
-  }
-
-  // ── pollingGroupBuffer（轮询连击折叠，known-issue 2026-09-04 P1）──
-  pushPollingUse(id: string, name: string, input: Record<string, unknown>): void {
-    this.pollingGroupBuffer.pushUse(id, name, input)
-  }
-
-  isActivePollingGroup(): boolean {
-    return this.pollingGroupBuffer.isActive()
-  }
-
-  getActivePollingGroup() {
-    return this.pollingGroupBuffer.getActive()
-  }
-
-  /** 异名工具到达是否打断当前连击（含另一个轮询工具） */
-  pollingShouldBreak(name: string): boolean {
-    return this.pollingGroupBuffer.shouldBreak(name)
-  }
-
-  hasPollingEntry(id: string): boolean {
-    return this.pollingGroupBuffer.hasEntry(id)
-  }
-
-  attachPollingResult(id: string, content: string, isError: boolean): void {
-    this.pollingGroupBuffer.attachResult(id, content, isError)
-  }
-
-  /**
-   * flush 连击组。仅多调用且至少一条已完成的组才记入 lastCollapsedPollingGroup
-   * （Ctrl+O 组展开位）——×1 退化走普通工具卡通道、全在途组不落卡，两者都
-   * 没有可展开的聚合卡。
-   */
-  flushPollingGroup(): CollapsedPollingGroup | null {
-    const group = this.pollingGroupBuffer.flush()
-    if (group && group.entries.length > 1 && group.entries.some(e => e.completed)) {
-      this.lastCollapsedPollingGroup = group
-    }
-    return group
-  }
-
-  // ── lastCollapsedPollingGroup ──
-  getLastCollapsedPollingGroup(): CollapsedPollingGroup | null {
-    return this.lastCollapsedPollingGroup
-  }
-
-  clearLastCollapsedPollingGroup(): void {
-    this.lastCollapsedPollingGroup = null
   }
 
   // ── lastCollapsedGroup ──

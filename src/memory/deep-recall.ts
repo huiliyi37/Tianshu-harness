@@ -37,8 +37,6 @@ export interface CollectCandidatesOptions {
   maxCandidates?: number
   maxTotalChars?: number
   readTranscript?: (path: string) => Array<{ role: string; content: string }>
-  /** 排除的会话 ID（调用方传当前会话与在线并行会话）；worker-* 派生会话恒排除。 */
-  excludeSessionIds?: readonly string[]
 }
 
 const QUOTE_CONTEXT_CHARS = 160
@@ -56,15 +54,11 @@ export function collectTranscriptCandidates(
   const maxTotalChars = options.maxTotalChars ?? 6_000
   const read = options.readTranscript ?? readHistoricalTranscript
 
-  const excludedSessions = new Set(options.excludeSessionIds ?? [])
   const files: Array<{ sessionId: string; path: string; mtimeMs: number }> = []
   for (const name of readdirSync(sessionDir)) {
     if (!name.endsWith('.jsonl') || name === 'cache-log.jsonl') continue
-    const sessionId = name.slice(0, -6)
-    // 当前会话不是「历史会话」；worker 派生会话是隔离边界，不得当作跨会话证据。
-    if (excludedSessions.has(sessionId) || sessionId.startsWith('worker-')) continue
     const path = join(sessionDir, name)
-    try { files.push({ sessionId, path, mtimeMs: statSync(path).mtimeMs }) } catch { /* skip */ }
+    try { files.push({ sessionId: name.slice(0, -6), path, mtimeMs: statSync(path).mtimeMs }) } catch { /* skip */ }
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs)
 

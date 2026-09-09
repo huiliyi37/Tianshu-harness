@@ -29,8 +29,6 @@ export type StopReasonSource =
   | 'max-turns'
   /** Same fully-errored tool batch re-emitted N× (e.g. denied-approval loop). Guard-forced. */
   | 'wedged-loop'
-  /** P0-1: consecutive polling-class storm with no file progress. Guard-forced. */
-  | 'tool-storm'
   /** User Ctrl+C / Esc. User action. */
   | 'user-interrupt'
   /** Provider/stream error. Fault. */
@@ -77,8 +75,6 @@ export function describeStopReason(r: StopReason): string {
       return `⏹ 达到最大轮次上限（turn=${r.turn}）— 任务可能未完成`
     case 'wedged-loop':
       return `⏹ 检测到工具死循环（同一失败调用重复${r.detail ? `：${r.detail}` : ''}）— 已终止以防上下文膨胀`
-    case 'tool-storm':
-      return `⏹ 检测到轮询风暴${r.detail ? `（连续同类观察操作且无文件推进：${r.detail}）` : ''}。系统已自动停止本轮，避免桌面端被持续刷屏卡死。你现在可以直接发送下一条消息；如需继续原任务，请换一种方式描述，或让主控改用 monitor 订阅 / job(await) 等待结果，而不是反复轮询。`
     case 'user-interrupt':
       return '⏹ 用户中断'
     case 'stream-error':

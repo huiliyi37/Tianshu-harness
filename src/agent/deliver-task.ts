@@ -594,14 +594,6 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         lines.push('', 'Ownership health warnings:')
         lines.push(...health.warningLines.map(line => `  ${line}`))
       }
-      // B1 pending-adopt 显式清单：无归属分类的 dirty 文件（多为 worker 写入或
-      // 他会话半成品）——明确列出并给认领路径，替代静默 unclassified 导致的
-      // 交付遗漏（worker 文件需事后 adopt 补交）。
-      if (health.pendingAdopt.length > 0) {
-        lines.push('', '⚠️  Pending adopt（无归属分类的 dirty 文件——可能是 worker 写入或他会话半成品）：')
-        lines.push(...health.pendingAdopt.map(f => `  - ${f}`))
-        lines.push('  认领方式：deliver_task commit=true adopt=[...]（确认属于本任务）；不属于则忽略（外部文件不进提交范围）。')
-      }
       if (health.infoLines.length > 0) {
         lines.push('', 'Ownership caveats:')
         lines.push(...health.infoLines.map(line => `  ${line}`))
@@ -1044,26 +1036,6 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         } else if (requestedFiles && Array.isArray(requestedFiles) && requestedFiles.length === 0) {
           lines.push('', '❌ No files specified for commit. Provide non-empty files array or omit to commit all owned files.')
           return { content: lines.join('\n'), isError: true }
-        }
-
-        // 空提交守卫（2026-08-31 benchmark 实测）：问答/审查/评测会话里
-        // deliver_task 以 0 个归属文件走 git commit 会失败并把整轮 headless
-        // 打成 agent_failed。空清单不是错误——如实说明并 advisory 返回。
-        if (filesToCommit.length === 0) {
-          // 结构化信号（审查 P2 收口）：stable marker 可被 transcript/headless
-          // 检测「零提交交付」，与真实成功交付可区分。
-          lines.push('', 'ℹ️ [empty-commit] 无可提交文件：本会话没有归属本任务的代码变更。')
-          lines.push('   如果是问答/审查/评测类任务，这是正常状态——直接结束会话即可；')
-          lines.push('   如果确实改过文件但不在清单里，检查文件是否由本会话工具实际写入并完成认领。')
-          // 归属失联鉴别：工作区此刻存在未认领的改动文件 = 「确实改过但 ledger
-          // 丢失」（9ac8aa289 场景）的强信号——与「真没写文件」必须可区分，
-          // 否则零提交的 no-op 交付在 headless 侧无从察觉。
-          const dirtyNow = collectCurrentDirtyFiles(params.cwd) ?? []
-          if (dirtyNow.length > 0) {
-            const sample = dirtyNow.slice(0, 3).join(', ')
-            lines.push(`   ⚠️ 归属失联嫌疑：工作区存在 ${dirtyNow.length} 个未认领改动文件（${sample}${dirtyNow.length > 3 ? ' 等' : ''}）。若含本会话改动，核对其认领链；若属并行会话可忽略。`)
-          }
-          return { content: lines.join('\n') }
         }
 
         const commitConflictFiles = new Set(filesToCommit)

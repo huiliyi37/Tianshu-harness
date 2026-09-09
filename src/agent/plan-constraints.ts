@@ -22,7 +22,7 @@
  * 渲染器必须自己保证产出 ≤ 上限，否则又是一次「截断了但看起来完整」。
  */
 
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { validatePathSafe } from '../tools/path-validate.js'
 import { listPlansSync } from '../plan/plan-store.js'
@@ -318,19 +318,12 @@ export function findApprovedPlanConstraints(cwd: string): string[] | undefined {
  */
 export function constraintsFromUnifiedPlan(src: {
   nonGoals?: string[]
-  assumptions?: string[]
   obligations?: { kind: string; text: string }[]
 }): string[] {
   const items: PlanConstraint[] = []
   for (const raw of src.nonGoals ?? []) {
     const text = raw.trim()
     if (text) items.push({ kind: 'anti-goal', text, section: 'nonGoals' })
-  }
-  // T8：待验证假设结构化载体（UnifiedPlan.assumptions → assumption 种类，
-  // 渲染指纹 [计划待验证假设·执行期先验证]——worker 收到"先验证再执行"）。
-  for (const raw of src.assumptions ?? []) {
-    const text = raw.trim()
-    if (text) items.push({ kind: 'assumption', text, section: 'assumptions' })
   }
   for (const ob of src.obligations ?? []) {
     if (ob.kind === 'advisory_gate') continue

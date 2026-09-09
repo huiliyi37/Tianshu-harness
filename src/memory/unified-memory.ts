@@ -16,7 +16,7 @@
  * 迁移 B → A 幂等按 id（正则观察产物 source='auto' 默认不迁——那是噪声）。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { memoryDir } from '../config/paths.js'
@@ -91,10 +91,6 @@ export interface MemoryEntry {
   transferableTo?: string[]
   /** 作用域元数据（模块/主题），召回结构化预过滤用。 */
   topic?: string
-  /** 用户显式失效时间（问题已解决 / 主动遗忘）。失效后 recall 默认不返回。 */
-  invalidatedAt?: number
-  /** 失效原因：resolved = 用户确认旧问题已解决；forgotten = 用户主动遗忘。 */
-  invalidatedReason?: 'resolved' | 'forgotten'
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -140,8 +136,6 @@ function normalizeEntry(raw: Record<string, unknown>): MemoryEntry | null {
     supersededBy: typeof raw.supersededBy === 'string' ? raw.supersededBy : undefined,
     transferableTo: Array.isArray(raw.transferableTo) ? raw.transferableTo.filter((t): t is string => typeof t === 'string') : undefined,
     topic: typeof raw.topic === 'string' ? raw.topic : undefined,
-    invalidatedAt: typeof raw.invalidatedAt === 'number' ? raw.invalidatedAt : undefined,
-    invalidatedReason: raw.invalidatedReason === 'resolved' || raw.invalidatedReason === 'forgotten' ? raw.invalidatedReason : undefined,
   }
 }
 
@@ -212,8 +206,6 @@ export function appendMemoryEntry(
     supersededBy: partial.supersededBy,
     transferableTo: partial.transferableTo,
     topic: partial.topic,
-    invalidatedAt: partial.invalidatedAt,
-    invalidatedReason: partial.invalidatedReason,
   }
 
   // 共用 project-memory-writer 的锁协议写入项目内知识库
@@ -262,69 +254,6 @@ export function supersedeMemoryEntry(cwd: string, oldId: string, newId: string):
     if (!found) return false
     writeFileAtomicSync(path, lines.join('\n') + '\n')
     return true
-  } finally {
-    release()
-  }
-}
-
-// ── 用户失效（P2：resolved / forget）────────────────────────────────────
-
-export type MemoryInvalidationReason = 'resolved' | 'forgotten'
-
-export interface MemoryInvalidationResult {
-  ok: boolean
-  message: string
-  entry?: MemoryEntry
-}
-
-/**
- * 用户显式关闭一条当前记忆：问题已解决（resolved）或主动遗忘（forgotten）。
- * invalidate-don't-delete——只设 validTo + status='expired'，保留原文供审计；
- * recall/自动注入默认不再返回（isCurrentEntry 拦截）。
- */
-export function invalidateMemoryEntry(
-  cwd: string,
-  entryId: string,
-  reason: MemoryInvalidationReason = 'forgotten',
-): MemoryInvalidationResult {
-  const path = memoryPath(cwd)
-  if (!existsSync(path)) return { ok: false, message: '项目里还没有长期记忆文件。' }
-
-  const lockPath = join(cwd, '.rivet', 'knowledge', 'memory.jsonl.lock')
-  const release = acquireLock(lockPath)
-  try {
-    const lines: string[] = []
-    let changed = false
-    let found: MemoryEntry | undefined
-    for (const line of readFileSync(path, 'utf-8').split('\n').filter(Boolean)) {
-      try {
-        const raw = JSON.parse(line)
-        if (raw.id === entryId) {
-          const normalized = normalizeEntry(raw)
-          if (!normalized || !isCurrentEntry(normalized)) {
-            lines.push(line)
-            continue
-          }
-          raw.validTo = Date.now()
-          raw.status = 'expired'
-          raw.invalidatedAt = raw.validTo
-          raw.invalidatedReason = reason
-          raw.tags = Array.isArray(raw.tags)
-            ? [...raw.tags.filter((t: unknown) => t !== `invalidated:${reason}`), `invalidated:${reason}`]
-            : [`invalidated:${reason}`]
-          found = { ...normalized, validTo: raw.validTo, status: 'expired', invalidatedAt: raw.validTo, invalidatedReason: reason, tags: raw.tags }
-          changed = true
-          lines.push(JSON.stringify(raw))
-          continue
-        }
-      } catch { /* keep malformed line as-is */ }
-      lines.push(line)
-    }
-
-    if (!changed || !found) return { ok: false, message: `未找到可失效的当前记忆：${entryId}` }
-    writeFileAtomicSync(path, lines.join('\n') + '\n')
-    const label = reason === 'resolved' ? '已标记为已解决' : '已遗忘'
-    return { ok: true, message: `${label}（${entryId}），不再自动注入/默认召回；原文保留可用 includeHistory 审计。`, entry: found }
   } finally {
     release()
   }

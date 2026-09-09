@@ -1,6 +1,6 @@
 {
   "name": "tianshu-tui",
-  "version": "3.13.0",
+  "version": "3.16.1",
   "description": "Terminal coding agent optimized for DeepSeek V4 prefix cache",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,6 @@
     "!dist/native",
     "!dist/node_modules/**",
     "dist/node_modules/better-sqlite3/",
-    "scripts/check-mobile-env.mjs",
     "scripts/fetch-native-sqlite.js",
     "scripts/prune-installed-wasms.js",
     "scripts/tree-sitter-wasm-keep.js",
@@ -40,7 +39,7 @@
     "rivet": "dist/main.js"
   },
   "scripts": {
-    "postinstall": "node scripts/check-mobile-env.mjs && (node scripts/install-git-hooks.mjs || node -e 1) && (node scripts/fetch-native-sqlite.js || node -e 1) && (node scripts/prune-installed-wasms.js || node -e 1)",
+    "postinstall": "(node scripts/install-git-hooks.mjs || node -e 1) && (node scripts/fetch-native-sqlite.js || node -e 1) && (node scripts/prune-installed-wasms.js || node -e 1)",
     "prepack": "npm run build && node scripts/stage-cli-sqlite-wrapper.js",
     "dev": "tsup --watch",
     "build": "tsup && node scripts/pack-native.js && node scripts/stage-runtime-deps.js",
@@ -113,15 +112,5 @@
     "turndown": "^7.2.4",
     "undici": "^8.3.0",
     "zod": "^3.24.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@ast-grep/lang-json",
-      "@ast-grep/lang-python",
-      "@ast-grep/napi",
-      "better-sqlite3",
-      "esbuild",
-      "lzo"
-    ]
   }
 }

@@ -156,7 +156,7 @@ export class GoalContinuationController {
     this.deps.flushMeridianTurn()
 
     await rejectOnAbort(
-      this.deps.completeTurn({ turn: params.turn, isFinal: false, callbacks: params.callbacks }),
+      this.deps.completeTurn({ turn: params.turn, isFinal: false, callbacks: params.callbacks, continuationReason: 'goal-continuation' }),
       signal,
       'goal-continue-complete',
     )

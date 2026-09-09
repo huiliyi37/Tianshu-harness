@@ -258,11 +258,6 @@ export interface AgentConfig {
     domainTier?: readonly string[]
     disabledTools?: readonly string[]
   }
-  /** Zen Mode — 会话启动期把主控工具面收窄到只读（读面），模型调面外工具 /
-   *  首消息分诊 / 步数预算超时 / /fast 时晋升 full（全量面）。缺省 undefined
-   *  → 禁用（全量面，恒放行）。worker 会话（headless / delegationDepth>0）不 arm。
-   *  值形态为 resolveZenConfig 物化结果（bootstrap 解析 tools.zen 后传入）。 */
-  zen?: import('./zen-mode.js').ResolvedZenConfig
   /** 当前 provider 的前缀缓存策略 — 逃生口 /tools enable 用它量化挂载的缓存代价。 */
   prefixCacheStrategy?: 'deepseek-native' | 'anthropic-cache-control' | 'none'
   /** 当前模型是否接受图片输入（多模态 user 消息）。按模型声明（config.models[].supportsVision），
@@ -339,19 +334,15 @@ export interface AgentCallbacks {
   onThinkingDelta: (thinking: string) => void
   onToolUse: (id: string, name: string, input: Record<string, unknown>) => void
   onToolResult: (id: string, name: string, result: string, isError?: boolean, rawPath?: string, uiContent?: string) => void
-  onTurnComplete: (usage: Partial<Usage>, turnNumber: number, isFinal?: boolean, evidenceSummary?: EvidenceSummary, metrics?: { turn: number; ttftMs?: number; tokensPerSecond?: number; outputTokens: number; decodeMs?: number }) => void
+  /** 自动续轮原因（obligation-verification / action-intent / steer / goal-continuation）。
+   *  Additive wire field：仅当中间 turn 之后由系统注入提醒并继续运行时携带；
+   *  desktop 用它把“给系统的自检回复”与“给用户的交付文本”区分开。 */
+  onTurnComplete: (usage: Partial<Usage>, turnNumber: number, isFinal?: boolean, evidenceSummary?: EvidenceSummary, continuationReason?: string) => void
   onError: (error: Error) => void
   onAbort: (reason?: string) => void
   onApprovalRequired: (id: string, name: string, input: Record<string, unknown>) => Promise<ApprovalResult | boolean>
   onCheckpoint?: (hash: string) => void
   onPhaseChange?: (phase: string, detail?: { tool?: string; reason?: string; suggestion?: string; voluntary?: boolean; source?: string }) => void
-  /** Zen Mode 相位镜像：run 开始与每次晋升各发一次（桌面端读面徽章）。
-   *  worker/子代理会话不接 zen → 不触发。 */
-  onZenPhaseChange?: (
-    phase: 'zen' | 'full',
-    reason?: 'tool' | 'timeout' | 'triage' | 'user',
-    stats?: { armed: boolean; zenTurns: number },
-  ) => void
   /** Auto session domain resolved at the first bind; observability only. */
   onDomainResolved?: (payload: DomainResolvedPayload) => void
   /** Auto domain drift is user-facing observability only; it never changes model state. */

@@ -12,7 +12,7 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createRouter } from '../index.js'
@@ -72,14 +72,6 @@ function setup() {
 }
 
 const tick = () => new Promise(r => setTimeout(r, 20))
-/** 归档是 run 收尾的异步尾步：固定 20ms 在高负载 Linux runner 上会提前判定失败，轮询到出现或超时。 */
-async function waitFor(cond: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 5000
-  while (!cond()) {
-    if (Date.now() > deadline) return assert.ok(cond(), what)
-    await tick()
-  }
-}
 
 test('会话不存在 → 404', async () => {
   const { router } = setup()
@@ -111,15 +103,10 @@ test('交接 run：prompt 指向项目内文档，收尾归档到 <id>.handoff.m
   mkdirSync(join(workDir, '.rivet'), { recursive: true })
   const srcPath = join(workDir, '.rivet', 'HANDOFF.md')
   writeFileSync(srcPath, '# Handoff 交接内容\n')
-  const wroteAt = Date.now()
   agent.finish()
   await tick()
 
   const destPath = join(getSessionDir(workDir), `${s.id}.handoff.md`)
-  await waitFor(
-    () => existsSync(destPath),
-    `run 收尾应归档到会话目录（诊断: src exists=${existsSync(srcPath)}, src mtime=${existsSync(srcPath) ? statSync(srcPath).mtimeMs : '—'}, 写入时刻≈${wroteAt}, 事件=${(manager.getEvents(s.id)?.events ?? []).map(e => e.type).join(',')}, sessionDir=${getSessionDir(workDir)}）`,
-  )
   assert.ok(existsSync(destPath), 'run 收尾应归档到会话目录')
   assert.equal(readFileSync(destPath, 'utf-8'), '# Handoff 交接内容\n')
 

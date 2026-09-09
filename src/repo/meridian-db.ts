@@ -295,6 +295,40 @@ export class MeridianDb {
     }))
   }
 
+  /**
+   * 按 name 集合一次拉取符号（buildCallEdges 批量路径，2026-09-08）。
+   * 参数化 `WHERE name IN (?,...)` 走 idx_symbols_name，替代 getAllSymbols
+   * 全表物化 + 内存过滤。名字去重后按 500 个分片（SQLite 变量上限留足余量），
+   * 分片结果按 symbol id 去重。空集合/无命中返回 []。
+   */
+  getSymbolsByNames(names: string[]): MeridianSymbol[] {
+    const unique = [...new Set(names)]
+    if (unique.length === 0) return []
+    const CHUNK_SIZE = 500
+    const seen = new Set<string>()
+    const out: MeridianSymbol[] = []
+    for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+      const chunk = unique.slice(i, i + CHUNK_SIZE)
+      const placeholders = chunk.map(() => '?').join(',')
+      const rows = this.db.prepare(`SELECT * FROM symbols WHERE name IN (${placeholders})`).all(...chunk) as Array<Record<string, unknown>>
+      for (const row of rows) {
+        const symbol: MeridianSymbol = {
+          id: row.id as string,
+          name: row.name as string,
+          kind: row.kind as MeridianSymbol['kind'],
+          filePath: row.file_path as string,
+          line: row.line as number,
+          exported: (row.exported as number) === 1,
+          contentHash: row.content_hash as string,
+        }
+        if (seen.has(symbol.id)) continue
+        seen.add(symbol.id)
+        out.push(symbol)
+      }
+    }
+    return out
+  }
+
   getEdgesFrom(symbolId: string): MeridianEdge[] {
     return (this.db.prepare('SELECT * FROM edges WHERE source_id = ?').all(symbolId) as Array<Record<string, unknown>>).map(row => ({
       sourceId: row.source_id as string,
@@ -427,6 +461,15 @@ export class MeridianDb {
   /** Get all indexed file paths */
   getAllFiles(): string[] {
     return (this.db.prepare('SELECT path FROM files').all() as Array<{ path: string }>).map(r => r.path)
+  }
+
+  /**
+   * P1-2: cheap cold-start probe — whether the files table has any rows.
+   * LIMIT 1 探测，避免写工具热路径上每次全表扫（getAllFiles 5k 文件 ≈ 5k 行）。
+   */
+  hasFiles(): boolean {
+    const row = this.db.prepare('SELECT 1 AS one FROM files LIMIT 1').get() as { one: number } | undefined
+    return row !== undefined
   }
 
   /** Insert or update a single edge */

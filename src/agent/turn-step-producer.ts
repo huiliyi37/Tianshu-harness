@@ -19,7 +19,6 @@ import { skillRegistry } from '../skills/skill-loader.js'
 import { detectQuizLike } from './intent-retrieval-route.js'
 import { renderMemoryBlock } from '../memory/unified-memory.js'
 import { reviewAdaptiveMemory } from '../memory/adaptive-stm.js'
-import { memoryQueryForTurn } from '../memory/memory-turn-intent.js'
 import { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled } from './cross-session-memory-config.js'
 export { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled } from './cross-session-memory-config.js'
 import { parseMentions, renderMentionContext, normalizeMentionRefs } from '../tui/mention-parser.js'
@@ -182,7 +181,7 @@ export class TurnStepProducer {
         this.self.abortStalledTurn()
       },
     })
-    callbacks = wrapCallbacksWithHeartbeat(callbacks, heartbeat)
+    callbacks = wrapCallbacksWithHeartbeat(callbacks, heartbeat, () => this.self.config.sessionId)
     heartbeat.start()
     this.self._turnHeartbeat = heartbeat
     this.self.turnStream = this.self.createTurnStreamController()
@@ -292,9 +291,7 @@ export class TurnStepProducer {
       this.self.taskContract = undefined
     }
 
-    const previousRoute = this.self._lastRetrievalRoute
     await this.self.intentRoute.buildForTurn(userInput, actionable, turnMode)
-    const currentRoute = this.self._lastRetrievalRoute
 
     // 协作分支 advisory（W3）：分支事实来自同一 turn route；social_idle 已在
     // route 层 fail-closed。A/D/CV3 仲裁全部在纯函数 selectCollabAdvisories
@@ -451,12 +448,10 @@ export class TurnStepProducer {
     // 显式 A/B 全量注入。adaptive-memory 默认 shadow，RIVET_ADAPTIVE_MEMORY=on 开启。
     const crossSessionOff = crossSessionDisabled(this.self.config.crossSessionEnabled)
     // 2026-09 记忆幻觉治理：agent-crafted 不再无条件按「最近写入」注入。
-    // task 用当前问题；followUp 默认沿用当前契约目标，但识别「已解决/换新问题」
-    // 与意图路由高置信换题后改用当前文本。排除当前会话与所有在线并行会话的条目。
-    const memoryIntentText = memoryQueryForTurn(userInput, turnMode, this.self.taskContract?.objective, {
-      previous: previousRoute ? { confidence: previousRoute.confidence, taskKinds: previousRoute.taskKinds } : undefined,
-      current: currentRoute ? { confidence: currentRoute.confidence, taskKinds: currentRoute.taskKinds } : undefined,
-    })
+    // 新任务用新问题做 query；followUp 沿用当前契约目标。排除当前会话与
+    // 所有在线并行会话的条目——前者避免旧任务回声，后者避免并行工作区
+    // 在途记忆互相污染（presence TTL 内视为在线）。
+    const memoryIntentText = turnMode === 'task' ? userInput : (this.self.taskContract?.objective ?? userInput)
     const liveSessionIds = crossSessionOff
       ? []
       : loadPresence(this.self.cwd, this.self.config.sessionId).map(e => e.sessionId)
@@ -769,10 +764,6 @@ export class TurnStepProducer {
       this.self.flushAdvisoryEfficacy()
     }
 
-    // 修孤儿先于冻结：integrity 维度的 minimal 判定如果先跑，会把本 turn
-    // 马上就要被 preflight 修好的持久化孤儿当成 error，开门先冻写工具与 bash
-    // （2026-09-05 桌面端写工具卡死链）。先愈合再决策。
-    this.self.healOrphansBeforeReliabilityDecision()
     this.self.refreshReliabilityDecision()
 
     _tb = Date.now()

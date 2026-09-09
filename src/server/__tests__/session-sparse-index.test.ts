@@ -410,3 +410,52 @@ test('listRewindPoints：环底之前的 user 事件仍提供 seq/ts 锚点', as
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('rewind：环底之前的 user 消息仍能解析 anchorSeq（磁盘全量配对）', async () => {
+  // rewind() 是同步 API，早前只拿内存环配事件 → 长会话里早期 user 事件不在环
+  // 内，anchorSeq 静默缺失、prompt 只剩含注入的原文。桌面端因此既定位不到
+  // 截断点（界面不截断）又匹配不上 blocks 文本。环被截尾时必须读磁盘全量。
+  class TurnMirrorAgent implements ManagedAgent {
+    messages: OaiMessage[] = []
+    run(prompt: string, _cb: AgentCallbacks): Promise<void> {
+      this.messages.push({ role: 'user', content: prompt })
+      this.messages.push({ role: 'assistant', content: 'ok' })
+      return Promise.resolve()
+    }
+    abort(): void {}
+    listArtifacts(): Artifact[] { return [] }
+    readArtifact(): Promise<string | null> { return Promise.resolve(null) }
+    getMessages(): OaiMessage[] { return this.messages }
+    replaceMessages(m: OaiMessage[]): void { this.messages = m }
+    rewindToMessages(m: OaiMessage[]): void { this.messages = m }
+  }
+  const dir = tmp()
+  try {
+    const p = new FileSessionPersistence(dir)
+    const mgr = new RuntimeSessionManager({
+      createAgent: () => new TurnMirrorAgent(),
+      defaultCwd: '/tmp',
+      persistence: p,
+      maxEvents: 5, // 病态小环：只留尾部 5 条事件
+    })
+    const s = mgr.createSession({ prompt: 'turn-1' })
+    await new Promise((r) => setTimeout(r, 10))
+    for (let t = 2; t <= 8; t++) {
+      mgr.run(s.id, `turn-${t}`)
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    const ring = mgr.getEvents(s.id, 0)!.events
+    assert.ok(ring.length <= 5, 'precondition: 环里只剩尾部')
+    assert.ok(!ring.some((e) => e.type === 'user' && e.data.text === 'turn-2'), 'precondition: turn-2 事件已在环外')
+
+    assert.ok(mgr.rewind(s.id, 2), 'rewind 到 turn-2 应成功')
+
+    const all = (await mgr.getAllEventsAsync(s.id))!.events
+    const rewindEvent = all.filter((e) => e.type === 'rewind').pop()!
+    const turn2 = all.find((e) => e.type === 'user' && e.data.text === 'turn-2')!
+    assert.equal(rewindEvent.data.prompt, 'turn-2', 'prompt 取事件原文')
+    assert.equal(rewindEvent.data.anchorSeq, turn2.seq, '环外 user 事件也必须能锚定')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

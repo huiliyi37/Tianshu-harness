@@ -17,7 +17,6 @@ import {
   dismissProjectTrustPrompt,
   isTrustPromptDismissed,
   stripUntrustedProjectKeys,
-  listTrustedProjectEntries,
 } from '../project-trust.js'
 import { interpretTrustKey, buildTrustPromptText } from '../../cli/project-trust-prompt.js'
 
@@ -120,16 +119,6 @@ describe('project-trust', () => {
       process.env.RIVET_TRUST_PROJECT = '0'
       trustProject(proj)
       assert.equal(isProjectTrusted(proj), false)
-    })
-
-    it('lists trusted entries with timestamps after trust', () => {
-      trustProject(proj)
-      const entries = listTrustedProjectEntries()
-      assert.equal(entries.length, 1)
-      assert.equal(entries[0]!.path, realpathSync(proj))
-      assert.match(entries[0]!.trustedAt, /^\d{4}-\d{2}-\d{2}T/)
-      untrustProject(proj)
-      assert.equal(listTrustedProjectEntries().length, 0)
     })
   })
 

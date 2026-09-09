@@ -41,12 +41,14 @@ export interface MeridianBackfillHandle {
   done: Promise<void>
 }
 
-export type MeridianBackfillReason = 'startup' | 'ondemand'
+export type MeridianBackfillReason = 'startup' | 'ondemand' | 'read_cold'
 
 export interface MeridianBackfillOptions {
   /**
    * `startup` — only runs when RIVET_MERIDIAN_BACKFILL=1.
-   * `ondemand` — runs unless explicitly disabled (=0) or lean profile is on.
+   * `ondemand` / `read_cold` — runs unless explicitly disabled (=0) or lean
+   * profile is on. `read_cold` 是 meridian-hook 冷库 read 触发的 on-demand
+   * 细分，仅用于 debug 日志归因，门控语义与 ondemand 相同。
    * Default `ondemand` so existing call sites and tests keep working.
    */
   reason?: MeridianBackfillReason

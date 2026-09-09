@@ -71,6 +71,24 @@ export function renderPlanMethodologyAdvisory(
  * architecture/data-flow diagram (the salience for this lives in the appendix,
  * close to where the model is reasoning, instead of a far-away tool description).
  */
+/**
+ * Permission note — tells the model when asking for access is pointless.
+ *
+ * Under the unattended level (dangerously-skip-permissions) tool calls no longer
+ * round-trip through approval, and tool-pipeline auto-grants out-of-workspace
+ * paths on first touch (tool-pipeline.ts:1216). Without this note the model only
+ * sees the static instruction "工作区外路径…用 request_path_access 申请" and
+ * dutifully asks — a round-trip the runtime would have auto-approved anyway.
+ *
+ * Cache-safe: dynamic appendix only (approvalMode flips mid-session).
+ * Returns '' for every mode that still asks, so those turns stay byte-identical
+ * to the pre-change prompt.
+ */
+export function renderPermissionNote(mode?: string): string {
+  if (mode !== 'dangerously-skip-permissions') return ''
+  return '<permission-note>当前权限档：全自动（免审批）。工具调用不再需要用户批准——不要停下来等授权。工作区外路径的读写会在首次触达时自动授予本会话访问权（无需调用 request_path_access，也不要先申请再动手）。仍会拦截的只有已配置的 deny 规则与危险命令确认。</permission-note>'
+}
+
 export function renderPlanModeBlock(
   activePlanFilePath?: string | null,
 ): string {
@@ -360,6 +378,11 @@ export interface VolatileContext {
   planModeState?: 'off' | 'planning' | 'approved'
   /** Ask Mode state — when 'asking', injects a pure read-only Q&A block */
   askModeState?: 'off' | 'asking'
+  /** Current approval mode (AgentConfig.approvalMode). Only the unattended level
+   *  renders a block; it tells the model it need not ask for out-of-workspace
+   *  access. Cache-safe: dynamic appendix only — the mode flips mid-session via
+   *  live setApprovalMode, so it must never enter the frozen base. */
+  approvalMode?: string
   /** Active plan file path (relative) for incremental plan writing */
   activePlanFilePath?: string | null
   /** One-shot flag: render the exit reminder on the first turn after plan mode
@@ -385,11 +408,6 @@ export interface VolatileContext {
   tersenessEnabled?: boolean
   /** When true, render a stricter terseness nudge (e.g. doom-loop / storm turns). */
   tersenessEscalate?: boolean
-  /** Zen mode（禅模式）: 裁剪 CVM 动态注入块（sensorium / 策略 profile /
-   *  知识碎片 / 星域提醒 / 遥测摘要 —— 全部以 CvmInjectionSource 计量）。
-   *  保留 git-status / recent-commits / 项目指令(frozen) / 计划指针。
-   *  Cache-safe: 只影响 dynamic appendix；非 zenLean 时行为字节级不变。 */
-  zenLean?: boolean
   /**
    * Cognitive projection (task-contract + verification gap + cognitive mirror +
    * uncertainty framing). Cache-safe: rendered ONLY into the dynamic appendix.
@@ -575,11 +593,6 @@ export function buildDynamicAppendixParts(ctx: VolatileContext, maxChars?: numbe
   const parts: Array<{ content: string; source?: CvmInjectionSource }> = []
   /** Collect an ordinary appendix block; pass a source only for CVM-metered ones. */
   const push = (content: string, source?: CvmInjectionSource): void => {
-    // Zen mode（禅模式）: 裁剪 CVM 动态注入块（sensorium / 策略 profile /
-    // 知识碎片 / 星域提醒 / 遥测摘要 —— 全部以 CvmInjectionSource 计量）。
-    // 保留 git-status / recent-commits / 项目指令(frozen) / 计划指针 ——
-    // 这些块不挂 source，不受此开关影响。非 zenLean 时条件恒假 → 字节级不变。
-    if (ctx.zenLean && source !== undefined) return
     parts.push({ content, source })
   }
 
@@ -591,6 +604,10 @@ export function buildDynamicAppendixParts(ctx: VolatileContext, maxChars?: numbe
   if (ctx.invokedSkillsBlock) {
     protectedParts.push(ctx.invokedSkillsBlock)
   }
+  // Permission note is a hard behavioural constraint (whether asking is
+  // pointless), not advisory — it must not be dropped by the Top-K budget.
+  const permissionNote = renderPermissionNote(ctx.approvalMode)
+  if (permissionNote) protectedParts.push(permissionNote)
 
   // Budget for ordinary appendix blocks is what's left after protected blocks.
   const protectedLen = protectedParts.reduce((sum, p) => sum + p.length, 0)

@@ -288,7 +288,7 @@ test('classifySessionIntegrity triggers on orphan tool_result', () => {
   assert.ok(result!.evidence.some(e => e.includes('3 orphan tool_result')))
 })
 
-test('classifySessionIntegrity triggers on repaired session', () => {
+test('classifySessionIntegrity does NOT punish an already-repaired session', () => {
   const input: IntegrityClassifierInput = {
     orphanToolUseCount: 0,
     orphanToolResultCount: 0,
@@ -297,11 +297,7 @@ test('classifySessionIntegrity triggers on repaired session', () => {
     messageCount: 100,
   }
   const result = classifySessionIntegrity(input)
-  assert.notEqual(result, null)
-  assert.equal(result!.trigger, 'session_integrity')
-  assert.equal(result!.severity, 'warn')
-  assert.ok(result!.evidence.some(e => e.includes('5 synthetic tool_result')))
-  assert.ok(result!.suggestedActions.some(a => a.includes('repaired context')))
+  assert.equal(result, null, 'repair is a resolution, not a reliability issue')
 })
 
 test('classifySessionIntegrity flags large damaged sessions', () => {

@@ -5,7 +5,7 @@ import { SessionPersist, getSessionDir } from '../agent/session-persist.js'
 import { forkSession, listBranches, countMessageLines } from '../agent/session-fork.js'
 import { type StarDomainId } from '../agent/star-domain.js'
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
-import { DOMAIN_SHARED_CAPABILITY_NOTE, DOMAIN_SWITCH_CACHE_WARNING } from '../agent/domain-picker-entries.js'
+import { DOMAIN_SWITCH_CACHE_WARNING } from '../agent/domain-picker-entries.js'
 import { getCapsuleByStar, listCapsuleStars } from '../agent/seed-capsule-store.js'
 import { microCompactOai, estimateOaiTokens } from '../compact/micro.js'
 import { rollbackToCheckpoint, getRollbackPreview } from '../agent/checkpoint.js'
@@ -73,7 +73,6 @@ import { PLUGIN_PRESETS } from '../plugins/plugin-presets.js'
 import { switchAgentRuntime, switchAgentSession, switchAgentCwd, restorePlanModeFromMeta } from '../bootstrap.js'
 import { loadTodos, setTodoSession } from '../tools/todo.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
-import { invalidateMemoryEntry, isCurrentEntry, readMemoryEntries } from '../memory/unified-memory.js'
 import { restoreGoalTracker } from '../agent/goal-persist.js'
 import { setPlanSession } from '../agent/plan-store.js'
 import { formatPermissionLabel, parsePermissionAlias, tierToMode } from '../agent/approval-vocabulary.js'
@@ -675,24 +674,6 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     },
   },
   {
-    // 禅模式用户跳过：立即晋升 full（全量工具面）。可选参数为提示语，不进对话历史。
-    name: '/fast',
-    immediate: true,
-    handler(ctx) {
-      const { parts, pushStatic, setIsStreaming } = ctx
-      const note = parts.slice(1).join(' ').trim()
-      const promoted = ctx.agent.promoteZen('user')
-      pushStatic(createLogEntry({
-        type: 'system',
-        content: promoted
-          ? `禅模式已解除：全量工具面恢复。${note ? `（${note}）` : ''}`
-          : `禅模式未激活或已解除。${note ? `（${note}）` : ''}`,
-      }))
-      setIsStreaming(false)
-      return true
-    },
-  },
-  {
     name: '/compact',
     immediate: true,
     handler(ctx) {
@@ -1163,37 +1144,6 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     },
   },
   {
-    name: '/forget',
-    immediate: true,
-    async handler(ctx) {
-      const { parts, pushStatic, setIsStreaming, agent } = ctx
-      const args = parts.slice(1).filter(Boolean)
-      const entryId = args.find(arg => !arg.startsWith('-'))
-      const reason = args.includes('resolved') ? 'resolved' as const : 'forgotten' as const
-      const lines: string[] = []
-      if (!entryId) {
-        const current = readMemoryEntries(agent.cwd)
-          .filter(isCurrentEntry)
-          .sort((a, b) => b.ts - a.ts || (a.id < b.id ? -1 : 1))
-          .slice(0, 5)
-        lines.push('用法：/forget <entryId> [resolved]（显式失效一条项目长期记忆）')
-        lines.push('resolved = 标记旧问题已解决；缺省 = 主动遗忘。')
-        if (current.length > 0) {
-          lines.push('', `最近可失效的记忆（${current.length} 条）：`)
-          for (const entry of current) lines.push(`- [${entry.id}] [${entry.kind}] ${entry.text.slice(0, 90)}`)
-        } else {
-          lines.push('', '当前没有可失效的记忆条目。')
-        }
-      } else {
-        const result = invalidateMemoryEntry(agent.cwd, entryId, reason)
-        lines.push(result.ok ? `✅ ${result.message}` : `⚠️ ${result.message}`)
-      }
-      pushStatic(createLogEntry({ type: 'system', content: lines.join('\n') }))
-      setIsStreaming(false)
-      return true
-    },
-  },
-  {
     name: '/trust',
     immediate: true,
     async handler(ctx) {
@@ -1596,21 +1546,16 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         } else if (current === null) {
           pushStatic(createLogEntry({ type: 'system', content: '星域\n\n当前无星域（自动匹配未命中）。\n使用 /domain <名称> 手动指定，或 /domain auto 重置为自动检测。' }))
         } else {
-          const def = starDomainRegistry.get(current.id)
-          const identity = def?.alias ? `\n身份: ${def.name} · ${def.alias}` : ''
-          const plain = def?.plain ? `\n特质说明: ${def.plain}` : ''
-          pushStatic(createLogEntry({ type: 'system', content: `星域\n\n当前: ${current.name} (${current.id})${identity}\n${DOMAIN_SHARED_CAPABILITY_NOTE}\n座右铭: ${current.motto}${plain}\n\n${current.volatileBlock}` }))
+          pushStatic(createLogEntry({ type: 'system', content: `星域\n\n当前: ${current.name} (${current.id})\n座右铭: ${current.motto}\n\n${current.volatileBlock}` }))
         }
       } else if (sub === 'list' || sub === 'ls') {
         const current = ctx.agent.getSessionDomain()
         const currentId = current?.id
-        const lines = (starDomainRegistry.list() as Array<{ id: StarDomainId; name: string; keywords: string[]; decisionStyle: string; motto: string; alias?: string; plain?: string }>).map(d => {
+        const lines = (starDomainRegistry.list() as Array<{ id: StarDomainId; name: string; keywords: string[]; decisionStyle: string; motto: string }>).map(d => {
           const marker = d.id === currentId ? ' ← current' : ''
-          const role = d.alias ? `\n    ${d.name} · ${d.alias}` : ''
-          const plain = d.plain ? `\n    特质说明: ${d.plain}` : ''
-          return `  ${d.name} (${d.id}) [${d.decisionStyle}]${marker}${role}\n    座右铭: ${d.motto}${plain}\n    keywords: ${d.keywords.join(', ')}`
+          return `  ${d.name} (${d.id}) [${d.decisionStyle}]${marker}\n    ${d.motto}\n    keywords: ${d.keywords.join(', ')}`
         })
-        pushStatic(createLogEntry({ type: 'system', content: `星域一览（${DOMAIN_SHARED_CAPABILITY_NOTE}）\n\n${lines.join('\n\n')}\n\n使用 /domain <id|名称> 切换，/domain auto 恢复自动检测。` }))
+        pushStatic(createLogEntry({ type: 'system', content: `星域一览\n\n${lines.join('\n\n')}\n\n使用 /domain <id|名称> 切换，/domain auto 恢复自动检测。` }))
       } else if (sub === 'auto') {
         const midSession = ctx.agent.getSessionTurnCount() > 0
         ctx.agent.resetSessionDomain()

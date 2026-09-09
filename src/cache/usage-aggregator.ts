@@ -32,9 +32,6 @@ export interface CacheUsageRow {
   cacheRead: number
   cacheCreate: number
   output: number
-  /** W-stats：首字节毫秒 / 输出速度（主轮行；速度分母为解码段）。 */
-  ttftMs?: number
-  tps?: number
   sidePath: boolean
 }
 
@@ -53,15 +50,6 @@ export interface UsageTotals {
   cost: number
   /** money saved by cache hits: ΣcacheRead × (missPrice − hitPrice) */
   savings: number
-  /** W-stats 速度指标（主轮行样本）：首字均值/p50/p90 与平均输出速度。
-   *  样本 0 时整组缺席（undefined）——空组消失语义。 */
-  ttftAvgMs?: number
-  ttftP50Ms?: number
-  ttftP90Ms?: number
-  tpsAvg?: number
-  speedSamples?: number
-  /** 输出速度样本轮数——ttft 有值但 output=0 的轮不计入 tps，二者可不等。 */
-  tpsSamples?: number
 }
 
 export interface ModelUsage extends UsageTotals {
@@ -123,8 +111,6 @@ export function parseUsageRows(content: string): CacheUsageRow[] {
       cacheRead: num(record.cacheRead) ?? 0,
       cacheCreate: num(record.cacheCreate) ?? 0,
       output: num(record.output) ?? 0,
-      ...(num(record.ttftMs) !== undefined ? { ttftMs: num(record.ttftMs) } : {}),
-      ...(num(record.tps) !== undefined ? { tps: num(record.tps) } : {}),
       sidePath: event === 'side_path',
     }]
   })
@@ -142,9 +128,6 @@ interface Accumulator {
   mainCacheRead: number
   cost: number
   savings: number
-  /** W-stats 速度样本（主轮行） */
-  ttftSamples: number[]
-  tpsSamples: number[]
 }
 
 function newAccumulator(): Accumulator {
@@ -153,7 +136,6 @@ function newAccumulator(): Accumulator {
     input: 0, cacheRead: 0, cacheCreate: 0, output: 0,
     mainInput: 0, mainCacheRead: 0,
     cost: 0, savings: 0,
-    ttftSamples: [], tpsSamples: [],
   }
 }
 
@@ -163,8 +145,6 @@ function addRow(acc: Accumulator, row: CacheUsageRow, pricing: ModelConfig['pric
     acc.requests += 1
     acc.mainInput += row.input
     acc.mainCacheRead += row.cacheRead
-    if (row.ttftMs !== undefined) acc.ttftSamples.push(row.ttftMs)
-    if (row.tps !== undefined) acc.tpsSamples.push(row.tps)
   }
   acc.input += row.input
   acc.cacheRead += row.cacheRead
@@ -183,22 +163,8 @@ function addRow(acc: Accumulator, row: CacheUsageRow, pricing: ModelConfig['pric
   }
 }
 
-function percentile(sorted: number[], p: number): number | undefined {
-  if (sorted.length === 0) return undefined
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))
-  return sorted[idx]
-}
-
 function toTotals(acc: Accumulator): UsageTotals {
   const round = (v: number) => Math.round(v * 1_000_000) / 1_000_000
-  const ttftSorted = [...acc.ttftSamples].sort((a, b) => a - b)
-  const tpsSorted = [...acc.tpsSamples].sort((a, b) => a - b)
-  const ttftAvg = acc.ttftSamples.length > 0
-    ? Math.round(acc.ttftSamples.reduce((s, v) => s + v, 0) / acc.ttftSamples.length)
-    : undefined
-  const tpsAvg = acc.tpsSamples.length > 0
-    ? Math.round((acc.tpsSamples.reduce((s, v) => s + v, 0) / acc.tpsSamples.length) * 10) / 10
-    : undefined
   return {
     requests: acc.requests,
     sidePathRequests: acc.sidePathRequests,
@@ -209,13 +175,6 @@ function toTotals(acc: Accumulator): UsageTotals {
     hitRate: acc.mainInput > 0 ? Math.round(acc.mainCacheRead / acc.mainInput * 1000) / 10 : null,
     cost: round(acc.cost),
     savings: round(acc.savings),
-    ...(ttftAvg !== undefined ? { ttftAvgMs: ttftAvg } : {}),
-    ...(ttftSorted.length > 0 ? { ttftP50Ms: percentile(ttftSorted, 50) } : {}),
-    ...(ttftSorted.length > 0 ? { ttftP90Ms: percentile(ttftSorted, 90) } : {}),
-    ...(tpsAvg !== undefined ? { tpsAvg } : {}),
-    ...(acc.ttftSamples.length > 0 ? { speedSamples: acc.ttftSamples.length } : {}),
-    // 口径拆明：速度样本数与首字样本数可不等（output=0 的轮只有 ttft）。
-    ...(acc.tpsSamples.length > 0 ? { tpsSamples: acc.tpsSamples.length } : {}),
   }
 }
 

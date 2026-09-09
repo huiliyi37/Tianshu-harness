@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createRouter } from '../index.js'
 import { buildConfigRoutes } from '../config-routes.js'
 import { readSecret, writeSecret } from '../../config/secrets-store.js'
@@ -1001,126 +1002,6 @@ describe('POST /config/providers — models 批量回填（「每行一个」/ �
     assert.ok(!glm?.models.some((m) => m.id === 'would-partially-save'), 'rejected batch must not persist anything')
   })
 })
-describe('project-trust routes', () => {
-  const prevHome = process.env.RIVET_HOME
-  const prevTrustEnv = process.env.RIVET_TRUST_PROJECT
-  let home: string
-  let proj: string
-
-  before(() => {
-    home = mkdtempSync(join(tmpdir(), 'rivet-trust-routes-'))
-    proj = mkdtempSync(join(tmpdir(), 'rivet-trust-routes-proj-'))
-    process.env.RIVET_HOME = home
-    delete process.env.RIVET_TRUST_PROJECT
-  })
-
-  after(() => {
-    if (prevHome === undefined) delete process.env.RIVET_HOME
-    else process.env.RIVET_HOME = prevHome
-    if (prevTrustEnv === undefined) delete process.env.RIVET_TRUST_PROJECT
-    else process.env.RIVET_TRUST_PROJECT = prevTrustEnv
-    rmSync(home, { recursive: true, force: true })
-    rmSync(proj, { recursive: true, force: true })
-  })
-
-  const router = () => createRouter(buildConfigRoutes(TOKEN))
-
-  it('rejects unauthorized requests', async () => {
-    const res = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, {})
-    assert.equal(res.status, 401)
-  })
-
-  it('requires an absolute cwd on GET/PUT/DELETE', async () => {
-    const res = await router()('GET', '/config/project-trust?cwd=relative', {}, AUTH)
-    assert.equal(res.status, 400)
-    const put = await router()('PUT', '/config/project-trust', { cwd: 'relative', action: 'trust' }, AUTH)
-    assert.equal(put.status, 400)
-    const del = await router()('DELETE', '/config/project-trust?cwd=', {}, AUTH)
-    assert.equal(del.status, 400)
-  })
-
-  it('reports untrusted with no stakes and no dismissal by default', async () => {
-    const res = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal(res.status, 200)
-    const body = res.body as { trusted: boolean; envOverride: boolean | null; promptDismissed: boolean; stakes: { sensitiveKeys: string[]; hasHooks: boolean } }
-    assert.equal(body.trusted, false)
-    assert.equal(body.envOverride, null)
-    assert.equal(body.promptDismissed, false)
-    assert.deepEqual(body.stakes, { sensitiveKeys: [], hasHooks: false })
-  })
-
-  it('detects sensitive keys in the project config as stakes', async () => {
-    writeFileSync(join(proj, '.rivet-config.json'), JSON.stringify({ agent: { approval: 'auto-safe' }, theme: 'dark' }))
-    const res = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    const body = res.body as { stakes: { sensitiveKeys: string[]; hasHooks: boolean } }
-    assert.deepEqual(body.stakes.sensitiveKeys, ['agent.approval'])
-    assert.equal(body.stakes.hasHooks, false)
-  })
-
-  it('trust roundtrip: PUT trust → GET trusted, DELETE → untrusted', async () => {
-    const put = await router()('PUT', '/config/project-trust', { cwd: proj, action: 'trust' }, AUTH)
-    assert.equal(put.status, 200)
-    const get = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal((get.body as { trusted: boolean }).trusted, true)
-
-    const del = await router()('DELETE', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal(del.status, 200)
-    const get2 = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal((get2.body as { trusted: boolean }).trusted, false)
-  })
-
-  it('dismiss roundtrip and trust clears the dismissal', async () => {
-    const put = await router()('PUT', '/config/project-trust', { cwd: proj, action: 'dismiss' }, AUTH)
-    assert.equal(put.status, 200)
-    const get = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal((get.body as { promptDismissed: boolean }).promptDismissed, true)
-
-    await router()('PUT', '/config/project-trust', { cwd: proj, action: 'trust' }, AUTH)
-    const get2 = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    assert.equal((get2.body as { promptDismissed: boolean }).promptDismissed, false, 're-trust re-engages the prompt')
-  })
-
-  it('rejects an unknown action', async () => {
-    const res = await router()('PUT', '/config/project-trust', { cwd: proj, action: 'maybe' }, AUTH)
-    assert.equal(res.status, 400)
-  })
-
-  it('lists trusted workspaces and reflects untrust', async () => {
-    await router()('PUT', '/config/project-trust', { cwd: proj, action: 'trust' }, AUTH)
-    const list = await router()('GET', '/config/project-trust/list', {}, AUTH)
-    assert.equal(list.status, 200)
-    const body = list.body as { trusted: { path: string; trustedAt: string }[] }
-    const entry = body.trusted.find((t) => t.path === realpathSync(proj))
-    assert.ok(entry, 'trusted list contains the project realpath')
-    assert.match(entry!.trustedAt, /^\d{4}-\d{2}-\d{2}T/)
-
-    await router()('DELETE', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-    const list2 = await router()('GET', '/config/project-trust/list', {}, AUTH)
-    const body2 = list2.body as { trusted: { path: string }[] }
-    assert.ok(!body2.trusted.some((t) => t.path === realpathSync(proj)))
-  })
-
-  it('env override surfaces in the status and beats the store', async () => {
-    process.env.RIVET_TRUST_PROJECT = '1'
-    try {
-      const get = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-      const body = get.body as { trusted: boolean; envOverride: boolean | null }
-      assert.equal(body.trusted, true, 'env=1 forces trusted regardless of the store')
-      assert.equal(body.envOverride, true)
-    } finally {
-      process.env.RIVET_TRUST_PROJECT = '0'
-      try {
-        await router()('PUT', '/config/project-trust', { cwd: proj, action: 'trust' }, AUTH)
-        const get = await router()('GET', `/config/project-trust?cwd=${encodeURIComponent(proj)}`, {}, AUTH)
-        const body = get.body as { trusted: boolean; envOverride: boolean | null }
-        assert.equal(body.trusted, false, 'env=0 forces untrusted even after a store trust')
-        assert.equal(body.envOverride, false)
-      } finally {
-        delete process.env.RIVET_TRUST_PROJECT
-      }
-    }
-  })
-})
 
 describe('PUT /config/approval — 全局档位变更广播 hook', () => {
   const prevHome = process.env.RIVET_HOME
@@ -1161,5 +1042,190 @@ describe('PUT /config/approval — 全局档位变更广播 hook', () => {
     const plain = createRouter(buildConfigRoutes(TOKEN))
     const ok = await plain('PUT', '/config/approval', { approval: 'manual' }, AUTH)
     assert.equal(ok.status, 200)
+  })
+})
+
+// ── POST /config/providers/test（completion 级「测试模型调用」真测）─────────
+// 与 test-key（GET /models 零 token 探测）区分：本端点发最小 chat completion，
+// 验证模型真能对话。probeProvider 请求打到本进程本地 http server（127.0.0.1），
+// 无外部网络依赖。本地 server 校验显式 apiKey 是否真的随 completion 请求发出。
+function startProbeServer(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = createServer(handler)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      resolve({ baseUrl: `http://127.0.0.1:${port}/v1`, close: () => new Promise((done) => server.close(() => done())) })
+    })
+  })
+}
+
+function sseProbeBody(chunks: string[]): string {
+  return chunks.map((c) => `data: ${c}\n\n`).join('') + 'data: [DONE]\n\n'
+}
+
+describe('POST /config/providers/test (completion probe)', () => {
+  const prevHome = process.env.RIVET_HOME
+  let home: string
+  let server: { baseUrl: string; close: () => Promise<void> } | undefined
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'rivet-provider-test-'))
+    process.env.RIVET_HOME = home
+  })
+
+  after(async () => {
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    await server?.close()
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('400 when provider is missing', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', { apiKey: 'sk-x', baseUrl: 'http://127.0.0.1:1/v1' }, AUTH)
+    assert.equal(res.status, 400)
+    assert.match((res.body as { error: string }).error, /provider is required/)
+  })
+
+  it('400 when no apiKey given and provider has no stored key', async () => {
+    writeConfig(home, { enabled: false })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', { provider: 'nope' }, AUTH)
+    assert.equal(res.status, 400)
+  })
+
+  it('runs a real minimal completion against the endpoint and reports ok', async () => {
+    let seenAuth: string | undefined
+    server = await startProbeServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'my-model' }, { id: 'other-model' }] }))
+        return
+      }
+      if (req.url === '/v1/chat/completions') {
+        seenAuth = req.headers.authorization
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end(sseProbeBody([JSON.stringify({ choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] })]))
+        return
+      }
+      res.writeHead(404).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-test', protocol: 'openai', model: 'my-model',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; completionOk: boolean; probedModel?: string; latencyMs?: number; models?: string[] }
+    assert.equal(body.ok, true, 'ok 以 completionOk 为准')
+    assert.equal(body.completionOk, true)
+    assert.equal(body.probedModel, 'my-model')
+    assert.deepEqual(body.models, ['my-model', 'other-model'])
+    assert.equal(typeof body.latencyMs, 'number')
+    assert.equal(seenAuth, 'Bearer sk-test', 'completion 请求应带显式 apiKey 的鉴权头')
+    await server.close()
+    server = undefined
+  })
+
+  it('reports ok=false when the completion endpoint rejects the key', async () => {
+    server = await startProbeServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'm' }] }))
+        return
+      }
+      res.writeHead(401).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-bad', protocol: 'openai', model: 'm',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; completionOk: boolean; error?: string }
+    assert.equal(body.ok, false)
+    assert.equal(body.completionOk, false)
+    assert.ok(body.error && body.error.length > 0, '失败应带可读 error')
+    await server.close()
+    server = undefined
+  })
+
+  // 2026-09-09 用户反馈「能对话但测试没用」：UI 测试按钮在模型 id 输入框之前，
+  // 用户只填 URL+key 就点测试；网关不实现 /models 时无模型名 → completion 无法
+  // 发起 → 旧实现一律 ok:false 误报（实际对话完全可用）。
+  it('ok=true + completionSkipped when no model id and gateway has no /models (URL+key verified only)', async () => {
+    server = await startProbeServer((req, res) => {
+      // 网关不实现 /models（自建中转常见）——404
+      res.writeHead(404).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-live', protocol: 'openai',
+      // model 未传——「只测 URL 连接」场景
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; completionOk: boolean; completionSkipped?: boolean; modelsOk: boolean; error?: string }
+    assert.equal(body.completionSkipped, true, '未提供模型 id → completion 未发起')
+    assert.equal(body.completionOk, false)
+    assert.equal(body.modelsOk, false, '网关无 /models')
+    assert.equal(body.ok, false, '/models 也失败 → 连接有效性无法验证，仍为失败')
+    assert.ok(body.error && body.error.length > 0, '失败带 /models 失败原因')
+    await server.close()
+    server = undefined
+  })
+
+  it('ok=true + completionSkipped when no model id but /models works (connection verified)', async () => {
+    server = await startProbeServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'listed-model' }] }))
+        return
+      }
+      res.writeHead(404).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-live', protocol: 'openai',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; completionSkipped?: boolean; modelsOk: boolean; error?: string }
+    assert.equal(body.ok, true, 'URL+key 经 /models 验证 → 连接有效')
+    assert.equal(body.completionSkipped, true)
+    assert.equal(body.modelsOk, true)
+    assert.equal(body.error, undefined, '成功路径不带 error（UI 走「未测」提示）')
+    await server.close()
+    server = undefined
+  })
+
+  it('vision: false suppresses the model-name vision heuristic (plain-text probe)', async () => {
+    let seenContent: unknown
+    server = await startProbeServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'glm-4v-flash' }] }))
+        return
+      }
+      if (req.url === '/v1/chat/completions') {
+        const chunks: Buffer[] = []
+        req.on('data', (c: Buffer) => chunks.push(c))
+        req.on('end', () => {
+          seenContent = JSON.parse(Buffer.concat(chunks).toString()).messages?.[0]?.content
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.end(sseProbeBody([JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })]))
+        })
+        return
+      }
+      res.writeHead(404).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    // 模型名带视觉词 + vision:false → 必须纯文本（string content，非图片 parts 数组）
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-x', protocol: 'openai', model: 'glm-4v-flash', vision: false,
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean }
+    assert.equal(body.ok, true)
+    assert.equal(typeof seenContent, 'string', 'vision:false 压制启发 → 纯文本 content')
+    await server.close()
+    server = undefined
   })
 })

@@ -57,11 +57,6 @@ export interface UnifiedPlan {
   createdAt: number
   /** Non-goals / exclusions from the plan. */
   nonGoals?: string[]
-  /** 待验证假设（计划「瑶光反证/待验证假设」章节）——planJson 路径下经
-   *  constraintsFromUnifiedPlan 注入工单 constraints（assumption 种类，
-   *  渲染指纹 [计划待验证假设·执行期先验证]）。修复无结构化载体的断点
-   *  （T8，2026-08-30）。 */
-  assumptions?: string[]
 }
 
 // ── Conversion: TaskGraph ↔ UnifiedPlan ────────────────────────────────────

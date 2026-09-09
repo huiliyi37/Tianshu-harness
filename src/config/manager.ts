@@ -2061,7 +2061,7 @@ Commands:
   set-key-env <p> <v>          Set API key from env variable
   set-default <p>              Set default provider
   set-default-model <p>:<m>    Set default model for new sessions (agent.defaultModel)
-  set-approval <mode>          Set approval mode (auto-safe/manual/auto-accept/dangerously-skip-permissions)
+  set-approval <mode> [--unsandboxed|--sandboxed]  Set approval mode (auto-safe/manual/auto-accept/dangerously-skip-permissions); yolo = 完全权限（免审批+全盘无沙箱），--unsandboxed 显式声明、--sandboxed 清除该标记；沙箱兜底用 RIVET_SANDBOX=1
   list-hooks                   Show CVM hook assembly config (config/env/effective disabled)
   set-hook-disabled <id> [--enable]  Disable (or re-enable with --enable) a CVM runtime hook
   set-proxy <url> [--clear]    Set/clear web proxy (web_search/web_fetch)
@@ -2289,12 +2289,28 @@ export async function runConfigCLI(args: string[], io: ConfigCliIO = {}): Promis
       case 'set-approval': {
         const mode = args[1]
         if (!mode) {
-          cliErr(io, `Usage: rivet config set-approval <${APPROVAL_MODES.join('|')}>`)
+          cliErr(io, `Usage: rivet config set-approval <${APPROVAL_MODES.join('|')}> [--unsandboxed|--sandboxed]`)
           cliExit(io, 1)
           return
         }
-        const saved = setApprovalMode(mode)
-        cliOut(io, formatSuccess(`Approval mode set to ${saved}`, fmtOpts))
+        if (!(APPROVAL_MODES as readonly string[]).includes(mode)) {
+          cliErr(io, `Invalid approval mode "${mode}". Available: ${APPROVAL_MODES.join(', ')}`)
+          cliExit(io, 1)
+          return
+        }
+        // --unsandboxed = 显式声明完全权限（yolo 自 2026-09-07 起默认即此档；
+        // flag 保留用于显式表达与桌面端兼容）。--sandboxed = 关闭 unsandboxed
+        // 标记（P1-1：此前 --sandboxed 被移除导致 unsandboxed 无法设回 false 的死巷；
+        // 沙箱兜底仍需 RIVET_SANDBOX=1 显式开启）。
+        const unsandboxed = hasFlag(args, '--unsandboxed') ? true : hasFlag(args, '--sandboxed') ? false : undefined
+        if (hasFlag(args, '--sandboxed')) {
+          cliOut(io, '提示：--sandboxed 已清除 unsandboxed 标记（= 关闭完全权限豁免）；沙箱兜底仍需显式设置环境变量 RIVET_SANDBOX=1。')
+        }
+        const saved = setApprovalConfig({ approval: mode, unsandboxed })
+        const note = saved.unsandboxed
+          ? '（完全权限：写沙箱已关，下次会话生效）'
+          : ''
+        cliOut(io, formatSuccess(`Approval mode set to ${saved.approval}${saved.unsandboxed ? ' (unsandboxed)' : ''} ${note}`, fmtOpts))
         break
       }
 

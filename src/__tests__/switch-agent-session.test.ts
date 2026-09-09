@@ -105,6 +105,16 @@ test('resolveProviderForModel：同 provider 命中（alias → 规范 id，凭�
   assert.equal(r.contextWindow, 1000000)
 })
 
+test('resolveProviderForModel：解析 provider:modelId 前缀（2026-09-08 假阴性回归）', () => {
+  const ctx = mkCtx()
+  const r = resolveProviderForModel(ctx, 'deepseek:v4')
+  assert.ok(r && !('error' in r))
+  if (!r || 'error' in r) return
+  assert.equal(r.modelId, 'ds-v4')
+  assert.equal(r.providerName, 'deepseek')
+  assert.equal(r.apiKey, 'key-ds')
+})
+
 test('resolveProviderForModel：跨 provider 命中（provider/key 摆正到目标）', () => {
   process.env.RIVET_TEST_GLM_KEY = 'k-glm'
   const ctx = mkCtx()

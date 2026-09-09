@@ -8,7 +8,9 @@ import type { ProviderProfile } from './provider-profile.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
+import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { sanitizeMessageContent } from '../utils/sanitize.js'
+import { stableStringify } from './stable-json.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { debugLog } from '../utils/debug.js'
 import { repairInvalidJsonEscapes } from './json-escape-repair.js'
@@ -371,6 +373,10 @@ export class OpenAIClient implements StreamClient {
    *  Only updated for requests with `prefixProbe: true` so side-path calls
    *  through this client don't poison the baseline. */
   private prevWireSignatures: Array<{ sig: string; len: number; role: string }> | null = null
+  /** 上一次主轮请求的 tools 数组指纹（同序 stable-json——上线字节保数组序）。
+   *  消息级探针对工具定义变化隐形（2026-09-06 主会话 toolsUpdated 碎裂事件
+   *  双探针皆净即此因），单独一个维度。 */
+  private prevWireToolsSig: string | null = null
   /** Latest wire divergence (consume-once via consumeWireDivergence). */
   private lastWireDivergence: WireDivergence | null = null
   /** undici ProxyAgent for config.proxy (undefined = no per-provider proxy). */
@@ -591,21 +597,38 @@ export class OpenAIClient implements StreamClient {
     // remaining client-side suspects are these transforms. Joined with
     // cacheRead regressions in the cache-log this separates send-layer byte
     // churn from provider-side rendering/落盘 behavior.
-    if (request.prefixProbe) this.recordWireDivergence(msgArray)
+    if (request.prefixProbe) this.recordWireDivergence(msgArray, body.tools as unknown[] | undefined)
 
     await this.sendStream(body, callbacks, signal)
   }
 
   /** Compare this request's final wire bytes with the previous main-turn
-   *  request's; record the first diverged message. Pure appends record nothing. */
-  private recordWireDivergence(messages: Array<Record<string, unknown>>): void {
+   *  request's; record the first diverged message. Pure appends record nothing.
+   *  tools 数组单独成维——它不进 messages，消息级对比对其隐形。 */
+  private recordWireDivergence(messages: Array<Record<string, unknown>>, tools?: unknown[]): void {
     const sigs = messages.map(m => {
       const s = JSON.stringify(m)
       return { sig: wireHash(s), len: s.length, role: String(m.role ?? '?') }
     })
+    const toolsSig = tools && tools.length > 0 ? wireHash(stableStringify(tools)) : null
     const prev = this.prevWireSignatures
+    const prevToolsSig = this.prevWireToolsSig
     this.prevWireSignatures = sigs
+    this.prevWireToolsSig = toolsSig
     if (!prev) return
+
+    // 工具定义变化优先报告——它打的是整个前缀（system+tools 段），不是某条消息。
+    if (prevToolsSig !== toolsSig) {
+      this.lastWireDivergence = {
+        idx: -1,
+        role: 'tools',
+        kind: 'tools_changed',
+        prevCount: prev.length,
+        newCount: sigs.length,
+        approxCharPos: 0,
+      }
+      return
+    }
 
     const shared = Math.min(prev.length, sigs.length)
     let divergedIdx = -1
@@ -782,7 +805,7 @@ export class OpenAIClient implements StreamClient {
   /** Parse SSE stream from a reader — exposed for testing */
   async parseStreamFromReader(
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    callbacks: Partial<Pick<StreamCallbacks, 'onTextDelta' | 'onContentBlock' | 'onStopReason' | 'onStreamAttemptAborted'>>,
+    callbacks: Partial<Pick<StreamCallbacks, 'onTextDelta' | 'onThinkingDelta' | 'onContentBlock' | 'onStopReason' | 'onStreamAttemptAborted'>>,
     signal?: AbortSignal,
     reasoningRef?: { content: string },
     /**
@@ -814,6 +837,32 @@ export class OpenAIClient implements StreamClient {
     let reasoningAccum = ''
     let textReceived = false
     let promotionFired = false
+    let toolProgressReceived = false
+    const repetitionGuard = this.config.providerName === 'deepseek'
+      ? new ReasoningRepetitionGuard() : undefined
+    const processPayload = (payload: string): void => {
+      let parsed: Parameters<OpenAIClient['processDelta']>[0]
+      try { parsed = JSON.parse(payload) } catch { return }
+      if (!parsed || typeof parsed !== 'object') return
+      const delta = parsed?.choices?.[0]?.delta
+      if (parsed.choices?.[0] && !delta) return
+      // Completed calls leave toolCallBuffer when flushed. Progress remains
+      // monotonic for this attempt, even if reasoning arrives after finish_reason.
+      if (delta?.tool_calls?.length) toolProgressReceived = true
+      // Match processDelta's channel ordering, including reasoning and content
+      // arriving in the same event. Only JSON decoding errors are recoverable;
+      // guard and consumer errors must reach stream cleanup and retry policy.
+      if (delta?.reasoning_content && !textReceived) {
+        reasoningAccum += delta.reasoning_content
+        receivedThinking = true
+        if (reasoningRef) reasoningRef.content = reasoningAccum
+        if (!delta.content && !toolProgressReceived && this.toolCallBuffer.size === 0) {
+          repetitionGuard?.push(delta.reasoning_content)
+        }
+      }
+      this.processDelta(parsed, callbacks)
+      if (delta?.content) textReceived = true
+    }
 
     // Create an internal timeout AbortSignal for hard timeout guarantee.
     // This ensures reader.read() is unblocked even if reader.cancel() alone
@@ -949,22 +998,7 @@ export class OpenAIClient implements StreamClient {
 
           if (process.env.RIVET_DEBUG_RAW_SSE) this.dumpRawSse(payload)
 
-          try {
-            const parsed = JSON.parse(payload)
-            this.processDelta(parsed, callbacks)
-            // Track whether text/content was received (for reasoning promotion fallback)
-            if (parsed.choices?.[0]?.delta?.content) textReceived = true
-            // Late reasoning (after content started) was reclassified as text in
-            // processDelta — exclude it from the thinking accumulation so the
-            // persisted thinking block matches the live UI channel.
-            if (parsed.choices?.[0]?.delta?.reasoning_content && !textReceived) {
-              reasoningAccum += parsed.choices[0].delta.reasoning_content
-              receivedThinking = true
-              if (reasoningRef) reasoningRef.content = reasoningAccum
-            }
-          } catch {
-            // Skip malformed SSE lines
-          }
+          processPayload(payload)
         }
         // 仅在收到真实内容事件时重置 idle timer（心跳不重置）
         if (sawDataEvent) {
@@ -974,23 +1008,10 @@ export class OpenAIClient implements StreamClient {
       }
 
       // Process any residual data in the SSE buffer (final chunk without trailing newline)
-      if (buffer.trim()) {
-        const trimmed = buffer.trim()
-        if (trimmed.startsWith('data:')) {
-          const payload = trimmed.slice(5).trimStart()
-          if (payload !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(payload)
-              this.processDelta(parsed, callbacks)
-              if (parsed.choices?.[0]?.delta?.content) textReceived = true
-              if (parsed.choices?.[0]?.delta?.reasoning_content && !textReceived) {
-                reasoningAccum += parsed.choices[0].delta.reasoning_content
-                receivedThinking = true
-                if (reasoningRef) reasoningRef.content = reasoningAccum
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
+      const trimmed = buffer.trim()
+      if (trimmed.startsWith('data:')) {
+        const payload = trimmed.slice(5).trimStart()
+        if (payload !== '[DONE]') processPayload(payload)
       }
 
       this.flushToolCalls(callbacks, { final: true })
@@ -1038,6 +1059,9 @@ export class OpenAIClient implements StreamClient {
       }
     } catch (err) {
       // Observability: surface how much streamed output this attempt discards.
+      // Release the unfinished response even for direct parser callers without
+      // a fetch lifecycle controller (including repetition/consumer failures).
+      void reader.cancel().catch(() => {})
       callbacks.onStreamAttemptAborted?.({
         provider: this.config.providerName ?? 'openai',
         receivedChars: reasoningAccum.length + this._textAccum.length,

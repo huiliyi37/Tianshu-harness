@@ -230,6 +230,38 @@ describe('CompactionController ceiling force semantics (task 6)', () => {
     assert.equal(decisions.length, 1)
     assert.deepEqual(decisions[0], { action: 'session-split', force: true, commit: true })
   })
+
+  it('ceiling checkpoint preserves a just-sent trailing user message verbatim (desktop long-message regression)', async () => {
+    // 用户刚发的长消息（末尾 user）绝不能被 ceiling checkpoint 摘要替换——
+    // 否则模型下一请求看到的指令是压缩版（用户观感：消息被截断）。
+    // 构造：历史顶过 95% ceiling，最后一条是 fresh 长 user 消息（尚未被模型消费）。
+    const session = new SessionContext()
+    const huge = 'x'.repeat(Math.floor(128_000 * 0.3) * 4) // 每条 ≈ 窗口 30%，历史合计超 ceiling
+    const FRESH = '这条是用户刚发送的完整指令：' + '请逐字保留我这段长消息的全部内容。'.repeat(400)
+    session.replaceMessages([
+      { role: 'user', content: 'anchor user' },
+      { role: 'assistant', content: 'anchor assistant' },
+      { role: 'user', content: huge },
+      { role: 'assistant', content: huge },
+      { role: 'user', content: huge },
+      { role: 'assistant', content: huge },
+      { role: 'user', content: FRESH },
+    ])
+    const controller = makeController(session)
+
+    await controller.enforceContextCeiling()
+
+    const msgs = session.getMessages()
+    assert.equal(session.getEstimatedTokens() <= 128_000 * 0.95, true, 'ceiling reduced context below 95%')
+    const tail = msgs[msgs.length - 1]
+    assert.ok(tail, 'checkpoint 后消息列表非空')
+    assert.equal(tail.role, 'user', 'checkpoint 后最后一条必须是 user（原文）')
+    assert.equal(
+      typeof tail.content === 'string' && tail.content.includes('请逐字保留我这段长消息的全部内容'),
+      true,
+      '刚发送的 user 消息原文必须逐字保留在 checkpoint 后的上下文中，不得被摘要替换',
+    )
+  })
 })
 
 describe('CompactionController', () => {
@@ -751,9 +783,14 @@ describe('CompactionController', () => {
     await controller.enforceContextCeiling()
 
     const messages = session.getMessages()
-    // Ceiling still fired: only 2 anchor messages + checkpoint-resume remain
-    assert.equal(messages.length, 3)
+    // Ceiling still fired: 2 anchor messages + checkpoint-resume handoff +
+    // the fresh trailing user message preserved verbatim (desktop
+    // long-message regression fix — pre-fix asserted 3 with the tail swallowed).
+    assert.equal(messages.length, 4)
+    assert.equal(messages[2]?.role, 'assistant')
     assert.match(String(messages[2]?.content), /<checkpoint-resume>/)
+    assert.equal(messages[3]?.role, 'user')
+    assert.equal(messages[3]?.content, huge, 'fresh trailing user message preserved verbatim')
     assert.ok(session.getEstimatedTokens() <= 1_000_000 * 0.95)
     assert.equal(refreshed, true)
   })
@@ -846,9 +883,12 @@ describe('CompactionController', () => {
   })
 
   // P3: trySessionSplit and enforceContextCeiling share the same structural
-  // pattern: preserve CACHE_ANCHOR_MESSAGES + inject a handoff user message.
-  // The unified replaceWithCheckpoint method powers both.
-  it('P3: trySessionSplit and enforceContextCeiling produce structurally equivalent output', async () => {
+  // pattern: preserve CACHE_ANCHOR_MESSAGES + inject a handoff message.
+  // The unified replaceWithCheckpoint method powers both. Divergence (desktop
+  // long-message regression): the ceiling path runs AFTER addUserMessage, so a
+  // trailing just-sent user message must be preserved verbatim after the
+  // handoff; the split path runs BEFORE addUserMessage (no fresh user exists).
+  it('P3: session split / ceiling checkpoint both keep anchors; ceiling additionally preserves a fresh trailing user verbatim', async () => {
     // === trySessionSplit path ===
     const session1 = new SessionContext()
     const huge = 'x'.repeat(220_000 * 4)
@@ -895,12 +935,17 @@ describe('CompactionController', () => {
     })
     await ctrl2.enforceContextCeiling()
     const msgs2 = session2.getMessages()
-    // Same structural invariant: anchors + 1 handoff
-    assert.equal(msgs2.length, 3)
+    // Correct structure post-fix: anchors + 1 handoff (assistant role so the
+    // preserved tail keeps the trailer slot) + the fresh user message verbatim.
+    // (Pre-fix this asserted 3 messages with the tail swallowed into the
+    // handoff summary — the desktop long-message truncation bug.)
+    assert.equal(msgs2.length, 4)
     assert.equal(msgs2[0]?.role, 'user')
     assert.equal(msgs2[1]?.role, 'assistant')
-    assert.equal(msgs2[2]?.role, 'user')
+    assert.equal(msgs2[2]?.role, 'assistant')
     assert.match(String(msgs2[2]?.content), /<checkpoint-resume>/)
+    assert.equal(msgs2[3]?.role, 'user')
+    assert.equal(msgs2[3]?.content, huge2, 'fresh trailing user message preserved verbatim')
     assert.equal(refreshed2, true)
   })
 

@@ -23,10 +23,6 @@ export const DOMAIN_SWITCH_CACHE_WARNING =
 export const DOMAIN_SWITCH_CACHE_NOTE =
   '⚠ 会话内切换星域会打断前缀缓存，建议在新会话切换'
 
-/** 所有星域的外层共同描述：能力相同，差别只在额外点亮的认知倾向。 */
-export const DOMAIN_SHARED_CAPABILITY_NOTE =
-  '通用工程全量保留 · 差别只是额外点亮哪层倾向'
-
 export interface DomainPickerEntry {
   /** Selection key: 'auto' | domain id. */
   key: string
@@ -36,8 +32,6 @@ export interface DomainPickerEntry {
   alias?: string
   /** 职责标语（如 破夜指引 · 洞察全景）——custom 域无 tagline 时回退 motto。 */
   tagline?: string
-  /** 本域特质说明（不再重复共有能力；共有能力见 DOMAIN_SHARED_CAPABILITY_NOTE）。 */
-  plain?: string
   /** Secondary dim meta: decisionStyle · keywords. */
   meta: string
   /** One-shot essence preview (never the full volatileBlock). */
@@ -96,7 +90,6 @@ export function buildDomainPickerEntries(
       motto: '按任务匹配',
       alias: '按任务匹配',
       tagline: '关键词自动路由 · 未命中回退天权',
-      plain: '按消息关键词，在 天权/开阳/瑶光/天梁 里挑一个当下最搭的纪律；没命中回退天权。',
       meta: 'zìdòng · 关键词自动匹配星域',
       essence: '根据每条消息内容自动匹配最合适的星域方法论；未命中时回退天权。',
       // null (env kill switch) has no picker entry → also reflect as Auto-selected.
@@ -117,7 +110,6 @@ export function buildDomainPickerEntries(
         motto: d.motto ?? '',
         alias: d.alias,
         tagline: d.tagline ?? d.motto ?? '',
-        plain: d.plain,
         meta: `${pinyin} · ${d.keywords.slice(0, 4).join(',')}`,
         essence,
         founder: genesis?.founder,

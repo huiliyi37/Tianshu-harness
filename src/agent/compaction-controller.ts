@@ -1091,19 +1091,45 @@ export class CompactionController {
     const messages = this.deps.session.getMessages()
     const anchorMessages = messages.slice(0, CACHE_ANCHOR_MESSAGES)
 
+    // 尾随「尚未消费的 user 消息」保护（desktop 长消息回归根因）：enforceContextCeiling
+    // 在 addUserMessage 之后、模型请求之前评估——此路径上末尾 user 恰是用户刚发送的
+    // 指令。整体归档（旧实现 slice(CACHE_ANCHOR_MESSAGES) 一刀切）会把它连同历史一起
+    // 摘要替换，模型下一请求看到的是压缩版指令（用户观感 = 消息被截断）。
+    // 判据「末尾即 user」复用 history-invariant 探针口径：末尾 user 必未被模型消费
+    // （消费后会接 assistant 回复）；turn 内工具循环中末尾是 assistant/tool，不命中，
+    // 压缩范围与旧行为一致。
+    const tail = messages[messages.length - 1]
+    const tailIsFreshUser = tail?.role === 'user' && messages.length - 1 > CACHE_ANCHOR_MESSAGES
+    const archiveEnd = tailIsFreshUser ? messages.length - 1 : messages.length
+    const tailPreserved: OaiMessage[] = tailIsFreshUser ? [tail] : []
+
     // Layered archival: the messages after the anchor are about to be dropped
     // and replaced by the summary. Archive them as a recallable compact-history
     // artifact and embed the recall reference into the summary (and fallback)
     // text — both are freshly-written messages, so the anchor prefix is intact.
-    const discarded = messages.slice(CACHE_ANCHOR_MESSAGES)
+    // 尾随 user 原文不在丢弃段内（archiveEnd 已止于其前）——原文不进归档、留在上下文。
+    const discarded = messages.slice(CACHE_ANCHOR_MESSAGES, archiveEnd)
     const archive = await this.archiveDiscardedHistory(discarded, params.reason)
     const summaryText = archive ? `${params.summary}${archive.ref}` : params.summary
     const fallbackText = archive ? `${params.fallbackText}${archive.ref}` : params.fallbackText
 
-    let candidate: OaiMessage[] = [...anchorMessages, { role: 'user', content: summaryText }]
+    // 摘要以 assistant 角色置于原文之前（仅当存在尾随原文）：避免中间位置出现第二条
+    // user 消息——promptEngine 对非 trailer 的历史 user 会做 volatileBlock 回退注入
+    // （双份注入/膨胀）；原文占据 trailer 位，volatile/appendix 注入路径与无 tail 一致。
+    // 无尾随 user 时保持旧形态（user 摘要收尾）。
+    const summaryRole = tailPreserved.length > 0 ? 'assistant' : 'user'
+    let candidate: OaiMessage[] = [
+      ...anchorMessages,
+      { role: summaryRole, content: summaryText },
+      ...tailPreserved,
+    ]
 
     if (estimateOaiTokens(candidate) > params.maxFallback) {
-      candidate = [...anchorMessages, { role: 'user', content: fallbackText }]
+      candidate = [
+        ...anchorMessages,
+        { role: summaryRole, content: fallbackText },
+        ...tailPreserved,
+      ]
     }
 
     // C4: append the authoritative task anchor at the tail (appendix region —

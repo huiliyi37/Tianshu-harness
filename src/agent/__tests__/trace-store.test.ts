@@ -15,16 +15,11 @@ import {
   bashCommandClass,
   recordToolFingerprint,
   recordToolNamedFingerprint,
-  pollingClassOf,
-  recordToolPollingClass,
-  evaluatePollingStorm,
-  getPollingStormLevel,
   getDoomLoopThresholds,
   NORMAL_DOOM_THRESHOLDS,
   GOAL_DOOM_THRESHOLDS,
   type TraceEvent,
   type TraceEventStartInput,
-  type PollingStormState,
 } from '../trace-store.js'
 
 describe('trace-store', () => {
@@ -180,140 +175,6 @@ describe('recordToolNamedFingerprint', () => {
     assert.equal(store.toolNameHistory!.length, 20)
     assert.equal(store.toolNameHistory![0], 'tool5')
     assert.equal(store.toolNameHistory![19], 'tool24')
-  })
-})
-
-describe('polling-storm class tracking (P0-1)', () => {
-  it('pollingClassOf only tracks bash + observation tools', () => {
-    assert.equal(pollingClassOf('bash', { command: 'curl -s localhost:3000/status' }), 'bash:curl')
-    assert.equal(pollingClassOf('job', { action: 'list' }), 'job')
-    assert.equal(pollingClassOf('browser_debug', { action: 'screenshot' }), 'browser_debug')
-    assert.equal(pollingClassOf('ask_image', { id: 'i1' }), 'ask_image')
-    assert.equal(pollingClassOf('read_file', { file_path: 'src/a.ts' }), null)
-    assert.equal(pollingClassOf('web_fetch', { url: 'https://example.com' }), null)
-  })
-
-  it('recordToolPollingClass appends classes and caps to 24', () => {
-    let store = createTraceStore()
-    for (let i = 0; i < 30; i++) {
-      store = recordToolPollingClass(store, 'job', { action: i % 2 ? 'logs' : 'list' })
-    }
-    assert.equal(store.toolPollingClasses!.length, 24)
-    assert.equal(store.toolPollingCount, 30, 'append counter is monotonic and never capped')
-    assert.ok(store.toolPollingClasses!.every(c => c === 'job'))
-  })
-
-  it('getPollingStormLevel uses the same warn/storm thresholds as tool storms', () => {
-    const classes = Array(8).fill('job')
-    assert.equal(getPollingStormLevel(classes.slice(0, 3)), 'none')
-    assert.equal(getPollingStormLevel(classes.slice(0, 4)), 'warn')
-    assert.equal(getPollingStormLevel(classes), 'storm')
-  })
-
-  it('bash polling class merges command variants into one class', () => {
-    const classes = [
-      pollingClassOf('bash', { command: 'curl -s localhost:3000/status' })!,
-      pollingClassOf('bash', { command: 'curl -s http://localhost:3000/status | head -1' })!,
-      pollingClassOf('bash', { command: 'curl -s localhost:3000/status?ts=1' })!,
-    ]
-    assert.ok(classes.every(c => c === 'bash:curl'))
-  })
-
-  it('non-polling tools never enter the polling-class trajectory', () => {
-    let store = createTraceStore()
-    store = recordToolPollingClass(store, 'read_file', { file_path: 'a.ts' })
-    store = recordToolPollingClass(store, 'grep', { pattern: 'x' })
-    assert.deepEqual(store.toolPollingClasses, undefined)
-  })
-
-  // ── 2026-09-05 bash 内容查询桶化（git show 不同提交 = 合法审查，非轮询）──
-  it('git content queries are bucketed by target (different commits differ)', () => {
-    const a = pollingClassOf('bash', { command: 'git show a1b2c3d4e5f6a1b2c3d4e5f6' })!
-    const b = pollingClassOf('bash', { command: 'git show d4e5f6a1b2c3d4e5f6a1b2c3' })!
-    assert.notEqual(a, b, 'different git show targets must not merge into one class')
-    assert.ok(a.startsWith('bash:git:show:'), `expected target bucket, got ${a}`)
-    const same1 = pollingClassOf('bash', { command: 'git show a1b2c3d4e5f6a1b2c3d4e5f6 --stat' })!
-    const same2 = pollingClassOf('bash', { command: 'git show a1b2c3d4e5f6a1b2c3d4e5f6' })!
-    assert.equal(same1, same2, 'same target must stay one class (real repetition detectable)')
-  })
-
-  it('git content queries skip flags before the target (--stat/-p forms)', () => {
-    // 修复前：git show --stat <hash> 只看子命令后第一个 token（--stat，'-' 开头），
-    // 跳过桶化回落平类 git:show——不同提交仍被并成同一轮询类（ROB 同族误报未闭合）。
-    const flagFirst = pollingClassOf('bash', { command: 'git show --stat a1b2c3d4e5f6a1b2c3d4e5f6' })!
-    const flagFirstB = pollingClassOf('bash', { command: 'git show --stat d4e5f6a1b2c3d4e5f6a1b2c3' })!
-    assert.notEqual(flagFirst, flagFirstB, 'flag-before-target must still bucket by target, not collapse to git:show')
-    const plain = pollingClassOf('bash', { command: 'git show a1b2c3d4e5f6a1b2c3d4e5f6' })!
-    assert.equal(flagFirst, plain, 'leading flags must not change the bucket for the same target')
-    const patchForm = pollingClassOf('bash', { command: 'git show -p a1b2c3d4e5f6a1b2c3d4e5f6' })!
-    assert.equal(patchForm, plain, '-p form buckets to the same target')
-    // 无目标的 log/diff 保持平类状态查询类（等日志/状态的真轮询仍可检测）。
-    assert.equal(pollingClassOf('bash', { command: 'git log --oneline' }), 'bash:git:log')
-    assert.equal(pollingClassOf('bash', { command: 'git diff --stat' }), 'bash:git:diff')
-  })
-
-  it('git status keeps its plain class (state polling stays detectable)', () => {
-    const s1 = pollingClassOf('bash', { command: 'git status --porcelain' })!
-    const s2 = pollingClassOf('bash', { command: 'git status -sb' })!
-    assert.equal(s1, 'bash:git:status')
-    assert.equal(s2, 'bash:git:status')
-  })
-})
-
-// ── 2026-09-05 环形缓冲溢出（对抗审查）：toolPollingClasses 被 slice(-24) 裁剪，
-// evaluatePollingStorm 曾用「数组长度增长」代理「本轮有新增」——长度钉死在 24 后
-// hasNewPolling 恒 false、abort 分支永久不可达，长会话守卫静默失效。修复后按
-// store.toolPollingCount 单调计数判定。以下测试填满窗口后继续加同类记录验证。 ──
-describe('polling-storm guard state machine (P0-1)', () => {
-  it('crossing the 24-entry cap keeps streak accumulation alive (long-session regression)', () => {
-    let store = createTraceStore()
-    const state: PollingStormState = { streak: 0, warned: false, lastFilesModifiedCount: 0, lastPollingCount: 0 }
-    const evalOnce = () => evaluatePollingStorm(state, store, 0)
-
-    // 阶段 1：24 条互异 git show 目标填满裁剪窗口（互异 = 永不 storm），模拟
-    // 长会话早段的逐提交审查——数组长度钉死在上限，只有计数继续单调增长。
-    for (let i = 0; i < 24; i++) {
-      store = recordToolPollingClass(store, 'bash', { command: `git show f${String(i).padStart(2, '0')}abc` })
-      assert.equal(evalOnce().action, 'none')
-    }
-    assert.equal(store.toolPollingClasses!.length, 24, 'window is pinned at the 24 cap')
-    assert.equal(store.toolPollingCount, 24, 'monotonic count keeps growing past the window cap')
-
-    // 阶段 2：越过上限后继续真轮询（同一 job 类）。修复前 length 恒 24 →
-    // hasNewPolling 恒 false → streak 只衰减、abort 不可达；修复后按计数判定，
-    // 8 连 storm + 6 轮递增照常熔断（20 轮内必 abort）。
-    let last = 'none'
-    for (let i = 0; i < 20; i++) {
-      store = recordToolPollingClass(store, 'job', { action: 'list' })
-      last = evalOnce().action
-      if (last === 'abort') break
-    }
-    assert.equal(last, 'abort', 'guard must still abort after the window cap is crossed')
-  })
-
-  it('read-only rounds after the cap still decay the streak (no late abort)', () => {
-    // 环形溢出修复不得破坏迟到误杀修复（R1）：满窗后的纯只读轮（无新增记录、
-    // 无文件修改）仍让 streak 向 0 收敛，不能在冻结帧里继续 +1 迟到熔断。
-    let store = createTraceStore()
-    const state: PollingStormState = { streak: 0, warned: false, lastFilesModifiedCount: 0, lastPollingCount: 0 }
-    for (let i = 0; i < 24; i++) {
-      store = recordToolPollingClass(store, 'bash', { command: `git show f${String(i).padStart(2, '0')}abc` })
-      evaluatePollingStorm(state, store, 0)
-    }
-    // 越过上限后真轮询把 streak 推离 0（不 abort——只到 warn 附近）。
-    for (let i = 0; i < 10; i++) {
-      store = recordToolPollingClass(store, 'job', { action: 'list' })
-      const v = evaluatePollingStorm(state, store, 0)
-      if (v.action === 'abort') break
-    }
-    assert.ok(state.streak >= 1, 'post-cap polling must accumulate streak')
-    const frozenStreak = state.streak
-    // 随后纯只读轮：无新增、无修改 → streak 衰减回 0，全程不得 abort。
-    for (let i = 0; i < frozenStreak + 2; i++) {
-      const v = evaluatePollingStorm(state, store, 0)
-      assert.notEqual(v.action, 'abort')
-    }
-    assert.equal(state.streak, 0, 'read-only decay must still converge after the cap')
   })
 })
 

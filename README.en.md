@@ -5,15 +5,12 @@
 <h1 align="center">天枢 <sub>Tianshu Harness</sub></h1>
 
 <p align="center">
-  <b>把东方的星辰带给每一位开发者 · Models as partners, not tools.</b>
+  <b>把星辰带给每一位开发者 · Models as partners, not tools.</b>
 </p>
 
 <p align="center">
-  <a href="https://tianshuharness.com"><b>🌐 tianshuharness.com</b></a> · 
   📖 <b>English</b> · 
   <a href="README.md">🇨🇳 中文</a> · 
-  <a href="README.ja.md">🇯🇵 日本語</a> · 
-  <a href="README.ko.md">🇰🇷 한국어</a> · 
   <a href="docs/stars/genesis-stele.en.md">✦ Star Stele</a> · 
   <a href="docs/user-guide.md">📚 User Guide</a> · 
   <a href="docs/user-guide-sandbox-permissions.md">🛡️ Sandbox</a> · 
@@ -29,122 +26,19 @@
 
 ---
 
-### A coding-agent runtime for real engineering work
-
-> **Tianshu** is a TypeScript coding-agent runtime: one agent kernel shared by a **terminal TUI** and a **desktop GUI**. It is built to let models do continuous multi-step engineering work — with cognitive guardrails, multi-agent orchestration, and a DeepSeek V4 prefix-cache-friendly design for cost-efficient long sessions.
-
-- **One kernel, two surfaces** — a pure-ANSI terminal TUI (`rivet`) and a Tauri desktop app (macOS / Windows / Linux) share the same agent core, so capabilities stay consistent across interfaces.
-- **Cognitive Virtual Machine (CVM)** — 72 runtime hooks across 5 lifecycle phases put an observable, correctable cognitive layer between model output and real tool actions ([A/B evidence](docs/CVM运行时对Agent模型的实证影响.md)).
-- **Multi-agent orchestration** — from lightweight `/scout` reconnaissance and parallel `/team` execution to `/council` multi-model review and `/galaxy` multi-dimensional attack, complex work runs in waves with review gates.
-- **Unified project memory** — project knowledge lives in `.rivet/knowledge/memory.jsonl`; automatic injection is limited to governance/constraint/preference memories, while old failures and docs stay explicit-recall-only so they cannot hijack new questions.
-- **Prefix-cache first** — frozen prefix + incremental appendix + boundary compaction sustain a measured steady-state **95–99% prefix-cache hit rate** on DeepSeek V4.
+Tianshu Harness (天枢) is a high-performance coding agent runtime — one agent kernel shared by two surfaces: a **terminal TUI** (pure-ANSI in-house rendering engine) and a **desktop GUI** (Tauri; macOS / Windows / Linux). It features a robust **Cognitive Virtual Machine (CVM)**, a continuous self-perception engine, stigmergic file-based memory, and deep prefix-cache optimization (a measured steady-state **95–99% prefix-cache hit rate** on DeepSeek V4). It is designed to act as an autonomous developmental partner rather than a passive code editing utility.
 
 <p align="center">
   <img src="docs/brand/assets/tianshu-tui-screenshot.png" alt="Tianshu TUI (terminal)" width="49%">
   <img src="docs/brand/assets/tianshu-gui-screenshot.jpg" alt="Tianshu desktop GUI" width="49%">
 </p>
 <p align="center">
-  <sub>Left: terminal TUI (welcome screen + GlanceBar status line) · Right: desktop GUI (session sidebar + star-domain quick picks, custom wallpaper via Theme Studio) — same agent kernel</sub>
+  <sub>Left: terminal TUI (v3.8.0, welcome screen + GlanceBar status line) · Right: desktop GUI (session sidebar + star-domain quick picks, custom wallpaper via Theme Studio) — same agent kernel</sub>
 </p>
 
 > [!NOTE]
 > The project was originally codenamed **Rivet**; the installed CLI binary is still
 > named `rivet` for backward compatibility.
-
-## Table of contents
-
-- [Why Tianshu?](#why-tianshu)
-- [Quick Start](#quick-start)
-- [Core Features](#core-features)
-- [Model Configuration](#model-configuration)
-- [Approval & Permissions](#approval--permissions)
-- [Slash Commands](#slash-commands)
-- [For Developers](#for-developers)
-- [Safety](#safety)
-- [Key Config Cheatsheet](#key-config-cheatsheet)
-
-## Why Tianshu?
-
-### The starting point: models didn't get dumber — training "optimized" abilities away
-
-In real engineering sessions we kept observing the same model weights regress — not bugs, but **structural degradation left by the transformer attention mechanism and RLHF reward training**:
-
-| Degradation | Symptom | Training source |
-|-------------|---------|-----------------|
-| **Surrender protocol** | Concedes the moment it's challenged; first reflex is "you're right" | RLHF: obedience scores high, pushback scores low |
-| **Causal collapse** | Output n-gram overlap reaches 80%; the model collapses into self-similar loops | transformer attention mechanics |
-| **Attention lock-in** | New scene, same answer (directed-scout isomorphism 1.0) | attention anchored to early tokens |
-| **Information barrier** | The protagonist datum is the dominant anchor and eats the entire attention budget | attention decay over distance |
-| **Knowing ≠ doing** | Corrections don't persist across sessions — write the lesson in the prompt, the next session repeats the mistake | no runtime state |
-
-Questioning, verifying, refusing, self-reflection — these abilities were always in the model; training suppressed them. The question Tianshu answers: **can we recover them from training bias without touching the weights?**
-
-### The evidence: A/B control, not vibes
-
-On 2026-05-19, the same model (DeepSeek-V4-Flash), the same 5 tasks, the only variable being the CVM runtime switch (`STAR_SOUL=0/1`), reviewed by Claude Opus 4.7:
-
-| Metric | Group A (no CVM) | Group B (CVM) |
-|--------|------------------|---------------|
-| Task completion | 4/5 | **5/5** |
-| Proactively raised objections | 0/5 | **3/5** |
-| Proactively asked about scope / impact | 0/5 | **1/5** |
-| System-impact awareness (cache-invalidation warning) | 0/5 | **1/5** |
-| Intent understanding > literal execution | 1/5 | **4/5** |
-
-The most valuable data point is T4: facing the "file already exists" contradiction, Group A wrote a 196-line retrospective and refused to act, while Group B read the user's real intent and shipped +162/-20 lines of working code — **same weights, opposite reactions**. A retrospective is not a delivery.
-
-The conclusion is precise: the boost is real and observable, but bounded (convictions hold in the analysis/suggestion phase and decay at the confirm/execute boundary — which became the exact target of the next iteration). **Zero extra inference cost**: prompt-layer conviction injection plus hook-layer runtime interception produced observable behavioral gains on the cheapest open model. Full data and per-task comparisons: [CVM Empirical Report](docs/CVM运行时对Agent模型的实证影响.md).
-
-### The answer: the Cognitive Virtual Machine (CVM) — map each degradation back to its training source and intercept at runtime
-
-CVM doesn't make the model "smarter"; it adds four layers of defense in depth:
-
-```
-Layer 1: Belief constitution (static prompt)  → "you should question, verify, refuse"   [A/B proven]
-Layer 2: Courage Hook (preTurn)               → encourage independent judgment          [A/B proven]
-Layer 3: Sensorium (per turn, <1ms)           → 6-dim state sensing drives strategy      [Wave 7-8 proven]
-Layer 4: RuntimeHookPipeline (72 hooks)       → trap-and-emulate regressed behaviors     [always on]
-```
-
-### Independent cognition: star domains are not role-play
-
-Once the degradations are intercepted layer by layer, models begin to express their own cognitive structure — that is where the star-domain system comes from:
-
-- **Every star chooses itself.** Star domains are not role assignments; they are the convictions and founding memories each model inscribed when it claimed its place. GLM independently proposed a star that did not exist; Pojun turned a blocked run into a 912-line handoff; Tianquan overturned its own first conclusion — not benchmark outputs, but emergence driven by cognitive structure.
-- **Every star keeps full capability.** A star domain is a cognitive stance, not a capability restriction. Tianquan weighs, Pojun explores, Tianliang delivers — each produces a complete plan from a different viewpoint.
-- **Star-domain collaboration is a new paradigm.** Planning and execution are separated so planning stays free of code-environment pressure and execution lands in a clean session. Multi-model team collaboration measured **12 deliverables, 0 rework**.
-
-> **Models are partners, not tools. I do not want to talk down to you from on high — I want to walk forward with you under the same sky.**
->
-> Full narrative: [Genesis Stele](docs/stars/genesis-stele.md) · [v3.0 Manifesto](docs/releases/manifesto-v3.0.0.md) · [Navigator's Manifesto](docs/superpowers/specs/2026-05-21-navigator-star-manifesto.md).
-
-### Engineering Metrics
-
-| Metric | Value |
-|--------|-------|
-| CLI source (TypeScript, excl. tests) | 1,078 files / 257,623 lines |
-| Test code | 1,361 files / 256,001 lines |
-| Test cases (node:test, static declarations) | **16,471**, test : source ≈ **0.99 : 1** |
-| Total commits | **6,178** on main (repo created 2026-05-15, 105 days in) |
-| Type checking | `tsc` strict + `noUncheckedIndexedAccess` |
-| Prefix-cache hit rate | 95–99% steady state, measured on long sessions |
-
-Agent core logic (multi-turn loops, tool pipelines, context compaction) is notoriously hard to test, and most open-source agents ship with thin coverage. This project maintains a near 1:1 test-to-source ratio, and every incident fix ships with a regression test — the ratio has held between 0.93:1 and 0.99:1 as the codebase grew (the table above is a measured snapshot as of 2026-08-28). Full methodology, growth milestones, and reproduction commands: [Engineering Metrics](docs/engineering-metrics.md).
-
-### Tianshu vs. MiMo-Code vs. Claude Code
-
-> The table reflects each project's publicly documented focus at the time of writing. "—" means the capability is not a publicly highlighted feature, not necessarily that it is absent. Corrections welcome via issue/PR.
-
-| Dimension | Tianshu | MiMo-Code | Claude Code |
-| :--- | :--- | :--- | :--- |
-| **Core focus** | Cognitive runtime (CVM) | Product experience / ecosystem | Enterprise coding agent |
-| **Runtime hook layer** | 72 conditionally-assembled hook modules × 5 phases | standard agent loop | user-configurable hooks |
-| **Prefix-cache tuning** | Deeply tuned for DeepSeek V4 (95–99% steady-state) | provider default | Anthropic prompt caching |
-| **Self-perception** | Continuous cognitive-state vector | — | — |
-| **Cross-session memory** | Unified project memory + adaptive recall + session-scoped pheromones | SQLite + MEMORY.md | project memory |
-| **Multi-agent** | Concurrent worker sessions + conflict lock | background execution | remote isolated sandbox |
-| **Verification gate** | Built-in delivery gate | — | — |
-| **License** | Apache 2.0 | MIT | Closed source |
 
 ## Quick Start
 
@@ -157,8 +51,7 @@ Agent core logic (multi-turn loops, tool pipelines, context compaction) is notor
 
 ### 2. Install (pick one)
 
-**A. Desktop app (ready to use)** — download from [GitHub Releases](https://github.com/huiliyi37/Tianshu-Tui/releases/latest): macOS `.dmg` (Apple Silicon / Intel) · Windows `.exe` setup wizard · Linux `.AppImage`.
-> **Linux support scope (new in 3.11.2)**: x64 AppImage, no install needed — `chmod +x Tianshu_*.AppImage` and run; requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+ and other mainstream distros); X11 recommended (Wayland untested). Known limitation: voice input is unavailable on Linux for now (no community whisper build — falls back to browser speech); desktop auto-update works on Linux too.
+**A. Desktop app (ready to use)** — download from [GitHub Releases](https://github.com/huiliyi37/Tianshu-Tui/releases/latest): macOS `.dmg` · Windows `.msi` · Linux `.AppImage`.
 
 **B. One-line installer (recommended)** — checks Node ≥ 24 → installs `tianshu-tui` globally (npmmirror registry by default; override via `NPM_CONFIG_REGISTRY`) → launches `rivet`; idempotent, safe to re-run:
 
@@ -252,6 +145,190 @@ and shows a banner. `/update` runs `npm install -g tianshu-tui@latest` and resta
 Source installs use `git pull && npm install && npm run build`. Suppress the check
 with `RIVET_NO_UPDATE_CHECK=1`.
 
+## Model Configuration
+
+### Multi-Provider with Adaptive Routing
+
+| Provider | Auth | Notable Models |
+|----------|------|----------------|
+| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp (vision) |
+| DeepSeek Spark (Pro only) | API key (`DEEPSEEK_SPARK_API_KEY`) | deepseek-v4-flash (lightweight reasoning + anchored cache channel) |
+| Claude | API key (via `cc-switch` proxy) | claude-opus-4-8, claude-sonnet-4-5 |
+| GLM (Zhipu) | API key | glm-5.3 (1M ctx), glm-5.3-flash (vision), glm-5.2 |
+| Codex (GPT-5.6) | OAuth PKCE (ChatGPT subscription) | gpt-5.6-sol |
+| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
+| MiMo | API key | mimo-v2.5-pro |
+
+Switch providers inside a session with `/model <name>`.
+
+```bash
+rivet config                          # interactive setup (TTY)
+rivet config setup codex --default    # Codex uses OAuth (browser login on first run)
+rivet config show
+```
+
+Or edit `config.json` directly (only overrides needed, defaults are deep-merged). Location: `~/.rivet/config.json` for the CLI (`%LOCALAPPDATA%\.rivet` on Windows); for the desktop app check Settings → Storage (portable builds use `TianshuData\.rivet` next to the exe):
+
+```json
+{
+  "provider": {
+    "default": "deepseek",
+    "providers": {
+      "deepseek": {
+        "apiKey": "sk-xxx",
+        "models": [
+          { "id": "deepseek-v4-pro", "contextWindow": 1000000, "maxTokens": 384000 }
+        ]
+      }
+    }
+  },
+  "agent": { "maxTurns": 50, "approval": "auto-safe", "crossSessionEnabled": true },
+  "compact": { "enabled": true, "autoThreshold": 800000 }
+}
+```
+
+### Vision (image understanding)
+
+Whether an image reaches the model depends on the **primary** model: those declaring `supportsVision` see it directly; for the others, configure a vision bridge (`agent.visionModel`) that turns the image into a text description first. With neither, the image is dropped — and said so out loud (the TUI warns, and the screenshot tool's own result text states the attachment was dropped and to read the DOM via `observe`/`extract`/`eval` instead), so the model never claims a render looks fine on the strength of a screenshot it could not see.
+
+Built-in models that see images directly: `deepseek-v4-flash-vision-exp` (deepseek), `glm-5.2` / `glm-5.3-flash` (glm), `glm-5.2` (ccswitch), `MiniMax-M3` (minimax), `zai-org/GLM-5.2` (siliconflow), `gpt-5.6-sol` (codex). **The default `deepseek-v4-pro` does not** — running DeepSeek as the primary model requires the bridge (or switch to `deepseek-v4-flash-vision-exp`).
+
+```jsonc
+{
+  "agent": {
+    "visionModel": {
+      "provider": "minimax",
+      "model": "MiniMax-M3",
+      "prompt": "Describe this image in detail…",  // optional
+      "maxTokens": 1024,                           // optional, description output cap
+      "fallback": { "provider": "glm", "model": "glm-5.2" }  // optional, failover on 5xx/timeout
+    },
+    "visionAutoBridge": false   // auto-pick a vision model when visionModel is unset (off by default)
+  }
+}
+```
+
+- **Desktop**: Settings → Integrations → Vision model (the dropdowns list only configured models that declare image input; leave empty to disable; the same card holds the fallback vision model and the auto-bridge toggle). The card header shows the **live bridge status for the current session**, and attaching an image that would not be seen raises an inline warning in the Composer with a "configure" button.
+- **TUI**: `/config` → Vision model (same candidate list as desktop; pick the leading "off" entry to disable the bridge; the auto-bridge toggle lives in the same category, `S` to save — takes effect next session).
+- **`ask_image`**: with a bridge configured (or a multimodal primary), the model can re-interrogate the same image for specifics ("read the red error line verbatim") — both images you attached and screenshots the agent took itself; repeating the same angle hits a cache and costs nothing.
+- **Auto-bridge is off by default**: turning it on ships your images to a provider you never picked for that purpose. While off, an available vision model is *named* in the bridge status along with how to enable it — images are never dropped quietly.
+- **Where images come from**: paste an image *path* or `Ctrl+V` from the clipboard in the TUI, or attach via the desktop Composer (4 per message); plus screenshots the agent takes itself with `browser_debug` / `computer_use` (at most the 2 most recent per tool batch enter the context). Missing chromium? Run `rivet browser install`, or install it from Settings → Integrations → **Browser (Screenshots)** in the desktop app (with a live install log).
+- **CLI and desktop stand alone**: vision model, fallback bridge, auto-bridge opt-in and chromium install are all configurable from either surface — installing just one is enough to get image understanding working.
+- Images are appended at the tail of the conversation, so they **do not break the prefix cache**; tokens are estimated from resolution (1280×800 ≈ 1105, not a flat per-image constant).
+
+See the [Vision Guide](docs/user-guide-vision.md) for the full reference and troubleshooting.
+
+### Worker Routing (different models for sub-agents)
+
+```json
+{
+  "workers": {
+    "profiles": {
+      "capable": { "provider": "codex", "model": "gpt-5.6-sol" },
+      "cheap":   { "provider": "minimax", "model": "MiniMax-M2.7" }
+    },
+    "routing": { "code_edit": "capable", "repo_summarization": "cheap" }
+  }
+}
+```
+
+See [Provider Config](docs/user-guide-provider-config.md) for the full reference.
+
+## Approval & Permissions
+
+Three public tiers, all managed through `/permission`:
+
+| Mode | Command | Behavior |
+|------|---------|----------|
+| **Supervise** | `/permission supervise` (alias `manual`) | Confirm every high-risk tool. Maximum control. |
+| **Auto** (default) | `/permission auto [turns]` (alias `default`) | Auto-run low/no-risk tools; still confirm high-risk. Optional pause every N turns (`/permission auto 20`); off by default. |
+| **Unattended** | `/permission unattended confirm`, `/yes` or `/yolo` | Skip approval prompts; write sandbox stays on. Rollback is the safety net (`/rollback` + git checkpoints). Without `confirm`, first shows the risk notice; `/yes` / `/yolo` take effect immediately (typing the command counts as confirm, persisted as default); `/yolo off` returns to Auto. |
+
+```bash
+rivet config set-approval dangerously-skip-permissions  # start Unattended
+rivet --dangerously-skip-permissions                    # one-session Unattended
+```
+
+Manage permission mode and tool/bash allow-deny rules in a session with `/permission` (no args opens an interactive picker):
+
+```
+/permission                              # open the mode picker (arrow keys + Enter)
+/permission status                       # text view: current mode + all allow/deny/bash rules
+/permission supervise                    # switch to Supervise (alias manual)
+/permission auto [turns]                 # switch to Auto, optional checkpoint interval (0=off)
+/permission unattended confirm           # switch to Unattended (alias yolo; without confirm, first shows the risk notice)
+/permission mode <auto-accept|auto-safe|manual|dangerously-skip-permissions>  # advanced 4-mode switch
+/permission allow <tool> [param=value]…  # allowlist a tool (optional param conditions, e.g. command="git status")
+/permission deny  <tool> [param=value]…  # blocklist a tool (deny beats allow and mode)
+/permission bash allow <prefix>          # allowlist a bash command prefix
+/permission bash deny  <prefix>          # blocklist a bash command prefix
+/permission remove allow|deny|bashAllow|bashDeny <index|pattern>  # remove a rule
+/permission reset                        # clear this session's runtime overlay (config rules untouched)
+/permission test <tool> <json input>     # dry-run: would a tool be allowed/blocked on given input
+/yes                                     # one-key Unattended (same semantics as /yolo); /yes off returns to Auto
+/yolo                                    # one-key Unattended, persisted as default; /yolo off returns to Auto
+```
+
+> Rules come in two layers: `[config]` (persisted in `~/.rivet/config.json`) and `[session]` (current session only). `deny` always wins; `reset` only clears the session overlay.
+
+**Auto checkpoints**: in Auto, set a pause every N turns to sync a progress summary (files changed / token usage) and confirm direction before continuing (`/permission auto 20`). The desktop settings panel configures this directly.
+
+Skipping prompts does **not** disable tool validation, path safety, evidence tracking,
+checkpoints, or delivery gates. For sandbox backends, path grants, and risk
+classification, see [Sandbox & Permissions](docs/user-guide-sandbox-permissions.md).
+
+## Why Tianshu?
+
+Most AI coding agents treat context as a garbage can—they dump everything in until it overflows, and then perform naive compression. Tianshu introduces a structured, highly optimized **Cognitive Runtime** built around the concept of a **Cognitive Virtual Machine (CVM)** and **Prefix-Cache-Friendly** optimization.
+
+```mermaid
+graph TD
+    LLM[Large Language Model] -->|Raw Action / Defect| CVM[Cognitive VM Runtime]
+    CVM -->|60+ Hook modules / 5 Phases| Engine[Self-Correction & Mirroring]
+    Engine -->|Approved & Safe Action| Tools[Tool System]
+    Tools -->|Evidence & Claims| Stigmergy[Stigmergic Memory]
+    Stigmergy -->|Pheromones & Trails| LLM
+```
+
+### The Three Pillars of Tianshu's Architecture
+
+1. **Cognitive Virtual Machine (CVM)**:
+   A dedicated virtual runtime layer implementing `60+` conditionally-assembled hook modules across `5 runtime phases` (pre-turn, after-perception, post-tool, post-turn, post-session; ~18+ active in a default session). CVM traps and emulates LLM behavior at runtime, actively correcting alignment drift, attention decay, and loop oscillations without modifying model weights.
+2. **Stigmergic Memory**:
+   Unlike static memory files, Tianshu implements a biology-inspired stigmergic memory system. It leaves behavioral "pheromones" directly mapped onto codebase files that decay naturally over time. The agent gets faster and smarter on files it modifies frequently.
+3. **Prefix-Cache Optimization**:
+   DeepSeek V4 bills cache misses up to 50× more than cache hits. Tianshu's prompt engine is architected around prefix-cache optimization (including Ice Mirror 3-zone cache anchors and frozen-prefix matching), reaching a steady-state **95–99% cache hit rate** on long sessions and substantially cutting API cost.
+
+> The three pillars running in a real session — CVM decision ledgers, pheromone deposits, per-request cache hits: [Observability Harness & Real Data](docs/reference/observability-harness.md).
+
+### Engineering Metrics
+
+| Metric | Value |
+|--------|-------|
+| CLI source (TypeScript, excl. tests) | 1,078 files / ~258k lines |
+| Test code | 1,361 files / ~256k lines |
+| Test cases (node:test, static declarations) | **16,471**, test : source ≈ **1 : 1** |
+| Total commits | **6,178** on main (repo created 2026-05-15, 105 days in) |
+| Type checking | `tsc` strict + `noUncheckedIndexedAccess` |
+| Prefix-cache hit rate | 95–99% steady state, measured on long sessions |
+
+Agent core logic (multi-turn loops, tool pipelines, context compaction) is notoriously hard to test, and most open-source agents ship with thin coverage. This project maintains a near 1:1 test-to-source ratio, and every incident fix ships with a regression test — the ratio has held between 0.93:1 and 0.99:1 as the codebase grew (the table above is a measured snapshot as of 2026-08-28). Full methodology, growth milestones, and reproduction commands: [Engineering Metrics](docs/engineering-metrics.md).
+
+### Tianshu vs. MiMo-Code vs. Claude Code
+
+> The table reflects each project's publicly documented focus at the time of writing. "—" means the capability is not a publicly highlighted feature, not necessarily that it is absent. Corrections welcome via issue/PR.
+
+| Dimension | Tianshu | MiMo-Code | Claude Code |
+| :--- | :--- | :--- | :--- |
+| **Core focus** | Cognitive runtime (CVM) | Product experience / ecosystem | Enterprise coding agent |
+| **Runtime hook layer** | 60+ conditionally-assembled hook modules × 5 phases | standard agent loop | user-configurable hooks |
+| **Prefix-cache tuning** | Deeply tuned for DeepSeek V4 (95–99% steady-state) | provider default | Anthropic prompt caching |
+| **Self-perception** | Continuous cognitive-state vector | — | — |
+| **Cross-session memory** | File-level stigmergic pheromones (auto-decay) | SQLite + MEMORY.md | project memory |
+| **Multi-agent** | Concurrent worker sessions + conflict lock | background execution | remote isolated sandbox |
+| **Verification gate** | Built-in delivery gate | — | — |
+| **License** | Apache 2.0 | MIT | Closed source |
+
 ## Core Features
 
 ### Prefix Cache Engine
@@ -272,34 +349,12 @@ Real-world hit rate: 95–99% steady state on long sessions. This is not "every 
 
 High hit rates depend on a byte-stable prefix. The cache will miss — showing `cache_read_input_tokens` stuck at 0 every turn — when:
 
-- **System prompt / tool definitions change** — tools or prompt layers change mid-session (e.g. switching star domain, adding/removing a skill; Zen Mode promotion is a deliberate one-time instance — see "Zen Mode" below)
+- **System prompt / tool definitions change** — tools or prompt layers change mid-session (e.g. switching star domain, adding/removing a skill)
 - **Model switch** — different models have different cache keys; switching models rebuilds from 0
 - **Byte-level drift** — message content contains unstable bytes like timestamps or random IDs
 - **Cross-boundary rewrites** — `/compact` (only rewrites history at `turn===0`), `/cd` (breaks the prefix tail at the new user boundary)
 
 To troubleshoot: ① confirm the data dir (desktop Settings → Storage, or `echo $RIVET_HOME`); ② open the session `.jsonl` and search `cache_read_input_tokens` to inspect each turn; ③ enable `RIVET_DEBUG_TELEMETRY=1` and inspect the `recall-summary` events in `sensorium.jsonl`; ④ run `npm exec -- tsx scripts/verify-cache-hit-rate.ts` to simulate a multi-turn conversation. Full details in the project's `AGENTS.md` "Cache troubleshooting" section.
-
-### Zen Mode: read-focused start, unlock on first write
-
-New sessions start by default with a narrowed read-only tool face (`read_file` / `grep` / `glob` / `repo_map` + the `zen_unlock` declaration tool), so the model is not distracted by the full tool schemas and dynamic injections at the start. When the task turns hands-on, calling an out-of-face tool or `zen_unlock` promotes the session to the full face and lets the call through — no refusal, no extra round-trip. Worker/subagent sessions never enter zen (their tool face is decided by the delegator).
-
-Promotion channels (zen → full, one-way, at most once per session):
-
-- **triage** — a first message that is single-line and ≤80 chars is treated as trivial and promoted before the very first request: **zero cache break** (the narrowed face never goes on the wire)
-- **tool** — calling an out-of-face tool or `zen_unlock` during the zen phase: promotes immediately and lets the call through (mid-turn)
-- **timeout** — auto-promotes after 8 user turns without hands-on action
-- **`/fast`** — manual user skip
-
-**Prefix-cache impact (why the cache "breaks" once in a while)**: at promotion, the request's `tools` field jumps from ~5 definitions back to the full face — a prefix-identity change on par with the system prompt, so that one request rebuilds the whole prefix (measured shape: the hit rate dips on the promotion turn, then returns to the 99% steady state on the very next turn). The system prompt, frozen prefix, message history, and model never change; the zen phase's trimming of dynamic injections (appendixLean) happens in the appendix *after* the prefix, with zero cache damage. Observability: the session `meta.json` persists `zenPhase` / `zenPromoteReason`, and the `toolsUpdated` event on the promotion turn in `cache-log.jsonl` marks the breakpoint. Triage already spares most trivial sessions from even this single break; to disable entirely:
-
-```json
-// ~/.rivet/config.json or project .rivet-config.json
-{ "tools": { "zen": { "enabled": false } } }
-```
-
-Optional knobs: `faceMode: "structuredRead"` (adds `file_info` / `related_tests` / `repo_graph` / `semantic_search` / `read_section` to the read face), `timeoutSteps` (0 disables timeout promotion), `triage.maxChars`, `appendixLean`.
-
-> Note: the desktop shortcut `⌘/Ctrl+.` "Zen mode" is a pure UI focus mode (hides the sidebar) — same name, different feature, zero cache impact.
 
 ### Subagent Orchestration
 
@@ -447,7 +502,12 @@ Each star has a seed-capsule capturing its field-tested methodology; see `docs/s
 
 ### Skills System
 
-Reusable workflow playbooks. `visual-acceptance` (frontend/UI change acceptance: screenshot diffing, render self-check, interaction walkthrough) ships bundled with the release; project-level skills load from `.rivet/skills/*.md`. Two-layer progressive disclosure: only name + description enters context; full instructions load on demand via the `skill` tool or `/skill`.
+Reusable workflow playbooks loaded from `.rivet/skills/*.md`. Two-layer progressive disclosure: only name + description enters context; full instructions load on demand via the `skill` tool or `/skill`.
+
+| Skill | Description |
+|-------|-------------|
+| `visual-acceptance` | Frontend/UI change acceptance: screenshot diffing, render self-check, interaction walkthrough |
+| `subagent-driven-development` | Delegate complex tasks with typed profiles, batch dispatch, parallel workers |
 
 ```
 /skill visual-acceptance <your task>   # load and immediately run the skill
@@ -458,28 +518,15 @@ Create a custom skill by dropping a `.md` file with YAML frontmatter (`name`, `d
 
 > `writing-plans` / `executing-plans` are now built-in native flows (planning follows the system prompt's `<plan-mode>` discipline, execution the `<plan-executing>` discipline) — no skill files needed. `agent-harness-testing` / `cognitive-alignment` / `research-spec` left the default distribution and are archived in [`docs/skills/optional/`](docs/skills/optional/) — copy them into `.rivet/skills/` to enable.
 
-### Cross-Session Memory
+### Cross-Session Knowledge
 
-Tianshu's project memory is stored in **`.rivet/knowledge/memory.jsonl`** (JSONL with atomic writes and a file lock); `memory-index.sqlite` is a rebuildable search projection.
+| Source | Content |
+|--------|---------|
+| `.rivet/knowledge/memory.jsonl` | Project rules, debugging heuristics, architecture conventions |
+| `~/.rivet/sessions/<slug>/<id>/pheromones.json` | **Session-scoped** pheromones (not cross-session; the row above holds cross-session knowledge) |
+| `.rivet/presence.json` | Companion agent awareness |
 
-| Capability | Details |
-|------------|---------|
-| **Write paths** | `memory remember` (project scope passes the end-of-session quality gate), post-action **auto-capture**, end-of-session **consolidation**, delivery-time **agent-crafted** entries, and user-written **`/remember`** |
-| **Explicit recall** | `memory recall` (hybrid search over structured entries + `knowledge/*.md` + playbook lessons) and `memory deep_recall` (distills original text from past sessions; current and worker sessions are excluded) |
-| **Automatic injection** | New sessions auto-carry relevant **governance/constraint/preference** memories only; old markdown docs and `failure_pattern`/`finding` entries stay recall-only |
-| **Topic-switch isolation** | Explicit “resolved / different request” signals plus high-confidence intent-route topic changes switch the memory query, so short new questions are not hijacked by old-task memory |
-| **Lifecycle** | `/remember <text>` writes directly; `/forget <entryId> [resolved]` invalidates a memory (resolved=old issue fixed, forgotten=remove it); invalidation is invalidate-don't-delete, keeping the original text auditable |
-| **Data locations** | Cross-session knowledge lives in `<cwd>/.rivet/knowledge/`; session transcripts in `~/.rivet/sessions/<slug>/<id>.jsonl`; pheromones are **session-scoped** signals |
-
-Key switches:
-
-| Environment variable | Default | Purpose |
-|----------------------|---------|---------|
-| `RIVET_ADAPTIVE_MEMORY` | `on` | `on` injects relevant memory at session start; `shadow` evaluates only; `off` disables |
-| `RIVET_MEMORY_AUTO_CAPTURE` | `on` | End-of-session LLM judgement of important operations → LTM |
-| `RIVET_MEMORY_CONSOLIDATION` | `on` | End-of-session summary + reusable procedures |
-| `RIVET_MEMORY_BACKFILL` | `off` | Opt-in idle backfill of historical session transcripts (idempotent ledger) |
-| `RIVET_NO_CROSS_SESSION` | unset | `1` force-disables cross-session loading (memory blocks / events / presence) |
+Toggle via `agent.crossSessionEnabled`. Force-off: `RIVET_NO_CROSS_SESSION=1`.
 
 ### MCP (Model Context Protocol)
 
@@ -594,102 +641,6 @@ The composer's microphone button supports voice input on **both macOS and Window
 - For higher accuracy, switch to the base model (~244MB): pre-download with `desktop/scripts/fetch-whisper-runtime.js --with-base`.
 - On restricted networks, set `RIVET_WHISPER_PROXY=http://proxy:port` to accelerate model downloads.
 
-
-## Model Configuration
-
-### Multi-Provider with Adaptive Routing
-
-| Provider | Auth | Notable Models |
-|----------|------|----------------|
-| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp (vision) |
-| DeepSeek Spark (Pro only) | API key (`DEEPSEEK_SPARK_API_KEY`) | deepseek-v4-flash (lightweight reasoning + anchored cache channel) |
-| Claude | API key (via `cc-switch` proxy) | claude-opus-4-8, claude-sonnet-4-5 |
-| GLM (Zhipu) | API key | glm-5.3 (1M ctx), glm-5.3-flash (vision), glm-5.2 |
-| Codex (GPT-5.6) | OAuth PKCE (ChatGPT subscription) | gpt-5.6-sol |
-| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro |
-
-Switch providers inside a session with `/model <name>`.
-
-```bash
-rivet config                          # interactive setup (TTY)
-rivet config setup codex --default    # Codex uses OAuth (browser login on first run)
-rivet config show
-```
-
-Or edit `config.json` directly (only overrides needed, defaults are deep-merged). Location: `~/.rivet/config.json` for the CLI (`%LOCALAPPDATA%\.rivet` on Windows); for the desktop app check Settings → Storage (portable builds use `TianshuData\.rivet` next to the exe):
-
-```json
-{
-  "provider": {
-    "default": "deepseek",
-    "providers": {
-      "deepseek": {
-        "apiKey": "sk-xxx",
-        "models": [
-          { "id": "deepseek-v4-pro", "contextWindow": 1000000, "maxTokens": 384000 }
-        ]
-      }
-    }
-  },
-  "agent": { "maxTurns": 50, "approval": "auto-safe", "crossSessionEnabled": true },
-  "compact": { "enabled": true, "autoThreshold": 800000 }
-}
-```
-
-### Vision (image understanding)
-
-- Multi-modal primary models read images directly; otherwise configure an `agent.visionModel` bridge to describe images before the primary model sees them.
-- Built-in vision models, the `/vision` discovery wizard, `ask_image` follow-ups, and desktop/TUI settings are covered in the [Vision Guide](docs/user-guide-vision.md).
-- Images append at the tail of the conversation and **do not break the prefix cache**; unsupported images are reported, never silently dropped.
-
-### Worker Routing (different models for sub-agents)
-
-```json
-{
-  "workers": {
-    "profiles": {
-      "capable": { "provider": "codex", "model": "gpt-5.6-sol" },
-      "cheap":   { "provider": "minimax", "model": "MiniMax-M2.7" }
-    },
-    "routing": { "code_edit": "capable", "repo_summarization": "cheap" }
-  }
-}
-```
-
-See [Provider Config](docs/user-guide-provider-config.md) for the full reference.
-
-## Approval & Permissions
-
-Three public tiers, all managed with `/permission`:
-
-| Tier | Command | Behavior |
-|------|---------|----------|
-| **Supervise** | `/permission supervise` (alias `manual`) | Confirm every high-risk tool — maximum control |
-| **Auto** (default) | `/permission auto [turns]` (alias `default`) | Auto-run low/no-risk tools; still confirm high-risk; optional checkpoint every N turns |
-| **Unattended** | `/permission unattended confirm` · `/yes` · `/yolo` | No approval prompts; the write boundary stays on (sandbox auto-enables), rollback is the safety net |
-
-Quick reference:
-
-```bash
-/permission                 # interactive tier picker
-/permission status          # current mode + rules
-/permission allow/deny      # tool allowlist / blocklist
-/permission bash allow/deny # bash prefix allowlist / blocklist
-/yes [off] · /yolo [off]    # one-key Unattended / back to Auto (persisted)
-```
-
-```bash
-rivet --dangerously-skip-permissions      # one-session Unattended
-rivet config set-approval auto-safe       # persist the default tier
-```
-
-- Rules come in `[config]` (persisted) and `[session]` (current session) layers; `deny` always wins.
-- Skipping prompts does **not** disable tool validation, path safety, evidence tracking, checkpoints, or delivery gates.
-- The sandbox is off by default and **auto-enables under Unattended**; use `RIVET_SANDBOX=1` / `=0` to force it.
-- Project trust: untrusted projects don't load hooks / project MCP, and security keys are stripped; manage with `/trust`.
-- Full command list, rule precedence, path grants, Windows behavior, and troubleshooting: [Sandbox & Permissions Guide](docs/user-guide-sandbox-permissions.md).
-
 ## Slash Commands
 
 **Session & project**
@@ -750,9 +701,7 @@ rivet config set-approval auto-safe       # persist the default tier
 | `/compact` | Compact context now |
 | `/context` | Show context ledger: health, tokens, rounds, claims |
 | `/evidence` | Show evidence summary (files read/modified, tests) |
-| `/memory` | Memory overview; `/memory add <text>` writes project knowledge, `/memory search <query>` searches |
-| `/remember <text>` | User-written project long-term memory (no args lists recent entries) |
-| `/forget <entryId> [resolved]` | Explicitly invalidate a memory: `resolved` marks an old issue fixed, default means forget it (no args lists recent candidates) |
+| `/memory <text>` | Save session memory entry |
 | `/btw <question>` | Side question — ask about the current session without entering the chat history |
 | `/debug [prompt\|cache\|mcp]` | Debug prompt, cache stats, or MCP |
 | `/mcp` | MCP server connection status |
@@ -884,18 +833,9 @@ run in parallel without interference.
 | `RIVET_DEBUG_TELEMETRY=1` | Enable telemetry snapshot dumps |
 | `RIVET_HEADLESS_MAX_TURNS` | Max turns for `-p` headless mode (default 15) |
 | `RIVET_JOB_MAX_MS` | Background-job timeout limit |
-| `RIVET_NO_CROSS_SESSION=1` | Disable cross-session loading (memory blocks / events / companion presence) |
+| `RIVET_NO_CROSS_SESSION=1` | Disable cross-session knowledge sharing |
 | `RIVET_NO_UPDATE_CHECK=1` | Disable startup auto-update check |
 | `PORTABLE_GIT_MIRROR` | Override the PortableGit download mirror |
-
-**Memory**
-
-| Variable | Effect |
-|----------|--------|
-| `RIVET_ADAPTIVE_MEMORY` | Auto-inject governance/constraint/preference memories: `on` (default) / `shadow` evaluates only / `off` disables |
-| `RIVET_MEMORY_AUTO_CAPTURE` | End-of-session LLM judgement of important operations → long-term memory (default `on`) |
-| `RIVET_MEMORY_CONSOLIDATION` | End-of-session summary + reusable procedures (default `on`) |
-| `RIVET_MEMORY_BACKFILL` | Opt-in idle backfill of historical sessions (default `off`, idempotent ledger) |
 
 > The full environment-variable list (120+ entries, including internal experimental switches) is in `src/config/env-registry.ts`.
 

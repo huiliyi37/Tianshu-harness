@@ -45,6 +45,11 @@ export interface ProbeOptions {
   probeModel?: string
   /** Skip the completion probe entirely (models list only). */
   skipCompletion?: boolean
+  /** 视觉探测三态（2026-09-09「测试没用」反馈）：undefined=按模型名启发（现状，
+   *  ProviderRow 无视觉声明场景）；true=强制图片真测；false=压制启发按纯文本测
+   *  （自定义 provider 未勾「支持视觉」时与用户声明一致——模型名带 vision 词
+   *  但网关不支持图片时，旧启发会误报失败而实际纯文本对话可用）。 */
+  vision?: boolean
 }
 
 export interface CapabilityHints {
@@ -310,7 +315,10 @@ async function probeOpenAICompletion(options: ProbeOptions, model: string, visio
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content }],
-        max_tokens: vision ? VISION_PROBE_MAX_TOKENS : 8,
+        // 64 而非 8：reasoning 网关（思考型/需要 max_completion_tokens 的 o 系
+        // 变体）对过小 max_tokens 会 400 或把预算全吃在思考通道——用户侧
+        // 「能对话但测试失败」的次生形态之一。64 token 成本仍可忽略。
+        max_tokens: vision ? VISION_PROBE_MAX_TOKENS : 64,
         stream: true,
       }),
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
@@ -421,7 +429,10 @@ export async function probeProvider(options: ProbeOptions): Promise<ProbeReport>
   // 型号选取：建议型号在列表中存在则优先；建议型号是视觉档但端点没有它时
   // （聚合站命名各异），优先挑别名表认识的识图/多模态型号——盲取 models[0]
   // 容易撞上 embedding/TTS 或未开通的型号导致误报失败；其余情况回退首个发现。
-  const wantVision = !!options.probeModel && isVisionCapableId(options.probeModel)
+  // vision 三态（见 ProbeOptions.vision）：显式 false 压制名字启发，显式 true
+  // 强制图片真测。
+  const nameHeuristicVision = !!options.probeModel && isVisionCapableId(options.probeModel)
+  const wantVision = options.vision === true || (options.vision !== false && nameHeuristicVision)
   let model: string | undefined
   if (options.probeModel && models.includes(options.probeModel)) {
     model = options.probeModel

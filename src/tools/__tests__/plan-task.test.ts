@@ -159,15 +159,13 @@ describe('createPlanTaskTool writeTodos routing', () => {
 // ── timeoutMs (T2 regression guard) ──
 
 describe('timeoutMs', () => {
-  it('execute:true → 30min 默认 + 兜底宽限（2026-09-05 起可配：参数/env 覆盖，到点转后台而非斩杀）', () => {
+  it('execute:true → 600s (aligns with team_orchestrate)', () => {
     const tool = createPlanTaskTool({
       getCoordinator: () => null,
       getExecutorDeps: () => ({} as any),
     })
     assert.equal(typeof tool.timeoutMs, 'function')
-    // 默认 1_800_000（30min）+ PLAN_EXECUTE_PIPELINE_GRACE_MS（内部脱离计时恒先触发）。
-    // 详细解析矩阵见 plan-task-timeout.test.ts。
-    assert.equal(tool.timeoutMs!({ input: { execute: true } } as any), 1_860_000)
+    assert.equal(tool.timeoutMs!({ input: { execute: true } } as any), 600_000)
   })
 
   it('execute:false → 120s (tool default)', () => {

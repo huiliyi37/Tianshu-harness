@@ -6,9 +6,12 @@ import { tmpdir } from 'node:os'
 import {
   createWriteEvidenceProbe,
   extractTargetPath,
+  findRecentUnrecordedWrites,
   formatBytes,
+  formatDiskReconciliationNote,
   formatWriteRecoveryContent,
   isWriteProbeEnabled,
+  shouldReconcileDisk,
 } from '../write-evidence-probe.js'
 import { runResumePreflightOai } from '../resume-preflight.js'
 import type { OaiMessage } from '../../api/oai-types.js'
@@ -113,6 +116,55 @@ describe('write-evidence-probe', () => {
     const probe = createWriteEvidenceProbe(tempDir)
     assert.equal(probe('write_file', { file_path: 'on.ts' }), undefined)
     assert.equal(isWriteProbeEnabled(), false)
+  })
+
+  it('findRecentUnrecordedWrites surfaces recent disk products the transcript never mentions', () => {
+    const now = Date.now()
+    mkdirSync(join(tempDir, 'src'), { recursive: true })
+    writeFileSync(join(tempDir, 'src/Recent.tsx'), 'export const x = 1\n', 'utf-8')
+    const messages: OaiMessage[] = [
+      { role: 'assistant', content: null, tool_calls: [{
+        id: 'tc_1', type: 'function',
+        function: { name: 'write_file', arguments: '{"file_path":"src/Old.tsx"}' },
+      }] },
+    ]
+    const recent = findRecentUnrecordedWrites(tempDir, messages, { now, sinceMs: now - 60_000 })
+    assert.equal(recent.length, 1)
+    assert.equal(recent[0]!.path, 'src/Recent.tsx')
+    const note = formatDiskReconciliationNote(recent, now)
+    assert.ok(note!.includes('src/Recent.tsx'))
+    assert.ok(note!.includes('read_file'))
+    assert.ok(note!.startsWith('<system-reminder>'))
+  })
+
+  it('findRecentUnrecordedWrites excludes paths already mentioned by write tools', () => {
+    const now = Date.now()
+    writeFileSync(join(tempDir, 'Mentioned.ts'), 'x', 'utf-8')
+    const messages: OaiMessage[] = [
+      { role: 'assistant', content: null, tool_calls: [{
+        id: 'tc_2', type: 'function',
+        function: { name: 'edit_file', arguments: '{"file_path":"Mentioned.ts"}' },
+      }] },
+    ]
+    assert.deepEqual(
+      findRecentUnrecordedWrites(tempDir, messages, { now, sinceMs: now - 60_000 }),
+      [],
+    )
+  })
+})
+
+describe('shouldReconcileDisk — 崩溃后对账的单一判据', () => {
+  it('cleanExit === false（上次非正常退出）才需要对账', () => {
+    assert.equal(shouldReconcileDisk({ cleanExit: false }), true)
+  })
+
+  it('正常退出（cleanExit === true）不对账——切换会话不再白付全树扫描', () => {
+    assert.equal(shouldReconcileDisk({ cleanExit: true }), false)
+  })
+
+  it('无 meta / 缺 cleanExit 字段不对账（新会话、旧记录）', () => {
+    assert.equal(shouldReconcileDisk(undefined), false)
+    assert.equal(shouldReconcileDisk({}), false)
   })
 })
 

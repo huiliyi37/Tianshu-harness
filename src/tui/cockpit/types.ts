@@ -49,21 +49,6 @@ export interface CockpitSnapshot {
   intent: string | null
   blockingReason: string | null
   nextAction: string | null
-  /** Strong Expert 建议信号（detectCriticalMoments 会话级可观测投影）。 */
-  expertSignals: Array<{
-    kind: import('../../agent/strong-expert.js').CriticalMomentKind
-    suggestedExpert: import('../../agent/strong-expert.js').StrongExpertId
-    auto: boolean
-  }>
-  /** Expert Bench 驻场统计（本会话专家席召唤/驻场命中/通过率）。 */
-  expertBench: Array<{
-    expert: import('../../agent/strong-expert.js').StrongExpertId
-    label: string
-    summons: number
-    resumeHits: number
-    passed: number
-    total: number
-  }>
   safety: {
     doomLoopLevel: 'none' | 'warn' | 'blocked'
     riskLevel: 'none' | 'low' | 'medium' | 'high'
@@ -78,15 +63,6 @@ export interface CockpitSnapshot {
     deliveryStatus: 'verified' | 'failed' | 'blocked' | 'unverified'
     impactedFiles: number
     impactedTests: number
-  }
-  /** Zen Mode（禅模式）会话级镜像——桌面 Cockpit 概览页读面徽章/指标。 */
-  zen: {
-    phase: 'zen' | 'full'
-    armed: boolean
-    promoteReason?: 'tool' | 'timeout' | 'triage' | 'user'
-    zenTurns: number
-    faceMode: 'minimal' | 'structuredRead'
-    face: string[]
   }
   trace: {
     events: Array<{
@@ -130,9 +106,6 @@ export interface CockpitSnapshot {
     /** Active star-domain label: pinned domain name, `Auto(天枢)` for auto
      *  (keyword fallback), or `关闭(环境)` when STAR_SOUL kill switch is on. */
     starDomain: string
-    /** W-stats：平均首字毫秒 / 平均输出速度（解码段分母）。样本 0 → undefined。 */
-    avgTtftMs?: number
-    avgTps?: number
   }
   mcp: {
     servers: Array<{

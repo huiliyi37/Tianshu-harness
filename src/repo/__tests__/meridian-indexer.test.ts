@@ -151,6 +151,75 @@ describe('MeridianIndexer attention indexing scope', () => {
     }
   })
 
+  it('probeFile cheap path preserves recordAccess and change detection without parsing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'meridian-indexer-probe-'))
+    const stateDir = mkdtempSync(join(tmpdir(), 'meridian-indexer-probe-state-'))
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    const file = join(cwd, 'src', 'a.ts')
+    writeFileSync(file, 'export const a = 1\n')
+    const indexer = new MeridianIndexer(cwd, stateDir)
+    try {
+      // New file: needs parse, but probe must not write files/symbols.
+      assert.equal(indexer.probeFile('src/a.ts'), 'parse')
+      assert.equal(indexer.getStats().files, 0)
+
+      // After real index, unchanged probe records access and returns unchanged.
+      await indexer.indexFile('src/a.ts')
+      const before = indexer.getDb().getAccessCount('src/a.ts')
+      assert.equal(indexer.probeFile('src/a.ts'), 'unchanged')
+      assert.equal(indexer.getDb().getAccessCount('src/a.ts'), before + 1)
+
+      // External change (git checkout / concurrent edit) is detected as parse.
+      writeFileSync(file, 'export const a = 2\n')
+      assert.equal(indexer.probeFile('src/a.ts'), 'parse')
+
+      // Outside / silent paths stay skip without touching disk records.
+      assert.equal(indexer.probeFile('/tmp/outside.ts'), 'skip')
+    } finally {
+      indexer.close()
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('invalidateFile serializes concurrent same-file runs and reruns once for late writes', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'meridian-indexer-invalidate-guard-'))
+    const stateDir = mkdtempSync(join(tmpdir(), 'meridian-indexer-invalidate-guard-state-'))
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    writeFileSync(join(cwd, 'src', 'a.ts'), 'export const a = 1\n')
+    const indexer = new MeridianIndexer(cwd, stateDir)
+    try {
+      const cast = indexer as unknown as { invalidateFileCore(rel: string): Promise<void> }
+      const original = cast.invalidateFileCore.bind(indexer)
+      let coreCalls = 0
+      let releaseFirst: () => void = () => {}
+      const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+      cast.invalidateFileCore = async (rel: string) => {
+        coreCalls++
+        if (coreCalls === 1) await firstGate
+        else await original(rel)
+      }
+
+      const first = indexer.invalidateFile('src/a.ts')
+      // 等第一个 core 真正进入（wrapper 已把 invalidating 置位）。
+      while (coreCalls === 0) await new Promise<void>(resolve => setImmediate(resolve))
+
+      const second = indexer.invalidateFile('src/a.ts')
+      await second
+      assert.equal(coreCalls, 1, 'concurrent same-file invalidate must not double-parse immediately')
+
+      releaseFirst()
+      await first
+      // wrapper 发现 pending 标记，重跑一轮——并发写期间的最新内容不会丢。
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(coreCalls, 2, 'pending invalidation must rerun once after the first completes')
+    } finally {
+      indexer.close()
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
   it('stores resolved import edges so reverse-dependency lookup works end-to-end', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'meridian-indexer-revdep-'))
     const stateDir = mkdtempSync(join(tmpdir(), 'meridian-indexer-revdep-state-'))

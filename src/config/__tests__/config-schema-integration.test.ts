@@ -101,32 +101,4 @@ describe('Config schema integration', () => {
     assert.throws(() => configSchema.parse({ ...base, hooks: { timeoutMs: -1 } }))
     assert.throws(() => configSchema.parse({ ...base, hooks: { slowMs: 0 } }))
   })
-
-  it('tools.zen 块 parse：合法配置保留（不再被 zod strip——HIGH 修复），非法值拒绝（fail-loud）', () => {
-    const base = loadConfig()
-
-    // 合法值：全部字段经 zod 解析保留，能到达 bootstrap 的 resolveZenConfig
-    const parsed = configSchema.parse({ ...base, tools: {
-      zen: {
-        enabled: false,
-        face: ['read_file', 'grep'],
-        timeoutSteps: 2,
-        triage: { enabled: false, maxChars: 10 },
-        appendixLean: false,
-      },
-    } })
-    assert.deepEqual(parsed.tools.zen, {
-      enabled: false,
-      face: ['read_file', 'grep'],
-      timeoutSteps: 2,
-      triage: { enabled: false, maxChars: 10 },
-      appendixLean: false,
-    })
-
-    // 非法值：结构错误在 zod 层抛错（D5 fail-loud 契约——此前 strip 会静默吞没）
-    assert.throws(() => configSchema.parse({ ...base, tools: { zen: { face: 'read_file' } } }), /face/)
-    assert.throws(() => configSchema.parse({ ...base, tools: { zen: { timeoutSteps: -1 } } }))
-    assert.throws(() => configSchema.parse({ ...base, tools: { zen: { triage: { maxChars: 0 } } } }))
-    assert.throws(() => configSchema.parse({ ...base, tools: { zen: { enabled: 'yes' } } }))
-  })
 })

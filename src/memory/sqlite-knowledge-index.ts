@@ -14,18 +14,13 @@ export interface SQLiteKnowledgeDocument {
   topic?: string
   current: boolean
   ts: number
-  sessionId?: string
 }
 
 export interface SQLiteKnowledgeSearchOptions {
-  kind?: MemoryKind | readonly MemoryKind[]
+  kind?: MemoryKind | MemoryKind[]
   topic?: string
   includeHistory?: boolean
   source?: 'playbook'
-  /** false 时排除 markdown 分块（自动 STM 注入通道）。 */
-  includeMarkdown?: boolean
-  /** 排除这些会话写入的条目（并行工作区隔离）。 */
-  excludeSessionIds?: readonly string[]
 }
 
 export interface SQLiteKnowledgeRank {
@@ -62,8 +57,6 @@ function indexedContent(document: SQLiteKnowledgeDocument): string {
 
 function passesFilters(document: SQLiteKnowledgeDocument, options: SQLiteKnowledgeSearchOptions): boolean {
   if (options.source === 'playbook' && document.source !== 'playbook') return false
-  if (options.includeMarkdown === false && document.source === 'markdown') return false
-  if (document.sessionId && (options.excludeSessionIds ?? []).includes(document.sessionId)) return false
   if (!options.includeHistory && !document.current) return false
   if (options.kind) {
     const kinds = Array.isArray(options.kind) ? options.kind : [options.kind]

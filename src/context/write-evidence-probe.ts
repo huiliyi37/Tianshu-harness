@@ -1,5 +1,7 @@
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
 import { validatePathSafe } from '../tools/path-validate.js'
+import type { OaiMessage } from '../api/oai-types.js'
 
 /** Tools whose orphan recovery can be grounded in on-disk file evidence. */
 export const WRITE_TOOLS = new Set([
@@ -117,4 +119,116 @@ export function createWriteEvidenceProbe(cwd: string): WriteProbe {
       return undefined
     }
   }
+}
+
+export interface RecentUnrecordedWrite {
+  /** cwd-relative, forward-slash path. */
+  path: string
+  bytes: number
+  mtimeMs: number
+}
+
+const RECENT_SCAN_EXCLUDED_DIRS = new Set([
+  '.git', '.rivet', '.svn', '.hg', 'node_modules', 'dist', 'build', 'coverage',
+  'release', 'target', '.cache', '.next', '.nuxt', 'out',
+])
+
+/** Paths this session already referenced through write-tool calls. */
+export function collectMentionedWritePaths(messages: OaiMessage[], cwd: string): Set<string> {
+  const mentioned = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== 'assistant' || !('tool_calls' in msg) || !msg.tool_calls) continue
+    for (const tc of msg.tool_calls) {
+      const name = tc.function?.name
+      if (!name || !WRITE_TOOLS.has(name)) continue
+      const target = extractTargetPath(tc.function?.arguments)
+      if (!target) continue
+      try {
+        const validated = validatePathSafe(cwd, target, 'read')
+        if (validated.ok) mentioned.add(validated.path)
+      } catch { /* malformed arg — ignore for reconciliation */ }
+    }
+  }
+  return mentioned
+}
+
+/**
+ * Find recently modified files that the session transcript never mentions.
+ * This is the "disk is ahead of the conversation" signal from 2026-09-08:
+ * after a hard kill, writes land on disk instantly while the message tail can
+ * be lost; on resume the model must verify these files before rewriting them.
+ */
+export function findRecentUnrecordedWrites(
+  cwd: string,
+  messages: OaiMessage[],
+  options: { sinceMs?: number; now?: number; maxFiles?: number; maxVisited?: number } = {},
+): RecentUnrecordedWrite[] {
+  const now = options.now ?? Date.now()
+  const sinceMs = options.sinceMs ?? now - 2 * 60 * 60 * 1000
+  const maxFiles = options.maxFiles ?? 8
+  const maxVisited = options.maxVisited ?? 5_000
+  const mentioned = collectMentionedWritePaths(messages, cwd)
+  const found: RecentUnrecordedWrite[] = []
+  let visited = 0
+
+  const walk = (dir: string, depth: number): void => {
+    if (visited >= maxVisited || found.length >= maxFiles) return
+    type WalkEntry = { name: string; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }
+    let entries: WalkEntry[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as unknown as WalkEntry[]
+    } catch {
+      return // unreadable dir — fail-soft
+    }
+    for (const entry of entries) {
+      if (visited >= maxVisited || found.length >= maxFiles) return
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || RECENT_SCAN_EXCLUDED_DIRS.has(entry.name) || depth >= 10) continue
+        walk(full, depth + 1)
+        continue
+      }
+      if (!entry.isFile()) continue
+      visited++
+      if (mentioned.has(full)) continue
+      try {
+        const stat = statSync(full)
+        if (stat.mtimeMs < sinceMs) continue
+        found.push({
+          path: relative(cwd, full).split('\\').join('/'),
+          bytes: stat.size,
+          mtimeMs: stat.mtimeMs,
+        })
+      } catch { /* vanish / unreadable — ignore */ }
+    }
+  }
+
+  walk(cwd, 0)
+  return found.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, maxFiles)
+}
+
+/**
+ * 是否需要做磁盘对账：只有**上次非正常退出**才需要。
+ *
+ * 该判据原先只写在 serve 侧 restoreHistoryMessages 里，bootstrap 的
+ * switchAgentSession 则无条件调用 findRecentUnrecordedWrites——而后者是
+ * readdirSync + 逐文件 statSync 的同步全树遍历（实测本仓 5000 文件
+ * 270~447ms 阻塞事件循环，Windows），于是每次**正常**切换会话都白付一次。
+ * 抽成单一事实源供两处调用点共用，避免判据再次漂移。
+ */
+export function shouldReconcileDisk(
+  meta: { cleanExit?: boolean } | undefined,
+): meta is { cleanExit: false } {
+  return meta?.cleanExit === false
+}
+
+/** Render the reconciliation note, or null when there is nothing to disclose. */
+export function formatDiskReconciliationNote(writes: RecentUnrecordedWrite[], now = Date.now()): string | null {
+  if (writes.length === 0) return null
+  const lines = writes.map(w => {
+    const ageMin = Math.max(0, Math.round((now - w.mtimeMs) / 60_000))
+    return `- ${w.path}（${formatBytes(w.bytes)}，约 ${ageMin} 分钟前修改）`
+  }).join('\n')
+  return `<system-reminder>\n【磁盘对账】以下文件在会话记录之外被近期修改，可能属于中断前已经完成的工作：\n${lines}\n请先 read_file 核实是否已包含目标改动；若已是目标状态请直接继续，不要重写。</system-reminder>`
 }

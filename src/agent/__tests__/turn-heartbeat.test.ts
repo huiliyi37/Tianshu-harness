@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { TurnHeartbeat } from '../turn-heartbeat.js'
+import { wrapCallbacksWithHeartbeat } from '../turn-orchestrator.js'
+import { clearActivity, getLastActivity, touchActivity } from '../stall-observer.js'
+import type { AgentCallbacks } from '../loop-types.js'
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -15,8 +18,7 @@ describe('TurnHeartbeat', () => {
       onHeartbeat: (elapsed, activity) => events.push({ elapsed, activity }),
     })
     hb.start()
-    // CI runner 满载时事件循环可被饿 100ms+，80ms 单发判定会脆断（2026-09-03 实证）——5 倍余量轮询窗
-    await delay(250)
+    await delay(80)
     hb.stop()
     assert.ok(events.length >= 1, `expected at least 1 heartbeat, got ${events.length}`)
     assert.equal(events[0]!.activity, 'starting')
@@ -376,51 +378,87 @@ describe('TurnHeartbeat', () => {
   })
 })
 
-describe('TurnHeartbeat armBatchDeadline（批级硬限）', () => {
-  it('整批超过硬限触发一次 onHardStall', async () => {
-    const stalls: number[] = []
-    const hb = new TurnHeartbeat({
-      silentMs: 10_000,
-      hardStallMs: 60_000,
-      onHeartbeat: () => {},
-      onHardStall: (ms) => stalls.push(ms),
-    })
-    hb.start()
-    hb.armBatchDeadline(40)
-    await delay(250)
+describe('wrapCallbacksWithHeartbeat', () => {
+  /** Minimal callbacks: only onTurnComplete is under test. */
+  function makeCallbacks(
+    onTurnComplete: (
+      usage: unknown,
+      turnNumber: number,
+      isFinal?: boolean,
+      evidenceSummary?: unknown,
+      continuationReason?: string,
+    ) => void,
+  ): AgentCallbacks {
+    return {
+      onTextDelta: () => {},
+      onThinkingDelta: () => {},
+      onToolUse: () => {},
+      onToolResult: () => {},
+      onTurnComplete,
+      onError: () => {},
+      onAbort: () => {},
+      onApprovalRequired: async () => true,
+    } as unknown as AgentCallbacks
+  }
+
+  it('forwards continuationReason through onTurnComplete', () => {
+    // The heartbeat wrapper is the callbacks object the orchestrator actually
+    // uses after initializeRun (turn-orchestrator.ts: callbacks =
+    // wrappedCallbacks). Dropping an argument here silently disables every
+    // downstream consumer of the wire field (sidecar turn_complete event →
+    // desktop delivery/self-verification split).
+    const hb = new TurnHeartbeat({ silentMs: 10_000, repeatMs: 10_000, onHeartbeat: () => {} })
+    const seen: Array<{ turnNumber: number; isFinal?: boolean; continuationReason?: string }> = []
+    const wrapped = wrapCallbacksWithHeartbeat(
+      makeCallbacks((_usage, turnNumber, isFinal, _evidence, continuationReason) => {
+        seen.push({ turnNumber, isFinal, continuationReason })
+      }),
+      hb,
+    )
+    wrapped.onTurnComplete({}, 3, false, undefined, 'obligation-verification')
+    assert.deepEqual(seen, [{ turnNumber: 3, isFinal: false, continuationReason: 'obligation-verification' }])
+    // tick() inside the wrapper arms a timer while !stopped — stop it or the
+    // test file never lets the event loop drain.
     hb.stop()
-    assert.equal(stalls.length, 1, `expected exactly 1 hard-stall, got ${stalls.length}`)
-    assert.equal(stalls[0], 40)
   })
 
-  it('rearmWatchdog 清掉未到期的批硬限（合法批提前结束不再误触）', async () => {
-    const stalls: number[] = []
-    const hb = new TurnHeartbeat({
-      silentMs: 10_000,
-      hardStallMs: 60_000,
-      onHeartbeat: () => {},
-      onHardStall: (ms) => stalls.push(ms),
-    })
-    hb.start()
-    hb.armBatchDeadline(40)
-    hb.rearmWatchdog()
-    await delay(250)
+  it('still forwards the pre-existing arguments (no regression)', () => {
+    const hb = new TurnHeartbeat({ silentMs: 10_000, repeatMs: 10_000, onHeartbeat: () => {} })
+    const seen: Array<{ turnNumber: number; isFinal?: boolean; evidence?: unknown }> = []
+    const wrapped = wrapCallbacksWithHeartbeat(
+      makeCallbacks((_usage, turnNumber, isFinal, evidenceSummary) => {
+        seen.push({ turnNumber, isFinal, evidence: evidenceSummary })
+      }),
+      hb,
+    )
+    const evidence = { gate: 'GREEN' }
+    wrapped.onTurnComplete({}, 7, true, evidence as never)
+    assert.deepEqual(seen, [{ turnNumber: 7, isFinal: true, evidence }])
     hb.stop()
-    assert.equal(stalls.length, 0)
   })
 
-  it('0 关闭批硬限（回到完全 disarm 的旧行为）', async () => {
-    const stalls: number[] = []
-    const hb = new TurnHeartbeat({
-      silentMs: 10_000,
-      hardStallMs: 60_000,
-      onHeartbeat: () => {},
-      onHardStall: (ms) => stalls.push(ms),
-    })
-    hb.start()
-    hb.armBatchDeadline(0)
-    await delay(250)
-    hb.stop()
-    assert.equal(stalls.length, 0)
+  it('markIdle survives the callback itself touching activity (session-manager append order)', () => {
+    // 集成顺序回归：session-manager 的 onTurnComplete 内 append turn_complete
+    // 事件并对所有事件无条件 touchActivity——若 markIdle 在 cb 之前打，
+    // 同一同步链里会被 touch 覆盖成 idle:false，sidecar/desktop 下
+    // 「交付后等用户 >150s 误报」修复永不生效（956564a83 遗留缺口）。
+    const key = 'test-idle-order'
+    try {
+      touchActivity(key, 'test-setup')
+      const hb = new TurnHeartbeat({ silentMs: 10_000, repeatMs: 10_000, onHeartbeat: () => {} })
+      const wrapped = wrapCallbacksWithHeartbeat(
+        makeCallbacks(() => {
+          // 模拟 session-manager append('turn_complete')：回调内同步打点
+          touchActivity(key, 'evt:turn_complete')
+        }),
+        hb,
+        () => key,
+      )
+      wrapped.onTurnComplete({}, 1, true)
+      assert.equal(getLastActivity(key).idle, true, 'idle 标记必须在回调内 touchActivity 之后仍成立')
+      hb.stop()
+    } finally {
+      clearActivity(key)
+    }
   })
 })

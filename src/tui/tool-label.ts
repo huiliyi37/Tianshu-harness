@@ -63,9 +63,6 @@ export function toolArgSummary(name: string, input: Record<string, unknown>): st
     case 'glob': return truncate(String(input.pattern ?? ''), 35)
     case 'delegate_task': return truncate(String(input.objective ?? ''), 50)
     case 'delegate_batch': return `${Array.isArray(input.tasks) ? input.tasks.length : '?'} tasks`
-    // 长编排工具：等待期卡片标题必须自报目标（「Tool (3m24s)」无名洞的修复）。
-    case 'plan_task':
-    case 'team_orchestrate': return truncate(String(input.objective ?? ''), 50)
     case 'web_fetch': return truncate(String(input.url ?? ''), 50)
     case 'browser_debug': {
       const action = String(input.action ?? '')

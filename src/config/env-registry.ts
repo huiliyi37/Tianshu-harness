@@ -3,8 +3,8 @@
  *
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
  * description 字段人工维护，重新生成时按 name 保留。
- * 最后生成：2026-09-05T09:26:28.711Z
- * 共 173 个变量。
+ * 最后生成：2026-08-13T18:50:28.964Z
+ * 共 153 个变量。
  *
  * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
  * 当源码中新增 RIVET_* 引用但注册表未同步时，
@@ -23,12 +23,6 @@ export interface EnvRegistryEntry {
 }
 
 export const ENV_REGISTRY: EnvRegistryEntry[] = [
-  {
-    name: 'RIVET_ADAPTIVE_MEMORY',
-    defaultHint: '',
-    files: ['memory/adaptive-stm.ts'],
-    description: '意图门控 STM：shadow 仅评估不注入；on/1 经 appendixDelta 注入；off/0 关闭。',
-  },
   {
     name: 'RIVET_ADVISORY_EFFICACY_SPAN',
     defaultHint: '',
@@ -50,7 +44,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_AMBIGUOUS_WIDTH',
     defaultHint: '\'\'',
-    files: ['tui/width.ts', 'tui/engine/__tests__/live-engine-ghost-render.test.ts', 'tui/__tests__/width.test.ts'],
+    files: ['tui/width.ts', 'tui/engine/__tests__/live-engine-ghost-render.test.ts', 'tui/__tests__/format-welcome.test.ts', 'tui/__tests__/width.test.ts'],
     description: '',
   },
   {
@@ -69,12 +63,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_APPLY_PATCH_VERIFY',
     defaultHint: '',
     files: ['tools/apply-patch.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_APPROVAL_TIMEOUT_MS',
-    defaultHint: '',
-    files: ['server/session-manager.ts'],
     description: '',
   },
   {
@@ -176,7 +164,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_CONFIG_PATH',
     defaultHint: '',
-    files: ['tui/__tests__/settings-persist.test.ts', 'tui/__tests__/slash-commands.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/vision-model-onboarding-routes.test.ts', 'plugins/__tests__/integration/git-source-mirror-fallback.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-load-error.test.ts', 'config/__tests__/config-schema-integration.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/manager-clear-api-key.test.ts', 'config/__tests__/manager-editor.test.ts', 'config/__tests__/manager-fetch-search.test.ts', 'config/__tests__/manager-permission-dirs.test.ts', 'config/__tests__/manager-provider.test.ts', 'config/__tests__/manager-routing.test.ts', 'config/__tests__/manager-shell.test.ts', 'config/__tests__/manager-ui.test.ts', 'config/__tests__/manager-vision-model.test.ts', 'config/__tests__/preset-model-backfill.test.ts', 'config/__tests__/provider-advanced.test.ts', 'config/__tests__/provider-cli.test.ts', 'config/__tests__/provider-onboarding-e2e.test.ts', 'config/__tests__/runtime-lean-aspect.test.ts', 'config/__tests__/runtime-lean.test.ts', 'config/__tests__/secrets-store.test.ts', '__tests__/bootstrap.test.ts'],
+    files: ['tui/__tests__/settings-persist.test.ts', 'tui/__tests__/slash-commands.test.ts', 'tools/__tests__/tool-preset.test.ts', 'plugins/__tests__/integration/git-source-mirror-fallback.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/manager-editor.test.ts', 'config/__tests__/manager-fetch-search.test.ts', 'config/__tests__/manager-permission-dirs.test.ts', 'config/__tests__/manager-provider.test.ts', 'config/__tests__/manager-routing.test.ts', 'config/__tests__/manager-shell.test.ts', 'config/__tests__/manager-ui.test.ts', 'config/__tests__/manager-vision-model.test.ts', 'config/__tests__/preset-model-backfill.test.ts', 'config/__tests__/runtime-lean-aspect.test.ts', 'config/__tests__/runtime-lean.test.ts', '__tests__/bootstrap.test.ts'],
     description: '',
   },
   {
@@ -198,15 +186,9 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_CPU_POOL_IDLE_MS',
-    defaultHint: '',
-    files: ['workers/cpu-pool.ts'],
-    description: '',
-  },
-  {
     name: 'RIVET_CROSS_SESSION_INJECT',
     defaultHint: '',
-    files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
+    files: ['agent/turn-step-producer.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
     description: '',
   },
   {
@@ -229,12 +211,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   },
   {
     name: 'RIVET_CU_FEEDBACK',
-    defaultHint: '',
-    files: ['pro/computer-use/tool.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_FEEDBACK_BUDGET_MS',
     defaultHint: '',
     files: ['pro/computer-use/tool.ts'],
     description: '',
@@ -330,6 +306,30 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
+    name: 'RIVET_ADAPTIVE_MEMORY',
+    defaultHint: "'shadow'",
+    files: ['memory/adaptive-stm.ts', 'agent/turn-step-producer.ts'],
+    description: '意图门控 STM：shadow 仅评估不注入；on/1 经 appendixDelta 注入；off/0 关闭。',
+  },
+  {
+    name: 'RIVET_MEMORY_AUTO_CAPTURE',
+    defaultHint: "'1'",
+    files: ['memory/auto-capture.ts', 'agent/hooks/auto-capture-hook.ts', 'agent/create-runtime-hooks.ts'],
+    description: '记忆形成侧：重要操作后模型判断并写入 LTM；off/0 关闭，默认开启。',
+  },
+  {
+    name: 'RIVET_MEMORY_CONSOLIDATION',
+    defaultHint: "'1'",
+    files: ['memory/session-consolidation.ts', 'agent/hooks/session-consolidation-hook.ts', 'agent/create-runtime-hooks.ts'],
+    description: '会话结束巩固：生成会话摘要 + 可复用做法写入 LTM；off/0 关闭，默认开启。',
+  },
+  {
+    name: 'RIVET_MEMORY_BACKFILL',
+    defaultHint: "'0'",
+    files: ['memory/backfill.ts', 'bootstrap.ts', 'server/serve-agent.ts'],
+    description: '历史会话回填（opt-in）：启动 30s 后闲时补采存量会话的知识写 LTM（ledger 幂等，每轮 ≤5 会话）；1/on 开启，默认关闭。',
+  },
+  {
     name: 'RIVET_EMBEDDING_API_KEY',
     defaultHint: 'env.DEEPSEEK_API_KEY',
     files: ['search/embedding-provider.ts'],
@@ -378,12 +378,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_FETCH_SKIP_COMPILE',
-    defaultHint: '\'unset\'',
-    files: ['repo/__tests__/native-resolver.test.ts'],
-    description: '',
-  },
-  {
     name: 'RIVET_FORCE_RECOVERY_CLI',
     defaultHint: '',
     files: ['main.ts'],
@@ -422,13 +416,13 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_HOME',
     defaultHint: '',
-    files: ['tui/engine/__tests__/connect-draft-engine.test.ts', 'tui/engine/__tests__/connect-wizard-list.test.ts', 'tui/engine/__tests__/overlay-deactivate-regression.test.ts', 'tui/__tests__/history-async.test.ts', 'tui/__tests__/updater.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/config-routes.test.ts', 'server/__tests__/mcp-hot-add.test.ts', 'server/__tests__/mcp-inject-tools.test.ts', 'server/__tests__/path-grants-routes.test.ts', 'server/__tests__/plugin-api.test.ts', 'server/__tests__/project-docs-routes.test.ts', 'server/__tests__/session-manager.test.ts', 'server/__tests__/session-routes.test.ts', 'server/__tests__/worker-log-route.test.ts', 'prompt/__tests__/block-policy.test.ts', 'plugins/__tests__/design-plugin-lib.test.ts', 'plugins/__tests__/plugin-installer.test.ts', 'plugins/__tests__/plugin-loader.test.ts', 'mcp/oauth/__tests__/connector.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/profile.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/remove-model.test.ts', 'cli/__tests__/prompt-version-warning.test.ts', 'auth/__tests__/login-flow.test.ts', 'api/deepseek-platform-client.ts', 'agent/__tests__/session-cd.test.ts', 'agent/__tests__/worker-session.test.ts'],
+    files: ['tui/__tests__/updater.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/config-routes.test.ts', 'server/__tests__/mcp-hot-add.test.ts', 'server/__tests__/mcp-inject-tools.test.ts', 'server/__tests__/path-grants-routes.test.ts', 'server/__tests__/plugin-api.test.ts', 'server/__tests__/project-docs-routes.test.ts', 'server/__tests__/session-manager.test.ts', 'server/__tests__/session-routes.test.ts', 'server/__tests__/worker-log-route.test.ts', 'prompt/__tests__/block-policy.test.ts', 'plugins/__tests__/design-plugin-lib.test.ts', 'plugins/__tests__/plugin-installer.test.ts', 'plugins/__tests__/plugin-loader.test.ts', 'mcp/oauth/__tests__/connector.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/remove-model.test.ts', 'cli/__tests__/prompt-version-warning.test.ts', 'api/deepseek-platform-client.ts', 'agent/__tests__/session-cd.test.ts'],
     description: '',
   },
   {
     name: 'RIVET_HOOKS_DISABLED',
     defaultHint: '',
-    files: ['config/profile.ts', 'agent/__tests__/loop-factory.test.ts'],
+    files: ['agent/loop-factory.ts', 'agent/__tests__/loop-factory.test.ts'],
     description: '逗号分隔的 CVM 管线禁用 hook id 列表，优先于 config.hooks.disabled（热更见 config-watcher）',
   },
   {
@@ -528,24 +522,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_MEMORY_AUTO_CAPTURE',
-    defaultHint: '',
-    files: ['memory/auto-capture.ts'],
-    description: '记忆形成侧：重要操作后模型判断并写入 LTM；off/0 关闭，默认开启。',
-  },
-  {
-    name: 'RIVET_MEMORY_BACKFILL',
-    defaultHint: '',
-    files: ['memory/backfill.ts'],
-    description: '历史会话回填（opt-in）：启动 30s 后闲时补采存量会话的知识写 LTM（ledger 幂等，每轮 ≤5 会话）；1/on 开启，默认关闭。',
-  },
-  {
-    name: 'RIVET_MEMORY_CONSOLIDATION',
-    defaultHint: '',
-    files: ['memory/session-consolidation.ts'],
-    description: '会话结束巩固：生成会话摘要 + 可复用做法写入 LTM；off/0 关闭，默认开启。',
-  },
-  {
     name: 'RIVET_MEMORY_LIMIT_BYTES',
     defaultHint: '',
     files: ['agent/resource-sensor.ts', 'agent/__tests__/resource-sensor.test.ts'],
@@ -578,7 +554,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_NO_CROSS_SESSION',
     defaultHint: '',
-    files: ['agent/cross-session-memory-config.ts', 'agent/loop.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
+    files: ['agent/loop.ts', 'agent/turn-step-producer.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
     description: '',
   },
   {
@@ -618,16 +594,16 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_ORCHESTRATION_HINT',
-    defaultHint: '',
-    files: ['main.ts'],
-    description: '',
-  },
-  {
     name: 'RIVET_OUTPUT_SANITIZE',
     defaultHint: '',
     files: ['agent/tool-execution.ts'],
     description: '',
+  },
+  {
+    name: 'RIVET_ORCHESTRATION_HINT',
+    defaultHint: '1',
+    files: ['tui/engine/orchestration-hint.ts', 'tui/engine/app.ts', 'main.ts'],
+    description: "输入时协同建议行（命中多信号提示 /team /scout /council）。设为 '0'/'off' 关闭；ui.orchestrationHint 配置同效",
   },
   {
     name: 'RIVET_PAL',
@@ -646,12 +622,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     defaultHint: '',
     files: ['agent/plan-constraints.ts', 'agent/__tests__/plan-constraints.test.ts'],
     description: '设为 0 关闭计划约束自动注入（D8 L2），resolvePlanConstraints 恒返回 []',
-  },
-  {
-    name: 'RIVET_PLAN_EXECUTE_TIMEOUT_MS',
-    defaultHint: '',
-    files: ['tools/plan-task.ts'],
-    description: 'plan_task execute 模式脱离等待的超时（ms）。优先序：input.executeTimeoutMs > 本 env > 默认 30min；到点编排转后台继续跑（指引含 checkpoint 续跑），不再级联 abort 斩杀 worker',
   },
   {
     name: 'RIVET_PLAN_MODE_SUGGEST',
@@ -681,12 +651,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_PROBE_TRACKING',
     defaultHint: '',
     files: ['agent/create-runtime-hooks.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_PROFILE',
-    defaultHint: '',
-    files: ['main.ts', 'config/profile.ts', 'config/__tests__/config-watcher.test.ts'],
     description: '',
   },
   {
@@ -764,7 +728,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_SANDBOX',
     defaultHint: '',
-    files: ['bootstrap.ts', 'tools/bash.ts', 'tools/sandbox-profile.ts', 'tools/__tests__/sandbox-profile.test.ts', 'server/config-routes.ts'],
+    files: ['bootstrap.ts', 'tools/bash.ts', 'tools/sandbox-profile.ts', 'tools/__tests__/sandbox-profile.test.ts'],
     description: '追加可写根目录，平台分隔符分隔（POSIX 用 :，Windows 用 ;）。与工具链画像、会话授权合并。',
   },
   {
@@ -798,18 +762,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '安全模式正则告警（层1）总开关，默认开；设 0/false/off/no 关闭（等价 config agent.securityGuidance=false）',
   },
   {
-    name: 'RIVET_SERVE_HOST',
-    defaultHint: '',
-    files: ['server/serve.ts'],
-    description: 'serve 监听地址（默认 127.0.0.1）；LAN IP/0.0.0.0 开启远程访问（P1 Mobile Remote）。CLI --host 优先于本 env。',
-  },
-  {
-    name: 'RIVET_SERVE_HOSTS_ALLOW',
-    defaultHint: '',
-    files: ['server/serve.ts'],
-    description: 'serve Host header allowlist（逗号分隔，不带端口）；配置后非回环 Host 仅白名单放行（DNS-rebinding 防护恢复）。',
-  },
-  {
     name: 'RIVET_SERVE_TIMING',
     defaultHint: '',
     files: ['server/serve.ts'],
@@ -824,7 +776,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_SESSION_DIR',
     defaultHint: '',
-    files: ['server/__tests__/cache-routes.test.ts', 'server/__tests__/fork.test.ts', 'server/__tests__/handoff-route.test.ts', 'server/__tests__/serve-restore-history.test.ts', 'server/__tests__/session-routes.test.ts', 'server/__tests__/snapshot.test.ts', 'prompt/__tests__/frozen-snapshot-persist.test.ts', 'config/paths.ts', 'agent/__tests__/appendix-trace.test.ts', 'agent/__tests__/handoff-persist.test.ts', 'agent/__tests__/loop-factory.test.ts', 'agent/__tests__/persist-integration.test.ts', 'agent/__tests__/polling-storm.test.ts', 'agent/__tests__/session-cd.test.ts', 'agent/__tests__/session-persist-codec.test.ts', 'agent/__tests__/session-persist.test.ts', 'agent/__tests__/speculation-stats-meta.test.ts', 'agent/__tests__/tool-pipeline.test.ts', 'agent/__tests__/worker-session.test.ts', '__tests__/bootstrap.test.ts', '__tests__/switch-agent-session.test.ts'],
+    files: ['server/__tests__/cache-routes.test.ts', 'server/__tests__/handoff-route.test.ts', 'server/__tests__/serve-restore-history.test.ts', 'server/__tests__/session-routes.test.ts', 'prompt/__tests__/frozen-snapshot-persist.test.ts', 'config/paths.ts', 'agent/__tests__/appendix-trace.test.ts', 'agent/__tests__/handoff-persist.test.ts', 'agent/__tests__/loop-factory.test.ts', 'agent/__tests__/persist-integration.test.ts', 'agent/__tests__/session-cd.test.ts', 'agent/__tests__/session-persist.test.ts', 'agent/__tests__/speculation-stats-meta.test.ts', 'agent/__tests__/tool-pipeline.test.ts', '__tests__/bootstrap.test.ts', '__tests__/switch-agent-session.test.ts'],
     description: '',
   },
   {
@@ -849,12 +801,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_STREAM_RESULT_MAX',
     defaultHint: '',
     files: ['stream-json.ts', '__tests__/stream-json.test.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_STRONG_EXPERT_ROUTING',
-    defaultHint: '',
-    files: ['tui/cockpit/state.ts'],
     description: '',
   },
   {
@@ -888,21 +834,9 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_TOOL_BATCH_DEADLINE_MS',
-    defaultHint: '',
-    files: ['agent/turn-orchestrator.ts'],
-    description: '',
-  },
-  {
     name: 'RIVET_TOOL_PRESET',
     defaultHint: '',
     files: ['tools/tool-preset.ts', 'tools/__tests__/tool-preset.test.ts', 'config/__tests__/runtime-lean.test.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_TRUST_PROJECT',
-    defaultHint: '',
-    files: ['main.ts', 'tools/__tests__/monitor-tool.test.ts', 'tools/__tests__/run-tests-declared.test.ts', 'server/config-routes-project-trust.ts', 'server/__tests__/config-routes.test.ts', 'server/__tests__/hooks-route.test.ts', 'server/__tests__/serve-agent-config-merge.test.ts', 'server/__tests__/session-manager.test.ts', 'prompt/__tests__/volatile.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/verify-config.test.ts', 'agent/__tests__/typecheck-gate.test.ts', 'agent/__tests__/user-hooks-bridge.test.ts'],
     description: '',
   },
   {
@@ -984,15 +918,9 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_WELCOME_ANIM',
-    defaultHint: '',
-    files: ['main.ts'],
-    description: '',
-  },
-  {
     name: 'RIVET_WHISPER_BIN',
     defaultHint: '',
-    files: ['server/speech-routes.ts', 'server/__tests__/speech-routes.test.ts'],
+    files: ['server/serve.ts', 'server/speech-routes.ts', 'server/__tests__/speech-routes.test.ts'],
     description: '',
   },
   {
@@ -1004,7 +932,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_WHISPER_MODEL',
     defaultHint: '',
-    files: ['server/speech-routes.ts', 'server/__tests__/speech-routes.test.ts'],
+    files: ['server/serve.ts', 'server/speech-routes.ts', 'server/__tests__/speech-routes.test.ts'],
     description: '',
   },
   {
@@ -1014,28 +942,22 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
-    name: 'RIVET_WORKER_BUDGET_HISTORY',
-    defaultHint: '',
-    files: ['agent/budget-shape.ts', 'agent/__tests__/budget-shape.test.ts'],
-    description: '=0 关闭写工预算的历史实际用量地板（同 objective 的 worker_actual 样本不再抬升预算）',
-  },
-  {
-    name: 'RIVET_WORKER_BUDGET_SHAPE',
-    defaultHint: '',
-    files: ['agent/budget-shape.ts', 'agent/__tests__/budget-shape.test.ts'],
-    description: '=0 关闭写工预算的文件形状定价（48 轮/600s flat 默认回归）',
-  },
-  {
     name: 'RIVET_WORKER_FINALIZE',
     defaultHint: '',
     files: ['agent/coordinator.ts'],
     description: '',
   },
   {
-    name: 'RIVET_WORKER_ISOLATION',
+    name: 'RIVET_WORKER_BUDGET_SHAPE',
     defaultHint: '',
-    files: ['agent/worker-process/parent.ts'],
-    description: '',
+    files: ['agent/budget-shape.ts', 'tools/team-orchestrator.ts', 'tools/delegate-task.ts', 'tools/delegate-batch.ts'],
+    description: '=0 关闭写工预算的文件形状定价（48 轮/600s flat 默认回归）',
+  },
+  {
+    name: 'RIVET_WORKER_BUDGET_HISTORY',
+    defaultHint: '',
+    files: ['agent/budget-shape.ts', 'agent/coordinator.ts'],
+    description: '=0 关闭写工预算的历史实际用量地板（同 objective 的 worker_actual 样本不再抬升预算）',
   },
   {
     name: 'RIVET_WORKER_WRITE_GATE',

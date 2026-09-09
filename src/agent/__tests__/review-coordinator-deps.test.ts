@@ -269,6 +269,34 @@ describe('createCoordinatorReviewDeps', () => {
     assert.match(result.infraFailures?.[0]?.claim ?? '', /JSON object/)
   })
 
+  it('F1: parse-salvaged blocked result 透传 salvagedFindings 摘要（价值不丢、不冒充 findings）', async () => {
+    const coordinator: ReviewCoordinator = {
+      delegate: async () => run([]),
+      delegateBatch: async () => run([worker({
+        status: 'blocked',
+        summary: 'Worker report JSON was malformed; salvaged 2/3 candidate(s) as findings',
+        findings: [
+          { claim: 'count 无 range 必失败', evidence: '…', confidence: 'medium' },
+          { claim: 'path 误用 ref 校验', evidence: '…', confidence: 'high' },
+        ],
+        risks: ['parse-salvaged: 2 finding(s) recovered from a malformed report — verify before trusting'],
+        evidenceStatus: 'unverified',
+        failureReason: 'json_parse',
+      })]),
+    }
+
+    const deps = createCoordinatorReviewDeps(coordinator)
+    const result = await deps.spawnSquadron({ files: ['src/a.ts'], crossModule: false, isFix: false })
+
+    // salvaged findings 不冒充 SquadronResult.findings（不参与 blocking 判定）
+    assert.deepEqual(result.findings, [])
+    assert.equal(result.infraFailures?.[0]?.kind, 'json')
+    const salvaged = result.infraFailures?.[0]?.salvagedFindings ?? []
+    assert.equal(salvaged.length, 2)
+    assert.equal(salvaged[0]?.claim, 'count 无 range 必失败')
+    assert.equal(salvaged[1]?.confidence, 'high')
+  })
+
   it('threads onActivity into DelegationRequest for all four spawns (review-gate UI visibility)', async () => {
     const captured: DelegationRequest[] = []
     const coordinator: ReviewCoordinator = {

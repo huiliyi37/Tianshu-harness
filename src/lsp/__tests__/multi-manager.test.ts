@@ -4,6 +4,7 @@ import { win32 as winPath } from 'node:path'
 import { createMultiLspManager, defaultLspSpawn, type MultiLspOptions } from '../multi-manager.js'
 import type { LspServerDef } from '../server-registry.js'
 import type { ChildProcess } from 'node:child_process'
+import { PassThrough } from 'node:stream'
 
 function mockChild(): ChildProcess {
   return { kill: () => true, on: () => {}, pid: 0 } as unknown as ChildProcess
@@ -46,6 +47,52 @@ describe('createMultiLspManager spawnFor wiring', () => {
     assert.equal(captured.length, 1)
     assert.equal(captured[0]!.command, 'gopls', 'gopls def command should pass through')
     assert.deepEqual(captured[0]!.args, [])
+  })
+})
+
+describe('never-initializing LSP is bounded, not a wedge', () => {
+  it('getFileDiagnostics degrades to [] when the server never answers initialize', async () => {
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const opts: MultiLspOptions = {
+      which: () => true,
+      initializeTimeoutMs: 60,
+      spawnFor: () => ({
+        stdin,
+        stdout,
+        stderr: new PassThrough(),
+        kill: () => true,
+        on: () => {},
+      }) as unknown as ChildProcess,
+    }
+    const mgr = createMultiLspManager('/tmp', opts)
+    const started = Date.now()
+    const diagnostics = await mgr.getFileDiagnostics('test.ts', 30)
+    const elapsed = Date.now() - started
+
+    assert.deepEqual(diagnostics, [], 'must degrade to no diagnostics')
+    assert.ok(elapsed < 1_000, `must not hang; took ${elapsed}ms`)
+    mgr.dispose()
+  })
+
+  it('hard initialize timeout disposes the hung child', async () => {
+    let killed = false
+    const opts: MultiLspOptions = {
+      which: () => true,
+      initializeTimeoutMs: 20,
+      spawnFor: () => ({
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => { killed = true; return true },
+        on: () => {},
+      }) as unknown as ChildProcess,
+    }
+    const mgr = createMultiLspManager('/tmp', opts)
+    await mgr.getFileDiagnostics('test.ts', 100)
+
+    assert.equal(killed, true, 'hung child must be killed at the hard bound')
+    mgr.dispose()
   })
 })
 

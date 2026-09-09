@@ -10,12 +10,22 @@ body:
     id: surface
     attributes:
       label: 使用端 · Surface
+      description: 不确定选哪个？看下面两条判据再选，避免误标导致问题被分流到错误的代码路径。
       options:
         - TUI (终端 rivet)
         - 桌面端 Desktop (Tauri)
         - 无界面模式 headless (-p / --json)
     validations:
       required: true
+  - type: markdown
+    attributes:
+      value: |
+        **如何区分 TUI 与桌面端（常见误标点）：**
+        - 用鼠标滚轮能滚动聊天区 / 能"贴底跟随、上翻不被拽"→ **桌面端**。raw 模式 TUI 的内容进入终端
+          scrollback 后由终端模拟器接管滚动，天枢收不到滚轮事件，也没有桌面端那套滚动跟随状态机。
+        - 终端里 Ctrl+C / 键盘翻页 scrollback → **TUI**。
+        - 若是 UI 卡顿/抖动类问题，请注明发生时的输出模式与终端模拟器（Windows Terminal / ConHost 等）。
+        - 参考：滚动/视图相关问题归集于 #54 / #56 / #58；写工具/委托问题见 #61。
   - type: input
     id: version
     attributes:

@@ -27,6 +27,21 @@ export const DELEGATE_TIMEOUT_MS: Record<DelegateKind, number> = {
 /** Capability TTL — client must heartbeat before this elapses. */
 export const DELEGATE_CAPABILITY_TTL_MS = 60_000
 
+/** E4a — disk-evidence self-heal for apply_edit (issue #61). */
+export const DELEGATE_DISK_PROBE_DEFAULT_MS = 1_500
+
+/** Poll interval while an apply_edit delegation is unanswered (tests shorten it). */
+export function delegateDiskProbeIntervalMs(): number {
+  const v = Number.parseInt(process.env.RIVET_DELEGATE_PROBE_MS ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : DELEGATE_DISK_PROBE_DEFAULT_MS
+}
+
+/** Default on; set RIVET_DELEGATE_DISK_PROBE=0 or false to disable the probe. */
+export function isDelegateDiskProbeEnabled(): boolean {
+  const v = process.env.RIVET_DELEGATE_DISK_PROBE
+  return v !== '0' && v !== 'false'
+}
+
 export interface ApplyEditPayload {
   path: string
   oldContent: string

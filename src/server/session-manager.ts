@@ -65,7 +65,7 @@ import type { StarDomainId } from '../agent/star-domain.js'
 import { skillRegistry, loadProjectSkills, listInstallableSkills, importSkillsIntoRivet, countInstalledSkills, readSkillContent, writeSkill, uninstallSkill, type InstallableSkill } from '../skills/skill-loader.js'
 import type { MissionStore } from './mission-store.js'
 import { join, resolve, dirname } from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { existsSync, copyFileSync, statSync, mkdirSync, readFileSync } from 'node:fs'
 import { createWorktree, createWorktreeAtBranch, removeWorktree, listWorktrees, hasUnlandedWork, commitAll, revParseHead, getCurrentGitRef, squashMergeBranch, pushBranch, type WorktreeEntry } from '../agent/worktree.js'
 import { createPr } from './gh-cli.js'
@@ -79,6 +79,8 @@ import { outOfWorkspaceFilePaths } from '../agent/tool-pipeline.js'
 import {
   DELEGATE_CAPABILITY_TTL_MS,
   DELEGATE_TIMEOUT_MS,
+  delegateDiskProbeIntervalMs,
+  isDelegateDiskProbeEnabled,
   isDelegateKind,
   type DelegateKind,
   type DelegateResult as ClientDelegateResult,
@@ -783,6 +785,17 @@ interface PendingDelegation {
   kind: DelegateKind
   resolve: (value: ClientDelegateResult | null) => void
   timer?: ReturnType<typeof setTimeout>
+  /**
+   * E4a — disk-evidence probe for apply_edit (issue #61): the desktop client
+   * may have applied the edit while its result POST was lost. While the
+   * delegation is unanswered we poll the target file; an exact newContent
+   * match settles the request instead of waiting out the full review window.
+   */
+  probe?: {
+    absPath: string
+    newContent: string
+    interval?: ReturnType<typeof setInterval>
+  }
 }
 
 interface DelegateCapabilitySlot {
@@ -4482,12 +4495,73 @@ export class RuntimeSessionManager {
     if (clientId && slot.clientId !== clientId) return false
     s.delegateCapabilities = undefined
     // Fail-back in-flight landings — client is gone.
-    for (const [rid, pend] of [...s.pendingDelegations]) {
-      s.pendingDelegations.delete(rid)
-      if (pend.timer) clearTimeout(pend.timer)
-      pend.resolve(null)
+    for (const [rid] of [...s.pendingDelegations]) {
+      this.settlePendingDelegation(s, rid, null)
     }
     return true
+  }
+
+  /**
+   * Settle a pending delegation exactly once, releasing its timeout timer and
+   * (E4a) disk probe. Every terminal path goes through here so no settlement
+   * can leak a live timer/interval.
+   */
+  private settlePendingDelegation(
+    session: InternalSession,
+    requestId: string,
+    value: ClientDelegateResult | null,
+  ): void {
+    const pend = session.pendingDelegations.get(requestId)
+    if (!pend) return
+    session.pendingDelegations.delete(requestId)
+    if (pend.timer) clearTimeout(pend.timer)
+    if (pend.probe?.interval) clearInterval(pend.probe.interval)
+    pend.resolve(value)
+  }
+
+  /**
+   * E4a — disk-evidence self-heal for apply_edit (issue #61): the desktop
+   * client may have applied the edit while its result POST was lost, leaving
+   * the write tool stalled for the full review window (5 min). While the
+   * delegation is unanswered, poll the target file — an exact newContent
+   * match settles the request with a synthetic success so the agent proceeds
+   * without a manual stop. Human-review flows (VS Code CodeLens) are
+   * unaffected: nothing is written until the human acts, so polling stays
+   * silent and the 300s window is unchanged. Partial/renamed writes never
+   * match (byte-exact comparison), so no premature ack is possible.
+   */
+  private startDelegationDiskProbe(
+    session: InternalSession,
+    requestId: string,
+    absPath: string,
+    newContent: string,
+  ): ReturnType<typeof setInterval> | undefined {
+    if (!isDelegateDiskProbeEnabled()) return undefined
+    const intervalMs = delegateDiskProbeIntervalMs()
+    const interval = setInterval(() => {
+      const pend = session.pendingDelegations.get(requestId)
+      if (!pend?.probe) {
+        clearInterval(interval)
+        return
+      }
+      void (async () => {
+        try {
+          const st = await stat(absPath)
+          if (!st.isFile()) return
+          if (st.size !== Buffer.byteLength(newContent, 'utf8')) return
+          const current = await readFile(absPath, 'utf8')
+          if (current !== newContent) return
+          this.settlePendingDelegation(session, requestId, {
+            content: '客户端已落盘（磁盘证据确认——结果回传丢失已自愈，请直接继续，切勿重写）',
+            status: 'ok',
+          })
+        } catch {
+          // File not ready / transient read error — keep polling.
+        }
+      })()
+    }, intervalMs)
+    if (typeof interval.unref === 'function') interval.unref()
+    return interval
   }
 
   /** Whether the session currently has a live capability for `kind`. */
@@ -4511,9 +4585,7 @@ export class RuntimeSessionManager {
     if (!s) return false
     const pend = s.pendingDelegations.get(requestId)
     if (!pend) return false
-    s.pendingDelegations.delete(requestId)
-    if (pend.timer) clearTimeout(pend.timer)
-    pend.resolve({
+    this.settlePendingDelegation(s, requestId, {
       content: typeof result.content === 'string' ? result.content : '',
       isError: result.isError === true,
       uiContent: typeof result.uiContent === 'string' ? result.uiContent : undefined,
@@ -4551,12 +4623,22 @@ export class RuntimeSessionManager {
         kind,
         resolve,
         timer: setTimeout(() => {
-          if (!session.pendingDelegations.delete(requestId)) return
           // Timeout → null (fail-back). NOT an error — agent never sees it.
-          resolve(null)
+          this.settlePendingDelegation(session, requestId, null)
         }, timeoutMs),
       }
       if (typeof pend.timer?.unref === 'function') pend.timer.unref()
+      // E4a — disk-evidence self-heal for apply_edit (issue #61): the client
+      // may have applied the edit while its result POST was lost. Poll the
+      // target file until it matches newContent or the request settles.
+      if (kind === 'apply_edit') {
+        const p = payload as { path?: unknown; newContent?: unknown }
+        if (typeof p.path === 'string' && typeof p.newContent === 'string') {
+          const absPath = join(session.record.cwd, p.path)
+          pend.probe = { absPath, newContent: p.newContent }
+          pend.probe.interval = this.startDelegationDiskProbe(session, requestId, absPath, p.newContent)
+        }
+      }
       session.pendingDelegations.set(requestId, pend)
       this.append(session, 'tool_delegate', {
         requestId,

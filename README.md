@@ -1165,6 +1165,24 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 
 > 提示：需要先由仓库维护者在 `Settings → General → Discussions` 中开启 Discussions 功能。
 
+## 🌐 官网开发
+
+天枢生态官网 [jiangsx496/Tianshu-Official-Website](https://jiangsx496.github.io/Tianshu-Official-Website/) 由 [@jiangsx496](https://github.com/jiangsx496) 原创开发，覆盖数据库、前端与初版后端。
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/jiangsx496">
+        <img src="https://github.com/jiangsx496.png?s=120" width="120" alt="@jiangsx496" style="border-radius:50%" />
+      </a>
+      <br />
+      <sub><b>@jiangsx496</b></sub>
+      <br />
+      <sub>官网原开发者 (Database · Frontend · Initial Backend)</sub>
+    </td>
+  </tr>
+</table>
+
 ## ✨ 贡献者
 
 感谢以下贡献者为天枢做出的贡献（按首次贡献时间排序）：

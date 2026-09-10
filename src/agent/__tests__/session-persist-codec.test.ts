@@ -1,9 +1,10 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionPersist } from '../session-persist.js'
+import { SessionBatchWriter } from '../session-batch-writer.js'
 import { decodeTranscriptText, encodeBatch, isZstdFrameStream } from '../session-transcript-codec.js'
 
 describe('SessionPersist write-behind codec (P1)', () => {
@@ -158,5 +159,44 @@ describe('SessionPersist write-behind codec (P1)', () => {
     persist.initMetadata({ title: 'sync write' })
     const onDisk = JSON.parse(readFileSync(join(tempDir, 'codec-meta-sync.meta.json'), 'utf-8'))
     assert.equal(onDisk.title, 'sync write')
+  })
+
+  it('flush failure requeues the batch instead of dropping it (ENOSPC-class)', async () => {
+    // 目标路径是已存在目录 → readFileSync/appendFile 抛 EISDIR：真实 OS 错误，无 mock。
+    const dirAsFile = join(tempDir, 'as-a-dir')
+    mkdirSync(dirAsFile)
+    const writer = new SessionBatchWriter(dirAsFile, () => tempDir)
+    writer.enqueueLine('{"v":1,"content":"IMPORTANT_TOOL_RESULT"}\n')
+    await assert.rejects(
+      () => writer.flush(),
+      err => (err as NodeJS.ErrnoException).code === 'EISDIR',
+    )
+    // 修复前：pendingBuffer 已被清空，这批行永久丢（用户在 UI 里毫无感知）。
+    assert.match(writer.mergePending(''), /IMPORTANT_TOOL_RESULT/,
+      'failed batch must stay buffered for the next flush/shutdown drain to retry')
+  })
+
+  it('flush() during an in-flight drain still flushes lines queued in the meantime', async () => {
+    // flush:true 持久化屏障的回归：in-flight 窗口里入队的行不在被 await 的
+    // promise 覆盖范围内，也不能只留在内存里没有任何冲刷计划。
+    const file = join(tempDir, 'race.jsonl')
+    const writer = new SessionBatchWriter(file, () => tempDir)
+    writer.enqueueLine('{"n":1}\n')
+    writer.flushSync() // 建文件 + 置 codecReady
+
+    writer.enqueueLine('{"n":2}\n')
+    const first = writer.flush() // in-flight（真 I/O）
+
+    // 同一 tick：工具结果（flush:true 场景）在 in-flight 窗口里入队，随即被 flush 屏障调用
+    writer.enqueueLine('{"n":3,"flushBarrier":true}\n')
+    const second = writer.flush()
+    await Promise.all([first, second])
+
+    // 屏障返回后批3必须已经在盘上（修复前：悬挂内存且定时器已被清，强杀即丢）
+    const onDisk = decodeTranscriptText(readFileSync(file))
+    assert.match(onDisk, /"n":2/)
+    assert.match(onDisk, /"n":3,"flushBarrier":true/,
+      'line queued during an in-flight flush must be durable once the barrier resolves')
+    assert.equal(writer.mergePending(''), '', 'nothing left hanging in the buffer')
   })
 })

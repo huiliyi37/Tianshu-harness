@@ -71,7 +71,15 @@ export class SessionMetadataStore {
   /** Persist in-memory metadata when dirty (batch-flush cadence). */
   flush(): void {
     if (!this.dirty) return
+    try {
+      writeFileAtomicSync(this.metadataPath, JSON.stringify(this.cached ?? {}, null, 2) + '\n')
+    } catch (err) {
+      // Keep dirty so the next batch flush retries — clearing it before the
+      // write meant one failed write silently dropped every metadata update
+      // since the last successful flush.
+      this.dirty = true
+      throw err
+    }
     this.dirty = false
-    writeFileAtomicSync(this.metadataPath, JSON.stringify(this.cached ?? {}, null, 2) + '\n')
   }
 }

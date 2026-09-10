@@ -56,7 +56,13 @@ export class SessionBatchWriter {
   /**
    * Flush barrier: cancel the timer, drain the pending batch into one
    * checksummed zstd frame append + datasync. Concurrent callers share the
-   * in-flight flush promise.
+   * in-flight drain promise; a drain that arrives while one is already in
+   * flight still drains whatever queued in the meantime (the awaited promise
+   * only covers the batch it started with).
+   *
+   * On write failure the batch is put back at the head of the buffer so the
+   * next flush / shutdown drain retries it — a failed append must not
+   * permanently drop queued lines (ENOSPC etc.).
    */
   async flush(): Promise<void> {
     if (this.flushTimer !== null) {
@@ -64,11 +70,21 @@ export class SessionBatchWriter {
       this.flushTimer = null
     }
     if (this.flushPromise !== null) return this.flushPromise
-    const text = this.pendingBuffer
-    this.pendingBuffer = ''
-    if (text.length === 0) return
-    this.flushPromise = this.writeBatch(text).finally(() => { this.flushPromise = null })
+    this.flushPromise = this.drainPending().finally(() => { this.flushPromise = null })
     return this.flushPromise
+  }
+
+  private async drainPending(): Promise<void> {
+    while (this.pendingBuffer.length > 0) {
+      const text = this.pendingBuffer
+      this.pendingBuffer = ''
+      try {
+        await this.writeBatch(text)
+      } catch (err) {
+        this.pendingBuffer = text + this.pendingBuffer
+        throw err
+      }
+    }
   }
 
   /** Synchronous flush variant for the sync compaction paths. */

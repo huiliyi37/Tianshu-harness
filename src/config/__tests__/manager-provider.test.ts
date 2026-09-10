@@ -42,7 +42,7 @@ describe('provider config mutations', () => {
     updateProviderBaseUrl('deepseek', 'https://gateway.example.com/v1')
     const provider = loadConfig().provider.providers.deepseek!
     assert.equal(provider.baseUrl, 'https://gateway.example.com/v1')
-    assert.equal(provider.models[0]?.id, 'deepseek-v4-pro')
+    assert.equal(provider.models[0]?.id, 'deepseek-v4-flash')
   })
 
   it('updateProviderTunables writes whitelisted fields only', () => {

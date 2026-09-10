@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="https://tianshuharness.com"><b>🌐 官网 tianshuharness.com</b></a> · 
+  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><b>🇨🇳 AtomGit 镜像</b></a> · 
   🇨🇳 <b>中文</b> · 
   <a href="README.en.md">📖 English</a> · 
   <a href="README.ja.md">🇯🇵 日本語</a> · 

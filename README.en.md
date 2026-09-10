@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://tianshuharness.com"><b>🌐 tianshuharness.com</b></a> · 
+  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><b>AtomGit mirror</b></a> · 
   📖 <b>English</b> · 
   <a href="README.md">🇨🇳 中文</a> · 
   <a href="README.ja.md">🇯🇵 日本語</a> · 

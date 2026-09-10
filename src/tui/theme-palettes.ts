@@ -403,12 +403,20 @@ const COBALT: ThemePaletteDef = {
     toolTest: '#58cbb4',
     toolDelegate: '#d4b44c',
   },
-  overrides: { userColor: '#fbbf24', assistantColor: '#c9cfd6', muted: '#9ca5b3' },
+  overrides: {
+    userColor: '#fbbf24',
+    assistantColor: '#c9cfd6',
+    muted: '#9ca5b3',
+    // 2026-09 inlineCode 独立(同 cyberpunk 模式):正文行内代码(文件名/命令/函数名
+    // 高频出现)原吃 secondary 雾青灰,灰扑扑;取柔亮天青 #8ecae6(H195 S63 L74)——
+    // L 高 S 中,守 cobalt「明度梯度清晰、视觉舒适」哲学,不引入高饱和艳色。
+    inlineCode: '#8ecae6',
+  },
   fallback: {
     primary: 'blue', secondary: 'cyan', success: 'green', warning: 'yellow',
     error: 'red', dim: 'gray', pulseQuiet: 'gray', pulseActive: 'blue', pulseAlert: 'red',
   },
-  fallbackOverrides: { userColor: 'yellowBright', assistantColor: 'white', muted: 'gray' },
+  fallbackOverrides: { userColor: 'yellowBright', assistantColor: 'white', muted: 'gray', inlineCode: 'cyanBright' },
 }
 
 // ── Graphite — 石墨·冰青（专业默认）─────────────────────────────────

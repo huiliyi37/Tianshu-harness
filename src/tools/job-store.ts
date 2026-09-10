@@ -17,6 +17,9 @@ import { debugLog } from '../utils/debug.js'
 const RING_CAP = 64_000
 /** Minimum interval between throttled `output` events (ms). */
 const OUTPUT_THROTTLE_MS = 500
+/** await 长等待的心跳间隔（ms）——由会话层注入上报器时生效。绑真实状态：
+ *  每 tick 复查 job.status，终态即停；不是空转 timer（见 SessionJobs.await）。 */
+const DEFAULT_AWAIT_HEARTBEAT_MS = 30_000
 
 /** Absolute wall-clock cap on a background job's lifetime (ms). 0/unset = unlimited.
  *  Off by default: background jobs are intentionally long-lived (dev servers,
@@ -314,7 +317,14 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
   static readonly MAX_TERMINAL_JOBS = 50
   private jobs = new Map<string, BackgroundJob>()
 
-  constructor(private readonly logDir: string) {
+  constructor(
+    private readonly logDir: string,
+    /** 长时等待上报（可选）：await 期间按心跳回调 `job:await:<id>`，由会话层
+     *  注入 touchActivity(sessionId, source)——stall-observer 据此把"合法长等待"
+     *  与"卡死"区分开（2026-09-10 纵深修复）。缺省 = 不上报。 */
+    private readonly onAwaitHeartbeat?: (source: string) => void,
+    private readonly heartbeatMs: number = DEFAULT_AWAIT_HEARTBEAT_MS,
+  ) {
     super()
   }
 
@@ -333,10 +343,25 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
     return job.snapshot()
   }
 
-  await(id: string, opts: JobAwaitOptions): Promise<JobAwaitResult | null> {
+  async await(id: string, opts: JobAwaitOptions): Promise<JobAwaitResult | null> {
     const job = this.jobs.get(id)
-    if (!job) return Promise.resolve(null)
-    return job.await(opts)
+    if (!job) return null
+    // 长等待心跳：等待期间按间隔上报"job 仍 running"（绑真实状态——每 tick 复查
+    // snapshot().status，一进终态就停表，由 exit/timeout 的 resolve 路径接手）。
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+    if (this.onAwaitHeartbeat && this.heartbeatMs > 0) {
+      const report = this.onAwaitHeartbeat
+      heartbeat = setInterval(() => {
+        if (job.snapshot().status === 'running') report(`job:await:${id}`)
+        else if (heartbeat) { clearInterval(heartbeat); heartbeat = undefined }
+      }, this.heartbeatMs)
+      heartbeat.unref?.()
+    }
+    try {
+      return await job.await(opts)
+    } finally {
+      if (heartbeat) clearInterval(heartbeat)
+    }
   }
 
   list(): JobSnapshot[] {

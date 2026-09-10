@@ -65,6 +65,22 @@ describe('provider presets', () => {
     assert.equal(vision.tier, 'cheap')
   })
 
+  it('deepseek 三模型共存 + 默认档：新增 deepseek-flash，默认档指向 v4-flash', () => {
+    const deepseek = cloneProviderPreset('deepseek')
+    const next = deepseek.models.find(m => m.id === 'deepseek-flash')
+    assert.ok(next, 'deepseek-flash 必须在 deepseek 预设模型列表')
+    assert.equal(next.contextWindow, 1_000_000)
+    assert.equal(next.maxTokens, 384_000)
+    assert.equal(next.supportsVision, true, '原生多模态声明视觉')
+    assert.deepEqual(next.pricing, { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 })
+    assert.equal(next.reasoningEffort, 'medium')
+    assert.equal(next.tier, 'cheap')
+    assert.ok(deepseek.models.some(m => m.id === 'deepseek-v4-pro'), 'V4-Pro 保留（14 日下线前共存）')
+    // 2026-09-10：V4-Pro 延至 14 日下线——默认档切到 v4-flash（不指向将下线或全新的模型）。
+    assert.equal(PROVIDER_PRESETS.deepseek.defaultModelId, 'deepseek-v4-flash', '默认档指向 v4-flash')
+    assert.equal(deepseek.models[0]?.id, 'deepseek-v4-flash', '首模型（无 defaultModel 时的启动兜底）同为 v4-flash')
+  })
+
   it('glm-5.3 / glm-5.3-flash：文本旗舰 + 原生多模态（flash 带 supportsVision）', () => {
     const glm = cloneProviderPreset('glm')
     const text = glm.models.find(m => m.id === 'glm-5.3')

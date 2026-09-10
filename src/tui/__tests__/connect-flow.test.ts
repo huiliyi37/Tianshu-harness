@@ -114,7 +114,7 @@ test('preset path: 6 steps — key → endpoint → connectivity → models → 
   if (probe.kind !== 'probe') return
   assert.equal(probe.baseUrl, PROVIDER_PRESETS.deepseek.provider.baseUrl)
   assert.equal(probe.apiKey, 'sk-test-123')
-  assert.equal(probe.probeModel, 'deepseek-v4-pro')
+  assert.equal(probe.probeModel, 'deepseek-v4-flash')
 
   // [3/6] Connectivity report — right after the probe (narrative order).
   assert.equal(flow.applyProbe(report({ models: ['deepseek-v4-pro'], latencyMs: 132 })).kind, 'next')
@@ -131,8 +131,8 @@ test('preset path: 6 steps — key → endpoint → connectivity → models → 
   const modelsView = flow.view()
   assert.equal(modelsView.kind, 'multi-choice')
   assert.equal(modelsView.stepLabel, '步骤 4 / 6')
-  assert.deepEqual(modelsView.options?.map(o => o.label), ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
-  assert.deepEqual(modelsView.options?.map(o => o.checked), [true, true, true])
+  assert.deepEqual(modelsView.options?.map(o => o.label), ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash-vision-exp'])
+  assert.deepEqual(modelsView.options?.map(o => o.checked), [true, true, true, true])
   assert.match(modelsView.options?.[0]?.description ?? '', /预设/)
 
   // [5/6] Capability check — measured rows + metadata inferences.
@@ -1471,7 +1471,7 @@ test('D1: aggregator preset defaults ALL models to unchecked (template + discove
   plain.submitInput('')
   plain.applyProbe(report({ models: ['deepseek-v4-pro'] }))
   plain.submitChoice('continue')
-  assert.deepEqual(plain.view().options?.map(o => o.checked), [true, true, true])
+  assert.deepEqual(plain.view().options?.map(o => o.checked), [true, true, true, true])
 })
 
 test('D1: aggregator with nothing checked cannot confirm (guarded error)', () => {
@@ -1683,13 +1683,15 @@ test('D2: preset path also stops at advanced steps for discovered unknowns', () 
   flow.applyProbe(report({ models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'brand-new-mystery'] }))
   flow.submitChoice('continue')
   // 只勾新发现的未知模型（探测发现的未知项默认不勾——显式勾上）。
+  // 按 label/id 操作而非数字索引——预设模型列表随版本增删（2026-09-10 增 deepseek-flash）。
   const view = flow.view()
   const mysteryOpt = (view.options ?? []).find(o => o.label === 'brand-new-mystery')
   assert.ok(mysteryOpt)
   assert.equal(mysteryOpt!.checked, false)
-  flow.toggle('0')
-  flow.toggle('1')
-  flow.toggle('3')
+  for (const o of view.options ?? []) {
+    if (o.label !== 'brand-new-mystery' && o.checked) flow.toggle(o.id)
+  }
+  flow.toggle(mysteryOpt!.id)
   assert.equal(flow.confirm().kind, 'next')
   assert.match(flow.view().title, /模型补参/)
   answerUnknownModels(flow)

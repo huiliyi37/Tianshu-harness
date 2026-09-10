@@ -378,12 +378,13 @@ describe('migrateDeepseekMaxTokens — one-shot bump 64000 → 384000', () => {
           deepseek: {
             name: 'deepseek',
             maxTokens: 384_000,
-            // 与当前预设 models 全集一致（含 vision-exp）——预设新增模型回流
+            // 与当前预设 models 全集一致（含 flash/vision-exp）——预设新增模型回流
             // （migratePresetModelBackfill）会把缺失条目补写进快照，那是有意
             // 行为；本测试钉的是「无需迁移时零写入」，故快照必须已同步。
             models: [
-              { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
               { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
+              { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
+              { id: 'deepseek-flash', alias: 'v4.1-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
               { id: 'deepseek-v4-flash-vision-exp', alias: 'v4-flash-vision', contextWindow: 1_000_000, maxTokens: 384_000 },
             ],
           },

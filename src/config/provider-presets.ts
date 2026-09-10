@@ -34,7 +34,9 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
     key: 'deepseek',
     label: 'DeepSeek',
     description: '官方旗舰：1M 上下文 + 深度推理，适合重活主控',
-    defaultModelId: 'deepseek-v4-pro',
+    // 2026-09-10：V4-Pro 延至 14 日下线——默认档切 v4-flash（不指向将下线或全新模型），
+    // 与新装首模型（models[0]，无 agent.defaultModel 时的启动兜底）保持一致。
+    defaultModelId: 'deepseek-v4-flash',
     keyUrl: 'https://platform.deepseek.com/api_keys',
     provider: {
       name: 'deepseek',
@@ -55,6 +57,17 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
       maxTokens: 384_000,
       models: [
         {
+          id: 'deepseek-v4-flash',
+          description: '快速档：能力对标旗舰，成本更低',
+          alias: 'v4-flash',
+          contextWindow: 1_000_000,
+          maxTokens: 384_000,
+          reasoningEffort: 'medium',
+          tier: 'cheap',
+          pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 },
+        },
+        {
+          // 2026-09-10 消息：14 日下线；保留至下线，默认档已切 v4-flash。
           id: 'deepseek-v4-pro',
           description: '旗舰推理档，1M 上下文',
           alias: 'v4-pro',
@@ -67,13 +80,16 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           pricing: { input: 3, output: 6, cacheRead: 0.025, cacheWrite: 3 },
         },
         {
-          id: 'deepseek-v4-flash',
-          description: '快速档：能力对标旗舰，成本更低',
-          alias: 'v4-flash',
+          // 2026-09-10 接入（V4.1 Flash 线，用户指定 id）：1M 上下文 + 原生多模态，
+          // 定价与 v4-flash 同档。图片按尺寸换算 token 计入计费。
+          id: 'deepseek-flash',
+          description: '新一代快速档：1M 上下文 + 原生多模态（图像输入）',
+          alias: 'v4.1-flash',
           contextWindow: 1_000_000,
           maxTokens: 384_000,
           reasoningEffort: 'medium',
           tier: 'cheap',
+          supportsVision: true,
           pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 },
         },
         {

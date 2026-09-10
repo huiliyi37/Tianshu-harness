@@ -192,8 +192,8 @@
       "note": "PR#38 /connect 向导（2160 行，2026-08-22 合入）——入账钉住，拆分待后续 2160→2166：ConnectCommit.needsLogin 标记 + oauth 分支（+6）。"
     },
     "src/config/provider-presets.ts": {
-      "ceiling": 1054,
-      "note": "PR#38 provider onboarding 统一栈（861 行）——入账钉住。861→875：deepseek 预设新增 v4-flash-vision-exp 视觉实验档（1M 上下文 + supportsVision + 定价同 flash，+14）。875→900：glm 预设新增 glm-5.3 文本旗舰 + glm-5.3-flash 原生多模态（Coding Plan provider，均 1M/128K + pricing 全 0，+21）。 900→925：P0 获取 Key 直链——ProviderPreset 加 keyUrl 字段 + 13 个预设官方控制台 URL（纯数据 +16，先例 ffc6d2f66 纯数据调升）。 925→926：isKeylessProviderEntry 单一事实源（keyless 判定收口，+14；注释行占大头）。 926→926：isLoopbackBaseUrl 迁出至 local-endpoint.ts（结构棘轮拆分；随迁收紧 keyless 判定——云端 baseUrl 无 key 不再豁免）。 926→936：kimi 预设补官方 k3-256k（256K 省额度版：262144 上下文 / 131072 输出 / max / pricing 全 0，+10 纯数据；同批 kimi 段改走 Kimi Code 订阅端点 api.kimi.com/coding/v1，行数净 0）。 936→1054：OpenCode Go 两个预设（opencode-go / opencode-go-anthropic：模型清单 + 协议 + 能力声明，纯数据 +118）——上游 2026-09 起强制 x-opencode-session，两端预设须开箱可用"
+      "ceiling": 1070,
+      "note": "PR#38 provider onboarding 统一栈（861 行）——入账钉住。861→875：deepseek 预设新增 v4-flash-vision-exp 视觉实验档（1M 上下文 + supportsVision + 定价同 flash，+14）。875→900：glm 预设新增 glm-5.3 文本旗舰 + glm-5.3-flash 原生多模态（Coding Plan provider，均 1M/128K + pricing 全 0，+21）。 900→925：P0 获取 Key 直链——ProviderPreset 加 keyUrl 字段 + 13 个预设官方控制台 URL（纯数据 +16，先例 ffc6d2f66 纯数据调升）。 925→926：isKeylessProviderEntry 单一事实源（keyless 判定收口，+14；注释行占大头）。 926→926：isLoopbackBaseUrl 迁出至 local-endpoint.ts（结构棘轮拆分；随迁收紧 keyless 判定——云端 baseUrl 无 key 不再豁免）。 926→936：kimi 预设补官方 k3-256k（256K 省额度版：262144 上下文 / 131072 输出 / max / pricing 全 0，+10 纯数据；同批 kimi 段改走 Kimi Code 订阅端点 api.kimi.com/coding/v1，行数净 0）。 936→1054：OpenCode Go 两个预设（opencode-go / opencode-go-anthropic：模型清单 + 协议 + 能力声明，纯数据 +118）——上游 2026-09 起强制 x-opencode-session，两端预设须开箱可用。 1054→1070：deepseek 预设接入 deepseek-flash（V4.1 线：1M 上下文 + 原生多模态 supportsVision，定价同 flash，+14 条目含注释）并重排为 [v4-flash, v4-pro, deepseek-flash, vision-exp]、默认档与首模型切 v4-flash（V4-Pro 14 日下线前发版准备，净 +2）——纯数据增长"
     }
   }
 }

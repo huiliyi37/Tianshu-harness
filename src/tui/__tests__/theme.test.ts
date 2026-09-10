@@ -31,6 +31,7 @@ describe('getTheme', () => {
     assert.equal(theme.primary, '#6ab8ff') // 钴蓝 — 唯一 accent（提亮）
     assert.equal(theme.userColor, '#fbbf24')      // 亮琥珀金 ▌ mark
     assert.equal(theme.assistantColor, '#c9cfd6') // 冷中性灰正文（提亮）
+    assert.equal(theme.inlineCode, '#8ecae6')     // 行内代码柔亮天青（独立 token,不吃 secondary 灰青）
   })
 
   it('antigravity still available via explicit switch (cool azure accent)', () => {
@@ -118,11 +119,13 @@ describe('getTheme', () => {
     assert.equal(getTheme(3).voice, 'default')
   })
 
-  it('inlineCode 缺省继承 secondary；cyberpunk 单独给冰蓝（正文行内代码不吃品红粉）', () => {
+  it('inlineCode 缺省继承 secondary；cyberpunk/cobalt 单独给独立色（正文行内代码不吃点缀色/灰青）', () => {
     // 正文行内代码高频出现且取 theme.inlineCode——某主题的 secondary 若是点缀色
-    // （cyberpunk 的品红粉），必须给它独立色，否则正文整屏染色（2026-09 实锤）。
+    // （cyberpunk 的品红粉）或低对比灰青（cobalt），必须给它独立色，否则正文整屏
+    // 染色或代码弱化（2026-09 实锤 + 默认主题观感优化）。
     assert.equal(THEMES.graphite.truecolor.inlineCode, THEMES.graphite.truecolor.secondary)
-    assert.equal(THEMES.cobalt.truecolor.inlineCode, THEMES.cobalt.truecolor.secondary)
+    assert.equal(THEMES.cobalt.truecolor.inlineCode, '#8ecae6')
+    assert.notEqual(THEMES.cobalt.truecolor.inlineCode, THEMES.cobalt.truecolor.secondary)
     assert.equal(THEMES.cyberpunk.truecolor.inlineCode, '#7aa2f7')
     assert.notEqual(THEMES.cyberpunk.truecolor.inlineCode, THEMES.cyberpunk.truecolor.secondary)
   })

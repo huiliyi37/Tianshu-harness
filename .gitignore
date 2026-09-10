@@ -52,6 +52,8 @@ docs/research/*.md
 .rivet/cache/
 .rivet/benchmark/
 .rivet/skills/deep-brainstorm/
+# brainstorming 为 bundled 技能（runtime-assets/bundled-skills/）的 seed 种入副本，勿入库
+.rivet/skills/brainstorming/
 desktop/.rivet/
 .cc-switch/
 .rivet/check2.txt
@@ -59,7 +61,9 @@ desktop/.rivet/
 .rivet/tauri-key/
 .rivet/frames.jsonl
 .rivet/tool-stream.jsonl
+# dsh-meridian.db*：2026-09-08 旧命名实验的残留库（现役为 meridian.db*）
 .rivet/meridian.db*
+.rivet/dsh-meridian.db*
 .rivet/playbook.jsonl
 .rivet/knowledge/memory.jsonl
 .rivet/knowledge/commit-facts.jsonl
@@ -146,7 +150,10 @@ todo-cli/
 .rivet/starflow/
 
 # 第三方运行时数据目录（WorkBuddy 等工具的本地 memory）
+# 第三方运行时数据目录（WorkBuddy 等工具的本地 memory）
 .workbuddy/
+# dsh 系工具的本地记忆数据（dsh-memory 格式，非本项目资产）
+.dsh/
 
 # 测试临时目录（测试中断时可能残留，不应进入 git status）
 src/**/__tests__/.scoped-commit-tmp/

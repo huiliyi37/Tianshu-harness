@@ -143,6 +143,9 @@ export interface OpenAIClientConfig {
   useMaxCompletionTokens?: boolean
   /** Custom User-Agent header — required by providers that verify caller identity (e.g. Kimi) */
   userAgent?: string
+  /** Header name carrying sessionId. Default 'X-Request-Session'; providers that
+   *  mandate their own name (OpenCode Go: x-opencode-session) set it via wire. */
+  sessionHeader?: string
   /**
    * Thinking-stall timeout (ms): once reasoning tokens have arrived but no text/tool
    * output yet, abort the stream if no further chunk within this window.
@@ -739,7 +742,9 @@ export class OpenAIClient implements StreamClient {
           'Connection': 'keep-alive',
           ...(this.config.userAgent ? { 'User-Agent': this.config.userAgent } : {}),
           ...authHeaders,
-          ...(this.config.sessionId ? { 'X-Request-Session': this.config.sessionId } : {}),
+          ...(this.config.sessionId
+            ? { [this.config.sessionHeader ?? 'X-Request-Session']: this.config.sessionId }
+            : {}),
         },
         body: JSON.stringify(effectiveBody),
         signal: lifecycle.signal,

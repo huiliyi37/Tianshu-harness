@@ -1,4 +1,5 @@
 import { resolveProbeEndpoints } from './endpoint-map.js'
+import { providerIdentityHeaders } from './caller-identity.js'
 import { matchModelId } from './model-id-matcher.js'
 import { ENRICHED_ALIAS_TABLE } from './model-meta-kb.js'
 import { VISION_PROBE_IMAGE_DATA_URI } from './provider-probe.js'
@@ -38,9 +39,17 @@ export interface VisionValidationResult {
   answer: string
 }
 
-function authHeaders(apiKey?: string): Record<string, string> {
-  return apiKey ? { authorization: `Bearer ${apiKey}` } : {}
+function authHeaders(apiKey?: string, identity: Record<string, string> = {}): Record<string, string> {
+  return { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...identity }
 }
+
+/** 视觉校验也直发 chat/completions——同样要带出站身份头（OpenCode Go 缺
+ *  x-opencode-session 即 400，视觉 onboarding 会假报"模型不支持视觉"）。 */
+function visionIdentityHeaders(options: VisionDiscoveryOptions | VisionValidationOptions): Record<string, string> {
+  return providerIdentityHeaders(options.providerName, options.baseUrl, VISION_PROBE_SESSION_ID)
+}
+
+const VISION_PROBE_SESSION_ID = 'tianshu-vision-probe'
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
@@ -78,7 +87,7 @@ async function fetchVisionModelIds(options: VisionDiscoveryOptions): Promise<str
   const url = resolveProbeEndpoints(options.baseUrl, options.providerName).modelsUrl
   const response = await fetchWithTimeout(url, {
     method: 'GET',
-    headers: authHeaders(options.apiKey),
+    headers: authHeaders(options.apiKey, visionIdentityHeaders(options)),
   }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   if (!response.ok) {
     const body = await response.text().catch(() => '')
@@ -152,7 +161,7 @@ export async function validateVisionModel(options: VisionValidationOptions): Pro
   const url = resolveProbeEndpoints(options.baseUrl, options.providerName).chatUrl
   const response = await fetchWithTimeout(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...authHeaders(options.apiKey) },
+    headers: { 'content-type': 'application/json', ...authHeaders(options.apiKey, visionIdentityHeaders(options)) },
     body: JSON.stringify({
       model: options.modelId,
       messages: [{

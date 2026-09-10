@@ -22,6 +22,14 @@ export interface AnthropicClientConfig {
   temperature?: number
   /** Per-provider HTTP proxy（优先于全局 network.proxy）。 */
   proxy?: string
+  /** Custom User-Agent — providers that verify caller identity (OpenCode Go
+   *  rejects generic SDK/HTTP-library names) declare it via catalog wire. */
+  userAgent?: string
+  /** Stable per-conversation session ID (cache/routing affinity). */
+  sessionId?: string
+  /** Header name carrying sessionId. Default 'X-Request-Session'; OpenCode Go
+   *  mandates 'x-opencode-session' and 400s without it. */
+  sessionHeader?: string
 }
 
 interface AnthropicContentBlock {
@@ -57,6 +65,33 @@ interface AnthropicRequestBody {
   thinking?: { type: 'enabled'; budget_tokens: number }
   temperature?: number
   tool_choice?: { type: 'tool'; name: string }
+}
+
+/**
+ * 折叠连续同角色消息为一条（content blocks 按序拼接）。
+ *
+ * Anthropic 官方 API 对连续同角色自动合并（"Consecutive user or assistant
+ * turns in your request will be combined into a single turn"），但严格兼容
+ * 实现（AWS Bedrock 等）直接 400 "roles must alternate between user and
+ * assistant"。客户端主动折叠 = 官方合并语义的显式化：对官方零行为差异，
+ * 对严格实现消除假崩；且折叠是确定性纯函数——跨请求字节稳定，不影响
+ * prompt cache。
+ *
+ * 触发来源之一：ceiling checkpoint 结构（59205b109）
+ * [anchors…, assistant(handoff), user(原文), user(task-anchor appendix)]
+ * 天然含连续 assistant / 连续 user。
+ */
+function foldConsecutiveSameRole(messages: AnthropicMessage[]): AnthropicMessage[] {
+  const out: AnthropicMessage[] = []
+  for (const msg of messages) {
+    const prev = out[out.length - 1]
+    if (prev && prev.role === msg.role) {
+      prev.content.push(...msg.content)
+    } else {
+      out.push({ role: msg.role, content: [...msg.content] })
+    }
+  }
+  return out
 }
 
 export class AnthropicClient implements StreamClient {
@@ -97,6 +132,10 @@ export class AnthropicClient implements StreamClient {
           'x-api-key': this.config.apiKey,
           'anthropic-version': '2023-06-01',
           'Accept': 'text/event-stream',
+          ...(this.config.userAgent ? { 'User-Agent': this.config.userAgent } : {}),
+          ...(this.config.sessionId
+            ? { [this.config.sessionHeader ?? 'X-Request-Session']: this.config.sessionId }
+            : {}),
         },
         body: JSON.stringify(body),
         signal: lifecycle.signal,
@@ -151,8 +190,11 @@ export class AnthropicClient implements StreamClient {
       ? [{ type: 'text', text: systemText }]
       : []
 
-    // Convert messages
-    const messages = nonSystemMessages.map(m => this.convertMessage(m))
+    // Convert messages, then fold consecutive same-role runs into a single
+    // message（严格 Anthropic 实现要求角色交替；官方 API 会自动合并，客户端
+    // 折叠 = 官方语义显式化）。BP 计算必须基于折叠后的形态——cache_control
+    // 依附加在 block 上，折叠只改消息边界、不动 block 序列。
+    const messages = foldConsecutiveSameRole(nonSystemMessages.map(m => this.convertMessage(m)))
 
     // Convert tools — sorted by name for deterministic cache
     const tools: AnthropicRequestBody['tools'] = request.tools && request.tools.length > 0

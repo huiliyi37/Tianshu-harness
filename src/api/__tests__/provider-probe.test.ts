@@ -60,6 +60,40 @@ describe('probeProvider', () => {
     server = undefined
   })
 
+  // 覆盖缺口回归：探测请求此前只带认证头，打 OpenCode Go 的 chat 端点会因缺
+  // x-opencode-session 被 400——连接测试要么假失败，要么在只测 /models 时假通过。
+  it('探测请求带出站身份头（会话头 + 专属 UA），不再只有认证头', async () => {
+    const seen: Array<http.IncomingHttpHeaders> = []
+    server = await startServer((req, res) => {
+      seen.push(req.headers)
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(sse([JSON.stringify({ choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] })]))
+    })
+
+    const report = await probeProvider({
+      baseUrl: server.baseUrl,
+      apiKey: 'sk-test',
+      providerName: 'opencode-go',
+    })
+    assert.equal(report.completionOk, true)
+    assert.ok(seen.length >= 2, `models + completion 两次探测都该带头，实际 ${seen.length}`)
+    for (const headers of seen) {
+      assert.equal(
+        headers['x-opencode-session'],
+        'tianshu-probe',
+        'name 层兜底：本地/中转 baseUrl 不匹配 host 规则时仍要发会话头',
+      )
+      assert.match(String(headers['user-agent'] ?? ''), /^tianshu-tui\//)
+    }
+    await server.close()
+    server = undefined
+  })
+
   it('classifies a 401 on /models and degrades instead of throwing', async () => {
     server = await startServer((_req, res) => {
       res.writeHead(401, { 'content-type': 'application/json' })

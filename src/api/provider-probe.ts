@@ -14,6 +14,7 @@
  */
 
 import { normalizeBaseUrl, resolveProbeEndpoints } from './endpoint-map.js'
+import { providerIdentityHeaders } from './caller-identity.js'
 import { type ModelAliasEntry, type ModelAliasMetadata } from './model-aliases.js'
 import { matchModelId } from './model-id-matcher.js'
 import { ENRICHED_ALIAS_TABLE } from './model-meta-kb.js'
@@ -88,12 +89,25 @@ export interface ProbeReport {
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_BODY_BYTES = 64 * 1024
 
-function authHeaders(apiKey?: string): Record<string, string> {
-  return apiKey ? { authorization: `Bearer ${apiKey}` } : {}
+/** 连接探测的会话标识——固定值：探测不属于任何真实对话，但上游（OpenCode Go）
+ *  仍要求带会话头；用常量避免每次探测都被上游当成新对话。 */
+const PROBE_SESSION_ID = 'tianshu-probe'
+
+function authHeaders(apiKey?: string, identity: Record<string, string> = {}): Record<string, string> {
+  return { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...identity }
 }
 
-function anthropicHeaders(apiKey?: string): Record<string, string> {
-  return apiKey ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } : {}
+function anthropicHeaders(apiKey?: string, identity: Record<string, string> = {}): Record<string, string> {
+  return { ...(apiKey ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } : {}), ...identity }
+}
+
+/**
+ * 探测请求也是「客户端对上游说话」，同样要带身份头——OpenCode Go 对 chat /
+ * messages 端点缺 x-opencode-session 即 400，只带认证的连接测试会假失败
+ * （或假通过，如果只测 /models）。探测不是某段真实对话，用固定标识而非兜底 UUID。
+ */
+function probeIdentityHeaders(options: ProbeOptions): Record<string, string> {
+  return providerIdentityHeaders(options.providerName, options.baseUrl, PROBE_SESSION_ID)
 }
 
 async function fetchWithProbeTimeout(
@@ -235,7 +249,9 @@ async function fetchModelList(options: ProbeOptions, errors: string[]): Promise<
   try {
     const response = await fetchWithProbeTimeout(url, {
       method: 'GET',
-      headers: anthropic ? anthropicHeaders(options.apiKey) : authHeaders(options.apiKey),
+      headers: anthropic
+        ? anthropicHeaders(options.apiKey, probeIdentityHeaders(options))
+        : authHeaders(options.apiKey, probeIdentityHeaders(options)),
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '')
@@ -311,7 +327,7 @@ async function probeOpenAICompletion(options: ProbeOptions, model: string, visio
   try {
     const response = await fetchWithProbeTimeout(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders(options.apiKey) },
+      headers: { 'content-type': 'application/json', ...authHeaders(options.apiKey, probeIdentityHeaders(options)) },
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content }],
@@ -368,6 +384,7 @@ async function probeAnthropicCompletion(options: ProbeOptions, model: string): P
       headers: {
         'content-type': 'application/json',
         ...(options.apiKey ? { 'x-api-key': options.apiKey, 'anthropic-version': '2023-06-01' } : {}),
+        ...probeIdentityHeaders(options),
       },
       body: JSON.stringify({
         model,

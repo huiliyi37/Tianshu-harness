@@ -28,7 +28,7 @@ import type { WorkerRouteConfig } from './coordinator.js'
 import type { WorkerSessionConfig } from './worker-session.js'
 import { debugLog } from '../utils/debug.js'
 import type { DomainKnowledgeStore } from './domain-knowledge-store.js'
-import { mapWorkOrderKindToCapabilityTask } from './work-order.js'
+import { deriveWorkerSessionId, mapWorkOrderKindToCapabilityTask } from './work-order.js'
 
 /** 主会话闭包的最小面——子进程用自建实现逐项替换。 */
 export interface WorkerRuntimeDeps {
@@ -60,6 +60,11 @@ export function buildWorkerRuntime(
 ): WorkerSessionConfig {
   const { config, cwd, provider, apiKey, auth, currentModelId } = deps
   const isWrite = deps.writeProfiles.includes(_order.profile)
+  // 上游（OpenCode Go）按会话做路由/缓存亲和。worker 的请求若全进程共用 factory
+  // 的兜底 ID，多会话（桌面端多窗口同进程）的委派会被上游当成同一段对话。
+  // 只取 order.id、不带 sessionNonce：子进程重建 client 时（worker-process/child.ts）
+  // 拿不到 nonce，父子必须用同一公式，否则同一 order 会算出两个 ID。
+  const wireSessionId = deriveWorkerSessionId(_order.id)
   // 子代理块策略：收紧 project-instructions 预算 + compact 描述档。三条分支
   // （modelOverride / review-override / 常规）共用同一份——分头构造迟早跑偏。
   const blocks = subagentPromptBlocks()
@@ -118,6 +123,7 @@ export function buildWorkerRuntime(
             maxTokens: ovMaxTokens,
             thinkingBudget: isWrite ? 8192 : 4096,
             auth: ovAuth,
+            sessionId: wireSessionId,
           }),
           promptEngine: new PromptEngine({
             model: ovModel,
@@ -187,6 +193,7 @@ export function buildWorkerRuntime(
             reasoningEffort: undefined,
             maxTokens: overrideMaxTokens,
             thinkingBudget: isWrite ? 8192 : 4096,
+            sessionId: wireSessionId,
           },
         ),
         promptEngine: new PromptEngine({
@@ -285,6 +292,7 @@ export function buildWorkerRuntime(
       maxTokens: workerMaxTokens,
       thinkingBudget: isWrite ? 8192 : 4096,
       auth: workerAuth,
+      sessionId: wireSessionId,
     }),
     promptEngine: new PromptEngine({
       model: workerModel,

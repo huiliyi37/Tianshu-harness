@@ -1,7 +1,7 @@
 import type { ModelConfig, ProviderConfig } from './schema.js'
 import { isLoopbackBaseUrl } from './local-endpoint.js'
 
-export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'siliconflow' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
+export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'siliconflow' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
 
 /** 一种计费模式对应一个官方 Base URL（如百炼的按量计费 / token plan）。 */
 export interface ProviderBillingMode {
@@ -209,6 +209,124 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           reasoningEffort: 'high',
           tier: 'strong',
           pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
+      unsupported: [],
+    },
+  },
+  'opencode-go': {
+    key: 'opencode-go',
+    label: 'OpenCode Go',
+    description: 'OpenCode 官方开源模型订阅（$10/月）：DeepSeek / GLM / Kimi / MiMo 一站式接入',
+    defaultModelId: 'deepseek-v4-pro',
+    keyUrl: 'https://opencode.ai/zen',
+    provider: {
+      name: 'opencode-go',
+      apiKeyEnv: 'OPENCODE_GO_KEY',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      protocol: 'openai',
+      capabilities: {
+        cacheControl: false,
+        stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
+        toolJsonBug: false,
+        prefixCache: 'none',
+        prefixCompletion: false,
+      },
+      thinking: 'enabled',
+      maxTokens: 64_000,
+      // 上游强制 x-opencode-session + 非通用 UA（见 api/provider-catalog.ts
+      // 的 HOST_WIRE_RULES），这里只声明模型；协议/头由 wire 层统一注入。
+      // 模型 id 只放「已有官方预设中已存在的」：alias table 按 id 合并（保留
+      // 先出现者的规格），新 id 若与 MODEL_META_KB 撞名会破坏 canonicalId 唯一性
+      // （provider-probe 的重复检测会红）。
+      models: [
+        {
+          id: 'deepseek-v4-pro',
+          alias: 'go-ds4p',
+          description: 'DeepSeek V4 Pro：1M 上下文，重活主控',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'max',
+          tier: 'strong',
+        },
+        {
+          id: 'deepseek-v4-flash',
+          alias: 'go-ds4f',
+          description: 'DeepSeek V4 Flash：1M 上下文，快且省',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+        },
+        {
+          id: 'glm-5.2',
+          alias: 'go-glm',
+          description: 'GLM-5.2：1M 上下文',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'max',
+          tier: 'strong',
+        },
+        {
+          id: 'kimi-k3',
+          alias: 'go-kimi',
+          description: 'Kimi K3：1M 上下文',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+        },
+      ],
+      unsupported: [],
+    },
+  },
+  'opencode-go-anthropic': {
+    key: 'opencode-go-anthropic',
+    label: 'OpenCode Go (Anthropic 协议)',
+    description: 'OpenCode Go 的 /v1/messages 端点：Qwen / MiniMax 等模型，支持 cache_control 断点',
+    defaultModelId: 'qwen3.7-max',
+    keyUrl: 'https://opencode.ai/zen',
+    provider: {
+      name: 'opencode-go-anthropic',
+      apiKeyEnv: 'OPENCODE_GO_KEY',
+      baseUrl: 'https://opencode.ai/zen/go',
+      protocol: 'anthropic',
+      capabilities: {
+        cacheControl: true,
+        stripParams: [],
+        toolJsonBug: false,
+        prefixCache: 'anthropic-cache-control',
+        prefixCompletion: false,
+      },
+      thinking: 'enabled',
+      maxTokens: 64_000,
+      models: [
+        {
+          id: 'qwen3.7-max',
+          alias: 'go-qwen37',
+          description: 'Qwen3.7 Max：1M 上下文',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+        },
+        {
+          id: 'qwen3.6-plus',
+          alias: 'go-qwen36',
+          description: 'Qwen3.6 Plus：1M 上下文',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+        },
+        {
+          id: 'qwen3.5-plus',
+          alias: 'go-qwen35',
+          description: 'Qwen3.5 Plus：1M 上下文',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
         },
       ],
       unsupported: [],

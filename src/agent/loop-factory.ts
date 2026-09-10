@@ -539,7 +539,7 @@ function buildLazyCopilotCompletion(self: AgentLoop): (system: string, user: str
         const cheapProfile = cfg.workers?.profiles?.cheap
         const allProviders = self.config.allProviders ?? {}
         if (!cheapProfile || !allProviders[cheapProfile.provider]) return null
-        const cheap = buildCheapClient(cheapProfile, allProviders)
+        const cheap = buildCheapClient(cheapProfile, allProviders, self.config.sessionId)
         return cheap ? completionFromClient(cheap.client, cheap.model) : null
       } catch {
         return null

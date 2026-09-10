@@ -7,7 +7,7 @@ import { migratePresetModelBackfill } from '../preset-model-backfill.js'
 
 describe('provider presets', () => {
   it('contains required built-in provider modes', () => {
-    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'openrouter', 'relay', 'siliconflow', 'volc', 'zhipu-vision'].sort())
+    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'opencode-go', 'opencode-go-anthropic', 'openrouter', 'relay', 'siliconflow', 'volc', 'zhipu-vision'].sort())
   })
 
   it('ollama is the only keyless preset (local, no auth)', () => {

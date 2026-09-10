@@ -5,11 +5,12 @@ import { proRegistry } from './pro-registry.js'
 import type { StreamClient } from './stream-client.js'
 import type { ProviderCapabilities } from './provider.js'
 import { getProviderProfile } from './provider-profile.js'
-import { getCatalogEntry } from './provider-catalog.js'
+import { resolveProviderWire } from './provider-catalog.js'
 import type { ProviderConfig } from '../config/schema.js'
 import { readSecret } from '../config/secrets-store.js'
 import { isKeylessProviderEntry } from '../config/provider-presets.js'
 import type { AuthProvider } from '../auth/types.js'
+import { PROCESS_SESSION_ID } from './caller-identity.js'
 
 /** Runtime parameters that vary per-model or per-call, not stored in config */
 export interface RuntimeParams {
@@ -73,6 +74,16 @@ export function createProviderClient(
   capabilities: ProviderCapabilities,
   params: RuntimeParams,
 ): StreamClient {
+  // Wire quirks for this endpoint: catalog entry rules + host-keyed rules.
+  // Host lookup matters because OpenCode Go's Anthropic-protocol endpoint is
+  // registered under `name: 'anthropic'` — a name-only lookup would miss its
+  // mandatory session header and every request would 400 MissingSessionID.
+  const wire = resolveProviderWire(provider.name, provider.baseUrl)
+  // 空串/空白 sessionId 等同没传：否则 `??` 放行空值、客户端又用真值判断，
+  // 结果是既不发头也不触发兜底——一个静默缺头请求。
+  const explicitSessionId = params.sessionId?.trim() ? params.sessionId : undefined
+  const sessionId = explicitSessionId ?? (wire?.sessionHeader ? PROCESS_SESSION_ID : undefined)
+
   // Pro 注册的 client 工厂优先（协议非 OpenAI/Anthropic 兼容时由 pro 模块提供）。
   // 开源构建注册表恒空 → 恒 miss → 走原路径，行为与现状完全一致。
   const proFactory = proRegistry.getClientFactory(provider.name)
@@ -115,11 +126,11 @@ export function createProviderClient(
       maxRetries: provider.maxRetries,
       temperature: provider.temperature,
       proxy: provider.proxy,
+      userAgent: wire?.userAgent,
+      sessionId,
+      sessionHeader: wire?.sessionHeader,
     })
   }
-
-  // Wire quirks from the catalog (stall defaults / max_completion_tokens / UA).
-  const wire = getCatalogEntry(provider.name)?.wire
 
   return new OpenAIClient({
     baseUrl: provider.baseUrl,
@@ -142,7 +153,8 @@ export function createProviderClient(
     effortCap: capabilities.effortCap,
     effortFormat: capabilities.effortFormat,
     reasoningEffort: params.reasoningEffort,
-    sessionId: params.sessionId,
+    sessionId,
+    sessionHeader: wire?.sessionHeader,
     providerName: provider.name,
     // 401/403 报错里点名 key 的环境变量，用户知道去哪检查。
     apiKeyEnv: provider.apiKeyEnv,

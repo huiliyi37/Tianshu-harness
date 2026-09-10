@@ -154,12 +154,17 @@ export const WELL_KNOWN_DEFAULTS: Record<string, ProviderCapabilities> = {
     supportsResponseFormat: false,
   },
   'opencode-go': {
-    supportsThinking: false,
+    // 推理透传：上游不认 thinking 块（默认就返回 reasoning_content），但接受
+    // reasoning_effort——low/medium/high/max/xhigh 实测全部 200。曾配成
+    // effortFormat 'none'，而 openai-client 的两个分支都以 effortFormat !== 'none'
+    // 为写入前提（openai-client.ts:518-548），于是用户的档位选择被静默吞掉。
+    // 透传后是否按档位调节由上游决定；天枢的职责是别把它丢掉。
+    supportsThinking: true,
     thinkingBlockType: 'none',
     supportsCacheControl: false,
     stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
     hasToolJsonInContentBug: false,
-    effortFormat: 'none',
+    effortFormat: 'reasoning_effort',
     prefixCacheStrategy: 'none',
     supportsResponseFormat: false,
   },

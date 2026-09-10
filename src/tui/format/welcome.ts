@@ -5,7 +5,7 @@
  * 范围边界(R7 拍板):本渲染器只产出输入框上方内容;输入框以下(状态栏/活信息)
  * 归 app.ts 既有底部 chrome,本文件零涉及。
  *
- * 全妆形态(fresh,cols≥44,rows≥阈值;shadow 58 列 6 行字标 → 13 行,pixel 41 列 5 行 → 12 行):
+ * 全妆形态(fresh,cols≥44,rows≥阈值;shadow 58 列 6 行字标 → 14 行,pixel 41 列 5 行 → 12 行):
  *   ''
  *   ##### ##### .###. #...# .#### #...# #...#
  *   ..#.. ..#.. #...# ##..# #.... #...# #...#  ✦ 天枢 · v3.6.0
@@ -15,10 +15,12 @@
  *      把星辰带给每一位开发者 · Models as partners, not tools.  ← 使命行
  *   ────────────────────────✦─────────────────────────    ← 基准线(唯一全幅元素)
  *   ''
- *   ⏜ /handoff 满60%交接新会话
+ *   ✧ /domain 查看星域描述与切换 · 不同星域工程能力不同
  *   ✧ /team /scout 协同——并行施工 · 只读侦察
- *   ✧ 中途切 /model /domain 碎缓存
+ *   ⏜ /handoff 满60%交接新会话 · 中途切 /model /domain 碎缓存   ← P2 收拢:handoff 与缓存提示合并
  *   ''
+ *   guide(首启引导版,P1-1):上块替换为 一句话定位 + 示例×3 + 操作提示(共 5 行,总 16 行);
+ *   问候语(settle,main.ts)经 commitStatic 追加在欢迎页块正下方,不进本渲染器。
  *
  * compact(恢复会话 / cols<44 / rows<17)单行:
  *   ✦ 天枢 · model ◎eff · ~/dir · ↑续N轮(#id) · v3.6.0
@@ -39,7 +41,7 @@ import { color } from '../engine/ansi.js'
 import { displayWidth, truncateToDisplayWidth } from '../width.js'
 import { boxCharsFor } from '../box-chars.js'
 import { useAsciiBorders } from '../term-caps.js'
-import type { RivetTheme } from '../theme.js'
+import type { RivetTheme, ThemeVoice } from '../theme.js'
 
 export interface FormatWelcomeInput {
   modelName: string
@@ -64,6 +66,10 @@ export interface FormatWelcomeInput {
   /** 字标风格:shadow=ANSI Shadow 立体字 RIVET(默认)/ pixel=点阵 TIANSHU。
    *  亦可经 RIVET_WELCOME_LOGO 环境变量切换。 */
   logoStyle?: string
+  /** 首启引导版(P1-1):提示区替换为「一句话定位 + 可直接照抄的示例 + 基础操作」。
+   *  仅全妆形态生效(窄/矮/compact 自然回落,不残留半套引导);由调用方按
+   *  welcome-guide 哨兵判定传入。 */
+  guide?: boolean
 }
 
 /** 全妆固定开销(呼吸空行×3 + 使命行 + 基准线 + 提醒行×3);总行数 = 此值 + 字标行数。 */
@@ -96,6 +102,25 @@ const HINT_COLLAB_DESC = '协同——并行施工 · 只读侦察'
 const HINT_COLLAB_SHORT_CMDS = '/team /scout'
 const HINT_COLLAB_SHORT_DESC = '协同多代理'
 const WORDMARK_PINYIN = 'T I Ā N S H Ū'
+
+// ── guide 首启引导版文案(P1-1,见设计文档 §P1-1)────────────────────
+/** 一句话定位(full/short/tiny 三档,档位链降级——任一档都保留「直接说你要做什么」动词)。 */
+const GUIDE_INTRO = '终端里的 AI 工程师 —— 直接说你要做什么，我来干活'
+const GUIDE_INTRO_SHORT = '终端里的 AI 工程师 —— 直接说你要做什么'
+const GUIDE_INTRO_TINY = '直接说你要做什么，我来干活'
+/** 可直接照抄的示例输入(@ 文件引用是天枢核心能力,值得在首屏教学)。 */
+const GUIDE_EXAMPLES = ['看看这个项目的结构', '帮我跑一下测试，把失败的修掉', '@src/main.ts 这段代码在做什么'] as const
+/** 基础操作提示(full/short 两档)。/theme 提示放在此处——默认主题之外的换肤入口
+ *  要能被首启用户看见。宽度实测：full 含前缀 58 列起、short 35 列起（比原 short
+ *  的 36 列还短一格，故窄终端不会因此丢提示）。 */
+const GUIDE_HINT = '直接开始 · Tab 补全路径 · / 浏览全部命令 · /theme 换肤'
+const GUIDE_HINT_SHORT = '直接开始 · / 命令 · /theme 换肤'
+/** guide intro 角色台词(2026-09,voice 角色化):playful=星灵小天 / tech=Nova 助手。
+ *  与问候语语气池同源同 voice——主题风格化完整打包。缺省回落 GUIDE_INTRO 中性链。 */
+const GUIDE_INTRO_VOICE: Partial<Record<ThemeVoice, string>> = {
+  playful: '嗨！我是小天，你的终端星灵——想做什么直接说',
+  tech: 'Nova 在线。目标已就绪——直接下达任务',
+}
 
 /** 5×5 点阵字模(TIANSHU / RIVET 通用字形库)。 */
 const BLOCK_FONT: Record<string, string[]> = {
@@ -279,6 +304,13 @@ export const MISSION_SHIMMER_FRAME_MS = 16
  *  末帧=静态终态,零跳变。调用方应以阻塞式微休眠播放(见 main.ts sleepSync),
  *  禁用 setTimeout——异步让出会给启动期其他任务插队输出的机会,正是「一卡一卡」的来源。
  * - 色彩纪律:扫过段 = primary bold(瞬态 chroma,与 effort 徽章同级的受控位),扫过即回 muted/dim;
+ * - kira 变体(候选 3,voice=playful):光带头 1 字符白闪(#fff)——「✨ 星点划过+彩尾」,
+ *   非彩虹;仍是单一瞬态 accent(白+主色同带),扫过即回底;
+ * - neon 变体(voice=tech 通式,2026-09):光带头=primary、尾迹=该主题 secondary 的
+ *   双色霓虹扫线。通式非 cyberpunk 专属——各 tech 主题尾色随自身 secondary:
+ *   cyberpunk=品红粉(synthwave 日落)/ gemini=星云紫/ antigravity=天青(近似头色,
+ *   双色弱化接近单色,可接受)。审查 #6 核验:描述不得锁死单一主题实例;若某主题
+ *   不需要渐变尾,后续可加 palette 级扫光档位开关(本期不引入,扩散面可控)。
  * - ASCII / 窄屏(使命行不存在)→ null,调用方直接写静态行;
  * - 帧由调用方播放(\r\x1B[2K + 帧 + MISSION_SHIMMER_FRAME_MS 休眠),RIVET_WELCOME_ANIM=0 时应跳过。
  */
@@ -289,6 +321,8 @@ export function missionShimmer(theme: RivetTheme, cols: number): MissionShimmer 
   for (const ch of `   ${MISSION_ZH} · `) cells.push({ ch, base: ch === ' ' || ch === '·' ? theme.dim : theme.muted })
   for (const ch of MISSION_EN) cells.push({ ch, base: theme.dim })
   const WIN = 4
+  const kira = theme.voice === 'playful'
+  const neon = theme.voice === 'tech'
   const frameCount = Math.min(10, Math.max(6, Math.ceil(cells.length / 6)))
   const step = (cells.length + WIN) / frameCount
   const frames: string[] = []
@@ -296,7 +330,12 @@ export function missionShimmer(theme: RivetTheme, cols: number): MissionShimmer 
     const head = Math.round(f * step)
     const rendered = cells.map((c, i) => {
       const d = head - i
-      if (d >= 0 && d < WIN && c.ch !== ' ') return color(c.ch, theme.primary, { bold: true })
+      if (d >= 0 && d < WIN && c.ch !== ' ') {
+        if (kira && d === 0) return color(c.ch, '#ffffff', { bold: true })
+        // neon(tech 通式):头部 primary、尾迹该主题 secondary——双色霓虹渐变扫线
+        if (neon && d > 0) return color(c.ch, theme.secondary, { bold: true })
+        return color(c.ch, theme.primary, { bold: true })
+      }
       return color(c.ch, c.base)
     }).join('')
     frames.push(rendered)
@@ -316,7 +355,9 @@ function datumLine(theme: RivetTheme, ascii: boolean, cols: number, separator?: 
     + color(h.repeat(rest), theme.muted, { bold: true })
 }
 
-/** 进入提示区:新会话一次性短提醒(竖排,规格 §三 中层)。 */
+/** 进入提示区:新会话一次性短提醒(竖排,规格 §三 中层)。
+ *  P2 收拢(2026-09):4→3 行——/handoff 与缓存成本提示同属「会话成本管理」主题,
+ *  合并为一行(full ≥58 列 / short 恒 44+ 放得下),省出的行位让给问候语 settle。 */
 function entryHintLines(theme: RivetTheme, ascii: boolean, cols: number): string[] {
   const handoff = ascii ? '-' : '⏜'
   const note = ascii ? '.' : '✧'
@@ -328,15 +369,49 @@ function entryHintLines(theme: RivetTheme, ascii: boolean, cols: number): string
    *  新用户首屏可见;与 domain 行同规则——全版/短版/过窄省略。 */
   const collabFull = `${color(note, theme.secondary)} ${color(HINT_COLLAB_CMDS, theme.brandColor)} ${color(HINT_COLLAB_DESC, theme.muted)}`
   const collabShort = `${color(note, theme.secondary)} ${color(HINT_COLLAB_SHORT_CMDS, theme.brandColor)} ${color(HINT_COLLAB_SHORT_DESC, theme.muted)}`
+  /* 合并行:P2 收拢。full 用原 handoff/cache 文案逐字拼接;中栏短版去
+   *  「新会话/中途切/满60%」保命令 token;着色沿用原两行结构
+   *  (⏜ secondary · /handoff brandColor · 命令 token secondary)。 */
+  const mergedFull = `${color(handoff, theme.secondary)} ${color('/handoff', theme.brandColor)} ${color(HINT_HANDOFF, theme.muted)}${color(' · ', theme.dim)}${color(HINT_CACHE_A, theme.muted)} ${color(HINT_CACHE_CMDS, theme.secondary)} ${color(HINT_CACHE_B, theme.muted)}`
+  const mergedShort = `${color(handoff, theme.secondary)} ${color('/handoff', theme.brandColor)} ${color('交接', theme.muted)}${color(' · ', theme.dim)}${color(HINT_CACHE_CMDS, theme.secondary)} ${color(HINT_CACHE_B, theme.muted)}`
   const lines: string[] = []
   if (domainPlainW(domainFull) <= cols) lines.push(domainFull)
   else if (domainPlainW(domainShort) <= cols) lines.push(domainShort)
   if (domainPlainW(collabFull) <= cols) lines.push(collabFull)
   else if (domainPlainW(collabShort) <= cols) lines.push(collabShort)
-  lines.push(
-    `${color(handoff, theme.secondary)} ${color('/handoff', theme.brandColor)} ${color(HINT_HANDOFF, theme.muted)}`,
-    `${color(note, theme.muted)} ${color(HINT_CACHE_A, theme.muted)} ${color(HINT_CACHE_CMDS, theme.secondary)} ${color(HINT_CACHE_B, theme.muted)}`,
-  )
+  if (domainPlainW(mergedFull) <= cols) lines.push(mergedFull)
+  else if (domainPlainW(mergedShort) <= cols) lines.push(mergedShort)
+  return lines
+}
+
+/** 首启引导块(P1-1):一句话定位 + 可直接照抄的示例 ×3 + 基础操作提示。
+ *  仅调用方判定首启(guide=true)且全妆形态时替换 entryHintLines;档位链
+ *  整行(含 glyph 前缀)装不下降档、再装不下省略——与 entryHint 同构,
+ *  CJK 终端绝不折行。
+ *
+ *  voice 角色化(2026-09,主题风格化):theme.voice=playful/tech 时 intro 换
+ *  角色台词(星灵小天 / Nova 助手)——「换主题=换伙伴」;窄档回落中性链。 */
+function guideLines(theme: RivetTheme, ascii: boolean, cols: number): string[] {
+  const star = ascii ? '*' : '✦'
+  const enter = ascii ? '-' : '⏎'
+  const lines: string[] = []
+  /* 档位判定必须计入「  glyph 」前缀——此前只测文本宽,44 列下 hint full
+   *  档(文本 41)选中后整行 46 折行(瑶光反证抓到)。 */
+  const glyphW = (glyph: string, text: string): number => displayWidth(`  ${glyph} ${text}`, WIDE)
+  const voiceIntro = theme.voice !== 'default' ? GUIDE_INTRO_VOICE[theme.voice] : undefined
+  const intro = voiceIntro && glyphW(star, voiceIntro) <= cols ? voiceIntro
+    : glyphW(star, GUIDE_INTRO) <= cols ? GUIDE_INTRO
+    : glyphW(star, GUIDE_INTRO_SHORT) <= cols ? GUIDE_INTRO_SHORT
+    : glyphW(star, GUIDE_INTRO_TINY) <= cols ? GUIDE_INTRO_TINY
+    : null
+  if (intro) lines.push(`  ${color(star, theme.secondary)} ${color(intro, theme.muted)}`)
+  for (const ex of GUIDE_EXAMPLES) {
+    if (displayWidth(`  · ${ex}`, WIDE) <= cols) lines.push(`  ${color('·', theme.dim)} ${color(ex, theme.muted)}`)
+  }
+  const hint = glyphW(enter, GUIDE_HINT) <= cols ? GUIDE_HINT
+    : glyphW(enter, GUIDE_HINT_SHORT) <= cols ? GUIDE_HINT_SHORT
+    : null
+  if (hint) lines.push(`  ${color(enter, theme.secondary)} ${color(hint, theme.dim)}`)
   return lines
 }
 
@@ -378,7 +453,9 @@ export function formatWelcome(input: FormatWelcomeInput, theme: RivetTheme): str
 
   if (input.compact) return compactLine0()
   const rows = input.rows && input.rows > 0 ? input.rows : Number.POSITIVE_INFINITY
-  if (rows < logoRowCount + FULL_FIXED_ROWS + RESERVED_ROWS) return compactLine0()
+  /* guide 引导块比提示区多 1 行内容,全妆门槛相应 +1——矮屏宁退单行不画半套引导。 */
+  const guideExtra = input.guide ? 1 : 0
+  if (rows < logoRowCount + FULL_FIXED_ROWS + RESERVED_ROWS + guideExtra) return compactLine0()
   if (cols < MIN_COLS) return compactLine0()
 
   const mission = missionLine(theme, cols)
@@ -388,7 +465,7 @@ export function formatWelcome(input: FormatWelcomeInput, theme: RivetTheme): str
     ...(mission ? [mission] : []),
     datumLine(theme, ascii, cols, input.separator),
     '',
-    ...entryHintLines(theme, ascii, cols),
+    ...(input.guide ? guideLines(theme, ascii, cols) : entryHintLines(theme, ascii, cols)),
     '',
   ]
 }

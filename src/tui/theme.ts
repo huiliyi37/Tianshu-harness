@@ -20,9 +20,10 @@ import {
   type ThemeName,
   type ThemeOverrides,
   type ThemePaletteDef,
+  type ThemeVoice,
 } from './theme-palettes.js'
 
-export type { ThemeName, ColorSet, ThemeOverrides }
+export type { ThemeName, ColorSet, ThemeOverrides, ThemeVoice }
 
 export interface RivetTheme {
   primary: string
@@ -40,6 +41,11 @@ export interface RivetTheme {
   systemColor: string
   /** 品牌词专用色（「天枢」字样、品牌星 ✦）。缺省 = primary。 */
   brandColor: string
+  /** 正文行内代码色。缺省 = secondary（多数主题如此）；cyberpunk 单独指定，
+   *  避免品红粉在正文里大面积出现导致整屏发红。 */
+  inlineCode: string
+  /** 语气档(主题风格化):greeting 问候池 / guide 首启文案按此选文案变体。 */
+  voice: ThemeVoice
   toolColor: (toolName: string) => string
   contextColor: (pct: number) => string
 }
@@ -76,6 +82,7 @@ function buildTheme(
   colors: ColorSet,
   overrides?: ThemeOverrides,
   auxiliaryDefault = '#9aa2b1',
+  voice: ThemeVoice = 'default',
 ): RivetTheme {
   return {
     ...colors,
@@ -84,6 +91,8 @@ function buildTheme(
     assistantColor: overrides?.assistantColor ?? colors.secondary,
     systemColor: overrides?.systemColor ?? auxiliaryDefault,
     brandColor: overrides?.brandColor ?? colors.primary,
+    inlineCode: overrides?.inlineCode ?? colors.secondary,
+    voice,
     toolColor: makeToolColor(colors),
     contextColor: makeContextColor(colors),
   }
@@ -100,10 +109,10 @@ export interface ThemeEntry {
 
 function buildEntry(def: ThemePaletteDef): ThemeEntry {
   return {
-    truecolor: buildTheme(def.truecolor, def.overrides),
+    truecolor: buildTheme(def.truecolor, def.overrides, undefined, def.voice ?? 'default'),
     // fallback 轨必须保持纯 ANSI 命名色。复用 truecolor 的 hex 默认值会让
     // level 0/1 终端重新收到 38;2 序列，等于悄悄绕过能力降级。
-    fallback: buildTheme(def.fallback, def.fallbackOverrides, def.fallback.dim),
+    fallback: buildTheme(def.fallback, def.fallbackOverrides, def.fallback.dim, def.voice ?? 'default'),
     background: def.background,
     description: def.description,
   }
@@ -138,12 +147,14 @@ export function registerCustomTheme(name: string, input: CustomThemeInput): void
   const baseDef = THEME_PALETTES[baseName]
   const colors: ColorSet = { ...baseDef.truecolor, ...input.colors }
   const overrides: ThemeOverrides = { ...baseDef.overrides, ...input.overrides }
+  // voice 继承 base(风格化跟随基底皮肤;custom 不单独标 voice)
+  const voice = baseDef.voice ?? 'default'
   customThemes.set(name, {
-    truecolor: buildTheme(colors, overrides),
+    truecolor: buildTheme(colors, overrides, undefined, voice),
     // 16 色轨没有 hex 可映射，继承 base 的 fallback（自定义 hex 只在 truecolor 生效）。
     // 第三个参数锁死辅助色默认值 = base fallback 的命名色，避免 muted/systemColor
     // 落回 truecolor 轨的 hex 默认值，让 level 0/1 终端收到 38;2 序列。
-    fallback: buildTheme(baseDef.fallback, baseDef.fallbackOverrides, baseDef.fallback.dim),
+    fallback: buildTheme(baseDef.fallback, baseDef.fallbackOverrides, baseDef.fallback.dim, voice),
     background,
     description: input.description ?? `Custom theme (base: ${baseName})`,
   })
@@ -167,7 +178,10 @@ export function resolveThemeEntry(name: string): ThemeEntry | undefined {
 
 // ── 主题切换 ───────────────────────────────────────────────────────
 
-let activeTheme: string = 'graphite'
+/** 进程内默认主题（未配置 ui.theme 时的落点）。2026-09 用户要求换回 cobalt
+ *  ——它在 2026-07-07~07-17 本就是默认（后被 graphite 取代，09-10 短暂换过
+ *  cyberpunk）。cobalt 的定位即「视觉极度舒适」的冷调中性，适合做默认。 */
+let activeTheme: string = 'cobalt'
 
 /** 切换主题。接受内置名或 `custom:<name>`；未知名 no-op 并返回 false。 */
 export function setTheme(name: ThemeName | (string & {})): boolean {
@@ -187,7 +201,7 @@ export function getActiveThemeBackground(): 'dark' | 'light' {
 
 export function getTheme(colorLevel?: number): RivetTheme {
   const level = colorLevel ?? chalk.level
-  const entry = resolveThemeEntry(activeTheme) ?? THEMES.graphite
+  const entry = resolveThemeEntry(activeTheme) ?? THEMES.cobalt
   // level 2（256 色）走 truecolor 轨：ansi.ts fg() 会现场量化为 38;5。
   return level >= 2 ? entry.truecolor : entry.fallback
 }

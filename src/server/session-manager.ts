@@ -63,6 +63,7 @@ import { starDomainRegistry } from '../agent/star-domain-registry.js'
 import type { ActiveStarDomain } from '../agent/star-domain.js'
 import type { StarDomainId } from '../agent/star-domain.js'
 import { skillRegistry, loadProjectSkills, listInstallableSkills, importSkillsIntoRivet, countInstalledSkills, readSkillContent, writeSkill, uninstallSkill, type InstallableSkill } from '../skills/skill-loader.js'
+import { getSkillLoadErrorsForSession } from './skill-load-errors.js'
 import type { MissionStore } from './mission-store.js'
 import { join, resolve, dirname } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -3028,7 +3029,8 @@ export class RuntimeSessionManager {
   getSkillLoadErrors(id: string): string[] | undefined {
     const session = this.sessions.get(id)
     if (!session) return undefined
-    return [...session.skillLoadErrors]
+    // 合并 createSession 的即时加载与 agent 创建路径的导入结果（见 skill-load-errors.ts）
+    return [...session.skillLoadErrors, ...getSkillLoadErrorsForSession(id)]
   }
 
   /**
@@ -3328,7 +3330,7 @@ export class RuntimeSessionManager {
       // the session's own client when no cheap profile is configured.
       let completion: Parameters<typeof extractGoalCriteria>[1] | null = null
       if (handles.cheapProfile && handles.allProviders) {
-        const cheap = buildCheapClient(handles.cheapProfile, handles.allProviders as Parameters<typeof buildCheapClient>[1])
+        const cheap = buildCheapClient(handles.cheapProfile, handles.allProviders as Parameters<typeof buildCheapClient>[1], id)
         if (cheap) completion = completionFromClient(cheap.client, cheap.model)
       }
       if (!completion) return // no cheap client → leave generic criteria default
@@ -3361,7 +3363,7 @@ export class RuntimeSessionManager {
       // 就静默 return，标题永远空，侧边栏显示 ID 截断。标题生成 token 消耗极小（<=256），
       // 用主 provider 做这个 cheap 任务完全可接受。
       let cheap = handles.cheapProfile
-        ? buildCheapClient(handles.cheapProfile, providers)
+        ? buildCheapClient(handles.cheapProfile, providers, id)
         : null
       if (!cheap) {
         // 回退：遍历所有已配 provider，找第一个能构建 client 的。标题生成对模型能力
@@ -3370,7 +3372,7 @@ export class RuntimeSessionManager {
           const models = (prov as { models?: Array<{ id?: string; alias?: string }> })?.models
           const firstModel = models?.[0]?.id ?? models?.[0]?.alias
           if (!firstModel) continue
-          cheap = buildCheapClient({ provider: providerName, model: firstModel }, providers)
+          cheap = buildCheapClient({ provider: providerName, model: firstModel }, providers, id)
           if (cheap) break
         }
       }

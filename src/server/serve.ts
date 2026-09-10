@@ -29,6 +29,7 @@ import { buildEnvRoute } from './env-route.js'
 import { buildBrowserRoutes } from './browser-routes.js'
 import { buildProjectTemplatesRoutes } from './project-templates-routes.js'
 import { buildProjectDocsRoutes } from './project-docs-routes.js'
+import { buildTrustRoutes } from './trust-api.js'
 import { buildCacheRoutes } from './cache-routes.js'
 import { buildSpeechRoutes, createSpeechEngineFromEnv, type SpeechEngine } from './speech-routes.js'
 import { existsSync } from 'node:fs'
@@ -777,6 +778,9 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
 
   // Cache usage route: 跨会话 cache-log 聚合 — 桌面端读不到 ~/.rivet 下的日志文件。
   Object.assign(routes, buildCacheRoutes({ apiToken, defaultCwd: () => process.cwd() }))
+
+  // 桌面端的项目授信入口（此前只有 CLI 能授信，配置被剥离后无处恢复）。
+  Object.assign(routes, buildTrustRoutes(apiToken))
 
   // MCP routes: server management + live status for the desktop MCP settings UI.
   Object.assign(routes, buildMcpRoutes({

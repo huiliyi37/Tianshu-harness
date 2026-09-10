@@ -8,6 +8,7 @@ import {
   isCatalogProvider,
   addCatalogEntry,
   getCatalogEntry,
+  resolveProviderWire,
 } from '../provider-catalog.js'
 import { WELL_KNOWN_DEFAULTS } from '../provider.js'
 import { getProviderCacheDefaults } from '../provider-profile.js'
@@ -280,4 +281,38 @@ test('addCatalogEntry overwrites existing entry', () => {
     notes: originalEntry.notes,
   })
   assert.equal(WELL_KNOWN_DEFAULTS['deepseek'], originalCaps)
+})
+
+// ── resolveProviderWire：OpenCode Go 的 wire 必须按 host 解析 ────────────────
+// 上游实测：缺 x-opencode-session → 400 MissingSessionID（/chat/completions 与
+// /messages 都一样）。Anthropic 协议形态在用户配置里的 name 是 'anthropic'，
+// catalog 没有该 key —— 只按 name 查表会漏掉头，所以 host 规则是必需的一层。
+test('resolveProviderWire: host 规则覆盖 opencode.ai 的两种协议端点', () => {
+  const openaiWire = resolveProviderWire('opencode-go', 'https://opencode.ai/zen/go/v1')
+  assert.equal(openaiWire?.sessionHeader, 'x-opencode-session')
+  assert.match(openaiWire?.userAgent ?? '', /^tianshu-tui\//)
+
+  const anthropicWire = resolveProviderWire('anthropic', 'https://opencode.ai/zen/go')
+  assert.equal(anthropicWire?.sessionHeader, 'x-opencode-session')
+  assert.match(anthropicWire?.userAgent ?? '', /^tianshu-tui\//)
+})
+
+test('resolveProviderWire: 子域命中，相似但与其它 host 不受影响', () => {
+  assert.equal(
+    resolveProviderWire('custom', 'https://api.opencode.ai/v1')?.sessionHeader,
+    'x-opencode-session',
+    '子域也算同一上游',
+  )
+  // deepseek 有自己的 wire（stall 默认），但不应被注入 OpenCode 的会话头
+  const deepseek = resolveProviderWire('deepseek', 'https://api.deepseek.com/v1')
+  assert.equal(deepseek?.sessionHeader, undefined)
+  assert.equal(deepseek?.userAgent, undefined)
+  assert.equal(resolveProviderWire('fake', 'https://notopencode.ai/v1'), undefined, '后缀相似但不是子域')
+  assert.equal(resolveProviderWire('nourl'), undefined, 'baseUrl 缺失时安全返回')
+})
+
+test('resolveProviderWire: catalog 条目 wire 比 host 规则更具体，逐字段覆盖', () => {
+  const wire = resolveProviderWire('kimi', 'https://opencode.ai/zen/go/v1')
+  assert.equal(wire?.userAgent, 'KimiCLI/1.0', '条目 UA 优先')
+  assert.equal(wire?.sessionHeader, 'x-opencode-session', '条目未声明的字段由 host 规则补齐')
 })

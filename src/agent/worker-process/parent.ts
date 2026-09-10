@@ -31,10 +31,33 @@ import {
 } from './protocol.js'
 import { runWorkerSession } from '../worker-session.js'
 
-/** 子进程隔离开关：RIVET_WORKER_ISOLATION=1 显式开启（v1 默认关——实机烧机
- *  一个版本后翻默认，见 known-issues 计划篇）。 */
+export type WorkerIsolationMode = 'off' | 'all' | 'review'
+
+/** 子进程隔离模式：
+ *  - `RIVET_WORKER_ISOLATION=1|true|all` → 全部 worker 走子进程
+ *  - `=review` → 只隔离审查类 worker（提交后审查门 + squadron 检查员）
+ *  - 未设置 / 其他值 → 关闭（进程内）
+ *
+ *  v1 默认关——实机烧机一个版本后翻默认，见 known-issues 计划篇。`review` 是针对
+ *  「审查 worker 卡死连累主 TUI」的窄口径开关：不动其余 worker 的成熟进程内路径。 */
+export function workerIsolationMode(): WorkerIsolationMode {
+  const v = process.env.RIVET_WORKER_ISOLATION
+  if (v === '1' || v === 'true' || v === 'all') return 'all'
+  if (v === 'review') return 'review'
+  return 'off'
+}
+
 export function workerIsolationEnabled(): boolean {
-  return process.env.RIVET_WORKER_ISOLATION === '1'
+  return workerIsolationMode() !== 'off'
+}
+
+/** 审查类 worker profile——`review` 模式只隔离这些。`reviewer` 覆盖提交后审查门
+ *  与 squadron 全部检查员（review-coordinator-deps 构造的 work order 统一用它）。
+ *  新增审查 profile 时在这里登记，别散落到派发点。 */
+const REVIEW_WORKER_PROFILES = new Set(['reviewer'])
+
+export function isReviewWorkerProfile(profile: string | undefined): boolean {
+  return profile !== undefined && REVIEW_WORKER_PROFILES.has(profile)
 }
 
 /** OOP runner 工厂（含回退）：WorkerOopUnavailable（entry 缺失/spawn 失败/
@@ -60,6 +83,22 @@ export class WorkerOopUnavailable extends Error {
   constructor(reason: string) {
     super(reason)
     this.name = 'WorkerOopUnavailable'
+  }
+}
+
+/** 按隔离模式组合 runner：`all` 全部走 OOP；`review` 仅审查 worker 走 OOP，其余
+ *  保持进程内 `runWorkerSession`（成熟路径零变化）；`off` 全部进程内。`inProcess`
+ *  可注入（测试断言分派路径，不真跑 session）。 */
+export function createModeAwareRunner(
+  mode: WorkerIsolationMode,
+  opts: WorkerOopOptions,
+  inProcess: (config: WorkerSessionConfig) => Promise<WorkerSessionRun> = runWorkerSession,
+): (config: WorkerSessionConfig) => Promise<WorkerSessionRun> {
+  const oop = createOopRunnerWithFallback(opts)
+  if (mode === 'all') return oop
+  return async (config) => {
+    if (mode === 'review' && isReviewWorkerProfile(config.order.profile)) return oop(config)
+    return inProcess(config)
   }
 }
 

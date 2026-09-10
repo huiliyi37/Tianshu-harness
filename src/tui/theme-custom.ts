@@ -35,7 +35,7 @@ const COLOR_KEYS: readonly (keyof ColorSet)[] = [
 ]
 
 const OVERRIDE_KEYS: readonly (keyof ThemeOverrides)[] = [
-  'userColor', 'assistantColor', 'muted', 'systemColor',
+  'userColor', 'assistantColor', 'muted', 'systemColor', 'inlineCode',
 ]
 
 function pickHexFields<K extends string>(raw: unknown, keys: readonly K[]): Partial<Record<K, string>> {

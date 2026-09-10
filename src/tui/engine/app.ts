@@ -1189,13 +1189,9 @@ export class TuiApp {
         return
       }
       if (key.name === 'ctrl_c') {
-        if (this.isAgentActive()) {
-          // Agent active: abort current agent run。对齐 Claude Code——运行中
-          // Ctrl+C 只作 interrupt 被吞掉，绝不落入双击退出。
-          this.handleAbort()
-        } else if (this.inputController.ctrlCPendingSince > 0) {
-          // 窗口内二次 Ctrl+C → 退出（期间 Esc/编辑键/粘贴/提交已取消 pending，
-          // 与输入框有无内容无关——Claude Code 双击退出语义）。
+        if (this.inputController.ctrlCPendingSince > 0) {
+          // 窗口内二次 Ctrl+C → 退出。优先于 agent-active 判定：agent 卡住
+          // （不 settle）时这是唯一逃生通道——否则二次 Ctrl+C 又被 abort 吃掉。
           this.inputController.clearExitConfirm()
           this.dispose()
           if (this.onExitCallback) {
@@ -1204,9 +1200,11 @@ export class TuiApp {
             process.exit(0)
           }
         } else {
-          // 空闲首按（有无内容都如此）：只进退出确认窗口，内容原样保留。对齐
-          // Claude Code：Ctrl+C 从不清空（清空是 idle Esc 职责）；owned timer
-          // 防重入窗口被旧定时器截断，Esc/编辑/粘贴/提交经 clearExitConfirm 清理。
+          // 活跃时首按仍是 interrupt，但与退出窗口并行开启——否则卡住的 agent
+          // 会把退出通道一并吞掉。空闲首按只进窗口，内容原样保留（对齐 Claude
+          // Code：Ctrl+C 从不清空，清空是 idle Esc 职责）；owned timer 防重入
+          // 窗口被旧定时器截断，Esc/编辑/粘贴/提交经 clearExitConfirm 清理。
+          if (this.isAgentActive()) this.handleAbort()
           const ic = this.inputController
           if (ic.ctrlCExitTimer !== null) clearTimeout(ic.ctrlCExitTimer)
           ic.ctrlCPendingSince = Date.now()

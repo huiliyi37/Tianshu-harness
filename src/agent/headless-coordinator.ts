@@ -75,6 +75,9 @@ export function createHeadlessCoordinator(input: HeadlessCoordinatorInput): Dele
           maxTokens,
           thinkingBudget: isWrite ? 8192 : 4096,
           auth: input.auth,
+          // 会话级 ID 而非 factory 的进程兜底：上游按会话做路由/缓存亲和，
+          // 进程级常量会把不同会话的委派合并成同一段对话。
+          sessionId: input.sessionId,
         },
       ),
       promptEngine: new PromptEngine({

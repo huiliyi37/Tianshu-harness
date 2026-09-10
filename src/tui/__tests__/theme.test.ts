@@ -2,15 +2,15 @@ import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { getTheme, setTheme, getActiveThemeName, THEMES, THEME_NAMES } from '../theme.js'
 
-afterEach(() => { setTheme('graphite') })
+afterEach(() => { setTheme('cobalt') })
 
 describe('getTheme', () => {
-  it('defaults to graphite theme', () => {
-    assert.equal(getActiveThemeName(), 'graphite')
+  it('defaults to cobalt theme', () => {
+    assert.equal(getActiveThemeName(), 'cobalt')
     const theme = getTheme(3)
-    assert.equal(theme.primary, '#7cc4e8') // 冰青 accent
-    assert.equal(theme.success, '#7fbf8e') // 鼠尾草绿
-    assert.equal(theme.error, '#e07a6f')   // 软珊瑚红
+    assert.equal(theme.primary, '#6ab8ff') // 钴蓝 accent
+    assert.equal(theme.success, '#58cbb4') // 青绿
+    assert.equal(theme.error, '#ed7665')   // 珊瑚砖红
     assert.notEqual(theme.primary, '#d77757') // 不是 Claude 品牌橙
     assert.notEqual(theme.primary, '#c9b8ff') // 不是紫微紫
   })
@@ -100,6 +100,31 @@ describe('getTheme', () => {
     assert.equal(typeof theme.muted, 'string')
     assert.ok(theme.muted.length > 0)
     assert.notEqual(theme.muted, theme.dim)
+  })
+
+  it('voice 随主题(风格化):pastel→playful / cyberpunk·gemini→tech / 其余 default', () => {
+    assert.equal(THEMES.graphite.truecolor.voice, 'default')
+    assert.equal(THEMES.cobalt.truecolor.voice, 'default')
+    assert.equal(THEMES.pastel.truecolor.voice, 'playful')
+    assert.equal(THEMES.cyberpunk.truecolor.voice, 'tech')
+    assert.equal(THEMES.gemini.truecolor.voice, 'tech')
+    assert.equal(THEMES.antigravity.truecolor.voice, 'tech')
+    // fallback 轨与 truecolor 轨同 voice(voice 是 def 层语义,与色轨无关)
+    assert.equal(THEMES.pastel.fallback.voice, 'playful')
+    // getTheme 读 active theme 的 voice
+    setTheme('pastel')
+    assert.equal(getTheme(3).voice, 'playful')
+    setTheme('graphite')
+    assert.equal(getTheme(3).voice, 'default')
+  })
+
+  it('inlineCode 缺省继承 secondary；cyberpunk 单独给冰蓝（正文行内代码不吃品红粉）', () => {
+    // 正文行内代码高频出现且取 theme.inlineCode——某主题的 secondary 若是点缀色
+    // （cyberpunk 的品红粉），必须给它独立色，否则正文整屏染色（2026-09 实锤）。
+    assert.equal(THEMES.graphite.truecolor.inlineCode, THEMES.graphite.truecolor.secondary)
+    assert.equal(THEMES.cobalt.truecolor.inlineCode, THEMES.cobalt.truecolor.secondary)
+    assert.equal(THEMES.cyberpunk.truecolor.inlineCode, '#7aa2f7')
+    assert.notEqual(THEMES.cyberpunk.truecolor.inlineCode, THEMES.cyberpunk.truecolor.secondary)
   })
 })
 

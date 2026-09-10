@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatMarkdown, parseBlocks, parseInline, hasMarkdown, guessLang, keywordsForLang } from '../format/markdown.js'
-import { getTheme } from '../theme.js'
+import { getTheme, THEMES } from '../theme.js'
 
 const theme = getTheme()
 
@@ -111,6 +111,14 @@ describe('formatMarkdown', () => {
     const lines = formatMarkdown({ text: 'hello', columns: 80 }, theme)
     assert.equal(lines.length, 1)
     assert.equal(lines[0], 'hello')
+  })
+
+  it('行内代码取 theme.inlineCode——cyberpunk 下是冰蓝而非 secondary 品红粉', () => {
+    // 锁死 markdown.ts 的 `seg.code ? theme.inlineCode : ''`：改回直接吃 secondary
+    // 会让 cyberpunk 正文整屏发红（2026-09 实锤），此断言即反证。
+    const out = formatMarkdown({ text: 'run `npm test` now', columns: 80 }, THEMES.cyberpunk.truecolor).join('')
+    assert.ok(out.includes('38;2;122;162;247'), `inlineCode 冰蓝在场:${JSON.stringify(out)}`)
+    assert.ok(!out.includes('38;2;255;92;138'), '正文不含 secondary 品红粉')
   })
 
   it('renders bold text with ANSI', () => {

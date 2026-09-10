@@ -1335,7 +1335,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
             const allProviders = ctx.agent.config.allProviders ?? {}
             let completion
             if (cheapProfile && allProviders[cheapProfile.provider]) {
-              const cheap = buildCheapClient(cheapProfile, allProviders)
+              const cheap = buildCheapClient(cheapProfile, allProviders, ctx.agent.config.sessionId)
               completion = cheap
                 ? completionFromClient(cheap.client, cheap.model)
                 : completionFromClient(ctx.agent.config.client, ctx.agent.config.promptEngine.getModel())

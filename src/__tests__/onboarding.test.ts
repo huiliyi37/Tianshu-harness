@@ -6,7 +6,10 @@ import assert from 'node:assert/strict'
 import {
   dismissOnboarding,
   getOnboardingState,
+  markWelcomeGuideShown,
   onboardingSentinelPath,
+  shouldShowWelcomeGuide,
+  welcomeGuideSentinelPath,
 } from '../onboarding.js'
 
 function makeHome(): string {
@@ -27,5 +30,37 @@ describe('onboarding state', () => {
     dismissOnboarding(home)
 
     assert.equal(getOnboardingState(home).shouldShow, false)
+  })
+})
+
+describe('welcome guide sentinel (P1-1 欢迎页首启分层)', () => {
+  it('paths to welcome-guide-shown under home', () => {
+    const home = makeHome()
+
+    assert.equal(welcomeGuideSentinelPath(home), join(home, 'welcome-guide-shown'))
+  })
+
+  it('fresh install (no sentinels): show guide', () => {
+    const home = makeHome()
+
+    assert.equal(shouldShowWelcomeGuide(home), true)
+  })
+
+  it('provider wizard dismissal marks as returning user: skip guide', () => {
+    const home = makeHome()
+
+    dismissOnboarding(home)
+
+    assert.equal(shouldShowWelcomeGuide(home), false)
+  })
+
+  it('mark once, never shows guide again (idempotent)', () => {
+    const home = makeHome()
+
+    markWelcomeGuideShown(home)
+    markWelcomeGuideShown(home)
+
+    assert.equal(shouldShowWelcomeGuide(home), false)
+    assert.equal(shouldShowWelcomeGuide(home), false, '幂等:重复 mark 不翻转')
   })
 })

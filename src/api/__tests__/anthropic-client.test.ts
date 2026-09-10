@@ -352,13 +352,14 @@ describe('cache_control breakpoint injection', () => {
       max_tokens: 4096,
     })
 
-    // 23 messages, each 1 block → 23 blocks. MAX_LOOKBACK=15.
-    // resp0 at blockPos=2 → fromEnd=21 >= 15 → skip
-    // tc0 at blockPos=3 → fromEnd=20 >= 15 → skip
+    // Same-role folding renders the wire-accurate form: resp0+tc0 merge into one
+    // assistant message and the trailing tool result (user) merges with 'final'
+    // → 21 messages, 23 blocks total（折叠只改消息边界，不增删 blocks）。
+    // resp0+tc0 at blockPos=3 → fromEnd=20 >= 15 → skip
     // tc1 at blockPos=5 → fromEnd=18 >= 15 → skip
     // tc2 at blockPos=7 → fromEnd=16 >= 15 → skip
-    // tc3 at blockPos=9 → fromEnd=14 < 15 → bp4Idx=8 (messages[8] = assistant tc3)
-    const bp4Msg = body.messages[8]!
+    // tc3 at blockPos=9 → fromEnd=14 < 15 → bp4Idx=7 (messages[7] = assistant tc3)
+    const bp4Msg = body.messages[7]!
     assert.equal(bp4Msg.role, 'assistant')
     assert.deepEqual(bp4Msg.content[bp4Msg.content.length - 1]!.cache_control, { type: 'ephemeral' })
   })
@@ -461,6 +462,74 @@ describe('cache_control breakpoint injection', () => {
     assert.equal(bp4Msg.role, 'assistant')
     const bp4Block = bp4Msg.content[bp4Msg.content.length - 1]!
     assert.deepEqual(bp4Block.cache_control, { type: 'ephemeral' })
+  })
+})
+
+// 连续同角色折叠：Anthropic 官方 API 自动合并（"Consecutive user or assistant
+// turns in your request will be combined into a single turn"），但严格实现
+// （Bedrock 等）直接 400 "roles must alternate"。客户端发前折叠，语义与官方
+// 合并一致——对官方零行为差异，对严格实现消除假崩。触发来源之一：ceiling
+// checkpoint 的结构（59205b109）[anchors…, assistant(handoff), user(原文),
+// user(task-anchor appendix)] 天然含连续 assistant / 连续 user。
+describe('consecutive same-role folding (strict Anthropic backends 400 without it)', () => {
+  it('folds the checkpoint handoff shape — wire roles stay alternating (59205b109 regression)', () => {
+    const client = makeClient()
+    const body = client.buildRequestBodyForTest({
+      model: 'claude-opus-4-7',
+      messages: [
+        { role: 'user', content: 'anchor user' },
+        { role: 'assistant', content: 'anchor assistant' },
+        { role: 'assistant', content: '<checkpoint-resume>archived history summary</checkpoint-resume>' },
+        { role: 'user', content: '用户刚发的完整指令（必须逐字送达）' },
+        { role: 'user', content: '<task-anchor>Objective: ship it</task-anchor>' },
+      ],
+      max_tokens: 4096,
+    })
+    assert.deepEqual(
+      body.messages.map(m => m.role),
+      ['user', 'assistant', 'user'],
+      'wire 角色必须严格交替——连续同角色在严格实现上 400 roles must alternate',
+    )
+    // 折叠是 block 按序拼接：不丢内容、不重排
+    const assistant = body.messages[1]!
+    assert.equal(assistant.content.length, 2)
+    assert.equal(assistant.content[0]!.text, 'anchor assistant')
+    assert.match(String(assistant.content[1]!.text), /checkpoint-resume/)
+    const lastUser = body.messages[2]!
+    assert.equal(lastUser.content.length, 2)
+    assert.match(String(lastUser.content[0]!.text), /逐字送达/)
+    assert.match(String(lastUser.content[1]!.text), /task-anchor/)
+    // BP 建立在折叠后的形态上：BP3 首个 user 尾块、BP4 assistant 尾块
+    const firstUser = body.messages[0]!
+    assert.deepEqual(firstUser.content[firstUser.content.length - 1]!.cache_control, { type: 'ephemeral' })
+    assert.deepEqual(assistant.content[assistant.content.length - 1]!.cache_control, { type: 'ephemeral' })
+  })
+
+  it('folds consecutive user messages; tool_result keeps order ahead of the follow-up text', () => {
+    const client = makeClient()
+    const body = client.buildRequestBodyForTest({
+      model: 'claude-opus-4-7',
+      messages: [
+        { role: 'user', content: 'go' },
+        {
+          role: 'assistant',
+          content: 'Let me read that file.',
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"file_path":"/foo"}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: 'file contents here' },
+        { role: 'user', content: 'follow-up question' },
+      ],
+      max_tokens: 4096,
+    })
+    assert.deepEqual(body.messages.map(m => m.role), ['user', 'assistant', 'user'])
+    const last = body.messages[2]!
+    assert.equal(last.content.length, 2, 'tool_result + follow-up 合并为一条 user 消息')
+    assert.equal(last.content[0]!.type, 'tool_result')
+    assert.equal(last.content[0]!.tool_use_id, 'call_1')
+    assert.equal(last.content[1]!.type, 'text')
+    assert.equal(last.content[1]!.text, 'follow-up question')
   })
 })
 

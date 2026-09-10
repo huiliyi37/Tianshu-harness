@@ -142,6 +142,7 @@ export function completionFromClient(
 export function buildCheapClient(
   profile: { provider: string; model: string },
   providers: Record<string, ProviderConfig>,
+  sessionId?: string,
 ): { client: StreamClient; model: string } | null {
   const prov = providers[profile.provider]
   if (!prov) return null
@@ -158,7 +159,9 @@ export function buildCheapClient(
   const client = createProviderClient(
     prov,
     resolveCapabilities(profile.provider, prov.capabilities),
-    { apiKey, model, maxTokens },
+    // 判据抽取是主会话的 side-path，会话 ID 仍用主会话的——上游按会话做路由/
+    // 缓存亲和，缺省会落到 factory 的进程级兜底，把不同会话的判据请求混成一段。
+    { apiKey, model, maxTokens, sessionId },
   )
   return { client, model }
 }

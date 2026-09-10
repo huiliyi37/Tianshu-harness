@@ -262,6 +262,31 @@ describe('CompactionController ceiling force semantics (task 6)', () => {
       '刚发送的 user 消息原文必须逐字保留在 checkpoint 后的上下文中，不得被摘要替换',
     )
   })
+
+  it('ceiling checkpoint preserves a fresh trailing user at the minimal 3-message boundary', async () => {
+    // 边界回归（>= 判据）：历史恰好 3 条、fresh user 在 index 2 = CACHE_ANCHOR_MESSAGES。
+    // 判据若为 messages.length - 1 > CACHE_ANCHOR_MESSAGES 会把这条当「anchor 内」
+    // 消息，连同历史一起摘要替换（desktop 截断 bug 的边界残留）；必须 >= 才含 index === 2。
+    const session = new SessionContext()
+    const huge = 'x'.repeat(600_000) // 单条 ≈ 150k tokens → 总量超 128k 窗口的 95%
+    session.replaceMessages([
+      { role: 'user', content: 'edge anchor user' },
+      { role: 'assistant', content: 'edge anchor assistant' },
+      { role: 'user', content: huge },
+    ])
+    const controller = makeController(session)
+
+    await controller.enforceContextCeiling()
+
+    const msgs = session.getMessages()
+    assert.equal(msgs.length, 4, 'anchors + assistant handoff + fresh user 原文')
+    assert.equal(msgs[0]?.role, 'user')
+    assert.equal(msgs[1]?.role, 'assistant')
+    assert.equal(msgs[2]?.role, 'assistant', 'handoff 摘要以 assistant 角色置于原文前')
+    assert.match(String(msgs[2]?.content), /<checkpoint-resume>/)
+    assert.equal(msgs[3]?.role, 'user')
+    assert.equal(msgs[3]?.content, huge, '最小边界（index 2）下的 fresh user 也必须逐字保留')
+  })
 })
 
 describe('CompactionController', () => {

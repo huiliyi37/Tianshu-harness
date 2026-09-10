@@ -33,6 +33,7 @@ import { DelegationCoordinator } from '../coordinator.js'
 import { buildModelCards } from '../headless-coordinator.js'
 import { buildReviewOverrideState, type ResolvedReviewOverride } from '../review-model-override.js'
 import { buildWorkerRuntime } from '../worker-runtime.js'
+import { deriveWorkerSessionId } from '../work-order.js'
 import { DomainKnowledgeStore } from '../domain-knowledge-store.js'
 import { profileRegistry } from '../profile-registry.js'
 import { runWorkerSession, type WorkerSessionConfig, type WorkerSessionRun } from '../worker-session.js'
@@ -225,6 +226,10 @@ async function bootAndRun(
       maxTokens: decision.maxTokens,
       thinkingBudget: decision.thinkingBudget,
       auth,
+      // 与父进程 buildWorkerRuntime 用同一公式（只取 order.id，不带 nonce）：
+      // 子进程重建 client 时若落回 factory 的进程兜底，同一 work order 会在父子
+      // 进程各拿一个 ID，上游会当成两段对话。
+      sessionId: deriveWorkerSessionId(cfg.order.id),
     })
     const promptEngine = new PromptEngine({
       model: decision.model,
@@ -285,7 +290,10 @@ async function bootAndRun(
         turnCount: messages.length,
       },
     })
-    process.exit(0)
+    // 等 stdout flush 再退（end 的 callback 在冲刷完成后触发）：process.exit()
+    // 不等待 pipe 写缓冲，真实 session 的 result 帧（transcript + messages 可达
+    // 数十 KB）会被截断，父侧只能合成 worker_crash（2026-09-10 烧机实测）。
+    process.stdout.end(() => process.exit(0))
   } catch (err) {
     childLog(`[worker-child] boot/run failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
     writeFrame({

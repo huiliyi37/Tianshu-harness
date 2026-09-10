@@ -26,6 +26,7 @@ import { captureGitBaseline, createInteractiveToolRegistry, createAgentRuntime, 
 import { TodoStore } from '../tools/todo-store.js'
 import { applyConfiguredPathGrants, applyDefaultDependencyReadGrants, applyRivetRuntimeReadGrants, loadPersistedGrants } from '../tools/path-grants.js'
 import { loadProjectSkills } from '../skills/skill-loader.js'
+import { recordSkillLoadErrors, forgetSkillLoadErrors } from './skill-load-errors.js'
 import { createMemoryTool } from '../tools/memory.js'
 import { DomainKnowledgeStore } from '../agent/domain-knowledge-store.js'
 import type { ProviderHealthTracker } from '../agent/provider-health.js'
@@ -269,6 +270,7 @@ export function resolveGoalHandles(
 /** Drop the stores entry for a permanently-destroyed session (memory bound). */
 export function forgetSessionStores(sessionId: string): void {
   sessionStoresById.delete(sessionId)
+  forgetSkillLoadErrors(sessionId)
 }
 
 /** Late-bound review-gate ref for the session-manager's getReviewGate /
@@ -314,7 +316,8 @@ function buildSessionStores(
   applyRivetRuntimeReadGrants()
   // Load skills into the shared registry (same as CLI bootstrap). Without this,
   // skillRegistry.list() returns empty and the desktop PlusMenu shows no skills.
-  loadProjectSkills(cwd, { importFromClaude: ctx.config.skills?.importFromClaude })
+  const skillLoad = loadProjectSkills(cwd, { importFromClaude: ctx.config.skills?.importFromClaude })
+  recordSkillLoadErrors(sessionId, skillLoad.errors) // 此前丢弃；见 skill-load-errors.ts
   const fileHistory = new FileHistory(persist.getBackupDir(), sessionId)
   const session = new SessionContext()
   // Restore prior conversation from disk (sidecar restart recovery).

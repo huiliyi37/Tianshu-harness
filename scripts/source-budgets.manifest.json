@@ -7,8 +7,8 @@
       "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复）"
     },
     "src/server/session-manager.ts": {
-      "ceiling": 5956,
-      "note": "session-manager 增长：跨盘审批广播/applyGlobalApprovalMode（93956f5e2+970b05196 回流 2026-09-07）——ceiling 5800→5830（时点实际 5820，10 行缓冲）。5820→5942 的 +122 为 2026-09-07~09-09 间 11 笔提交累计欠账（38b246ba6 stall-observer 接线 / f512c450a+b738faffc images·continuationReason 透传 / a93b36f13 handoff 容差 / 029421c36 前的 settlement 演进等，均未同步账本——f35d922ea 曾误记整段为 029421c36 的 +9，实为 +8/-1 净增 7，此条更正）。ceiling 对齐实际 5949（零缓冲，+1 即触警）。5949→5956：issue #63 残留（编辑重发对含 hook 注入的会话失效）——配对纯函数（buildUserAnchors/stripInjectedSuffix）已沿接缝拆到新模块 src/server/rewind-anchors.ts，此处只剩 import + userEventListFor（环被截尾时读磁盘全量事件，rewind 的 anchorSeq 才不丢）。"
+      "ceiling": 5958,
+      "note": "session-manager 增长：跨盘审批广播/applyGlobalApprovalMode（93956f5e2+970b05196 回流 2026-09-07）——ceiling 5800→5830（时点实际 5820，10 行缓冲）。5820→5942 的 +122 为 2026-09-07~09-09 间 11 笔提交累计欠账（38b246ba6 stall-observer 接线 / f512c450a+b738faffc images·continuationReason 透传 / a93b36f13 handoff 容差 / 029421c36 前的 settlement 演进等，均未同步账本——f35d922ea 曾误记整段为 029421c36 的 +9，实为 +8/-1 净增 7，此条更正）。ceiling 对齐实际 5949（零缓冲，+1 即触警）。5949→5956：issue #63 残留（编辑重发对含 hook 注入的会话失效）——配对纯函数（buildUserAnchors/stripInjectedSuffix）已沿接缝拆到新模块 src/server/rewind-anchors.ts，此处只剩 import + userEventListFor（环被截尾时读磁盘全量事件，rewind 的 anchorSeq 才不丢）。5956→5958：合并两个来源的技能加载错误（import + getSkillLoadErrors 合并共 +2）——记录侧在新模块 src/server/skill-load-errors.ts，此处只剩读合并。"
     },
     "src/tui/slash-commands.ts": {
       "ceiling": 4620,
@@ -30,8 +30,8 @@
       "note": "2219→2606：hooks 配置 Wave 3a 等配置面增长（先于本调整已在 HEAD 超限）+ / 项目信任门接线（未授信剥离，+9 行）——按现值对齐。 2606→2648：账本对齐实际行数（68a961c20 预设新增模型回流存量快照，已合入 HEAD 后超限）。 2648→2664：config login 子命令（OAuth 登录落地，/login 幽灵指引闭环）——case +12、帮助文本 +1、帮助示例区 +3。 2664→2682：setDefaultModelConfig 扩展 defaultEffort（undefined=不动/null·auto=删字段/显式档=落盘，+17）——/model 面板 effort 随默认持久化（CC 对标）。 2682→2643：migratePresetModelBackfill 迁出至 preset-model-backfill.ts（结构棘轮拆分；随迁收紧 userSaved 判据——用户删模型不再被预设回流）。 2682→2705：API key 删除原语 clearApiKey（947f8b6e1，+42 未收口欠账，2026-09-07 审查补记）"
     },
     "src/main.ts": {
-      "ceiling": 2397,
-      "note": "main 增长：yolo 语义注释/接线（6ff919118 2026-09-07）欠账收口——ceiling 2358→2395 2395→2397：峰谷计价标示（25b3022ef，+12 未收口欠账，2026-09-07 审查补记）"
+      "ceiling": 2417,
+      "note": "main 增长：yolo 语义注释/接线（6ff919118 2026-09-07）欠账收口——ceiling 2358→2395 2395→2397：峰谷计价标示（25b3022ef，+12 未收口欠账，2026-09-07 审查补记） 2397→2415：欢迎页 P1-P2 接线（guide 哨兵判定/展示即写 + 问候语 settle 薄壳——主体拆至 src/tui/welcome-greeting.ts 与 onboarding.ts，2026-09-09） 2415→2417：审查 #6 settle 守卫传参(isInputPending,外层 busy 预判删除净 +2,2026-09-09)"
     },
     "src/tui/pi/latex-to-unicode.ts": {
       "ceiling": 2071
@@ -61,8 +61,8 @@
       "note": "1492→1678：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
     },
     "src/api/openai-client.ts": {
-      "ceiling": 1587,
-      "note": "1492→1563：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 1563→1587：wire 探针 tools 维（4f85c6b1f +22）+ reasoning-repetition guard 接线（609e0964a +2 净）——落地时未上账，2026-09-09 审查补记"
+      "ceiling": 1592,
+      "note": "1492→1563：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 1563→1587：wire 探针 tools 维（4f85c6b1f +22）+ reasoning-repetition guard 接线（609e0964a +2 净）——落地时未上账，2026-09-09 审查补记 1587→1592：可配置会话头名 sessionHeader（OpenCode Go 强制 x-opencode-session，字段 + header 注入，+5）"
     },
     "src/agent/turn-orchestrator.ts": {
       "ceiling": 1491,
@@ -106,8 +106,8 @@
       "note": "1123→1124：重读纪律措辞（75f41db16 +1）"
     },
     "src/server/serve-agent.ts": {
-      "ceiling": 1158,
-      "note": "1125→1150：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）1150→1158：memory 工具补 deep_recall 侧路接线（deepRecallAgentRef 晚绑定盒）+ RIVET_MEMORY_BACKFILL 回填调度（对齐 dsh 记忆件，+8 净增）。"
+      "ceiling": 1161,
+      "note": "1125→1150：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）1150→1158：memory 工具补 deep_recall 侧路接线（deepRecallAgentRef 晚绑定盒）+ RIVET_MEMORY_BACKFILL 回填调度（对齐 dsh 记忆件，+8 净增）。1158→1161：技能加载双路径错误归集接线（import + recordSkillLoadErrors 调用 + forgetSessionStores 清理，各 1 行）——主体逻辑已沿接缝拆到新模块 src/server/skill-load-errors.ts，此处只剩接线。"
     },
     "src/tools/browser-debug/tool.ts": {
       "ceiling": 1084
@@ -131,8 +131,8 @@
       "note": "995→1004：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
     },
     "src/server/serve.ts": {
-      "ceiling": 1116,
-      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记"
+      "ceiling": 1120,
+      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记）。1116→1120：/project/trust 路由注册（import + 注册调用共 +3）——路由主体、参数校验与 6 条测试都在新模块 src/server/trust-api.ts，此处只剩接线。"
     },
     "src/agent/starflow-orchestrator.ts": {
       "ceiling": 1075,
@@ -155,12 +155,12 @@
       "note": "941→1022：捆绑技能退役清理——RETIRED_BUNDLED_SKILLS 名单（名字+SHA-256）+ retireMatchingSkillCopies 一次性清理逻辑（撤出三项 + 消融两项的存量副本清理，+81）。"
     },
     "src/config/env-registry.ts": {
-      "ceiling": 986,
-      "note": "944→956：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）956→962：RIVET_ORCHESTRATION_HINT 登记（+6）962→968：RIVET_ADAPTIVE_MEMORY 的 shadow/on/off 发布开关登记（+6）968→974：RIVET_MEMORY_AUTO_CAPTURE 登记（+6）974→980：RIVET_MEMORY_CONSOLIDATION 登记（+6）980→986：RIVET_MEMORY_BACKFILL 登记（+6，历史会话回填 opt-in 开关）。"
+      "ceiling": 1040,
+      "note": "944→956：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）956→962：RIVET_ORCHESTRATION_HINT 登记（+6）962→968：RIVET_ADAPTIVE_MEMORY 的 shadow/on/off 发布开关登记（+6）968→974：RIVET_MEMORY_AUTO_CAPTURE 登记（+6）974→980：RIVET_MEMORY_CONSOLIDATION 登记（+6）980→986：RIVET_MEMORY_BACKFILL 登记（+6，历史会话回填 opt-in 开关）。 986→1040：gen-env-registry 重生成收口（153→169 条，含 8 个存量漏注册 RIVET_APPROVAL_TIMEOUT_MS/RIVET_CPU_POOL_IDLE_MS/RIVET_FETCH_SKIP_COMPILE/RIVET_PROFILE/RIVET_TEST_ENV_KEY_PROV/RIVET_TRUST_PROJECT/RIVET_WELCOME_ANIM/RIVET_WORKER_ISOLATION 与新增 RIVET_WELCOME_GREETING；自动生成文件随注册数机械增长，2026-09-09）"
     },
     "src/server/config-routes.ts": {
-      "ceiling": 1117,
-      "note": "config-routes 增长：onApprovalConfigChanged hook 适配（93956f5e2 回流 2026-09-07）——ceiling 1055→1065 1065→1074：DELETE key 端点（947f8b6e1，+15 未收口欠账，2026-09-07 审查补记） 1074→1118：POST /config/providers/test completion 级真测端点（7f0cc7c1c，+44 落地时未上账，2026-09-09 审查补记） 1118→1117：test-key/test 解析链抽共享 resolveProviderProbeTarget（4cdff0bd9，-1 回收）。ceiling 对齐实际 1117。"
+      "ceiling": 1136,
+      "note": "config-routes 增长：onApprovalConfigChanged hook 适配（93956f5e2 回流 2026-09-07）——ceiling 1055→1065 1065→1074：DELETE key 端点（947f8b6e1，+15 未收口欠账，2026-09-07 审查补记） 1074→1118：POST /config/providers/test completion 级真测端点（7f0cc7c1c，+44 落地时未上账，2026-09-09 审查补记） 1118→1117：test-key/test 解析链抽共享 resolveProviderProbeTarget（4cdff0bd9，-1 回收）。ceiling 对齐实际 1117。 1117→1136：存量漂移收口（2026-09-09 结构门禁对齐实际行数，非本 PR 引入）"
     },
     "src/pro/computer-use/cdp/driver.ts": {
       "ceiling": 899
@@ -192,8 +192,8 @@
       "note": "PR#38 /connect 向导（2160 行，2026-08-22 合入）——入账钉住，拆分待后续 2160→2166：ConnectCommit.needsLogin 标记 + oauth 分支（+6）。"
     },
     "src/config/provider-presets.ts": {
-      "ceiling": 936,
-      "note": "PR#38 provider onboarding 统一栈（861 行）——入账钉住。861→875：deepseek 预设新增 v4-flash-vision-exp 视觉实验档（1M 上下文 + supportsVision + 定价同 flash，+14）。875→900：glm 预设新增 glm-5.3 文本旗舰 + glm-5.3-flash 原生多模态（Coding Plan provider，均 1M/128K + pricing 全 0，+21）。 900→925：P0 获取 Key 直链——ProviderPreset 加 keyUrl 字段 + 13 个预设官方控制台 URL（纯数据 +16，先例 ffc6d2f66 纯数据调升）。 925→926：isKeylessProviderEntry 单一事实源（keyless 判定收口，+14；注释行占大头）。 926→926：isLoopbackBaseUrl 迁出至 local-endpoint.ts（结构棘轮拆分；随迁收紧 keyless 判定——云端 baseUrl 无 key 不再豁免）。 926→936：kimi 预设补官方 k3-256k（256K 省额度版：262144 上下文 / 131072 输出 / max / pricing 全 0，+10 纯数据；同批 kimi 段改走 Kimi Code 订阅端点 api.kimi.com/coding/v1，行数净 0）。"
+      "ceiling": 1054,
+      "note": "PR#38 provider onboarding 统一栈（861 行）——入账钉住。861→875：deepseek 预设新增 v4-flash-vision-exp 视觉实验档（1M 上下文 + supportsVision + 定价同 flash，+14）。875→900：glm 预设新增 glm-5.3 文本旗舰 + glm-5.3-flash 原生多模态（Coding Plan provider，均 1M/128K + pricing 全 0，+21）。 900→925：P0 获取 Key 直链——ProviderPreset 加 keyUrl 字段 + 13 个预设官方控制台 URL（纯数据 +16，先例 ffc6d2f66 纯数据调升）。 925→926：isKeylessProviderEntry 单一事实源（keyless 判定收口，+14；注释行占大头）。 926→926：isLoopbackBaseUrl 迁出至 local-endpoint.ts（结构棘轮拆分；随迁收紧 keyless 判定——云端 baseUrl 无 key 不再豁免）。 926→936：kimi 预设补官方 k3-256k（256K 省额度版：262144 上下文 / 131072 输出 / max / pricing 全 0，+10 纯数据；同批 kimi 段改走 Kimi Code 订阅端点 api.kimi.com/coding/v1，行数净 0）。 936→1054：OpenCode Go 两个预设（opencode-go / opencode-go-anthropic：模型清单 + 协议 + 能力声明，纯数据 +118）——上游 2026-09 起强制 x-opencode-session，两端预设须开箱可用"
     }
   }
 }

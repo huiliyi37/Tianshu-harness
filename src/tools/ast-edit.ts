@@ -1,14 +1,15 @@
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
-import { readFileSync } from 'node:fs'
-import { resolve, relative } from 'node:path'
+import { relative } from 'node:path'
 import { writeFileAtomicAsync } from '../fs-atomic.js'
-import { applyEol, chooseEol, detectEol } from './line-endings.js'
+import { applyEol, chooseEol } from './line-endings.js'
 import { getTargetEol } from '../platform.js'
 import { incrementEditFailCount, resetEditFailCount } from './read-file.js'
 import { checkSyntax } from './syntax-check.js'
 import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
-import { loadAstGrepNapi } from './ast-grep-napi.js'
 import { validatePathSafe } from './path-validate.js'
+import { cpuPool } from '../workers/cpu-pool.js'
+import type { AstEditChange, AstEditComputeArgs, AstEditComputeResult, AstEditOpArg } from '../workers/cpu-tasks.js'
+import { MAX_PARSE_FILE_BYTES, astScanSoftMs, astScanUnavailable, collectFiles } from './ast-shared.js'
 
 /** Post-write syntax verification + rollback for ast_edit. Default on;
  *  RIVET_AST_EDIT_VERIFY=0 falls back to the pre-write ERROR-node gate only. */
@@ -16,22 +17,10 @@ function isAstEditVerifyEnabled(): boolean {
   const v = process.env.RIVET_AST_EDIT_VERIFY
   return v !== '0' && v !== 'false'
 }
-import {
-  inferLang,
-  resolveLang,
-  collectFiles,
-  collectMetaVarNames,
-  buildLangMap,
-  isDynamicLang,
-  ensureDynamicLangsRegistered,
-} from './ast-shared.js'
 
 // ── types ─────────────────────────────────────────────────────────
 
-export interface AstEditOp {
-  find: string
-  replace: string
-}
+export type AstEditOp = AstEditOpArg
 
 export interface AstEditInput {
   ops: AstEditOp[]
@@ -41,40 +30,7 @@ export interface AstEditInput {
   limit?: number
 }
 
-interface FileChange {
-  before: string
-  after: string
-  line: number
-}
-
 // ── tool ──────────────────────────────────────────────────────────
-
-interface SgNodeLike {
-  text(): string
-  range(): { start: { index: number; line: number; column: number }; end: { index: number; line: number; column: number } }
-  getMatch(name: string): SgNodeLike | null
-  getMultipleMatches(name: string): SgNodeLike[] | null
-}
-
-function interpolateTemplate(template: string, node: SgNodeLike): string {
-  let result = template
-  const vars = collectMetaVarNames(template)
-  // replace in reverse order of length to avoid partial matches (e.g. $NAME vs $NAME2)
-  for (const { name, multi } of vars.sort((a, b) => b.name.length - a.name.length)) {
-    if (multi) {
-      const mvs = node.getMultipleMatches(name)
-      if (mvs && mvs.length > 0) {
-        result = result.replace(new RegExp(`\\$\\$\\${name}`, 'g'), mvs.map((n: SgNodeLike) => n.text()).join(''))
-      }
-    } else {
-      const mv = node.getMatch(name)
-      if (mv) {
-        result = result.replace(new RegExp(`\\$${name}\\b`, 'g'), mv.text())
-      }
-    }
-  }
-  return result
-}
 
 export const AST_EDIT_TOOL: Tool = {
   definition: {
@@ -138,19 +94,16 @@ export const AST_EDIT_TOOL: Tool = {
       }
     }
 
-    const paths = Array.isArray(input.paths) ? (input.paths as string[]).filter(p => typeof p === 'string') : ['.']
+    // path（单数）别名：schema 只声明 paths，但模型/worker 常写成单数。忽略它会
+    // 静默退化为 ['.'] 全仓扫描——2026-09-10 卡死事故的直接触发条件。
+    const paths = Array.isArray(input.paths)
+      ? (input.paths as unknown[]).filter((p): p is string => typeof p === 'string')
+      : typeof input.path === 'string' && input.path.trim()
+        ? [input.path.trim()]
+        : ['.']
     const explicitLang = typeof input.lang === 'string' && input.lang.trim() ? input.lang.trim() : undefined
     const dryRun = input.dryRun !== false // default true
     const limit = typeof input.limit === 'number' && input.limit > 0 ? input.limit : 50
-
-    const loaded = await loadAstGrepNapi()
-    if (!loaded.ok) {
-      return { content: loaded.message, isError: true }
-    }
-    const napi = loaded.napi
-
-    const LANG_MAP = buildLangMap(napi)
-    await ensureDynamicLangsRegistered(napi)
 
     const allFiles: string[] = []
     const mode = dryRun ? 'read' : 'write'
@@ -176,185 +129,78 @@ export const AST_EDIT_TOOL: Tool = {
       }
     }
 
-    const fileResults: Array<{ file: string; changes: FileChange[]; error?: string }> = []
-    const errors: string[] = []
+    // 解析 + 编辑计算整段在 worker 线程（cpu-tasks.astEditComputeRaw）：native
+    // parse / findAll / commitEdits 同步阻塞事件循环，留在主线程等于保留
+    // 2026-09-10 的假死形态。**写文件仍在主线程**——审批、备份、写后语法复检与
+    // 回滚必须保持单一入口。worker 不可用/超时一律报错降级，不回退主线程。
+    const computeArgs: AstEditComputeArgs = {
+      files: allFiles,
+      ops,
+      explicitLang,
+      dryRun,
+      limit,
+      maxBytes: MAX_PARSE_FILE_BYTES,
+    }
 
-    for (const filePath of allFiles) {
-      const langStr = resolveLang(explicitLang, filePath)
-      if (!langStr) {
-        errors.push(`${filePath}: 不支持的语言`)
+    let compute: AstEditComputeResult
+    try {
+      compute = await cpuPool.run('astEditComputeRaw', [computeArgs], astScanSoftMs()) as AstEditComputeResult
+    } catch (err) {
+      return {
+        content: astScanUnavailable(err instanceof Error ? err.message : String(err)),
+        isError: true,
+      }
+    }
+    if (compute.loadError) return { content: compute.loadError, isError: true }
+
+    const errors = compute.errors
+    const fileResults: Array<{ file: string; changes: AstEditChange[] }> = []
+
+    for (const fr of compute.files) {
+      if (dryRun) {
+        fileResults.push({ file: fr.file, changes: fr.changes })
         continue
       }
+      // worker 的「编辑后语法检查」未过——错误已记在 errors，丢弃该文件更改。
+      if (!fr.syntaxOk) continue
 
-      // Dynamic languages (python/json) are parsed by their registered name;
-      // built-in languages go through napi.Lang.X via LANG_MAP.
-      const langValue = isDynamicLang(langStr) ? langStr : LANG_MAP[langStr]
-      // runtime assertion: napi.Lang uses non-enumerable getters — verify we got a real string
-      if (typeof langValue !== 'string') {
-        errors.push(`${filePath}: LANG_MAP 对 "${langStr}" 返回了非字符串——可能是 @ast-grep/napi API 变更`)
-        continue
-      }
-
-      let source: string
+      const relPath = relative(cwd, fr.file)
+      const verify = isAstEditVerifyEnabled()
       try {
-        source = readFileSync(filePath, 'utf-8')
-      } catch {
-        errors.push(`${filePath}: 无法读取文件`)
-        continue
-      }
-
-      const changes: FileChange[] = []
-      let currentSource = source
-
-      for (const op of ops) {
-        let root: ReturnType<ReturnType<typeof napi.parse>['root']>
-        try {
-          root = napi.parse(langValue, currentSource).root()
-        } catch {
-          errors.push(`${filePath}: 操作 "${op.find.slice(0, 40)}" 解析错误`)
-          break
+        params.onFileWrite?.(fr.file)
+        // Preserve the file's original line endings (CRLF on Windows-authored
+        // files); ast-grep edits operate on \n-normalized ranges internally.
+        const eol = chooseEol(fr.file, fr.existingEol, getTargetEol())
+        // Back up before writing so a fatal post-write check can roll back.
+        if (verify) {
+          await trackFileChange(cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'ast_edit' })
         }
+        await writeFileAtomicAsync(fr.file, applyEol(fr.newSource, eol))
 
-        // detect syntax errors in current source
-        const errorNodes = root.findAll({ rule: { kind: 'ERROR' } } as unknown as string)
-        if (errorNodes.length > 0) {
-          errors.push(`${filePath}: 解析错误（${errorNodes.length} 个语法错误）`)
-          break
-        }
-
-        // parse as rule object if JSON
-        let pattern: string | Record<string, unknown> = op.find
-        try {
-          const parsed = JSON.parse(op.find)
-          if (parsed && typeof parsed === 'object' && 'rule' in parsed) {
-            pattern = parsed
-          }
-        } catch { /* not JSON */ }
-
-        let found: ReturnType<typeof root.findAll>
-        try {
-          found = root.findAll(pattern as string)
-        } catch {
-          errors.push(`${filePath}: 模式 "${op.find.slice(0, 40)}" 编译错误`)
-          continue
-        }
-
-        if (found.length === 0) continue
-
-        // collect edits (limited), substituting meta-variables
-        const edits: Array<{ startPos: number; endPos: number; insertedText: string }> = []
-        const count = Math.min(found.length, limit)
-        for (let i = 0; i < count; i++) {
-          const node = found[i]!
-          const before = node.text()
-          const range = node.range()
-          const line = range.start.line + 1
-          // interpolate template with meta-variable values
-          const after = interpolateTemplate(op.replace, node)
-
-          changes.push({ before, after, line })
-          edits.push({
-            startPos: range.start.index,
-            endPos: range.end.index,
-            insertedText: after,
-          })
-        }
-
-        // Overlap guard: findAll returns non-nested matches, but a pattern can
-        // still produce ranges that touch/cross when meta-variables expand
-        // asymmetrically. commitEdits on overlapping ranges corrupts the output.
-        // Drop any edit whose range encloses or is enclosed by an earlier one,
-        // keeping the first (outermost) match intact.
-        edits.sort((a, b) => a.startPos - b.startPos)
-        const deduped: typeof edits = []
-        let skippedOverlap = 0
-        for (const e of edits) {
-          const prev = deduped[deduped.length - 1]
-          if (prev && e.startPos < prev.endPos) {
-            // overlaps or nested — skip to avoid corrupting commitEdits
-            skippedOverlap++
-            continue
-          }
-          deduped.push(e)
-        }
-        if (skippedOverlap > 0) {
-          errors.push(`${filePath}: 已跳过 ${skippedOverlap} 个重叠匹配（"${op.find.slice(0, 40)}"）——嵌套范围会破坏编辑`)
-        }
-
-        // apply edits and re-parse for next op
-        try {
-          currentSource = root.commitEdits(deduped)
-        } catch {
-          errors.push(`${filePath}: 操作 "${op.find.slice(0, 40)}" 的 commitEdits 失败`)
-          break
-        }
-      }
-
-      if (changes.length > 0) {
-        // Final syntax check on the post-edit source before writing. The per-op
-        // loop detects ERROR nodes between ops, but the LAST op's result is
-        // never re-checked — a replacement can itself introduce invalid syntax
-        // (e.g. an unbalanced brace in the replace template). Catch it here so
-        // we never persist a broken file silently.
-        let finalSyntaxOk = true
-        if (!dryRun) {
+        // Authoritative post-write verification (python3 ast.parse / esbuild):
+        // the ast-grep ERROR-node gate misses some corruption; checkSyntax is the
+        // same gate edit_file/write_file use. Fatal → roll back.
+        let rolledBack = false
+        if (verify) {
           try {
-            const finalRoot = napi.parse(langValue, currentSource).root()
-            const finalErrors = finalRoot.findAll({ rule: { kind: 'ERROR' } } as unknown as string)
-            if (finalErrors.length > 0) {
-              errors.push(`${filePath}: 编辑后语法错误（${finalErrors.length} 个 ERROR 节点）——文件未写入，更改已丢弃`)
-              finalSyntaxOk = false
+            const check = await checkSyntax(fr.file, fr.newSource)
+            if (check.fatal) {
+              await restoreLatestBackup(cwd, relPath, params.sessionId)
+              incrementEditFailCount(fr.file)
+              errors.push(`${fr.file}: 写入后语法错误——已回滚：${check.fatal.split('\n')[0]}`)
+              rolledBack = true
             }
           } catch {
-            errors.push(`${filePath}: 编辑后解析失败——文件未写入，更改已丢弃`)
-            finalSyntaxOk = false
+            // checkSyntax degraded (missing parser/timeout) — keep the write.
           }
         }
-        if (finalSyntaxOk) {
-          if (!dryRun) {
-            const cwd = params.cwd ?? process.cwd()
-            const relPath = relative(cwd, filePath)
-            const verify = isAstEditVerifyEnabled()
-            try {
-              params.onFileWrite?.(filePath)
-              // Preserve the file's original line endings (CRLF on Windows-authored
-              // files); ast-grep edits operate on \n-normalized ranges internally.
-              const eol = chooseEol(filePath, detectEol(source), getTargetEol())
-              // Back up before writing so a fatal post-write check can roll back.
-              if (verify) {
-                await trackFileChange(cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'ast_edit' })
-              }
-              await writeFileAtomicAsync(filePath, applyEol(currentSource, eol))
 
-              // Authoritative post-write verification (python3 ast.parse / esbuild):
-              // the ast-grep ERROR-node gate misses some corruption; checkSyntax
-              // is the same gate edit_file/write_file use. Fatal → roll back.
-              let rolledBack = false
-              if (verify) {
-                try {
-                  const check = await checkSyntax(filePath, currentSource)
-                  if (check.fatal) {
-                    await restoreLatestBackup(cwd, relPath, params.sessionId)
-                    incrementEditFailCount(filePath)
-                    errors.push(`${filePath}: 写入后语法错误——已回滚：${check.fatal.split('\n')[0]}`)
-                    rolledBack = true
-                  }
-                } catch {
-                  // checkSyntax degraded (missing parser/timeout) — keep the write.
-                }
-              }
-
-              if (!rolledBack) {
-                fileResults.push({ file: filePath, changes })
-                resetEditFailCount(filePath)
-              }
-            } catch {
-              errors.push(`${filePath}: 写入更改失败`)
-            }
-          } else {
-            fileResults.push({ file: filePath, changes })
-          }
+        if (!rolledBack) {
+          fileResults.push({ file: fr.file, changes: fr.changes })
+          resetEditFailCount(fr.file)
         }
+      } catch {
+        errors.push(`${fr.file}: 写入更改失败`)
       }
     }
 

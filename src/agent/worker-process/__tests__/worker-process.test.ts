@@ -7,9 +7,10 @@ import { join } from 'node:path'
 import { createFrameDecoder, encodeFrame } from '../protocol.js'
 import {
   runWorkerSessionOop, resolveChildEntry, WorkerOopUnavailable,
+  workerIsolationMode, workerIsolationEnabled, isReviewWorkerProfile, createModeAwareRunner,
   type WorkerOopOptions,
 } from '../parent.js'
-import type { WorkerSessionConfig } from '../../worker-session.js'
+import type { WorkerSessionConfig, WorkerSessionRun } from '../../worker-session.js'
 import type { WorkOrder } from '../../work-order.js'
 
 // ── 协议单测 ─────────────────────────────────────────────────────
@@ -38,7 +39,7 @@ describe('NDJSON 帧解码', () => {
  *  - hang：init 后一声不吭（watchdog 击杀用）
  *  - crash：init 后 exit(1)
  *  - echo-steer：收到 steer 帧后把它放进 result.summary 证明下行通路 */
-function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer'): string {
+function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer' | 'big-frame'): string {
   const src = `
 const { createInterface } = require('node:readline')
 const dec = (${createFrameDecoder.toString()})()
@@ -50,6 +51,22 @@ rl.on('line', (line) => {
     if (msg.t === 'init') {
       if (mode === 'hang') return // 一声不吭
       if (mode === 'crash') { process.exit(1) }
+      if (mode === 'big-frame') {
+        // 大 result 帧（200KB > pipe 写缓冲 64KB）：发完立刻 process.exit(0) 会
+        // 截断未 flush 的 stdout，父侧只能合成 worker_crash——真实 session 的
+        // result 帧（transcript + messages）正是这个量级（2026-09-10 烧机实测）。
+        const pad = 'x'.repeat(200000)
+        send({ t: 'result', run: {
+          result: { workOrderId: 'wo_big', status: 'passed', summary: 'big:' + pad.length, findings: [], artifacts: [], changedFiles: [], risks: [], nextActions: [], evidenceStatus: 'verified' },
+          transcript: { text: pad, thinking: '', toolUses: [], toolResults: [], repairAttempts: 0, errors: [] },
+          usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          messages: [{ role: 'user', content: pad }],
+          turnCount: 1,
+        } })
+        // 与 child.ts 的退出契约一致：等 stdout flush 再退，否则大帧被截断。
+        process.stdout.end(() => process.exit(0))
+        return
+      }
       send({ t: 'activity', kind: 'text', detail: 'hello' })
       send({ t: 'mailbox', msg: { to: 'coordinator', type: 'finding', severity: 'info', body: 'm1' } })
     } else if (msg.t === 'steer') {
@@ -191,4 +208,105 @@ describe('OOP 运行器（真子进程假 agent）', () => {
   })
 
   after(() => rmSync(dir, { recursive: true, force: true }))
+})
+
+// ── 隔离模式（RIVET_WORKER_ISOLATION 取值）与分场景派发 ────────────────
+// `review` 模式只隔离审查类 worker（提交后审查门 + squadron 检查员）——解决
+// 2026-09-10 暴露的场景：审查 worker 卡死连累主 TUI，而非审查 worker 保持
+// 进程内的成熟路径。
+
+describe('worker 隔离模式与分场景派发', () => {
+  const original = process.env.RIVET_WORKER_ISOLATION
+  const restore = (): void => {
+    if (original === undefined) delete process.env.RIVET_WORKER_ISOLATION
+    else process.env.RIVET_WORKER_ISOLATION = original
+  }
+
+  test('未设置 / 非法值 → off（默认进程内，不误开）', () => {
+    try {
+      delete process.env.RIVET_WORKER_ISOLATION
+      assert.equal(workerIsolationMode(), 'off')
+      assert.equal(workerIsolationEnabled(), false)
+      process.env.RIVET_WORKER_ISOLATION = 'yes'
+      assert.equal(workerIsolationMode(), 'off', '非法值不得误开隔离')
+    } finally { restore() }
+  })
+
+  test('=1 / =true / =all → all', () => {
+    try {
+      for (const v of ['1', 'true', 'all']) {
+        process.env.RIVET_WORKER_ISOLATION = v
+        assert.equal(workerIsolationMode(), 'all', `=${v}`)
+        assert.equal(workerIsolationEnabled(), true)
+      }
+    } finally { restore() }
+  })
+
+  test('=review → 只把 reviewer profile 判为审查 worker', () => {
+    try {
+      process.env.RIVET_WORKER_ISOLATION = 'review'
+      assert.equal(workerIsolationMode(), 'review')
+      assert.equal(workerIsolationEnabled(), true)
+      assert.equal(isReviewWorkerProfile('reviewer'), true)
+      assert.equal(isReviewWorkerProfile('code_scout'), false)
+      assert.equal(isReviewWorkerProfile(undefined), false)
+    } finally { restore() }
+  })
+
+  test('review 模式：reviewer 走 OOP，其他 profile 走进程内', async () => {
+    const modeDir = mkdtempSync(join(tmpdir(), 'worker-mode-'))
+    const fixture = writeFixture(modeDir, 'ok')
+    const spawned: string[] = []
+    const inProcessCalls: string[] = []
+    const runner = createModeAwareRunner('review', {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 8_000,
+      entryOverride: { execArgs: [], script: fixture },
+      spawnOverride: (_e, script) => {
+        spawned.push(script)
+        return spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+      },
+    }, async () => {
+      inProcessCalls.push('called')
+      return {
+        result: {
+          workOrderId: 'wo_test', status: 'passed', summary: 'in-process',
+          findings: [], artifacts: [], changedFiles: [], risks: [], nextActions: [],
+          evidenceStatus: 'skipped', objective: 'test', profile: 'code_scout',
+        },
+        transcript: { text: '', thinking: '', toolUses: [], toolResults: [], repairAttempts: 0, errors: [] },
+        session: { getMessages: () => [] } as unknown as WorkerSessionRun['session'],
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      }
+    })
+
+    const order = makeConfig().order
+    const scoutRun = await runner(makeConfig({ order: { ...order, profile: 'code_scout' } as unknown as WorkOrder }))
+    assert.equal(scoutRun.result.summary, 'in-process', '非审查 worker 应走注入的进程内 runner')
+    assert.deepEqual(spawned, [], '非审查 worker 不得 spawn 子进程')
+    assert.deepEqual(inProcessCalls, ['called'])
+
+    await runner(makeConfig({ order: { ...order, profile: 'reviewer' } as unknown as WorkOrder }))
+    assert.equal(spawned.length, 1, '审查 worker 应走 OOP（spawn 子进程）')
+  })
+})
+
+// ── result 帧完整性（2026-09-10 真实烧机暴露）────────────────────────
+// 真实 session 的 result 帧含 transcript + messages，可达数十 KB；child 发完帧
+// 立刻 process.exit(0) 会丢弃未 flush 的 pipe 写缓冲，父侧只能合成 worker_crash。
+
+describe('OOP result 帧完整性', () => {
+  test('大 result 帧（200KB）不被 process.exit 截断', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'worker-oop-big-'))
+    const fixture = writeFixture(dir, 'big-frame')
+    const run = await runWorkerSessionOop(makeConfig(), {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 15_000,
+      entryOverride: { execArgs: [], script: fixture },
+      spawnOverride: (_e, script) => spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] }),
+    })
+    assert.equal(run.result.status, 'passed',
+      `大帧不应被截断（实际 ${run.result.status}：${run.result.summary.slice(0, 120)}）`)
+    assert.ok(run.result.summary.startsWith('big:'), `应收到完整 summary：${run.result.summary.slice(0, 80)}`)
+  })
 })

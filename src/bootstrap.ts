@@ -86,7 +86,7 @@ import { anchorsFromMessages } from './agent/reasoning-anchors.js'
 import { createProviderClient, resolveApiKey } from './api/factory.js'
 import { buildReviewOverrideState } from './agent/review-model-override.js'
 import { buildWorkerRuntime } from './agent/worker-runtime.js'
-import { createOopRunnerWithFallback, workerIsolationEnabled } from './agent/worker-process/parent.js'
+import { createModeAwareRunner, workerIsolationEnabled, workerIsolationMode } from './agent/worker-process/parent.js'
 import type { ResolvedReviewOverride } from './agent/review-model-override.js'
 import { createAuthProvider } from './auth/registry.js'
 import { resolveCapabilities } from './api/provider.js'
@@ -1060,12 +1060,14 @@ export function createAgentRuntime(deps: {
   refs.coordinator = new DelegationCoordinator({
     baseToolRegistry: toolRegistry,
     modelCards,
-    // worker 子进程隔离 v1（RIVET_WORKER_ISOLATION=1 显式开启，默认进程内）：
-    // 每次 worker 派发 spawn 独立子进程，sidecar 结构性免疫 worker 冻结/爆内存
-    // （/scout 蜂群卡死事故的结构解；协议与回退见 worker-process/parent.ts）。
+    // worker 子进程隔离（RIVET_WORKER_ISOLATION：1/all=全部 worker，review=仅审查
+    // worker，未设置=默认进程内）：每次派发 spawn 独立子进程，sidecar 结构性免疫
+    // worker 冻结/爆内存（/scout 蜂群卡死事故的结构解；协议与回退见
+    // worker-process/parent.ts）。review 是针对「审查 worker 卡死连累主 TUI」的
+    // 窄口径开关——不动其余 worker 的成熟进程内路径。
     // entry 缺失自动回退进程内——公开仓裁剪与 dev 场景零破坏。
     ...(workerIsolationEnabled()
-      ? { runWorker: createOopRunnerWithFallback({ getMemoryBlock: () => persist.buildMemoryBlock() }) }
+      ? { runWorker: createModeAwareRunner(workerIsolationMode(), { getMemoryBlock: () => persist.buildMemoryBlock() }) }
       : {}),
     // P1-6 全局并发闸输入：不再硬编码 3，配置化（见 resolveCoordinatorMaxWorkers）。
     // 该值同时是 CoordinatorState 的并发上限与 WorkOrderQueue 的容量基准——

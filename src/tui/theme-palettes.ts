@@ -39,6 +39,9 @@ export interface ThemeOverrides {
   assistantColor?: string
   muted?: string
   systemColor?: string
+  /** 正文行内代码色。缺省 = secondary——但 secondary 若在正文里大面积出现
+   *  （cyberpunk 的品红粉就是），整屏会被染色，此时在此单独指定。 */
+  inlineCode?: string
   /** 品牌词专用色（「天枢」字样、品牌星 ✦）。缺省 = primary。
    *  独立于 userColor：品牌色跟品牌走，不随「用户消息」语义色漂移。 */
   brandColor?: string
@@ -55,27 +58,43 @@ export interface ThemePaletteDef {
   background: 'dark' | 'light'
   /** /theme picker 描述文案。 */
   description: string
+  /** 语气档(2026-09,主题风格化):消费方(greeting 问候池 / guide 首启文案)
+   *  统一读 theme.voice,缺省 = 'default' 中性。新主题标 voice 即全套生效。 */
+  voice?: ThemeVoice
 }
 
+/** 语气档:default(中性)/ playful(粉彩活泼·星灵人设)/ tech(科技冷静·Nova 人设)。
+ *  与 api/greeting.ts 的 GreetingVoice 同构(结构化兼容,无需转换)。 */
+export type ThemeVoice = 'default' | 'playful' | 'tech'
+
 // ── Pastel — soft, pleasant, 二次元-inspired ──────────────────────
+// 2026-09 去紫重调(用户实锤:薰衣草紫 secondary + 正文随紫,整屏发紫怪)。
+// secondary 薰衣草 #d4a5f5 → 樱花粉 #ffa8b5(R>B 非紫族);error 珊瑚
+// #ff9aa2 → 草莓红 #ff6b81(与樱花粉拉开饱和/亮度,警示仍可辨);
+// assistantColor 显式暖纸白——正文不再跟随 secondary。
 const PASTEL: ThemePaletteDef = {
   background: 'dark',
-  description: '温和粉彩。二次元风格启发，高对比、低饱和度多色卡。',
+  description: '二次元粉彩。薄荷 × 樱花粉——小天和你的糖果色终端。',
+  voice: 'playful',
   truecolor: {
     primary: '#a8e6cf',   // mint green — search/grep/glob
-    secondary: '#d4a5f5', // lavender — edit/write
+    secondary: '#ffa8b5', // 樱花粉 — edit/write(原薰衣草紫,去紫)
     success: '#d0f0a8',   // 粉彩青柠 — 原为 #b5ead7，与 mint 主色同色相 158° 不可分（cr 1.06）
     warning: '#ffe0a3',   // 粉彩琥珀 — 原为 #ffdac1 蜜桃，与 error 珊瑚粉色相距仅 29°
-    error: '#ff9aa2',     // coral pink — errors
+    error: '#ff6b81',     // 草莓红 — 原珊瑚粉 #ff9aa2 与樱花粉 secondary 撞粉族,加深拉开
     dim: '#8585a0',       // soft gray — secondary info
     pulseQuiet: '#4a4a5a',
     pulseActive: '#a8e6cf',
-    pulseAlert: '#ff9aa2',
+    pulseAlert: '#ff6b81',
+  },
+  overrides: {
+    assistantColor: '#f2e9e0', // 暖纸白正文(原随 secondary 变紫,去紫核心)
   },
   fallback: {
     primary: 'cyan', secondary: 'magenta', success: 'green', warning: 'yellow',
     error: 'red', dim: 'gray', pulseQuiet: 'gray', pulseActive: 'cyan', pulseAlert: 'red',
   },
+  fallbackOverrides: { assistantColor: 'white' },
 }
 
 // ── Cyberpunk — neon tech-noir, tuned for legibility on near-black ──
@@ -83,12 +102,19 @@ const PASTEL: ThemePaletteDef = {
 // failed WCAG AA and vibrated against black; primary cyan-green collided with
 // success green. Fixed per dark-mode color rules (raise lightness, ease
 // saturation, split the greens, lift purple to lavender, rose over pure red).
+// 2026-09 去紫重调(用户实锤:薰衣草紫 secondary 整屏发紫怪):secondary
+// lavender #c4a3ff → 霓虹品红粉 #ff5c8a;assistantColor 显式冷白。
+// 2026-09 正文去红:markdown.ts 的行内代码改取 inlineCode(见 overrides),不再
+// 直接吃 secondary——正文里文件名/函数名/命令出现频率极高,染成品红粉即整屏
+// 发红。secondary 保留赛博粉红(工具卡/扫光尾/side-panel 标题等点缀位),
+// inlineCode 单独取冰蓝 #7aa2f7(H221,离粉红 122°、离 primary 青 30°)。
 const CYBERPUNK: ThemePaletteDef = {
   background: 'dark',
-  description: '赛博朋克。霓虹极高对比，酷炫亮眼。',
+  description: '赛博朋克·霓虹夜城。电青 × 品红粉 synthwave——Nova 的终端夜之城。',
+  voice: 'tech',
   truecolor: {
     primary: '#48c6e2',   // cyan-400 — desaturated cyan to avoid rgb halation
-    secondary: '#c4a3ff', // lavender — readable violet 9:1
+    secondary: '#ff5c8a', // 霓虹品红粉 — 工具卡/扫光尾/面板标题等点缀位
     success: '#4ade80',   // green-400
     warning: '#fbbf24',   // amber-400
     error: '#e27585',     // rose-400 — softened rose red
@@ -97,10 +123,15 @@ const CYBERPUNK: ThemePaletteDef = {
     pulseActive: '#48c6e2',
     pulseAlert: '#e27585',
   },
+  overrides: {
+    assistantColor: '#e8eef6', // 冷白正文(原随 secondary 变紫,去紫核心)
+    inlineCode: '#7aa2f7',     // 正文行内代码专用冰蓝——大面积出现,不吃粉红
+  },
   fallback: {
     primary: 'cyan', secondary: 'magenta', success: 'green', warning: 'yellow',
     error: 'red', dim: 'gray', pulseQuiet: 'gray', pulseActive: 'cyan', pulseAlert: 'red',
   },
+  fallbackOverrides: { assistantColor: 'white', inlineCode: 'blue' },
 }
 
 // ── Observatory — 五色星辰（中国传统五色体系）──────────────────────
@@ -327,6 +358,7 @@ const DAWN: ThemePaletteDef = {
 const ANTIGRAVITY: ThemePaletteDef = {
   background: 'dark',
   description: 'Codex 风格。天青色冷调 Accent，亮灰结构文本，现代而克制。',
+  voice: 'tech',
   truecolor: {
     primary: '#5aa9ff',   // cool azure (desktop --accent)
     secondary: '#8ab4ff', // 浅天青
@@ -414,6 +446,7 @@ const GRAPHITE: ThemePaletteDef = {
 const GEMINI: ThemePaletteDef = {
   background: 'dark',
   description: 'Gemini 风格。结合星云微光渐变 (冷靛蓝与星云紫) 与极光薄荷，极具科技美感。',
+  voice: 'tech',
   truecolor: {
     primary: '#818cf8',      // Gemini Indigo
     secondary: '#c084fc',    // Nebula Violet

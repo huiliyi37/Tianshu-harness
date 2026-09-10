@@ -10,7 +10,9 @@
  */
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
-import { loadConfig, saveConfig } from '../config/manager.js'
+import { readFileSync } from 'node:fs'
+import { loadConfig, saveConfig, findProjectConfig } from '../config/manager.js'
+import { isProjectTrusted } from '../config/project-trust.js'
 import type { McpManager } from '../mcp/manager.js'
 import { mcpServerConfigSchema, type McpServerConfig } from '../mcp/config.js'
 import { MCP_PRESETS } from '../mcp/presets.js'
@@ -19,7 +21,7 @@ import type { Tool } from '../tools/types.js'
 import { findMcpOAuthProvider } from '../mcp/oauth/providers.js'
 import { startMcpOAuth, loadMcpOAuthToken, revokeMcpOAuth } from '../mcp/oauth/connector.js'
 import type { McpOAuthToken } from '../mcp/oauth/types.js'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, dirname } from 'node:path'
 
 function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
   return async (body, params, headers, res) => {
@@ -39,6 +41,37 @@ function persistMcpServers(servers: Record<string, McpServerConfig>): void {
   const cfg = loadConfig()
   cfg.mcp.servers = servers
   saveConfig(cfg)
+}
+
+/**
+ * 项目级 `mcp.servers` 是否因「项目未授信」被 loadConfig 剥离。
+ *
+ * 信任门（config/project-trust）对未授信项目剥离安全敏感键，`mcp.servers` 在
+ * 剥离清单内（layered-config.test.ts 断言其长度为 0）。随后 `initializeMcp`
+ * 第一行就因 `servers` 为空而整体跳过——终端用户看到的是「MCP 服务器全没了」，
+ * 而 UI 上没有任何线索指向原因：剥离通知走 stderr（notifyUntrustedOnce），
+ * 桌面端不可见。
+ *
+ * 这里把事实暴露给 `GET /mcp/status`，让面板能直接说清「为什么是空的、怎么恢复」，
+ * 而不是让用户和排查者对着空列表猜。返回 null = 无需提示（已授信 / 无项目配置 /
+ * 项目里本就没有 MCP）。
+ */
+export function detectStrippedProjectMcp(
+  cwd: string,
+): { projectPath: string; serverCount: number } | null {
+  const projectPath = findProjectConfig(cwd)
+  if (!projectPath) return null
+  if (isProjectTrusted(dirname(projectPath))) return null
+  try {
+    const raw = JSON.parse(readFileSync(projectPath, 'utf-8')) as {
+      mcp?: { servers?: Record<string, unknown> }
+    }
+    const count = Object.keys(raw.mcp?.servers ?? {}).length
+    return count > 0 ? { projectPath, serverCount: count } : null
+  } catch {
+    // 坏 JSON 由 loadConfig 抛 ConfigLoadError 负责报错，这里不重复报。
+    return null
+  }
 }
 
 export interface McpRouteDeps {
@@ -69,7 +102,7 @@ export function buildMcpRoutes(
 
   return {
     // GET /mcp/status — live connection states from the running McpManager.
-    'GET /mcp/status': withAuth(() => {
+    'GET /mcp/status': withAuth((_body, params) => {
       const mgr = getMgr()
       const servers = mgr ? mgr.getStates() : []
       const configServers = cloneMcpServers()
@@ -94,6 +127,13 @@ export function buildMcpRoutes(
           /** True while the sidecar MCP manager is still booting (POST will
            *  persist config and be picked up by reconcile when ready). */
           managerReady: mgr != null,
+          /** 项目级 MCP 被信任门剥离时的实情——桌面端据此解释空列表，
+           *  而不是让用户对着「什么都没有」猜。null = 无需提示。
+           *  cwd 由调用方给出：桌面端的项目是会话工作区，而 sidecar 进程的
+           *  cwd 未必是它（Rust 侧只在 spec.cwd 存在时才 current_dir）。 */
+          configStripped: detectStrippedProjectMcp(
+            typeof params?.cwd === 'string' && params.cwd.trim() ? params.cwd.trim() : process.cwd(),
+          ),
         },
       }
     }, token),

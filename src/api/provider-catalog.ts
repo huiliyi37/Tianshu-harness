@@ -33,6 +33,13 @@ export interface ProviderWireConfig {
   /** Custom User-Agent for the upstream API. */
   userAgent?: string
   /**
+   * Header name carrying the stable per-conversation session ID. Defaults to
+   * 'X-Request-Session'. Upstreams that mandate their own header name declare
+   * it here — OpenCode Go requires `x-opencode-session` and answers 400
+   * MissingSessionID without it (verified against the live endpoint).
+   */
+  sessionHeader?: string
+  /**
    * Thinking-stall default (ms) for providers prone to stalling on pure
    * thinking phases. undefined = disabled (falls back to read timeout).
    * Semantics: chunk-idle window, not total duration — far below the 300s
@@ -43,6 +50,18 @@ export interface ProviderWireConfig {
    */
   thinkingStallTimeoutMs?: number
 }
+
+// ─── Caller identity ─────────────────────────────────────────
+
+/**
+ * User-Agent sent to upstreams that verify caller identity. OpenCode Go's docs
+ * ask every client to "identify itself with its own user agent … rather than a
+ * generic SDK or HTTP-library name" — so this must stay 天枢's own name, never
+ * a library default like `undici`. Version comes from tsup's RIVET_VERSION
+ * define (absent in dev/test builds). UA rides outside the request body, so it
+ * cannot perturb the prefix cache.
+ */
+export const TIANSHU_USER_AGENT = `tianshu-tui/${process.env.RIVET_VERSION ?? 'dev'}`
 
 // ─── Catalog entry ───────────────────────────────────────────
 
@@ -124,10 +143,23 @@ const CATALOG_META: Record<string, CatalogMeta> = {
   },
   'opencode-go': {
     label: 'OpenCode Go',
+    // name 层兜底：host 规则覆盖直连（也覆盖手工配置的 anthropic 形态），但用户
+    // 经本地中转 / 自建网关（baseUrl 不是 opencode.ai）时 host 不匹配——只要名字
+    // 还认得出是 OpenCode Go，头就该照发。
+    wire: { userAgent: TIANSHU_USER_AGENT, sessionHeader: 'x-opencode-session' },
     notes: [
-      'No thinking block (effort passthrough only)',
-      'No thinking effort control',
+      'No thinking block — reasoning arrives as reasoning_content with no params needed',
+      'reasoning_effort is accepted (low|medium|high|max|xhigh, all 200) and passed through verbatim',
       'No cache support',
+      'Upstream requires x-opencode-session (stable per conversation) + a non-generic User-Agent; wire rules are host-keyed in HOST_WIRE_RULES',
+    ],
+  },
+  'opencode-go-anthropic': {
+    label: 'OpenCode Go (Anthropic 协议)',
+    wire: { userAgent: TIANSHU_USER_AGENT, sessionHeader: 'x-opencode-session' },
+    notes: [
+      'Anthropic /v1/messages endpoint of the same upstream',
+      'Same session/UA requirements as opencode-go',
     ],
   },
   openai: {
@@ -204,6 +236,48 @@ const CATALOG_META: Record<string, CatalogMeta> = {
       '与 ccswitch 同模板：reasoning_effort 透传，Rectifier 翻译为上游原生格式',
     ],
   },
+}
+
+// ─── Host-keyed wire rules ───────────────────────────────────
+
+/**
+ * Wire rules keyed by upstream host, for providers whose *name* cannot identify
+ * them. OpenCode Go is the driving case: its Anthropic-protocol endpoint is
+ * registered under `name: 'anthropic'` (factory dispatches on `protocol`), so a
+ * name-only lookup misses the session header and every request comes back
+ * 400 MissingSessionID.
+ */
+const HOST_WIRE_RULES: ReadonlyArray<{ host: string; wire: ProviderWireConfig }> = [
+  {
+    host: 'opencode.ai',
+    wire: { userAgent: TIANSHU_USER_AGENT, sessionHeader: 'x-opencode-session' },
+  },
+]
+
+function hostWireRule(baseUrl: string | undefined): ProviderWireConfig | undefined {
+  if (!baseUrl) return undefined
+  let host: string
+  try {
+    // WHATWG URL 保留 FQDN 尾点（https://opencode.ai./v1 → 'opencode.ai.'），
+    // 不剥掉会让同一上游因写法不同而静默丢头。
+    host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return undefined
+  }
+  return HOST_WIRE_RULES.find(r => host === r.host || host.endsWith(`.${r.host}`))?.wire
+}
+
+/**
+ * Wire quirks for a provider: the catalog entry's own rules merged over any
+ * host rule (the entry is the more specific statement, so it wins on conflicts).
+ * Returns undefined when neither applies — callers then send no UA and the
+ * default session header name.
+ */
+export function resolveProviderWire(name: string, baseUrl?: string): ProviderWireConfig | undefined {
+  const byName = CATALOG_META[name]?.wire
+  const byHost = hostWireRule(baseUrl)
+  if (!byName && !byHost) return undefined
+  return { ...byHost, ...byName }
 }
 
 // ─── Catalog assembly ────────────────────────────────────────

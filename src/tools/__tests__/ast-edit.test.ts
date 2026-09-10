@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { writeFile, mkdir, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { cpuPool } from '../../workers/cpu-pool.js'
 import type { Tool, ToolCallParams } from '../types.js'
 
 let astEdit: Tool
@@ -307,5 +309,89 @@ describe('ast_edit path validation', () => {
       dryRun: true,
     })
     assert.ok(out.length > 0)
+  })
+})
+
+// ── Wave 5：解析隔离（worker 通道）────────────────────────────────────
+// ast_edit 的 native AST 操作（parse / findAll / commitEdits / 最终语法检查）
+// 搬进 worker 线程；**写文件仍在主线程**——审批、备份、写后语法复检与回滚
+// 保持单一入口。不可用/超时一律报错降级，不回退主线程解析（回退等于把
+// 2026-09-10 的冻结风险请回来）。
+
+/** 子进程跑一次 ast_edit：cpu-pool 的 DISABLED 是模块加载时常量，同进程内改
+ *  env 无效，只能在子进程里设。dryRun 默认 true——不写文件。 */
+const RUN_AST_EDIT = `
+import { AST_EDIT_TOOL } from './src/tools/ast-edit.ts'
+const r = await AST_EDIT_TOOL.execute({
+  input: { ops: [{ find: 'var $NAME = $VAL', replace: 'const $NAME = $VAL' }], paths: ['src/tools/ast-edit.ts'], lang: 'TypeScript' },
+  cwd: process.cwd(),
+  toolUseId: 'probe',
+  abortSignal: new AbortController().signal,
+})
+console.log('IS_ERROR=' + String(r.isError) + '|' + r.content.slice(0, 200).replace(/\\n/g, ' '))
+`
+
+function runAstEditInChild(env: Record<string, string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', RUN_AST_EDIT], {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    let err = ''
+    const fail = (e: Error): void => {
+      try { child.kill() } catch { /* already gone */ }
+      reject(e)
+    }
+    child.stdout.on('data', (c: Buffer) => { out += String(c) })
+    child.stderr.on('data', (c: Buffer) => { err += String(c) })
+    child.on('error', fail)
+    child.on('close', (code) => {
+      if (code !== 0) fail(new Error(`child exited ${code}: ${err.slice(0, 300)}`))
+      else resolve(out)
+    })
+  })
+}
+
+describe('ast-edit 解析隔离（Wave 5：worker 通道）', () => {
+  it('RIVET_CPU_POOL=0：报「AST 解析不可用」且不回退主线程解析', async () => {
+    const out = await Promise.race([
+      runAstEditInChild({ RIVET_CPU_POOL: '0' }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('子进程未退出')), 30_000)),
+    ])
+    assert.ok(out.includes('IS_ERROR=true'), `应为错误结果：${out}`)
+    assert.ok(out.includes('AST 解析不可用'), `应报解析不可用降级文案：${out}`)
+    assert.ok(out.includes('grep'), `应提示改用 grep：${out}`)
+  })
+
+  it('worker 可用时走 worker 通道并正常返回更改', async () => {
+    const out = await Promise.race([
+      runAstEditInChild({ RIVET_CPU_POOL_IDLE_MS: '100' }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('子进程未退出')), 30_000)),
+    ])
+    assert.ok(out.includes('IS_ERROR=undefined'), `应成功返回：${out}`)
+    assert.ok(out.includes('处更改'), `应返回更改摘要：${out}`)
+  })
+
+  it('pool 不可用时：在窗口内返回降级文案，不挂起', async () => {
+    // 确定性触发（同 ast-grep.test.ts）：dispose 让 pool 永久不可用 → 走降级分支。
+    cpuPool.dispose()
+    try {
+      const t0 = Date.now()
+      const result = await astEdit.execute({
+        input: { ops: [{ find: 'var $NAME = $VAL', replace: 'const $NAME = $VAL' }], paths: ['sample.ts'], lang: 'TypeScript' },
+        cwd: testDir,
+        toolUseId: 'test-edit-timeout',
+        abortSignal: new AbortController().signal,
+        onOutput: undefined,
+      } as unknown as ToolCallParams)
+      const elapsed = Date.now() - t0
+      assert.equal(result.isError, true, `应降级为错误，实际：${result.content}`)
+      assert.ok(result.content.includes('AST 解析不可用'), `应报降级文案：${result.content}`)
+      assert.ok(elapsed < 10_000, `应在超时窗口内返回，实际 ${elapsed}ms`)
+    } finally {
+      delete process.env.RIVET_AST_SCAN_TIMEOUT_MS
+    }
   })
 })

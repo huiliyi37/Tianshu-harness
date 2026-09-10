@@ -1097,9 +1097,9 @@ export class CompactionController {
     // 摘要替换，模型下一请求看到的是压缩版指令（用户观感 = 消息被截断）。
     // 判据「末尾即 user」复用 history-invariant 探针口径：末尾 user 必未被模型消费
     // （消费后会接 assistant 回复）；turn 内工具循环中末尾是 assistant/tool，不命中，
-    // 压缩范围与旧行为一致。
+    // 压缩范围与旧行为一致。>= 含 index === CACHE_ANCHOR_MESSAGES 的最小 3 条边界。
     const tail = messages[messages.length - 1]
-    const tailIsFreshUser = tail?.role === 'user' && messages.length - 1 > CACHE_ANCHOR_MESSAGES
+    const tailIsFreshUser = tail?.role === 'user' && messages.length - 1 >= CACHE_ANCHOR_MESSAGES
     const archiveEnd = tailIsFreshUser ? messages.length - 1 : messages.length
     const tailPreserved: OaiMessage[] = tailIsFreshUser ? [tail] : []
 

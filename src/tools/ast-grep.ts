@@ -1,16 +1,8 @@
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
-import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { loadAstGrepNapi } from './ast-grep-napi.js'
-import {
-  inferLang,
-  resolveLang,
-  collectFiles,
-  collectMetaVarNames,
-  buildLangMap,
-  isDynamicLang,
-  ensureDynamicLangsRegistered,
-} from './ast-shared.js'
+import { cpuPool } from '../workers/cpu-pool.js'
+import type { AstScanArgs, AstScanMatch, AstScanResult } from '../workers/cpu-tasks.js'
+import { MAX_PARSE_FILE_BYTES, astScanSoftMs, astScanUnavailable, collectFiles, resolveRuleOrPattern } from './ast-shared.js'
 
 export interface AstGrepInput {
   pattern: string
@@ -20,13 +12,9 @@ export interface AstGrepInput {
   includeMeta?: boolean
 }
 
-export interface AstGrepMatch {
-  file: string
-  line: number
-  column: number
-  matchText: string
-  metaVariables?: Record<string, string>
-}
+/** 匹配结果的对外形状——直接复用 worker 通道回传的纯数据类型，两处共用一份
+ *  定义，避免「工具认一种、worker 认另一种」的漂移。 */
+export type AstGrepMatch = AstScanMatch
 
 function formatMatch(m: AstGrepMatch, includeMeta: boolean): string {
   // Multi-line matches (e.g. a whole function) would dump the body into the
@@ -46,10 +34,6 @@ function formatMatch(m: AstGrepMatch, includeMeta: boolean): string {
 
 /** 空结果首行前缀——search-pod-hook 靠 startsWith 识别；改文案必须与 hook 同步。 */
 export const AST_GREP_EMPTY_PREFIX = '0 处匹配'
-
-/** 文件循环让出间隔：readFileSync + tree-sitter 同步解析全仓文件是一个长同步
- *  段，同进程 worker 执行时会冻结 TUI 输入——每处理 20 个文件让出一次事件循环。 */
-const YIELD_EVERY_FILES = 20
 
 /** 格式化匹配计数摘要行（空结果时以 AST_GREP_EMPTY_PREFIX 开头）。 */
 export function formatAstGrepSummary(matchCount: number, filesScanned: number, errorCount: number): string {
@@ -80,19 +64,10 @@ export const AST_GREP_TOOL: Tool = {
     const pattern = String(input.pattern ?? '').trim()
     if (!pattern) return { content: '错误：需要提供 pattern', isError: true }
 
-    // Parse the pattern once: a bare pattern string and a `{ rule: ... }` JSON
-    // object are both valid ast-grep inputs. Detect rule objects early so we
-    // can skip the regex-misuse guard on their internal fields.
-    let ruleOrPattern: string | Record<string, unknown> = pattern
-    let isRuleObject = false
-    try {
-      const parsed = JSON.parse(pattern)
-      if (parsed && typeof parsed === 'object' && 'rule' in parsed) {
-        ruleOrPattern = parsed
-        isRuleObject = true
-      }
-    } catch { /* not JSON — use as bare pattern string */ }
-
+    // pattern 形态判定：裸串与 `{ rule: … }` JSON 都合法。此处只需要
+    // isRuleObject 决定 regex 误用护栏是否跳过对象内部字段；真正的匹配在
+    // worker 内用同一判定（ast-shared.resolveRuleOrPattern）。
+    const { isRuleObject } = resolveRuleOrPattern(pattern)
     // Regex-misuse guard: ast_grep uses ast-grep pattern syntax ($NAME, $$NAME),
     // not regular expressions. \d \w \1 etc. will not work as intended.
     if (!isRuleObject && /\\[dDwWsSbB1-9]/.test(pattern)) {
@@ -102,17 +77,16 @@ export const AST_GREP_TOOL: Tool = {
       }
     }
 
-    const paths = Array.isArray(input.paths) ? (input.paths as string[]).filter(p => typeof p === 'string') : ['.']
+    // path（单数）别名：schema 只声明 paths，但模型/worker 常写成单数。忽略它
+    // 会静默退化为 ['.'] 全仓扫描——2026-09-10 卡死事故的直接触发条件。
+    const paths = Array.isArray(input.paths)
+      ? (input.paths as unknown[]).filter((p): p is string => typeof p === 'string')
+      : typeof input.path === 'string' && input.path.trim()
+        ? [input.path.trim()]
+        : ['.']
     const explicitLang = typeof input.lang === 'string' && input.lang.trim() ? input.lang.trim() : undefined
     const limit = typeof input.limit === 'number' && input.limit > 0 ? input.limit : 50
     const includeMeta = input.includeMeta === true
-
-    // Dynamic import — @ast-grep/napi is a precompiled native addon
-    const loaded = await loadAstGrepNapi()
-    if (!loaded.ok) {
-      return { content: loaded.message, isError: true }
-    }
-    const napi = loaded.napi
 
     const allFiles: string[] = []
     for (const p of paths) {
@@ -125,113 +99,39 @@ export const AST_GREP_TOOL: Tool = {
       }
     }
 
-    const matches: AstGrepMatch[] = []
-    const errors: string[] = []
-    let filesScanned = 0
-
-    // Lang uses non-enumerable getters — build the map from the resolved napi.
-    const LANG_MAP = buildLangMap(napi)
-    // Register dynamic languages (python/json) once before any parse — lazy,
-    // single-shot, degrades gracefully if the lang-* package is missing.
-    await ensureDynamicLangsRegistered(napi)
-
-    let filesProcessed = 0
-    for (const filePath of allFiles) {
-      // Slice the scan into event-loop-yieldable chunks (see YIELD_EVERY_FILES).
-      if (filesProcessed > 0 && filesProcessed % YIELD_EVERY_FILES === 0) {
-        await new Promise<void>(r => setImmediate(r))
-      }
-      filesProcessed++
-
-      const langStr = resolveLang(explicitLang, filePath)
-      if (!langStr) {
-        errors.push(`${filePath}: 不支持的语言（该扩展名无语法）`)
-        continue
-      }
-
-      // Dynamic languages (python/json) are parsed by their registered name;
-      // built-in languages go through napi.Lang.X via LANG_MAP.
-      const langValue = isDynamicLang(langStr) ? langStr : LANG_MAP[langStr]
-      // runtime assertion: napi.Lang uses non-enumerable getters — verify we got a real string
-      if (typeof langValue !== 'string') {
-        errors.push(`${filePath}: LANG_MAP 对 "${langStr}" 返回了非字符串——可能是 @ast-grep/napi API 变更`)
-        continue
-      }
-
-      let source: string
-      try {
-        source = readFileSync(filePath, 'utf-8')
-      } catch {
-        errors.push(`${filePath}: 无法读取文件`)
-        continue
-      }
-
-      filesScanned++
-
-      let root: ReturnType<ReturnType<typeof napi.parse>['root']>
-      try {
-        root = napi.parse(langValue, source).root()
-      } catch {
-        errors.push(`${filePath}: 解析错误`)
-        continue
-      }
-
-      // tree-sitter error recovery produces ERROR nodes — detect broken syntax
-      const errorNodes = root.findAll({ rule: { kind: 'ERROR' } } as unknown as string)
-      if (errorNodes.length > 0) {
-        errors.push(`${filePath}: 解析错误（${errorNodes.length} 处语法错误）`)
-        continue
-      }
-
-      let found
-      try {
-        found = root.findAll(ruleOrPattern as string)
-      } catch {
-        errors.push(`${filePath}: pattern 编译错误`)
-        continue
-      }
-
-      for (const node of found) {
-        if (matches.length >= limit) break
-        const range = node.range()
-        const line = range.start.line + 1
-        const col = range.start.column + 1
-        const match: AstGrepMatch = { file: filePath, line, column: col, matchText: node.text() }
-        if (includeMeta) {
-          match.metaVariables = {}
-          // extract meta-variables from named pattern captures ($NAME, $$ARGS etc.)
-          const metaVarDefs = collectMetaVarNames(pattern)
-          for (const { name, multi } of metaVarDefs) {
-            if (multi) {
-              const mvs = node.getMultipleMatches(name)
-              if (mvs && mvs.length > 0) {
-                // Shape summary, not raw text: a $$$BODY capture can span an
-                // entire function (KB of source). The model needs the SHAPE
-                // (how big, what it starts with) to judge whether the match is
-                // sane — the full text is read_file's job. Precise counts avoid
-                // ambiguity: "8 lines" is unambiguous, a truncated code blob is not.
-                const texts = mvs.map(n => n.text())
-                const nodeCount = texts.length
-                const lineCount = texts.reduce((sum, t) => sum + t.split('\n').length, 0)
-                const firstLine = texts[0]!.split('\n')[0]!.trim().slice(0, 50)
-                match.metaVariables[name] = `${nodeCount}n/${lineCount}L: ${firstLine}`
-              }
-            } else {
-              const mv = node.getMatch(name)
-              if (mv) match.metaVariables[name] = mv.text().slice(0, 120)
-            }
-          }
-        }
-        matches.push(match)
-      }
-      if (matches.length >= limit) break
+    // 解析整段在 worker 线程执行（cpu-tasks.astScanRaw）：native parse 同步阻塞
+    // 事件循环，留在主线程等于保留 2026-09-10 的假死形态。worker 不可用/超时
+    // 一律报错降级，**不回退主线程**。
+    const scanArgs: AstScanArgs = {
+      files: allFiles,
+      pattern,
+      explicitLang,
+      limit,
+      includeMeta,
+      maxBytes: MAX_PARSE_FILE_BYTES,
     }
 
-    const summary = formatAstGrepSummary(matches.length, filesScanned, errors.length)
-    const body = matches.map(m => formatMatch(m, includeMeta)).join('\n')
-    const errorSection = errors.length > 0 ? `\n\n错误：\n${errors.map(e => `  - ${e}`).join('\n')}` : ''
+    let scan: AstScanResult
+    try {
+      scan = await cpuPool.run('astScanRaw', [scanArgs], astScanSoftMs()) as AstScanResult
+    } catch (err) {
+      return {
+        content: astScanUnavailable(err instanceof Error ? err.message : String(err)),
+        isError: true,
+      }
+    }
+    // napi 加载失败：原样回传 worker 侧诊断（不掩盖 cause），同样不回退主线程。
+    if (scan.loadError) return { content: scan.loadError, isError: true }
 
-    return { content: `${summary}\n\n${body}${errorSection}` }
+    const summary = formatAstGrepSummary(scan.matches.length, scan.filesScanned, scan.errors.length)
+    const body = scan.matches.map(m => formatMatch(m, includeMeta)).join('\n')
+    const errorSection = scan.errors.length > 0 ? `\n\n错误：\n${scan.errors.map(e => `  - ${e}`).join('\n')}` : ''
+    const skipSection = scan.skipped.length > 0 ? `\n\n跳过：\n${scan.skipped.map(s => `  - ${s}`).join('\n')}` : ''
+    const degradeSection = scan.degraded.length > 0
+      ? `\n\n解析降级（以下文件有 tree-sitter 错误恢复区，匹配可能不完整）：\n${scan.degraded.map(d => `  - ${d}`).join('\n')}`
+      : ''
+
+    return { content: `${summary}\n\n${body}${errorSection}${skipSection}${degradeSection}` }
   },
 
   requiresApproval: () => false,

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { ReadableStream } from 'node:stream/web'
 
 import {
   buildCriteriaExtractionUser,
@@ -99,5 +100,109 @@ describe('buildCheapClient', () => {
     }
     const result = buildCheapClient({ provider: 'test', model: 'm' }, providers as unknown as Record<string, ProviderConfig>)
     assert.equal(result, null)
+  })
+})
+
+// ── buildCheapClient 的会话 ID 透传 ──────────────────────────────────
+// 判据抽取是主会话的 side-path。不带会话 ID 时会落到 factory 的进程级兜底，
+// 多会话同进程（桌面端多窗口）下上游会把这些请求当成同一段对话；带了才
+// 与所在会话同源。这条断言直接钉住新参数的接线。
+
+function goalCheapProvider(): ProviderConfig {
+  return {
+    name: 'deepseek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    protocol: 'openai',
+    capabilities: {
+      cacheControl: false,
+      stripParams: [],
+      toolJsonBug: true,
+      prefixCache: 'deepseek-native',
+      prefixCompletion: true,
+    },
+    thinking: 'enabled',
+    maxTokens: 8192,
+    models: [{ id: 'deepseek-v4-flash', contextWindow: 128_000, maxTokens: 8192 }],
+    unsupported: [],
+    apiKey: 'sk-test',
+  }
+}
+
+describe('buildCheapClient 会话 ID', () => {
+  it('把调用方的 sessionId 透传给 client 的请求头', async () => {
+    const built = buildCheapClient(
+      { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      { deepseek: goalCheapProvider() },
+      'sess-goal-1',
+    )
+    assert.ok(built, 'provider 配置齐全时应能构建 client')
+
+    const originalFetch = globalThis.fetch
+    let captured: Record<string, string> = {}
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      captured = (init?.headers ?? {}) as Record<string, string>
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          controller.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      await built.client.stream(
+        { model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 } as never,
+        {
+          onTextDelta: () => {},
+          onThinkingDelta: () => {},
+          onContentBlock: () => {},
+          onStopReason: () => {},
+          onError: () => {},
+        } as never,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.equal(captured['X-Request-Session'], 'sess-goal-1')
+  })
+
+  it('未传 sessionId 时不带该头（普通 provider 不被污染）', async () => {
+    const built = buildCheapClient(
+      { provider: 'deepseek', model: 'deepseek-v4-flash' },
+      { deepseek: goalCheapProvider() },
+    )
+    assert.ok(built)
+
+    const originalFetch = globalThis.fetch
+    let captured: Record<string, string> = {}
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      captured = (init?.headers ?? {}) as Record<string, string>
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          controller.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      await built.client.stream(
+        { model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 } as never,
+        {
+          onTextDelta: () => {},
+          onThinkingDelta: () => {},
+          onContentBlock: () => {},
+          onStopReason: () => {},
+          onError: () => {},
+        } as never,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.equal(captured['X-Request-Session'], undefined)
   })
 })

@@ -521,3 +521,208 @@ describe('resolveApiKey', () => {
     assert.throws(() => resolveApiKey(provider), /No API key configured/)
   })
 })
+
+// ── OpenCode Go：上游强制 x-opencode-session ──────────────────────────────
+// 实测（2026-09，真实 key 打 https://opencode.ai/zen/go）：
+//   POST /v1/chat/completions 缺头 → 400 {"type":"MissingSessionID"}
+//   POST /v1/messages         缺头 → 400 {"type":"MissingSessionID"}
+//   两者带上 x-opencode-session 后 → 200
+// 该 provider 的 Anthropic 形态在用户配置里的 name 是 'anthropic'（catalog 无同名
+// 条目），所以 wire 必须能按 baseUrl host 解析，只按 provider name 查表会漏。
+describe('OpenCode Go wire headers', () => {
+  const opencodeCapabilities = {
+    cacheControl: false,
+    stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
+    toolJsonBug: false,
+    prefixCache: 'none' as const,
+    prefixCompletion: false,
+  }
+
+  const opencodeOpenAi: ProviderConfig = {
+    name: 'opencode-go',
+    baseUrl: 'https://opencode.ai/zen/go/v1',
+    protocol: 'openai',
+    capabilities: opencodeCapabilities,
+    thinking: 'enabled',
+    maxTokens: 64000,
+    models: [{ id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 64000 }],
+    unsupported: [],
+  }
+
+  const opencodeAnthropic: ProviderConfig = {
+    // 用户配置里 anthropic 形态的 name 就是 'anthropic'——不是 opencode-go-*
+    name: 'anthropic',
+    baseUrl: 'https://opencode.ai/zen/go',
+    protocol: 'anthropic',
+    capabilities: {
+      cacheControl: true,
+      stripParams: [],
+      toolJsonBug: false,
+      prefixCache: 'anthropic-cache-control',
+      prefixCompletion: false,
+    },
+    thinking: 'enabled',
+    maxTokens: 64000,
+    models: [{ id: 'qwen3.7-max', contextWindow: 1_000_000, maxTokens: 64000 }],
+    unsupported: [],
+  }
+
+  /** Capture the outgoing request while answering with a minimal valid stream. */
+  async function captureRequest(
+    client: { stream: (req: never, cb: never) => Promise<void> },
+    sse: string,
+  ): Promise<{ headers: Record<string, string>; body: Record<string, unknown> }> {
+    const originalFetch = globalThis.fetch
+    let captured: { headers: Record<string, string>; body: Record<string, unknown> } = { headers: {}, body: {} }
+    globalThis.fetch = mock.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      captured = {
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      }
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(sse))
+          controller.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await client.stream(
+        { model: 'x', messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 } as never,
+        {
+          onTextDelta: () => {},
+          onThinkingDelta: () => {},
+          onContentBlock: () => {},
+          onStopReason: () => {},
+          onError: () => {},
+        } as never,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    return captured
+  }
+
+  async function captureHeaders(
+    client: { stream: (req: never, cb: never) => Promise<void> },
+    sse: string,
+  ): Promise<Record<string, string>> {
+    return (await captureRequest(client, sse)).headers
+  }
+
+  it('OpenAI 协议形态发出 x-opencode-session 与专属 UA', async () => {
+    const client = createProviderClient(
+      opencodeOpenAi,
+      resolveCapabilities('opencode-go'),
+      { ...runtimeParams, model: 'deepseek-v4-flash', sessionId: 'session-abc-123' },
+    )
+    const headers = await captureHeaders(
+      client as never,
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+    assert.equal(headers['x-opencode-session'], 'session-abc-123')
+    assert.match(headers['User-Agent'] ?? '', /^tianshu-tui\//, 'UA 必须是天枢自己的标识，不能是 SDK/HTTP 库名')
+  })
+
+  it('Anthropic 协议形态（provider name = anthropic）同样按 baseUrl host 命中 wire', async () => {
+    const client = createProviderClient(
+      opencodeAnthropic,
+      resolveCapabilities('anthropic', opencodeAnthropic.capabilities),
+      { ...runtimeParams, model: 'qwen3.7-max', sessionId: 'session-abc-123' },
+    )
+    const headers = await captureHeaders(
+      client as never,
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\ndata: {"type":"message_stop"}\n\n',
+    )
+    assert.equal(headers['x-opencode-session'], 'session-abc-123')
+    assert.match(headers['User-Agent'] ?? '', /^tianshu-tui\//)
+  })
+
+  it('非 OpenCode 端点不被注入该头（避免污染其他 provider）', async () => {
+    const client = createProviderClient(
+      deepseekProvider,
+      resolveCapabilities('deepseek'),
+      { ...runtimeParams, model: 'deepseek-r1', sessionId: 'session-abc-123' },
+    )
+    const headers = await captureHeaders(
+      client as never,
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+    assert.equal(headers['x-opencode-session'], undefined)
+  })
+
+  it('wire 要求 session 头但调用方漏传 sessionId 时，仍发出稳定的兜底 ID（否则上游 400）', async () => {
+    const client = createProviderClient(
+      opencodeOpenAi,
+      resolveCapabilities('opencode-go'),
+      { ...runtimeParams, model: 'deepseek-v4-flash' }, // 无 sessionId
+    )
+    const headers = await captureHeaders(
+      client as never,
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+    assert.ok(headers['x-opencode-session'], '缺 sessionId 时必须有兜底 ID')
+    const again = await captureHeaders(
+      client as never,
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+    assert.equal(
+      headers['x-opencode-session'],
+      again['x-opencode-session'],
+      '兜底 ID 进程内稳定——每请求随机会让上游无法做会话路由亲和',
+    )
+  })
+
+  // 推理透传：capability 里 effortFormat='none' / thinkingBlockType='none' 会让
+  // openai-client 两个分支都不写 reasoning_effort（L518-548），用户的档位选择被静默
+  // 吞掉。上游实测接受 reasoning_effort（low/medium/high/max/xhigh 全 200），是否照
+  // 档位调节由上游决定——但天枢的职责是把用户选的档位原样送到，不能丢。
+  it('透传 reasoning_effort（配置档位不被 capability 静默吞掉）', async () => {
+    const client = createProviderClient(
+      opencodeOpenAi,
+      resolveCapabilities('opencode-go'),
+      { ...runtimeParams, model: 'deepseek-v4-flash', reasoningEffort: 'max', sessionId: 'session-abc-123' },
+    )
+    const { body } = await captureRequest(
+      client as never,
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+    assert.equal(body.reasoning_effort, 'max')
+    assert.equal(body.thinking, undefined, '不发 thinking 块——上游默认已返回 reasoning_content')
+  })
+
+  it('请求级 reasoning_effort 同样透传（侧路/worker 按次覆盖）', async () => {
+    const client = createProviderClient(
+      opencodeOpenAi,
+      resolveCapabilities('opencode-go'),
+      { ...runtimeParams, model: 'deepseek-v4-flash', sessionId: 'session-abc-123' },
+    )
+    const originalFetch = globalThis.fetch
+    let capturedBody: Record<string, unknown> = {}
+    globalThis.fetch = mock.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      const stream = new ReadableStream({
+        start(startController) {
+          startController.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          startController.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      await client.stream(
+        {
+          model: 'deepseek-v4-flash',
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 16,
+          reasoning_effort: 'high',
+        } as never,
+        { onTextDelta: () => {}, onThinkingDelta: () => {}, onContentBlock: () => {}, onStopReason: () => {}, onError: () => {} } as never,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert.equal(capturedBody.reasoning_effort, 'high')
+  })
+})

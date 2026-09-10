@@ -36,7 +36,7 @@ function applyPickerEffort(ctx: BootstrapContext, e: string | undefined): void {
   if ((valid as readonly string[]).includes(e)) ctx.agent.setReasoningEffort(e as (typeof valid)[number])
 }
 import { maybePrintStaticPromptCacheWarning } from './cli/prompt-version-warning.js'
-import { getOnboardingState } from './onboarding.js'
+import { getOnboardingState, markWelcomeGuideShown, shouldShowWelcomeGuide } from './onboarding.js'
 import { loadConfig as loadRivetConfig, setupProvider, registerProvider, upsertProviderModel, removeProvider, setDefaultProvider, setUiConfig, setApprovalMode as persistApprovalDefault, setDefaultDomainConfig, setDefaultModelConfig } from './config/manager.js'
 import { isProFeatureEnabled } from './config/pro-license.js'
 import type { GoalTracker as GoalTrackerInstance } from './agent/goal-tracker.js'
@@ -62,6 +62,7 @@ import { TIER_HINT, TIER_TO_WIRE, formatPermissionLabel, formatTierLabel } from 
 import { readFileSync, statSync } from 'node:fs'
 import { join as pathJoin } from 'node:path'
 import { formatWelcome, isMissionLine, missionShimmer, MISSION_SHIMMER_FRAME_MS } from './tui/format/welcome.js'
+import { settleWelcomeGreeting } from './tui/welcome-greeting.js'
 import { resolveOrchestrationHintEnabled } from './tui/engine/orchestration-hint.js'
 import { HANDOFF_NUDGE_RATIO, formatHandoffNudge } from './tui/handoff.js'
 import { formatDomainDriftNudge } from './tui/domain-drift-nudge.js'
@@ -657,7 +658,7 @@ async function main() {
                 const allProviders = agent.config.allProviders ?? {}
                 let completion
                 if (cheapProfile && allProviders[cheapProfile.provider]) {
-                  const cheap = buildCheapClient(cheapProfile, allProviders)
+                  const cheap = buildCheapClient(cheapProfile, allProviders, agent.config.sessionId)
                   completion = cheap
                     ? completionFromClient(cheap.client, cheap.model)
                     : completionFromClient(agent.config.client, model.id)
@@ -756,11 +757,11 @@ async function main() {
   // ── 主题装载 ──────────────────────────────────────────────────
   // 1. 注册 ~/.rivet/themes/*.json 自定义主题（custom:<name> 引用）
   // 2. 解析配置值：'auto' → OSC 11 背景检测（500ms 超时，COLORFGBG 兜底）
-  //    → graphite(dark)/paper(light)。未配置与未知名（自定义文件被删）
-  //    落到 graphite，与 dsh-tui / theme.ts 内存默认对齐。
+  //    → graphite(dark)/paper(light)。未配置与未知名落到 cobalt
+  //    （2026-09 用户指定；2026-07-07~07-17 本就是默认），与 theme.ts 内存默认对齐。
   // 3. 已持久化的 ui.theme（含旧默认 tianshu）照旧尊重，不改写磁盘。
   loadCustomThemes()
-  const configuredTheme = ctx.config.ui?.theme ?? 'graphite'
+  const configuredTheme = ctx.config.ui?.theme ?? 'cobalt'
   let themeName: string = configuredTheme
   if (configuredTheme === 'auto') {
     // 必须在 TUI 接管 stdin 前查询——此处 raw-mode 探测后即恢复。
@@ -770,7 +771,7 @@ async function main() {
       process.stderr.write(`[T9] Theme auto-detect: ${detected} background → ${themeName}\n`)
     }
   }
-  if (!setTheme(themeName)) setTheme('graphite')
+  if (!setTheme(themeName)) setTheme('cobalt')
   const theme = getTheme()
 
   // ── Spinner 词池 / reducedMotion 配置接线 ─────────────────────
@@ -2237,6 +2238,8 @@ async function main() {
   const existingMsgCount = ctx.session.getMessages().length
   if (!skipWelcome) {
     const installRoot = detectInstallRoot()
+    // P1-1 首启引导版:仅 TTY 且哨兵未写(新装首次启动)展示一次,渲染后 mark。
+    const guideShow = existingMsgCount === 0 && stdout.isTTY === true && shouldShowWelcomeGuide()
     // 首屏框与输入框的线框同源——否则 thick/dots 星域下刊头是 thin、输入框
     // 是域个性，两个框并排时风格断裂。（提前取 id：let  narrowing 不进闭包）
     const sessionDomainId = ctx.agent.getSessionDomain()?.id
@@ -2249,6 +2252,7 @@ async function main() {
       rows: stdout.rows || 24,
       numericId: ctx.agent.sessionNumericId,
       compact: existingMsgCount > 0,
+      guide: guideShow,
       version: installRoot ? getCurrentVersion(installRoot) : null,
       approvalMode: ctx.config.agent.approval ?? 'auto-safe',
       reasoningEffort: (ctx.agent.planModeState === 'planning')
@@ -2283,6 +2287,8 @@ async function main() {
     } else {
       stdout.write(welcomeLines.join('\n') + '\n')
     }
+    // 展示即写(P1-1):无论是否交互,引导版只出现一次;幂等。
+    if (guideShow) markWelcomeGuideShown()
   }
 
   // 自然流：欢迎页写完后直接渲染底部 chrome（GlanceBar + 输入框），输入框以 append
@@ -2294,6 +2300,20 @@ async function main() {
   // 两者都比自然流难看。真正扎眼的「输入框下方死区」另有其因——动态段垫高与轮末塌回
   // 曾是两套口径，已在 getDynamicBudget 收口为内容驱动（空闲期同样走自然流）。
   app.start()
+
+  // 欢迎页问候语 settle(P1-2):零启动延迟,LLM ≤1.2s 竞速,失败静默算法兜底;
+  // 主体在 src/tui/welcome-greeting.ts(巨石只降不升,沿接缝拆出)。
+  // busy/输入中守卫在 settle 内部 commit 时复查(审查 #6)——外层不预判。
+  if (!skipWelcome && stdout.isTTY === true) {
+    const settleApp = app
+    settleWelcomeGreeting({
+      enabled: true,
+      isTty: true,
+      isAgentBusy: () => settleApp.isAgentBusy,
+      isInputPending: () => settleApp.getInputValue() !== '' || settleApp.getInputImagesCount() > 0,
+      commitStatic: (text) => settleApp.commitStatic(text),
+    })
+  }
 
   // 首屏交接提醒（resume 场景）：上下文占用 ≥60% 的会话，建议先 /handoff 再开新会话——
   // 交接自动注入新会话，比整段回连省前缀重建成本。

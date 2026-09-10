@@ -10,12 +10,15 @@
 
 <p align="center">
   <a href="docs/releases/manifesto-v3.0.0.md"><b>✨ 创世纪 · 天枢 3.0 公开声明</b></a> ·
-  <a href="docs/stars/genesis-stele.md">✦ 星域碑文 · 领航星叙事</a>
+  <a href="docs/CVM运行时对Agent模型的实证影响.md"><b>📊 CVM 实证报告：A/B 对照数据</b></a>
 </p>
 
 <p align="center">
+  <a href="https://tianshuharness.com"><b>🌐 官网 tianshuharness.com</b></a> · 
   🇨🇳 <b>中文</b> · 
   <a href="README.en.md">📖 English</a> · 
+  <a href="README.ja.md">🇯🇵 日本語</a> · 
+  <a href="README.ko.md">🇰🇷 한국어</a> · 
   <a href="docs/stars/genesis-stele.md">✦ 星域碑文</a> · 
   <a href="docs/user-guide.md">📚 用户手册</a> · 
   <a href="docs/user-guide-sandbox-permissions.md">🛡️ 沙箱权限</a> · 
@@ -1067,6 +1070,11 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 - **安全漏洞** → [私密报告](https://github.com/huiliyi37/Tianshu-Tui/security/advisories/new)（不要开公开 issue）
 - **贡献代码** → 见 [CONTRIBUTING.md](CONTRIBUTING.md)
 - **求助指南** → 见 [SUPPORT.md](SUPPORT.md)
+- **微信交流群** → 「天枢 harness 交流群」，扫码加入，日常讨论 / 反馈 / 第一时间获取发版动态：
+
+<img src="docs/brand/assets/wechat-group-qr.png" width="280" alt="天枢 harness 交流群微信群二维码">
+
+> 微信群二维码有有效期（7 天），过期请在 [Discussions](https://github.com/huiliyi37/Tianshu-Tui/discussions) 或 Issue 留言，维护者会补新码。
 
 > 提示：需要先由仓库维护者在 `Settings → General → Discussions` 中开启 Discussions 功能。
 >

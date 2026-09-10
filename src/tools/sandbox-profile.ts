@@ -144,8 +144,10 @@ export function defaultWritableRoots(ctx: { cwd: string; env?: NodeJS.ProcessEnv
 
   // User-approved out-of-workspace write grants (session or persisted). Recomputed
   // per command-wrap, so a grant approved mid-session takes effect on the next
-  // bash call with no restart.
-  for (const granted of writeGrantedRoots()) roots.add(granted)
+  // bash call with no restart. Scoped to this command's cwd: the sidecar hosts
+  // sessions from multiple workspaces, and a grant approved in workspace A must
+  // not widen B's sandbox.
+  for (const granted of writeGrantedRoots(ctx.cwd)) roots.add(granted)
 
   return [...roots]
 }

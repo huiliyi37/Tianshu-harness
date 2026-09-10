@@ -208,10 +208,13 @@ export async function runWorkerSessionOop(
   let watchdogTimer: ReturnType<typeof setTimeout> | undefined
   let killTimer: ReturnType<typeof setTimeout> | undefined
   let killStage: 'none' | 'term' | 'kill' = 'none'
+  // settle 时摘除 abort 监听（见下方 abort 接线处的说明）
+  let detachAbort: (() => void) | undefined
 
   const cleanup = (): void => {
     if (watchdogTimer) clearTimeout(watchdogTimer)
     if (killTimer) clearTimeout(killTimer)
+    detachAbort?.()
   }
 
   const killLadder = (reason: string): void => {
@@ -334,7 +337,15 @@ export async function runWorkerSessionOop(
         try { stdin.write(encodeFrame({ t: 'abort', reason: String(config.abortSignal?.reason ?? 'caller_aborted') })) } catch { /* stdin 已关——close 事件兜底 */ }
       }
       if (config.abortSignal.aborted) onAbort()
-      else config.abortSignal.addEventListener('abort', onAbort, { once: true })
+      else {
+        config.abortSignal.addEventListener('abort', onAbort, { once: true })
+        // settle 后摘除：abortSignal 常是会话级合成信号（AbortSignal.any([会话, order])，
+        // coordinator.ts mergedSignal），order 级先触发 abort 时 once 不消耗、监听继续挂在
+        // 会话信号上——把整个运行闭包（ChildProcess 句柄、解码器、含会话史的 initPayload）
+        // 钉在会话生命周期。长会话多次委派单调泄漏，第 11 个监听触发
+        // MaxListenersExceededWarning。wrapAbort / worker-session 路径已有同款摘除纪律。
+        detachAbort = () => config.abortSignal?.removeEventListener('abort', onAbort)
+      }
     }
 
     // steer 桥：coordinator 的 onSteerDrain 在父侧排空队列 → 转发子进程。

@@ -1,7 +1,7 @@
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createFrameDecoder, encodeFrame } from '../protocol.js'
@@ -39,7 +39,7 @@ describe('NDJSON 帧解码', () => {
  *  - hang：init 后一声不吭（watchdog 击杀用）
  *  - crash：init 后 exit(1)
  *  - echo-steer：收到 steer 帧后把它放进 result.summary 证明下行通路 */
-function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer' | 'big-frame'): string {
+function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer' | 'big-frame' | 'grandchild-hang'): string {
   const src = `
 const { createInterface } = require('node:readline')
 const dec = (${createFrameDecoder.toString()})()
@@ -49,6 +49,13 @@ const rl = createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   for (const msg of dec.feed(line + '\\n')) {
     if (msg.t === 'init') {
+      if (mode === 'grandchild-hang') {
+        // 孙进程：不设 detached（继承本进程组），pid 落盘供父侧断言。
+        // 模拟 worker 里的 stdio MCP/LSP 服务器等非 detached 后代。
+        const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+        require('node:fs').writeFileSync(process.argv[1] + '.grandchild-pid', String(g.pid))
+        return // 一声不吭 → watchdog → 击杀梯应组杀连带孙进程
+      }
       if (mode === 'hang') return // 一声不吭
       if (mode === 'crash') { process.exit(1) }
       if (mode === 'big-frame') {
@@ -159,6 +166,33 @@ describe('OOP 运行器（真子进程假 agent）', () => {
     assert.equal(run.result.status, 'failed')
     assert.equal(run.result.failureReason, 'worker_crash')
     assert.equal(run.result.evidenceStatus, 'skipped')
+  })
+
+  test('watchdog 组杀连带孙进程——kill(-pid) 须真正作用到 worker 进程组（Unix，2026-09-10 修复）', async () => {
+    if (process.platform === 'win32') return // Windows 走 taskkill /T 父子关系语义
+    const fixture = writeFixture(dir, 'grandchild-hang')
+    // 不用 spawnOverride：直接走生产 doSpawn（含 detached）——修复前 kill(-pid)
+    // ESRCH 回退 child.kill()，孙进程（stdio MCP/LSP 服务器等非 detached 后代）
+    // 成孤儿继续烧 CPU、继续写正被 worktree remove 的目录。
+    const run = await runWorkerSessionOop(makeConfig(), {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 900,
+      entryOverride: { execArgs: [], script: fixture },
+    })
+    assert.equal(run.result.failureReason, 'stalled')
+    const grandchildPid = Number(readFileSync(fixture + '.grandchild-pid', 'utf-8'))
+    const dead = await new Promise<boolean>(resolve => {
+      const started = Date.now()
+      const poll = (): void => {
+        try {
+          process.kill(grandchildPid, 0)
+          if (Date.now() - started > 5000) resolve(false)
+          else setTimeout(poll, 100)
+        } catch { resolve(true) }
+      }
+      poll()
+    })
+    assert.ok(dead, '孙进程应随 worker 进程组被击杀')
   })
 
   test('watchdog：子进程 hang → SIGTERM/SIGKILL 阶梯 → 合成 stalled', async () => {

@@ -181,6 +181,11 @@ export async function runWorkerSessionOop(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
       windowsHide: true,
+      // Unix 上 worker 必须自成进程组，killProcessTree 的 kill(-pid) 组杀才
+      // 作用得到（否则 ESRCH 静默回退 child.kill()，stdio MCP/LSP 服务器等
+      // 非 detached 后代全成孤儿）。与 bash.ts 工具子进程的 detached 写法同款。
+      // Windows 的组杀走 taskkill /T（按父子关系），detached 不适用。
+      detached: process.platform !== 'win32',
     }))
   const child = doSpawn(entry.execArgs, entry.script)
   if (!child.stdin || !child.stdout || !child.stderr) {

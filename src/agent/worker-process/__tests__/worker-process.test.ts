@@ -53,7 +53,7 @@ rl.on('line', (line) => {
         // 孙进程：不设 detached（继承本进程组），pid 落盘供父侧断言。
         // 模拟 worker 里的 stdio MCP/LSP 服务器等非 detached 后代。
         const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
-        require('node:fs').writeFileSync(process.argv[1] + '.grandchild-pid', String(g.pid))
+        require('node:fs').writeFileSync(__filename + '.grandchild-pid', String(g.pid))
         return // 一声不吭 → watchdog → 击杀梯应组杀连带孙进程
       }
       if (mode === 'hang') return // 一声不吭

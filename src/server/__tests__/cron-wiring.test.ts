@@ -208,3 +208,29 @@ describe('CronWiring', () => {
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+describe('CronWiring cwd 透传（2026-09-11 F2）', () => {
+  let cleanup: () => void
+  afterEach(() => { cleanup?.() })
+
+  it('定时任务触发的 TaskRecord 携带创建工作区 cwd', async () => {
+    const { registry, scheduler, lock } = setup()
+    cleanup = () => {
+      scheduler.stop()
+      rmSync(TEST_LOCK_PATH, { force: true })
+      rmSync(TEST_SCHEDULE_PATH, { force: true })
+      rmSync(TEST_TASKS_DIR, { recursive: true, force: true })
+    }
+    const task = createScheduledTask('deps check in A', { type: 'interval', spec: '50' }, [], { cwd: '/workspace/A' })
+    scheduler.add(task)
+    const wiring = new CronWiring({ scheduler, registry, lock })
+    await wiring.start()
+    await sleep(250)
+    const cronTasks = await registry.listTasks({ source: 'cron' })
+    assert.ok(cronTasks.length >= 1)
+    assert.equal(cronTasks[0]!.cwd, '/workspace/A',
+      'cron 触发的任务必须记录创建工作区（执行 cwd 的来源）')
+    await wiring.stop()
+  })
+})
+

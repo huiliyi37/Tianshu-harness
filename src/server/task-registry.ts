@@ -44,6 +44,8 @@ export interface RuntimeHandle {
     options?: {
       /** 无人值守运行：会话内审批请求 fail-closed 中止（付费版 v1 · T2）。 */
       unattended?: boolean
+      /** 任务执行的工作区（cron 任务=创建时会话工作区快照）。缺省=池 defaultCwd。 */
+      cwd?: string
     },
   ): Promise<RuntimeResult>
   /** 释放 runtime 回池 */
@@ -160,6 +162,7 @@ export class TaskRegistry {
         ...(input.retryOf ? { retryOf: input.retryOf } : {}),
         ...(input.retry ? { retry: input.retry } : {}),
         ...(input.unattended ? { unattended: true } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
       }
 
       await this.store.save(r)
@@ -457,7 +460,7 @@ export class TaskRegistry {
         ac.signal,
         record.allowedTools,
         (sessionId) => { void this.attachSessionId(record.id, sessionId) },
-        { unattended: record.unattended === true },
+        { unattended: record.unattended === true, cwd: record.cwd },
       )
 
       await this.transition(record.id, 'completed', { result })

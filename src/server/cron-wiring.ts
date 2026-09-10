@@ -75,6 +75,8 @@ export class CronWiring {
         retry: meta?.retry,
         // reviewPolicy 解析结果：无人值守运行的审批 fail-closed 中止。
         unattended: meta?.unattended,
+        // 任务在创建它的会话工作区里执行（见 ScheduledTask.cwd）。
+        cwd: meta?.cwd,
       })
     })
 

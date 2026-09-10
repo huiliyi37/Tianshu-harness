@@ -34,7 +34,8 @@ export class SessionRuntimePool implements RuntimePool {
     const handle: RuntimeHandle = {
       execute: async (prompt, signal, allowedTools, onSessionStart, options): Promise<RuntimeResult> => {
         const session = this.manager.createSession({
-          cwd: this.defaultCwd,
+          // 任务自带 cwd（cron=创建时会话的工作区快照）优先；缺省回退池 defaultCwd。
+          cwd: options?.cwd ?? this.defaultCwd,
           title: `${this.titlePrefix}:${taskId.slice(0, 8)}`,
           // 无人值守（auto-proceed）：审批请求 fail-closed 中止本次运行。
           unattended: options?.unattended === true,

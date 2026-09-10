@@ -173,6 +173,25 @@ describe('OOP 运行器（真子进程假 agent）', () => {
     assert.equal(run.result.failureReason, 'stalled', '击杀梯收尾后合成 stalled 而非 worker_crash')
   })
 
+  test('settle 后摘除 abort 监听——同一会话级信号多次委派不累积监听（2026-09-10 泄漏修复）', async () => {
+    const { getEventListeners } = await import('node:events')
+    const fixture = writeFixture(dir, 'crash') // 最快 settle：init 后 exit(1)
+    const controller = new AbortController()
+    const spawnFx = (_e: string[], script: string) => spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const opts = (): WorkerOopOptions => ({ ...baseOpts(fixture), spawnOverride: spawnFx })
+
+    // abortSignal 是会话级合成信号（AbortSignal.any([session, order])）时，order 级
+    // 不触发 abort 则 once 永不消耗——修复前监听钉在会话信号上每次委派 +1，
+    // 长会话单调泄漏并最终触发 MaxListenersExceededWarning。
+    const run1 = await runWorkerSessionOop(makeConfig({ abortSignal: controller.signal }), opts())
+    assert.equal(run1.result.status, 'failed')
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, '第一次委派 settle 后监听已摘除')
+
+    const run2 = await runWorkerSessionOop(makeConfig({ abortSignal: controller.signal }), opts())
+    assert.equal(run2.result.status, 'failed')
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, '第二次委派后同样不残留')
+  })
+
   test('abort 下行 → 子进程返回 blocked/caller_aborted', async () => {
     const fixture = writeFixture(dir, 'ok')
     const cfg = makeConfig()

@@ -4869,7 +4869,7 @@ export class RuntimeSessionManager {
   previewFilesPrecise(
     id: string,
     messageIndex: number,
-  ): { available: boolean; files: { path: string; action: 'restore' | 'delete' }[] } | undefined {
+  ): { available: boolean; files: { path: string; action: 'restore' | 'delete' | 'unreadable' }[] } | undefined {
     const s = this.sessions.get(id)
     if (!s) return undefined
     const fh = s.agent?.getFileHistory?.()

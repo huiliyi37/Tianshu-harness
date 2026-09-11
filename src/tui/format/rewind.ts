@@ -23,7 +23,8 @@ export type RewindMode = 'convo' | 'code' | 'both' | 'summarize-from' | 'summari
 
 export interface RewindFile {
   path: string
-  action: 'restore' | 'delete'
+  /** unreadable = 该文件的备份在编辑时读取失败，回溯会跳过它（不删也不还原）。 */
+  action: 'restore' | 'delete' | 'unreadable'
 }
 
 export interface RewindEntry {
@@ -172,7 +173,9 @@ function buildActionBody(body: string[], data: RewindData, selected: number, w: 
       body.push(`  ${color(`将影响 ${files.length} 个文件：`, theme.muted)}`)
       const shown = files.slice(0, 8)
       shown.forEach(f => {
-        const badge = f.action === 'delete' ? color('删除', theme.error) : color('还原', theme.primary)
+        const badge = f.action === 'delete' ? color('删除', theme.error)
+          : f.action === 'unreadable' ? color('无法撤销（备份当时读取失败，将跳过）', theme.warning)
+          : color('还原', theme.primary)
         body.push(`    ${badge}  ${color(oneLine(f.path, w - 10), theme.secondary)}`)
       })
       if (files.length > shown.length) {

@@ -109,6 +109,44 @@ describe('FileHistory', () => {
     assert.equal(existsSync(created), false)
   })
 
+  it('rewind skips files whose backup read failed while the path existed (no unlink)', async () => {
+    // 跨平台的「存在但读不了」触发：trackEdit 时路径是目录（readFile EISDIR），
+    // 与 Windows AV/EDR 锁、EBUSY 同属「备份没拿到 ≠ 文件当时不存在」。
+    const file = join(TMP, 'was-busy.txt')
+    mkdirSync(file) // 路径存在，但读不了
+    await history.trackEdit(file, 'msg_1')
+    rmSync(file, { recursive: true })
+    writeFileSync(file, 'edited after lock released')
+
+    const changed = await history.rewind('msg_1')
+    assert.deepEqual(changed, [])
+    assert.equal(existsSync(file), true)
+    assert.equal(readFileSync(file, 'utf-8'), 'edited after lock released')
+  })
+
+  it('rewindToBoundary skips unreadable-backup files instead of deleting them', async () => {
+    const file = join(TMP, 'busy-boundary.txt')
+    mkdirSync(file)
+    await history.trackEdit(file, 'edit_1')
+    rmSync(file, { recursive: true })
+    writeFileSync(file, 'edited after boundary')
+
+    const changed = await history.rewindToBoundary(new Set(['edit_1']))
+    assert.deepEqual(changed, [])
+    assert.equal(readFileSync(file, 'utf-8'), 'edited after boundary')
+  })
+
+  it('getBoundaryFiles reports unreadable action instead of delete', async () => {
+    const file = join(TMP, 'busy-preview.txt')
+    mkdirSync(file)
+    await history.trackEdit(file, 'edit_1')
+    rmSync(file, { recursive: true })
+    writeFileSync(file, 'edited')
+
+    const files = history.getBoundaryFiles(new Set(['edit_1']))
+    assert.deepEqual(files, [{ path: file, action: 'unreadable' }])
+  })
+
   it('rewindToBoundary leaves pre-boundary-only files untouched', async () => {
     const kept = join(TMP, 'kept.txt')
     writeFileSync(kept, 'v1')

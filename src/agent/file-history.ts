@@ -33,6 +33,9 @@ export interface FileBackup {
   backupFileName: string | null
   version: number
   timestamp: number
+  /** 旧内容存在但备份读取失败（AV/EDR 锁、EBUSY…）。rewind 必须跳过该文件：
+   *  此时「没有备份」≠「文件当时不存在」，null-only 语义会把 undo 变成删除。 */
+  unreadable?: true
 }
 
 export interface FileSnapshot {
@@ -79,8 +82,11 @@ export class FileHistory {
       await mkdir(dirname(backupPath), { recursive: true })
       await writeFile(backupPath, content, 'utf-8')
       backup = { backupFileName, version, timestamp: Date.now() }
-    } catch {
-      backup = { backupFileName: null, version, timestamp: Date.now() }
+    } catch (err) {
+      // null 哨兵只保留一个含义：「trackEdit 时文件不存在」（rewind 据此 unlink）。
+      // 存在但读不了是另一个世界——标记 unreadable，让 rewind 跳过而不是删掉原文。
+      const unreadable = (err as NodeJS.ErrnoException)?.code !== 'ENOENT'
+      backup = { backupFileName: null, version, timestamp: Date.now(), ...(unreadable ? { unreadable: true } : {}) }
     }
 
     if (lastSnapshot && lastSnapshot.messageId === messageId) {
@@ -124,6 +130,7 @@ export class FileHistory {
       if (targetBackup === undefined) continue
 
       if (targetBackup.backupFileName === null) {
+        if (targetBackup.unreadable) continue // 备份没拿到 ≠ 文件当时不存在——不能拿 undo 当删除用
         try {
           await unlink(filePath)
           filesChanged.push(filePath)
@@ -154,13 +161,16 @@ export class FileHistory {
    * between the boundary and that first post-boundary edit). Restoring that
    * backup (or deleting it when the backup is null, i.e. the file did not yet
    * exist at the boundary) rewinds the file precisely to the boundary while
-   * preserving any edits made before it.
+   * preserving any edits made before it. Entries whose backup read failed at
+   * edit time are skipped: no backup ≠ file absent, and deleting it would turn
+   * a rewind into data loss.
    */
   async rewindToBoundary(postBoundaryIds: Set<string>): Promise<string[]> {
     const targets = this.firstBackupPerFile(postBoundaryIds)
     const filesChanged: string[] = []
     for (const [filePath, backup] of targets) {
       if (backup.backupFileName === null) {
+        if (backup.unreadable) continue
         try {
           await unlink(filePath)
           filesChanged.push(filePath)
@@ -179,10 +189,10 @@ export class FileHistory {
   }
 
   /** Files a boundary rewind would touch, for a pre-confirm preview. */
-  getBoundaryFiles(postBoundaryIds: Set<string>): { path: string; action: 'restore' | 'delete' }[] {
+  getBoundaryFiles(postBoundaryIds: Set<string>): { path: string; action: 'restore' | 'delete' | 'unreadable' }[] {
     return [...this.firstBackupPerFile(postBoundaryIds)].map(([path, b]) => ({
       path,
-      action: b.backupFileName === null ? 'delete' : 'restore',
+      action: b.backupFileName === null ? (b.unreadable ? 'unreadable' : 'delete') : 'restore',
     }))
   }
 
@@ -216,6 +226,7 @@ export class FileHistory {
     for (const filePath of this.trackedFiles) {
       const targetBackup = targetSnapshot.trackedFileBackups[filePath]
       if (targetBackup === undefined) continue
+      if (targetBackup.unreadable) continue // 无备份可比对，避免把「撤不了」误报成整文件删除
 
       let oldContent = ''
       if (targetBackup.backupFileName !== null) {

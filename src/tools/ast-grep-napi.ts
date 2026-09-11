@@ -31,13 +31,26 @@ function isModuleNotFound(err: unknown): boolean {
   return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND'
 }
 
+/** 摊平 err.cause 链：napi 加载器的兜底文案（"Cannot find native binding…"）
+ *  会把真因（如 JSON 版本探测的 SyntaxError）压进 cause；不摊平的话，
+ *  错误输出只剩兜底文案，排查会被引向"重装包"的歧路。 */
+function flattenCause(err: unknown): string {
+  const parts: string[] = []
+  let cur: unknown = err
+  for (let depth = 0; cur instanceof Error && depth < 4; depth++) {
+    parts.push(cur.message)
+    cur = (cur as Error & { cause?: unknown }).cause
+  }
+  return [...new Set(parts)].join('\n  ↳ cause: ')
+}
+
 export async function loadAstGrepNapi(
   importer: () => Promise<NapiModule> = () => import('@ast-grep/napi'),
 ): Promise<NapiLoadResult> {
   try {
     return { ok: true, napi: await importer() }
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err)
+    const detail = err instanceof Error ? flattenCause(err) : String(err)
     if (isModuleNotFound(err)) {
       return {
         ok: false,

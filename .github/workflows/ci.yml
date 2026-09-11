@@ -25,18 +25,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # npm/cli#4828：lockfile 在 macOS 生成时，npm ci 会跳过平台特定的可选
-      # 原生包（@ast-grep/napi-linux-x64-gnu 等），linux 上 ast-grep/ast-edit
-      # 全线 "Cannot find native binding"。补装一次并验证可加载。
-      - name: Ensure platform-native optional deps (npm/cli#4828)
-        run: |
-          if ! ls node_modules/@ast-grep/napi-linux* >/dev/null 2>&1; then
-            echo "native binding missing after npm ci — reinstalling @ast-grep/napi"
-            rm -rf node_modules/@ast-grep
-            npm install --no-save @ast-grep/napi
-          fi
-          node -e "import('@ast-grep/napi').then(() => console.log('napi binding OK'))"
-
       - name: Type check
         run: npm run typecheck
 

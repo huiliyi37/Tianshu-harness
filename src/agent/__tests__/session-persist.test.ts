@@ -843,3 +843,100 @@ describe('SessionPersist — getHandoffPath', () => {
     assert.ok(existsSync(p), 'writeHandoff 与 getHandoffPath 同路径')
   })
 })
+
+describe('SessionPersist — loadPreviousDurableClaims（跨会话继承）', () => {
+  let tempDir: string
+
+  // UUID 形态 id（SESSION_ID_RE 只认 [a-zA-Z0-9_-]）。字典序刻意设计：
+  // NEWER < CURRENT < OLDER，即「时间上最近的会话」字典序反而最小——
+  // 老实现 sort().pop() 取字典序最大，必然错过它。
+  const OLDER = 'ffff0001-0000-4000-8000-000000000001'
+  const NEWER = 'bbbb0002-0000-4000-8000-000000000002'
+  const CURRENT = 'cccc0003-0000-4000-8000-000000000003'
+  const ORPHAN = 'eeee0004-0000-4000-8000-000000000004'
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'rivet-durable-claims-'))
+    process.env.RIVET_SESSION_DIR = tempDir
+    SessionPersist.invalidateListCache()
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    delete process.env.RIVET_SESSION_DIR
+    SessionPersist.invalidateListCache()
+  })
+
+  /**
+   * 按真实磁盘形态种一个会话：转录 .jsonl（write-behind 批）+ meta.json
+   * （updatedAt 由时钟参数决定，保证排序断言确定性）+ durable claims 落盘
+   * （write-behind 写链）。claims 文件本身 `<id>.claims.jsonl` 就是
+   * listSessions 剥出一层后缀后 `<id>.claims` 伪会话条目的来源。
+   */
+  async function seedSession(id: string, label: string, clockMs: number, withClaims = true): Promise<void> {
+    const now = mock.method(Date, 'now', () => clockMs)
+    try {
+      const persist = new SessionPersist(id, tempDir)
+      await persist.appendOaiWithChecksum({ role: 'user', content: `session ${label}` })
+      persist.initMetadata({ model: 'deepseek-v4' })
+      persist.updateMetadata({ title: `session ${label}` })
+      await persist.flushSessionBuffer()
+      if (!withClaims) return
+
+      const store = persist.createClaimStore()
+      const claim = store.propose({
+        kind: 'user_constraint',
+        scope: 'session',
+        text: `durable-claim-of-${label}`,
+        confidence: 0.9,
+        fitness: 5,
+        source: { actor: 'user', sessionId: id, turn: 1, eventId: `turn-1:${id}` },
+        evidence: [{ id: 'e1', kind: 'user_message', summary: label, createdAt: clockMs }],
+        createdAt: clockMs,
+        tags: [],
+      })
+      store.updateClaimStatus(claim.id, 'durable', 'seed: cross-session inheritance fixture')
+      await store.flushWrites()
+    } finally {
+      now.mock.restore()
+    }
+  }
+
+  it('伪会话条目（<id>.claims.jsonl 附属文件被 listSessions 剥成 <id>.claims）不被当成「上一个会话」——继承最近真会话的 durable claims 而非恒 []', async () => {
+    await seedSession(OLDER, 'older', 1_000)
+    await seedSession(NEWER, 'newer', 2_000)
+    await seedSession(CURRENT, 'current', 3_000)
+    // 另造一个孤儿伪条目：转录已清、claims 附属文件残留（崩溃/清理后的真实磁盘形态）
+    writeFileSync(join(getSessionDir(tempDir), `${ORPHAN}.claims.jsonl`), '')
+    SessionPersist.invalidateListCache()
+
+    const persist = new SessionPersist(CURRENT, tempDir)
+    const claims = persist.loadPreviousDurableClaims()
+
+    assert.equal(claims.length, 1, '必须继承到恰好一条 durable claim（带点伪 id 未过滤时恒返回 []）')
+    assert.equal(claims[0]!.text, 'durable-claim-of-newer', '必须是时间上最近的真会话（newer）的 claim')
+  })
+
+  it('字典序最大 ≠ 最近：上一个真会话 id 更大时也必须按 updatedAt 选最近的，而非字典序最大的旧会话', async () => {
+    // OLDER 字典序最大但时间更老、无 claims 文件；NEWER 最近、带 durable claims
+    await seedSession(OLDER, 'older', 1_000, false)
+    await seedSession(NEWER, 'newer', 2_000)
+    await seedSession(CURRENT, 'current', 3_000)
+    SessionPersist.invalidateListCache()
+
+    const persist = new SessionPersist(CURRENT, tempDir)
+    const claims = persist.loadPreviousDurableClaims()
+
+    assert.equal(claims.length, 1, '必须按 updatedAt 选中最近的 NEWER，而不是字典序最大的 OLDER')
+    assert.equal(claims[0]!.text, 'durable-claim-of-newer')
+  })
+
+  it('没有上一个真会话时返回 []（孤儿伪条目不算会话）', async () => {
+    await seedSession(CURRENT, 'current', 1_000)
+    writeFileSync(join(getSessionDir(tempDir), `${ORPHAN}.claims.jsonl`), '')
+    SessionPersist.invalidateListCache()
+
+    const persist = new SessionPersist(CURRENT, tempDir)
+    assert.deepEqual(persist.loadPreviousDurableClaims(), [])
+  })
+})

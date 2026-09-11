@@ -571,13 +571,21 @@ export class SessionPersist {
     return new ContextClaimStore(getSessionDir(this.cwd), this.sessionId)
   }
 
-  /** Load durable claims from the most recent previous session. */
+  /**
+   * Load durable claims from the most recent previous main session.
+   *
+   * 必须走 listMainSessions（主会话名单、按 updatedAt 降序），不能 listSessions +
+   * sort().pop()，两个坑：
+   * - listSessions 对 `<id>.claims.jsonl` 附属文件只剥一层 .jsonl，产出 `<id>.claims`
+   *   伪会话条目；`.claims` 后缀按字典序恒大于裸 id → pop() 恒选中伪 id，
+   *   loadDurableClaims 找 `<伪id>.claims.jsonl` 不存在 → 继承恒返回 []（确定性恒死）。
+   * - UUID 无时序，字典序最大 ≠ 最近会话。
+   * 与 evictOldSessionsInternal 的主会话名单语义对齐（同坑它已修：worker-/带点 id 不算会话）。
+   */
   loadPreviousDurableClaims(): ContextClaim[] {
-    const sessions = SessionPersist.listSessions(this.cwd)
-    const previous = sessions
-      .filter(s => s !== this.sessionId)
-      .sort()
-      .pop()
+    const previous = SessionPersist.listMainSessions(this.cwd)
+      .map(s => s.id)
+      .find(id => id !== this.sessionId)
     if (!previous) return []
     return ContextClaimStore.loadDurableClaims(getSessionDir(this.cwd), previous)
   }

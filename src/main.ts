@@ -819,6 +819,7 @@ async function main() {
     gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
       cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).toString().trim() || undefined
   } catch { /* 非 git 目录 */ }
 
@@ -2086,7 +2087,7 @@ async function main() {
     // --is-inside-work-tree` fails outside a repo even when git is installed.
     const gitAvailable = (() => {
       try {
-        execSync('git --version', { cwd: process.cwd(), stdio: 'pipe' })
+        execSync('git --version', { cwd: process.cwd(), stdio: 'pipe', windowsHide: true })
         return true
       } catch {
         return false

@@ -6,7 +6,7 @@
  * use these functions instead of platform-dependent Node.js APIs directly.
  */
 import { homedir } from 'node:os'
-import { spawnSync } from 'node:child_process'
+import { spawnSyncHidden } from './tools/spawn-hidden.js'
 import type { ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { win32 as winPath } from 'node:path'
@@ -161,7 +161,7 @@ export function resolveGitBashPath(deps: GitBashProbeDeps): string | null {
 /** Locate git.exe on PATH via `where` (Windows). Returns first hit or undefined. */
 function whichGitWindows(): string | undefined {
   try {
-    const result = spawnSync('where', ['git'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSyncHidden('where', ['git'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
     if (result.status === 0) {
       const first = result.stdout.toString().split('\n')[0]?.trim()
       return first && first.length > 0 ? first : undefined
@@ -173,7 +173,7 @@ function whichGitWindows(): string | undefined {
 /** Locate bash.exe on PATH via `where` (Windows)。Returns first hit or undefined. */
 function whichBashWindows(): string | undefined {
   try {
-    const result = spawnSync('where', ['bash'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSyncHidden('where', ['bash'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
     if (result.status === 0) {
       const first = result.stdout.toString().split('\n')[0]?.trim()
       return first && first.length > 0 ? first : undefined
@@ -258,7 +258,7 @@ export function resolveShellCommand(deps: ShellProbeDeps): ShellCommand {
 /** True if the named PowerShell executable resolves on PATH (Windows). */
 function hasPwshWindows(cmd: string): boolean {
   try {
-    const result = spawnSync('where', [cmd], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSyncHidden('where', [cmd], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
     return result.status === 0 && result.stdout.toString().trim().length > 0
   } catch {
     return false
@@ -347,7 +347,7 @@ export function gracefulKill(child: KillableChild): void {
   if (!child.pid) return
   try {
     if (isWin) {
-      spawnSync('taskkill', ['/PID', String(child.pid)], {
+      spawnSyncHidden('taskkill', ['/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
       })
@@ -361,7 +361,7 @@ export function forceKill(child: KillableChild): void {
   if (!child.pid) return
   try {
     if (isWin) {
-      spawnSync('taskkill', ['/F', '/PID', String(child.pid)], {
+      spawnSyncHidden('taskkill', ['/F', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
       })
@@ -375,7 +375,7 @@ export function gracefulKillTree(child: KillableChild): void {
   if (!child.pid) return
   try {
     if (isWin) {
-      spawnSync('taskkill', ['/T', '/PID', String(child.pid)], {
+      spawnSyncHidden('taskkill', ['/T', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
       })
@@ -385,7 +385,7 @@ export function gracefulKillTree(child: KillableChild): void {
   } catch {
     try {
       if (isWin) {
-        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+        spawnSyncHidden('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
           stdio: ['ignore', 'ignore', 'ignore'],
           timeout: 5000,
         })
@@ -400,7 +400,7 @@ export function forceKillTree(child: KillableChild): void {
   if (!child.pid) return
   try {
     if (isWin) {
-      spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+      spawnSyncHidden('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
       })
@@ -410,7 +410,7 @@ export function forceKillTree(child: KillableChild): void {
   } catch {
     try {
       if (isWin) {
-        spawnSync('taskkill', ['/F', '/PID', String(child.pid)], {
+        spawnSyncHidden('taskkill', ['/F', '/PID', String(child.pid)], {
           stdio: ['ignore', 'ignore', 'ignore'],
           timeout: 5000,
         })

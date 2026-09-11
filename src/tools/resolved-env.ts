@@ -276,6 +276,7 @@ function readRegistryEnvReal(scope: 'machine' | 'user'): Record<string, string> 
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
       encoding: 'utf8',
+      windowsHide: true,
     })
     if (res.status !== 0 || typeof res.stdout !== 'string') return {}
     return parseRegQuery(res.stdout)

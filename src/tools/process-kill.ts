@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'child_process'
-import { spawnSync } from 'node:child_process'
+import { spawnSyncHidden } from './spawn-hidden.js'
 
 type KillFn = (pid: number, signal: NodeJS.Signals) => void
 
@@ -27,7 +27,7 @@ export function killProcessTree(
       ? ['/F', '/T', '/PID', String(child.pid)]
       : ['/T', '/PID', String(child.pid)]
     try {
-      spawnSync('taskkill', args, {
+      spawnSyncHidden('taskkill', args, {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
       })

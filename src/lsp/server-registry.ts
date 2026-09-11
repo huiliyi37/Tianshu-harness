@@ -49,6 +49,7 @@ export function defaultWhich(bin: string): boolean {
     execFileSync(process.platform === 'win32' ? 'where' : 'which', [bin], {
       stdio: ['ignore', 'ignore', 'ignore'],
       timeout: 800,
+      windowsHide: true,
     })
     return true
   } catch {

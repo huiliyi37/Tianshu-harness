@@ -288,7 +288,7 @@ function rtkExec(): typeof execFileSync {
 
 function probeRtkHealth(): RtkVerdict {
   try {
-    rtkExec()('rtk', ['--version'], { timeout: 1000, encoding: 'utf-8' })
+    rtkExec()('rtk', ['--version'], { timeout: 1000, encoding: 'utf-8', windowsHide: true })
   } catch {
     return 'missing'
   }
@@ -296,7 +296,7 @@ function probeRtkHealth(): RtkVerdict {
   try {
     dir = mkdtempSync(join(tmpdir(), 'rivet-rtk-probe-'))
     writeFileSync(join(dir, 'rivet-rtk-marker'), 'x')
-    const out = rtkExec()('rtk', ['ls', dir], { timeout: 2000, encoding: 'utf-8' })
+    const out = rtkExec()('rtk', ['ls', dir], { timeout: 2000, encoding: 'utf-8', windowsHide: true })
     return out.includes('rivet-rtk-marker') ? 'ok' : 'broken'
   } catch {
     return 'broken'
@@ -339,7 +339,7 @@ function rtkRewrite(command: string, toolUseId?: string): string {
   let result: string
   try {
     result = rtkVerdict() === 'ok'
-      ? rtkExec()('rtk', ['rewrite', command], { timeout: 500, encoding: 'utf-8' }).trim()
+      ? rtkExec()('rtk', ['rewrite', command], { timeout: 500, encoding: 'utf-8', windowsHide: true }).trim()
       : command
   } catch {
     result = command

@@ -161,7 +161,7 @@ function formatPlanMerge(planMerge: NonNullable<TeamRunSummary['planMerge']>): s
  *  diff-collector.ts 已踩过此坑）。非 git 目录/超时返回 null（调用方降级跳过）。 */
 function gitStatusRows(cwd: string): string[] | null {
   try {
-    const out = execFileSync('git', ['-c', 'core.quotePath=false', 'status', '--short'], { cwd, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+    const out = execFileSync('git', ['-c', 'core.quotePath=false', 'status', '--short'], { cwd, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString()
     return out.split('\n').filter(l => l.trim().length > 0)
   } catch {
     return null

@@ -11,7 +11,8 @@ test('browser-missing banner points to the one-shot command + manual fallback', 
   assert.match(b, /rivet browser install/)
   assert.match(b, /chromium/)
   // manual fallback carries the mirror env for CN users
-  assert.match(b, /npx playwright install chromium/)
+  // the manual command is pinned to the embedded playwright-core version (#102)
+  assert.match(b, /npx playwright(@\d+\.\d+\.\d+)? install chromium/)
 })
 
 test('module-missing banner does NOT tell the user to install a browser', () => {

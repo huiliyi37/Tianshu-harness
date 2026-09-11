@@ -226,4 +226,48 @@ diff --git a/gone.txt b/gone.txt
     assert.ok(lines.length <= 602, `expected truncation, got ${lines.length} lines`)
     assert.ok(result.uiContent!.includes('行 diff，Ctrl+O'))
   })
+
+  // `git apply --3way` 报冲突（exit 1）时已经半套用：干净 hunk 落盘、干净文件
+  // 被整体 staged 进索引、冲突文件留 UU 条目。工具报"失败"但磁盘是改过的——
+  // 模型按"失败=没发生"重试死循环，且 UU 索引毒化 `git checkout -- <file>`。
+  it('rolls back the half-applied tree when --3way reports a conflict', async () => {
+    writeFileSync(join(repoDir, 'a.txt'), 'base-a\n')
+    writeFileSync(join(repoDir, 'b.txt'), 'base-b\n')
+    git(repoDir, ['add', '.'])
+    git(repoDir, ['commit', '-m', 'add a b'])
+    // a.txt 本地漂移（未提交）→ 补丁以已提交内容为前置 → --3way 冲突
+    writeFileSync(join(repoDir, 'a.txt'), 'local-edit\n')
+    const diff = `diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-base-a
++patched-a
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-base-b
++patched-b
+`
+    const result = await APPLY_PATCH_TOOL.execute({
+      input: { diff },
+      toolUseId: 'toolu_test',
+      cwd: repoDir,
+    })
+
+    assert.equal(result.isError, true, 'conflicting patch must fail')
+    assert.match(result.content, /已自动回滚/)
+    // 工作树回到补丁前状态：a.txt 是用户的本地漂移内容，不是冲突标记
+    assert.equal(readFileSync(join(repoDir, 'a.txt'), 'utf-8'), 'local-edit\n')
+    // 干净文件 b.txt 不留补丁内容、不留在暂存区
+    assert.equal(readFileSync(join(repoDir, 'b.txt'), 'utf-8'), 'base-b\n')
+    const status = git(repoDir, ['status', '--porcelain']).stdout ?? ''
+    assert.ok(!status.includes('UU'), `index must not keep unmerged entries:\n${status}`)
+    assert.ok(!/^M  b\.txt$/m.test(status), `b.txt must not stay staged:\n${status}`)
+    // 标准恢复命令不再被毒化（修复前：error: path 'a.txt' is unmerged）
+    const checkout = git(repoDir, ['checkout', '--', 'a.txt'])
+    assert.equal(checkout.status, 0, `git checkout -- a.txt must work after rollback: ${checkout.stderr}`)
+    assert.equal(readFileSync(join(repoDir, 'a.txt'), 'utf-8'), 'base-a\n', 'checkout restores the committed base (drift was unstaged)')
+  })
 })

@@ -199,8 +199,26 @@ export const APPLY_PATCH_TOOL: Tool = {
     })
 
     if (!result.ok) {
+      // `git apply --3way` reports conflicts as exit 1 AFTER partially applying:
+      // conflict markers + clean hunks are already on disk, cleanly-merged files
+      // are staged into the index, and conflicted files are left unmerged (UU).
+      // Reporting "failed" over that half-applied tree makes the model retry a
+      // patch that "never happened", and the unmerged index poisons standard
+      // recovery (`git checkout -- <file>` dies with "path is unmerged"). Roll
+      // the touched paths back to their pre-patch backups and unstage them —
+      // the same rollback the fatal-syntax path below already performs.
+      const rolledBack = targets.length > 0
+      if (rolledBack) {
+        await rollbackTargets(params.cwd, targets, params.sessionId)
+        await unstagePatchTargets(params.cwd, targets)
+      }
       for (const t of targets) incrementEditFailCount(t.abs)
-      return { content: `补丁应用失败：${result.error}`, isError: true }
+      return {
+        content: rolledBack
+          ? `补丁应用失败（半套用状态已自动回滚）：${result.error}`
+          : `补丁应用失败：${result.error}`,
+        isError: true,
+      }
     }
 
     // Post-apply structural verification: git apply --3way can leave conflict
@@ -333,6 +351,26 @@ async function rollbackTargets(cwd: string, targets: PatchTarget[], sessionId?: 
       try { await unlink(t.abs) } catch { /* already gone */ }
     }
   }
+}
+
+/** Best-effort index cleanup after a failed `git apply --3way`: the failed
+ *  apply can leave cleanly-merged targets staged and conflicted targets
+ *  unmerged (UU). `git reset -- <path>` takes index entries back to HEAD
+ *  (worktree untouched — content restore is rollbackTargets' job), un-poisoning
+ *  recovery commands like `git checkout -- <file>`. Trade-off: pre-patch staged
+ *  changes on those same paths are unstaged too — acceptable in the failure
+ *  path, where the patch itself staged the entries. No-ops outside a git
+ *  workspace (non-zero exit) — the worktree rollback already ran above. */
+async function unstagePatchTargets(cwd: string, targets: PatchTarget[]): Promise<void> {
+  if (targets.length === 0) return
+  await new Promise<void>((resolve) => {
+    const child = spawnGit(['reset', '-q', '--', ...targets.map((t) => t.rel)], {
+      cwd,
+      stdio: 'ignore',
+    })
+    child.on('close', () => resolve())
+    child.on('error', () => resolve())
+  })
 }
 
 const APPLY_PATCH_MAX_UI_LINES = 600

@@ -101,6 +101,68 @@ export function isUserMessage(msg: OaiMessage): msg is OaiUserMessage {
   return msg.role === 'user'
 }
 
+/** Placeholder substituted for an image-only user message after stripping, so
+ *  the message (and role alternation) survives even when it carried no text. */
+export const STRIPPED_IMAGE_PLACEHOLDER = '[image removed to reduce payload size]'
+
+/**
+ * True when at least one user message carries a multimodal `image_url` part.
+ * The retry path uses this to decide whether an image_strip recovery can help.
+ */
+export function oaiMessagesHaveImageParts(messages: OaiMessage[]): boolean {
+  return messages.some(
+    m => m.role === 'user'
+      && Array.isArray(m.content)
+      && m.content.some(p => p.type === 'image_url'),
+  )
+}
+
+export interface StrippedOaiMessages {
+  /** Messages with image_url parts removed (same reference when nothing changed). */
+  messages: OaiMessage[]
+  /** Number of image_url parts removed. */
+  removedCount: number
+}
+
+/**
+ * Return a copy of `messages` with every multimodal `image_url` part removed,
+ * preserving all text and the overall message/role structure. This is the
+ * payload-shrinking recovery for a 413 / image-rejection retry: drop images and
+ * resend instead of repeating the identical oversized request.
+ *
+ * Pure — never mutates input. Returns the SAME array reference when no image
+ * was removed, so callers can cheaply detect a no-op. An image-only user message
+ * (no text part) is replaced with a short text placeholder so the request still
+ * has a non-empty user turn and valid role alternation after the strip.
+ */
+export function stripOaiImageParts(
+  messages: OaiMessage[],
+  placeholder: string = STRIPPED_IMAGE_PLACEHOLDER,
+): StrippedOaiMessages {
+  let removedCount = 0
+  let next: OaiMessage[] | undefined
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
+    const imageCount = msg.content.reduce(
+      (n, p) => (p.type === 'image_url' ? n + 1 : n),
+      0,
+    )
+    if (imageCount === 0) continue
+
+    removedCount += imageCount
+    next ??= messages.slice()
+    const kept = msg.content.filter(p => p.type !== 'image_url')
+    const content: OaiContentPart[] = kept.length > 0
+      ? kept
+      : [{ type: 'text', text: placeholder }]
+    next[i] = { ...msg, content }
+  }
+
+  return { messages: next ?? messages, removedCount }
+}
+
 /**
  * Extract plain text from any OaiMessage content (handles multimodal user messages).
  * Use this instead of `msg.content` when you need a string regardless of content type.

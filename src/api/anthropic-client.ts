@@ -1,5 +1,6 @@
 import type { StreamClient, StreamCallbacks } from './stream-client.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
+import { oaiMessagesHaveImageParts, stripOaiImageParts } from './oai-types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
@@ -115,9 +116,20 @@ export class AnthropicClient implements StreamClient {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
-    const body = this.buildRequestBody(request)
+    // image_strip recovery state — see openai-client.sendStream for the flow:
+    // first request sends images; on a 413 / image-rejection retry the images
+    // are dropped and resent once; any further image_strip error is rethrown.
+    const messagesHaveImages = oaiMessagesHaveImageParts(request.messages)
+    let stripRequested = false
+    let imagesStripped = false
 
     await withStructuredRetry(async () => {
+      const body = this.buildRequestBody(request, {
+        stripImages: stripRequested && !imagesStripped,
+      })
+      if (stripRequested && !imagesStripped) {
+        imagesStripped = true
+      }
       // 共享 lifecycle controller（见 openai-client 同名注释）：传给 fetch，
       // 由外部 signal 联动并在 processSSEStream 的 finally 中 abort。
       const lifecycle = new AbortController()
@@ -166,6 +178,15 @@ export class AnthropicClient implements StreamClient {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)
         }
+        if (info.classified.category === 'image_strip') {
+          // Nothing to strip (no image parts) or already stripped once → the
+          // retry cannot help; surface the original 413 / image error now.
+          if (imagesStripped || !messagesHaveImages) {
+            return false
+          }
+          // First image_strip retry: drop images on the next attempt.
+          stripRequested = true
+        }
       },
     })
   }
@@ -175,10 +196,16 @@ export class AnthropicClient implements StreamClient {
     return this.buildRequestBody(request)
   }
 
-  private buildRequestBody(request: OaiChatRequest): AnthropicRequestBody {
+  private buildRequestBody(
+    request: OaiChatRequest,
+    opts: { stripImages?: boolean } = {},
+  ): AnthropicRequestBody {
     // Extract system messages to top-level system array
     let systemText = ''
-    const nonSystemMessages = request.messages.filter(m => {
+    const srcMessages = opts.stripImages
+      ? stripOaiImageParts(request.messages).messages
+      : request.messages
+    const nonSystemMessages = srcMessages.filter(m => {
       if (m.role === 'system') {
         systemText += (systemText ? '\n\n' : '') + m.content
         return false

@@ -108,8 +108,14 @@ export interface RetryOptions {
    *  When exceeded, the current attempt is abandoned and an error is thrown.
    *  Prevents retry loops from running for tens of minutes on unresponsive providers. */
   maxTotalDurationMs?: number
-  /** Called before each retry with diagnostic info. */
-  onRetry?: (info: RetryInfo) => void
+  /**
+   * Called before each retry with diagnostic info. Return `false` to veto the
+   * pending retry: the original error is rethrown immediately (no backoff) when
+   * the caller can prove the retry cannot succeed — e.g. an `image_strip`
+   * recovery whose request carries no image part to remove. A `void` return
+   * leaves the normal retry schedule untouched.
+   */
+  onRetry?: (info: RetryInfo) => void | false
 }
 
 export interface RetryInfo {
@@ -192,12 +198,17 @@ export async function withStructuredRetry<T>(
           ? applyDelayJitter(classified.retryDelayMs)
           : jitteredBackoff(attempt + 1)
 
-      // Notify caller
-      options?.onRetry?.({
+      // Notify caller. A `false` return vetoes this retry: the caller proved it
+      // cannot help (e.g. image_strip with no image part to remove), so rethrow
+      // the original error at once instead of sleeping into a doomed attempt.
+      const veto = options?.onRetry?.({
         attempt: attempt + 1,
         classified,
         nextDelayMs,
       })
+      if (veto === false) {
+        throw err
+      }
 
       // Wait (abort-aware)
       await abortableDelay(nextDelayMs, signal)

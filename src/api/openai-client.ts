@@ -1,6 +1,6 @@
 import type { StreamClient, WireDivergence } from './stream-client.js'
 import type { StreamCallbacks } from './stream-client.js'
-import { normalizeOaiMessage } from './oai-types.js'
+import { normalizeOaiMessage, oaiMessagesHaveImageParts, stripOaiImageParts } from './oai-types.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { proRegistry } from './pro-registry.js'
 import { estimateOaiTokens } from '../compact/micro.js'
@@ -674,6 +674,16 @@ export class OpenAIClient implements StreamClient {
     const reasoningRef = { content: '' }
     const isThinking = this.config.thinking === 'enabled'
 
+    // image_strip recovery state: whether the current request carries image_url
+    // parts at all, whether a strip has been requested by a 413 / image
+    // rejection, and whether it already happened. Flow: first request sends
+    // images; on an image_strip retry the images are dropped and the stripped
+    // body is resent once; any further image_strip error is rethrown immediately
+    // (a second identical oversized body cannot help).
+    const messagesHaveImages = oaiMessagesHaveImageParts((body.messages as OaiMessage[]) ?? [])
+    let stripRequested = false
+    let imagesStripped = false
+
     // Size-scaled first-byte budget (B): estimate prompt size once (stable across
     // retries; the per-retry reasoning re-injection is negligible) and derive a
     // first-byte timeout that grows with input so large cold-context prefills are
@@ -706,15 +716,28 @@ export class OpenAIClient implements StreamClient {
       // the increment and causes GLM to re-reason from scratch (the exact
       // "推理到一半中断然后从头推一遍" symptom). GLM retains reasoning server-side,
       // so skipping client-side reinjection is safe.
+      // 413 / image-rejection recovery (requested by a previous image_strip
+      // classification): strip image_url parts once, before reasoning injection.
+      let messagesBase: unknown[] = body.messages as unknown[]
+      if (stripRequested && !imagesStripped && messagesHaveImages) {
+        const stripped = stripOaiImageParts(messagesBase as OaiMessage[])
+        if (stripped.removedCount > 0) {
+          messagesBase = stripped.messages
+          imagesStripped = true
+        }
+      }
+
       let effectiveBody = body
       const isGlm = this.config.providerName === 'glm'
       if (isThinking && reasoningRef.content && !isGlm) {
-        const msgs = [...(body.messages as unknown[]), {
+        const msgs = [...messagesBase, {
           role: 'assistant',
           content: '',
           reasoning_content: reasoningRef.content,
         }]
         effectiveBody = { ...body, messages: msgs }
+      } else if (messagesBase !== body.messages) {
+        effectiveBody = { ...body, messages: messagesBase }
       }
 
       // Resolve auth headers: AuthProvider takes precedence over static apiKey
@@ -800,6 +823,15 @@ export class OpenAIClient implements StreamClient {
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)
+        }
+        if (info.classified.category === 'image_strip') {
+          // Nothing to strip (no image parts) or already stripped once → the
+          // retry cannot help; surface the original 413 / image error now.
+          if (imagesStripped || !messagesHaveImages) {
+            return false
+          }
+          // First image_strip retry: drop images on the next attempt.
+          stripRequested = true
         }
       },
     })

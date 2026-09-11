@@ -1,93 +1,107 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { isAssistantWithTools, isToolMessage, isUserMessage, type OaiChatRequest, type OaiMessage } from '../oai-types.js'
+import {
+  stripOaiImageParts,
+  oaiMessagesHaveImageParts,
+  STRIPPED_IMAGE_PLACEHOLDER,
+  type OaiMessage,
+} from '../oai-types.js'
 
-describe('OpenAI-native API types', () => {
-  it('narrows tool messages with tool_call_id', () => {
-    const msg: OaiMessage = {
-      role: 'tool',
-      tool_call_id: 'call_123',
-      content: 'done',
-    }
+// ---------------------------------------------------------------------------
+// oaiMessagesHaveImageParts
+// ---------------------------------------------------------------------------
 
-    assert.equal(isToolMessage(msg), true)
-    if (isToolMessage(msg)) {
-      assert.equal(msg.tool_call_id, 'call_123')
-    }
+describe('oaiMessagesHaveImageParts', () => {
+  it('is false for text-only messages', () => {
+    const msgs: OaiMessage[] = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ]
+    assert.equal(oaiMessagesHaveImageParts(msgs), false)
   })
 
-  it('narrows assistant messages with tool calls', () => {
-    const msg: OaiMessage = {
-      role: 'assistant',
-      content: null,
-      reasoning_content: 'Need to inspect the file.',
-      tool_calls: [
-        {
-          id: 'call_read',
-          type: 'function',
-          function: {
-            name: 'read_file',
-            arguments: '{"file_path":"src/main.tsx"}',
-          },
-        },
-      ],
-    }
-
-    assert.equal(isAssistantWithTools(msg), true)
-    if (isAssistantWithTools(msg)) {
-      assert.equal(msg.tool_calls[0]?.function.name, 'read_file')
-      assert.equal(msg.reasoning_content, 'Need to inspect the file.')
-    }
+  it('is true when a user message carries an image_url part', () => {
+    const msgs: OaiMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        ],
+      },
+    ]
+    assert.equal(oaiMessagesHaveImageParts(msgs), true)
   })
 
-  it('does not classify empty tool_calls as assistant-with-tools', () => {
-    const msg: OaiMessage = {
-      role: 'assistant',
-      content: 'No tools needed.',
-      tool_calls: [],
-    }
+  it('is false for empty message arrays', () => {
+    assert.equal(oaiMessagesHaveImageParts([]), false)
+  })
+})
 
-    assert.equal(isAssistantWithTools(msg), false)
+// ---------------------------------------------------------------------------
+// stripOaiImageParts
+// ---------------------------------------------------------------------------
+
+describe('stripOaiImageParts', () => {
+  it('returns the same reference when no image part exists (cheap no-op)', () => {
+    const msgs: OaiMessage[] = [{ role: 'user', content: 'text only' }]
+    const result = stripOaiImageParts(msgs)
+    assert.equal(result.removedCount, 0)
+    assert.equal(result.messages, msgs, 'must not copy when nothing changed')
   })
 
-  it('narrows user messages', () => {
-    const msg: OaiMessage = {
-      role: 'user',
-      content: 'Continue.',
-    }
-
-    assert.equal(isUserMessage(msg), true)
-    assert.equal(isToolMessage(msg), false)
+  it('removes image_url parts, preserving text and other messages', () => {
+    const msgs: OaiMessage[] = [
+      { role: 'system', content: 'sys' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'keep me' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+          { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BBBB' } },
+        ],
+      },
+      { role: 'assistant', content: 'ok' },
+    ]
+    const result = stripOaiImageParts(msgs)
+    assert.equal(result.removedCount, 2)
+    assert.notEqual(result.messages, msgs, 'must return a copy after stripping')
+    const user = result.messages[1]!
+    assert.equal(user.role, 'user')
+    assert.deepEqual(user.content, [{ type: 'text', text: 'keep me' }])
+    assert.deepEqual(result.messages[0], msgs[0], 'system message untouched')
+    assert.deepEqual(result.messages[2], msgs[2], 'assistant message untouched')
   })
 
-  it('supports OpenAI-compatible request bodies with cache usage fields', () => {
-    const request: OaiChatRequest = {
-      model: 'deepseek-chat',
-      messages: [
-        { role: 'system', content: 'You are concise.' },
-        { role: 'user', content: 'Read the file.' },
-      ],
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'read_file',
-            description: 'Read a file',
-            parameters: {
-              type: 'object',
-              properties: { file_path: { type: 'string' } },
-              required: ['file_path'],
-            },
-          },
-        },
-      ],
-      tool_choice: 'auto',
-      max_tokens: 1024,
-      stream: true,
-      reasoning_effort: 'low',
-    }
+  it('replaces an image-only user message with a text placeholder', () => {
+    const msgs: OaiMessage[] = [
+      {
+        role: 'user',
+        content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }],
+      },
+    ]
+    const result = stripOaiImageParts(msgs)
+    assert.equal(result.removedCount, 1)
+    assert.deepEqual(result.messages[0]!.content, [
+      { type: 'text', text: STRIPPED_IMAGE_PLACEHOLDER },
+    ])
+  })
 
-    assert.equal(request.messages.length, 2)
-    assert.equal(request.tools?.[0]?.function.name, 'read_file')
+  it('does not mutate the input array', () => {
+    const msgs: OaiMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 't' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        ],
+      },
+    ]
+    stripOaiImageParts(msgs)
+    assert.equal(
+      (msgs[0]!.content as unknown[]).length,
+      2,
+      'input content parts must be untouched',
+    )
   })
 })

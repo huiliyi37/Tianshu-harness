@@ -945,3 +945,142 @@ describe('content→reasoning channel ordering (C→R 折叠防护)', () => {
     assert.ok(!textParts.join('').includes('内部推理…'), 'tool-call 轮 reasoning 不泄露为 text')
   })
 })
+
+// ---------------------------------------------------------------------------
+// image_strip recovery (413 / image-rejection retry strips images once)
+// ---------------------------------------------------------------------------
+
+describe('image_strip recovery', () => {
+  const originalFetch = globalThis.fetch
+
+  /** fetch mock: `statuses` consumed in order, then an SSE success response. */
+  function mockFetchSequence(statuses: number[]) {
+    const calls: Array<{ url: string; body: string }> = []
+    let idx = 0
+    globalThis.fetch = (async (url: unknown, init: RequestInit) => {
+      calls.push({ url: String(url), body: String(init.body ?? '') })
+      const status = statuses[idx++]
+      if (status !== undefined) {
+        return new Response(JSON.stringify({ error: { message: 'Request too large' } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const enc = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(enc.encode(
+            'data: {"choices":[{"delta":{"role":"assistant","content":""},"index":0}]}\n\n' +
+            'data: {"choices":[{"delta":{"content":"ok"},"index":0,"finish_reason":"stop"}]}\n\n' +
+            'data: [DONE]\n\n',
+          ))
+          controller.close()
+        },
+      })
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }) as typeof fetch
+    return calls
+  }
+
+  function restoreFetch(): void {
+    globalThis.fetch = originalFetch
+  }
+
+  const IMAGE_REQUEST = {
+    model: 'gpt-4o',
+    stream: true,
+    max_tokens: 10,
+    messages: [
+      { role: 'system', content: 'sys' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe this' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        ],
+      },
+    ],
+  }
+
+  const NOOP_CALLBACKS = {
+    onTextDelta: () => {},
+    onThinkingDelta: () => {},
+    onContentBlock: () => {},
+    onStopReason: () => {},
+    onError: () => {},
+  }
+
+  it('strips image_url parts on a 413 retry and resends once', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      let stopReason: string | undefined
+      await client.stream(IMAGE_REQUEST as never, {
+        ...NOOP_CALLBACKS,
+        onStopReason: (r: string) => { stopReason = r },
+      })
+
+      assert.equal(calls.length, 2, 'one 413 attempt + one stripped retry')
+      const first = JSON.parse(calls[0]!.body) as { messages: Array<{ role: string; content: unknown }> }
+      const second = JSON.parse(calls[1]!.body) as { messages: Array<{ role: string; content: unknown }> }
+
+      // First attempt carries the image; second attempt has it stripped, text kept.
+      const firstUser = first.messages[1]!.content as Array<{ type: string }>
+      assert.ok(firstUser.some(p => p.type === 'image_url'), 'first attempt must send the image')
+      const secondUser = second.messages[1]!.content as Array<{ type: string }>
+      assert.ok(!secondUser.some(p => p.type === 'image_url'), 'retry must drop image_url parts')
+      assert.ok(secondUser.some(p => p.type === 'text'), 'retry must keep text parts')
+      assert.equal(stopReason, 'end_turn')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('fails fast on 413 when the request has no image parts to strip', async () => {
+    const calls = mockFetchSequence([413, 413, 413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      const textOnlyRequest = {
+        model: 'gpt-4o',
+        stream: true,
+        messages: [{ role: 'user', content: 'text only' }],
+      }
+      await assert.rejects(
+        () => client.stream(textOnlyRequest as never, NOOP_CALLBACKS),
+        (err: unknown) => {
+          assert.equal((err as { status?: number }).status, 413)
+          return true
+        },
+      )
+      // The veto proves the retry cannot help — no second attempt, no delay.
+      assert.equal(calls.length, 1, 'no-image 413 must not retry')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('gives up after one stripped retry when the server keeps rejecting', async () => {
+    const calls = mockFetchSequence([413, 413, 413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      await assert.rejects(
+        () => client.stream(IMAGE_REQUEST as never, NOOP_CALLBACKS),
+        (err: unknown) => {
+          assert.equal((err as { status?: number }).status, 413)
+          return true
+        },
+      )
+      // Attempt 1 (images) + attempt 2 (stripped) = 2; a third attempt would be
+      // a doomed repeat of the stripped body and is vetoed.
+      assert.equal(calls.length, 2, 'second image_strip must be vetoed')
+      const second = JSON.parse(calls[1]!.body) as { messages: Array<{ role: string; content: unknown }> }
+      const secondUser = second.messages[1]!.content as Array<{ type: string }>
+      assert.ok(!secondUser.some(p => p.type === 'image_url'), 'retry body must be stripped')
+    } finally {
+      restoreFetch()
+    }
+  })
+})

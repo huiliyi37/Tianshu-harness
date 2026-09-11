@@ -176,6 +176,42 @@ describe('withStructuredRetry', () => {
     assert.equal(calls, 2, `expected 2 calls, got ${calls}`)
   })
 
+  it('should not retry when onRetry returns false (veto)', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Server error (500)', 500)
+    }
+    // A veto must rethrow the original error immediately: no backoff wait and
+    // no second attempt, even though the classifier would otherwise retry.
+    await assert.rejects(
+      () => withStructuredRetry(fn, undefined, {
+        maxTotalRetries: 5,
+        onRetry: () => false,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof FakeApiError)
+        assert.equal(calls, 1, 'vetoed retry must not call fn again')
+        return true
+      },
+    )
+  })
+
+  it('should retry when onRetry returns undefined (no veto)', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      if (calls === 1) throw new FakeApiError('Server error (500)', 500)
+      return 'ok'
+    }
+    const result = await withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 5,
+      onRetry: () => undefined,
+    })
+    assert.equal(result, 'ok')
+    assert.equal(calls, 2)
+  })
+
   it('should respect AbortSignal', async () => {
     const controller = new AbortController()
     let calls = 0

@@ -921,6 +921,120 @@ describe('executeToolUse', () => {
     assert.doesNotMatch((result.toolResult as any).content as string, /阻断/, 'must not be the R2 block message')
   })
 
+  it('R2: blocks hash_edit when another session holds an exclusive claim (fail-closed)', async () => {
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, _path: string, _type: string) => false,
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const result = await executeToolUse(
+      { id: 'tu-hash', name: 'hash_edit', input: { file_path: 'foo.ts', anchors: [], new_string: 'x' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.equal((result.toolResult as any).is_error, true, 'hash_edit must hit the same R2 guard as write_file')
+    assert.equal(executed, false, 'harness must NOT execute the contested hash_edit')
+    assert.match((result.toolResult as any).content as string, /另一个会话/)
+  })
+
+  it('R2: blocks apply_patch when another session claims a patch target (path parsed from diff)', async () => {
+    const claimed: string[] = []
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => { claimed.push(path); return false },
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const diff = ['--- a/src/foo.ts', '+++ b/src/foo.ts', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n')
+    const result = await executeToolUse(
+      { id: 'tu-patch', name: 'apply_patch', input: { diff } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.deepEqual(claimed, ['src/foo.ts'], 'claim must target the path parsed from the diff header')
+    assert.equal((result.toolResult as any).is_error, true, 'contested patch target must be blocked pre-write')
+    assert.equal(executed, false, 'harness must NOT execute the contested apply_patch')
+  })
+
+  it('R2: apply_patch check_only is read-only — no claim, reaches the harness', async () => {
+    let claims = 0
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: () => { claims++; return true },
+      checkClaim: () => null,
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: r.isError ?? false, retried: false } },
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-patch-check', name: 'apply_patch', input: { diff: '--- a/x.ts\n+++ b/x.ts\n', check_only: true } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.equal(claims, 0, 'check_only never writes — must not claim')
+    assert.equal(executed, true)
+  })
+
+  it('R2: blocks contested ast_edit target; plan_close without apply never claims', async () => {
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => path !== 'src/renamed.ts',
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const blocked = await executeToolUse(
+      { id: 'tu-ast', name: 'ast_edit', input: { paths: ['src/renamed.ts'], code: 'x' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+    assert.equal((blocked.toolResult as any).is_error, true, 'contested ast_edit target must be blocked pre-write')
+    assert.equal(executed, false)
+
+    let claims = 0
+    const spyRegistry = {
+      acquireClaim: () => { claims++; return true },
+      checkClaim: () => null,
+    }
+    const deps2 = makeDeps({
+      sessionRegistry: spyRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+    await executeToolUse(
+      { id: 'tu-plan', name: 'plan_close', input: { file_path: 'docs/plans/p.md' } },
+      deps2, noopCallbacks as any, 1, false,
+    )
+    assert.equal(claims, 0, 'plan_close without apply must not pre-claim')
+  })
+
   it('executes a tool and returns result', async () => {
     const deps = makeDeps()
     const result = await executeToolUse(

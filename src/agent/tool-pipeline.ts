@@ -99,6 +99,42 @@ export function patchTargetPaths(diff: string): string[] {
   return [...out]
 }
 
+/**
+ * Paths a tool call is about to write, in the same cwd-relative key form the
+ * post-write claim path uses. Covers every workspace-writing tool — a pre-write
+ * guard keyed to write_file/edit_file alone left hash_edit / ast_edit /
+ * apply_patch / plan_close as unguarded side doors around the peer-session
+ * exclusive claim. Read-only variants (apply_patch check_only, ast_edit dry
+ * run, plan_close without apply) never claim.
+ */
+function preWriteClaimPaths(
+  tu: { id: string; name: string; input: Record<string, unknown> },
+  cwd: string,
+): string[] {
+  const norm = (p: string): string =>
+    p.startsWith(cwd + '/') || p.startsWith(cwd + '\\') ? p.slice(cwd.length + 1) : p
+  const one = (v: unknown): string[] =>
+    typeof v === 'string' && v.length > 0 ? [norm(v)] : []
+  switch (tu.name) {
+    case 'write_file':
+    case 'edit_file':
+    case 'hash_edit':
+      return one(tu.input.file_path)
+    case 'ast_edit':
+      if (tu.input.dryRun === true || !Array.isArray(tu.input.paths)) return []
+      return tu.input.paths
+        .filter((p): p is string => typeof p === 'string' && p.length > 0)
+        .map(norm)
+    case 'apply_patch':
+      if (tu.input.check_only === true || typeof tu.input.diff !== 'string') return []
+      return patchTargetPaths(tu.input.diff).map(norm)
+    case 'plan_close':
+      return tu.input.apply === true ? one(tu.input.file_path) : []
+    default:
+      return []
+  }
+}
+
 /** Infer the workspace_mutation `kind` from a git destructive command.
  *  Used by B1 cross-session stash awareness to differentiate stash / reset / checkout / clean. */
 function gitMutationKind(cmd: string): string | undefined {
@@ -1329,32 +1365,25 @@ async function executeToolUseInner(
 
     // R2 — concurrent write conflict block (desktop multi-session). When a live
     // SessionRegistry is wired and another active session holds an exclusive
-    // claim on the target file, fail-closed: refuse the write instead of
+    // claim on a target file, fail-closed: refuse the write instead of
     // clobbering a peer session's in-flight edit. acquireClaim is idempotent for
     // the same session, so an uncontended write also stakes our claim here.
-    // Only active when a registry is present — CLI / single-session / no-registry
-    // paths are completely unaffected.
-    if (
-      deps.sessionRegistry &&
-      deps.sessionId &&
-      (tu.name === 'write_file' || tu.name === 'edit_file') &&
-      typeof tu.input.file_path === 'string'
-    ) {
-      // Normalize to the same key form the post-write claim path uses (relative
-      // to cwd when inside the workspace) so claims compare consistently.
-      let claimPath = tu.input.file_path
-      if (claimPath.startsWith(deps.cwd + '/') || claimPath.startsWith(deps.cwd + '\\')) {
-        claimPath = claimPath.slice(deps.cwd.length + 1)
-      }
-      const acquired = deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')
-      if (!acquired) {
-        const owner = deps.sessionRegistry.checkClaim(claimPath)
-        const ownerTag = owner?.sessionId ? `（会话 ${owner.sessionId.slice(0, 8)}）` : ''
-        const blockMsg =
-          `文件「${claimPath}」正被另一个会话${ownerTag}独占编辑，已阻断本次写入以避免并发冲突。` +
-          `请等待对方完成，或改写其它文件。`
-        callbacks.onToolResult(tu.id, tu.name, blockMsg, true)
-        return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: blockMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+    // Covers every workspace-writing tool via preWriteClaimPaths — a guard
+    // keyed to write_file/edit_file alone left the other four write tools as
+    // an unguarded side door. Only active when a registry is present — CLI /
+    // single-session / no-registry paths are completely unaffected.
+    if (deps.sessionRegistry && deps.sessionId) {
+      for (const claimPath of preWriteClaimPaths(tu, deps.cwd)) {
+        const acquired = deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')
+        if (!acquired) {
+          const owner = deps.sessionRegistry.checkClaim(claimPath)
+          const ownerTag = owner?.sessionId ? `（会话 ${owner.sessionId.slice(0, 8)}）` : ''
+          const blockMsg =
+            `文件「${claimPath}」正被另一个会话${ownerTag}独占编辑，已阻断本次写入以避免并发冲突。` +
+            `请等待对方完成，或改写其它文件。`
+          callbacks.onToolResult(tu.id, tu.name, blockMsg, true)
+          return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: blockMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+        }
       }
     }
 

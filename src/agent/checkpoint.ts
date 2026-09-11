@@ -198,10 +198,15 @@ export function pruneOrphanCheckpoints(max = MAX_CHECKPOINTS): number {
   // 1. Drop orphans whose recorded cwd is gone.
   const live: { file: string; mtime: number }[] = []
   for (const e of entries) {
-    let cwd = ''
+    let cwd: string | null = null
     try {
       cwd = (JSON.parse(readFileSync(e.file, 'utf-8')) as CheckpointData).cwd ?? ''
-    } catch { /* unreadable → treat as orphan */ }
+    } catch {
+      // 读取/解析失败 ≠ 孤儿：Windows 杀软扫描 EBUSY、权限抖动等瞬态错误
+      // 在这里删除会不可逆地毁掉用户的回滚点（checkpoint 是删除类操作唯一
+      // 的后悔药）。跳过保留，下次 prune 再试；确认损坏才由使用方处置。
+      continue
+    }
     if (cwd && existsSync(cwd)) {
       live.push(e)
     } else {

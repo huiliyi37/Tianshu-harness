@@ -65,6 +65,8 @@ export interface TaskRecord {
   scheduledTaskId?: string
   /** 执行该任务的可见 session id（runtime 池创建后回填，用于跳转会话线程）。 */
   sessionId?: string
+  /** 任务执行的工作区（cron 任务=创建时快照；缺省=runtime 池 defaultCwd）。 */
+  cwd?: string
   /** 第几次尝试（首次=1）。 */
   attempt?: number
   /** 若本记录是重试，指向原始任务 id。 */
@@ -97,6 +99,8 @@ export interface CreateTaskInput {
   retry?: ScheduledTaskRetry
   /** 无人值守运行（审批 fail-closed 中止）。 */
   unattended?: boolean
+  /** 任务执行的工作区（cron 任务=创建时快照；缺省=runtime 池 defaultCwd）。 */
+  cwd?: string
 }
 
 // ─── TaskStore 接口 ───────────────────────────────────────────

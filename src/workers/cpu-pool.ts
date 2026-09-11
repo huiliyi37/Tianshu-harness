@@ -107,8 +107,15 @@ function spawnWorker(): Worker | null {
   if (!path) return null
 
   const w = new Worker(path, {
-    // tsx dev: enable TypeScript in the worker thread
-    execArgv: path.endsWith('.ts') ? ['--import', 'tsx/esm'] : undefined,
+    // node ≥ 23.6 原生 strip-types 已能加载 cpu-worker.ts 及其显式 .ts imports。
+    // 此前给 .ts worker 传 ['--import','tsx/esm']：node < 24.11.1 在 worker 线程
+    // 不注册钩子（no-op，长期"碰巧正常"）；node ≥ 24.11.1 钩子首次在 worker 生效，
+    // 会把 require('<pkg>/package.json') 的 JSON 改写成 esbuild JS 文本——
+    // @ast-grep/napi 加载器的版本探测因此抛错，兜底成 "Cannot find native
+    // binding"（包完好、dlopen 成功；CI ubuntu+node24 上 ast 全家假红的根因）。
+    // 故 .ts worker 一律空 execArgv（不能 undefined——那会继承父进程的
+    // --import tsx/--test，行为随父进程漂移）；dist/.js 分支维持 undefined。
+    execArgv: path.endsWith('.ts') ? [] : undefined,
   })
   w.unref()
   w.on('message', (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {

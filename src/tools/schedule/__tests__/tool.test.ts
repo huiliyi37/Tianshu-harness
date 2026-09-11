@@ -136,3 +136,14 @@ test('工具定义使用 input_schema 命名（7f22186b0 修复守卫）', () =>
     assert.equal(tool.isEnabled(), true)
   }
 })
+
+
+test('create 把调用会话的 cwd 快照进任务（F2：任务在创建工作区执行）', async () => {
+  await run(SCHEDULE_CREATE_TOOL, { prompt: 'morning check', trigger: { type: 'interval', spec: '3600000' } })
+  const listed = await run(SCHEDULE_LIST_TOOL, {})
+  const tasks = scheduler.list()
+  assert.equal(tasks.length, 1)
+  assert.equal(tasks[0]!.cwd, dir, '任务 cwd = 工具调用上下文的工作区')
+  assert.ok(listed.content.length > 0)
+})
+

@@ -944,7 +944,7 @@ export const BASH_TOOL: Tool = {
       return first
     }
 
-    for (const p of denial.paths) grantPath(p, 'write')
+    for (const p of denial.paths) grantPath(p, 'write', { cwd: params.cwd })
     recordSandboxLearn({
       cwd: params.cwd,
       command: String(params.input.command ?? ''),

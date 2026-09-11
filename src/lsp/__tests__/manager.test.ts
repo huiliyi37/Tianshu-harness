@@ -15,6 +15,8 @@ function createMockServer() {
   const stderr = new PassThrough()
 
   let killed = false
+  /** 收到的 didOpen 通知数（F4：重初始化必须向新服务器重发 didOpen）。 */
+  let didOpenCount = 0
 
   let serverBuf = ''
   stdin.on('data', (chunk: Buffer) => {
@@ -67,7 +69,11 @@ function createMockServer() {
           }))
         }
       }
-      // Notifications (initialized, textDocument/didOpen) — no response needed
+      for (const msg of messages) {
+        if ('method' in msg && (msg as { method: string }).method === 'textDocument/didOpen') {
+          didOpenCount++
+        }
+      }
     }
   })
 
@@ -80,7 +86,7 @@ function createMockServer() {
     get killed() { return killed },
   }
 
-  return { proc, stdin, stdout, stderr }
+  return { proc, stdin, stdout, stderr, get didOpenCount() { return didOpenCount } }
 }
 
 describe('LspManager', () => {
@@ -248,5 +254,23 @@ describe('LspManager', () => {
     await mgr.initialize()
     const result = await mgr.gotoDefinition('src/file.ts', 1, 1)
     assert.equal(result.length, 0)
+  })
+
+  it('重新 initialize 向新服务器重发 didOpen——openedDocs 必须清空（2026-09-11 F4）', async () => {
+    const s1 = createMockServer()
+    const s2 = createMockServer()
+    const servers = [s1, s2]
+    const mgr = createLspManager(() => servers.shift()!.proc as any, '/project')
+    managers.push(mgr)
+
+    await mgr.initialize()
+    await mgr.gotoDefinition('src/target.ts', 10, 5)
+    assert.equal(s1.didOpenCount, 1, '首任服务器收到 didOpen')
+
+    mgr.dispose() // 模拟服务器死亡清理
+    await mgr.initialize() // 重启路径：同一 manager 重新初始化
+    await mgr.gotoDefinition('src/target.ts', 10, 5)
+    assert.equal(s2.didOpenCount, 1,
+      '新服务器必须重新收到 didOpen——修复前 openedDocs 残留把 didOpen 短路掉')
   })
 })

@@ -70,6 +70,13 @@ export interface ScheduledTask {
   retry?: ScheduledTaskRetry
   /** 审查策略。缺省 = 'always-review'。 */
   reviewPolicy?: ReviewPolicy
+  /**
+   * 创建该任务时会话的工作区（快照）。任务触发后在快照 cwd 里执行——桌面端
+   * 一个 sidecar 托管多个项目，缺省时所有任务都会落到 sidecar 的启动目录，
+   * 项目 A 创建的「检查依赖更新」就会在错误的项目里跑 npm/git。
+   * 缺省（旧持久化数据）= 由执行方回退到 runtime 池的 defaultCwd。
+   */
+  cwd?: string
 }
 
 export type ScheduleTable = ScheduledTask[]
@@ -82,6 +89,8 @@ export interface TaskDueMeta {
   unattended?: boolean
   /** 手动触发（试跑/中止后重跑），非定时到点。 */
   manual?: boolean
+  /** 任务创建时会话的工作区快照（执行 cwd，见 ScheduledTask.cwd）。 */
+  cwd?: string
 }
 
 /**
@@ -552,6 +561,7 @@ export class CronScheduler {
         ? false
         : resolveRunUnattended({ reviewPolicy: task.reviewPolicy, triggerCount: preTriggerCount }),
       ...(opts?.manual ? { manual: true } : {}),
+      ...(task.cwd ? { cwd: task.cwd } : {}),
     }
     for (const handler of this.handlers) {
       try {
@@ -577,7 +587,7 @@ export function createScheduledTask(
   prompt: string,
   trigger: CronTrigger,
   allowedTools: string[] = [],
-  opts?: { recurringMaxAgeMs?: number; agentId?: string; retry?: ScheduledTaskRetry; reviewPolicy?: ReviewPolicy },
+  opts?: { recurringMaxAgeMs?: number; agentId?: string; retry?: ScheduledTaskRetry; reviewPolicy?: ReviewPolicy; cwd?: string },
 ): ScheduledTask {
   return {
     id: `cron_${randomUUID().slice(0, 8)}`,
@@ -590,6 +600,7 @@ export function createScheduledTask(
     triggerCount: 0,
     ...(normalizeRetry(opts?.retry) ? { retry: normalizeRetry(opts?.retry)! } : {}),
     ...(normalizeReviewPolicy(opts?.reviewPolicy) ? { reviewPolicy: normalizeReviewPolicy(opts?.reviewPolicy)! } : {}),
+    ...(opts?.cwd ? { cwd: opts.cwd } : {}),
   }
 }
 
@@ -659,6 +670,7 @@ function normalizeScheduledTask(value: unknown): ScheduledTask | null {
     triggerCount,
     ...(typeof task.recurringMaxAgeMs === 'number' && Number.isFinite(task.recurringMaxAgeMs) ? { recurringMaxAgeMs: task.recurringMaxAgeMs } : {}),
     ...(typeof task.agentId === 'string' ? { agentId: task.agentId } : {}),
+    ...(typeof task.cwd === 'string' && task.cwd ? { cwd: task.cwd } : {}),
     ...(typeof task.lastTriggeredAt === 'string' ? { lastTriggeredAt: task.lastTriggeredAt } : {}),
     ...(typeof task.enabled === 'boolean' ? { enabled: task.enabled } : {}),
     ...(normalizeRetry(task.retry) ? { retry: normalizeRetry(task.retry)! } : {}),

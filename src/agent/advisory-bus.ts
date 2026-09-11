@@ -1160,7 +1160,32 @@ export class AdvisoryBus {
     taken.sort(compareEntries)
     sorted.push(...taken)
 
-    // 账本：本轮参与竞争但没拿到渲染位的条目（类别上限 / Top-N 截断）。
+    // ── Wave 2 统一注入预算 ──
+    // 上游 8 层降频机制各自判断后，此处单点约束最终进入 prompt 的总数。
+    // W6 throttle 信号 → 削减预算（替代隔周期 skip）；正常态预算 = 3。
+    // 必须先于下面的送达记账执行：被预算裁掉的条目从未进入 prompt，
+    // 若先记账再裁剪，它们会同时落在 delivered（假送达）与 dropped 两本账上，
+    // readback 会把它们误判为 ignored、推进习惯化静音与 efficacy 冷却。
+    const CVM_INJECTION_BASE_BUDGET = 3
+    const busCount = sorted.length
+    const srPending = this.srPendingDelivery.size
+    // ⚠ 按 key 数计数初期足够（SR 天然低频），后续可按 injectedTokens 加权校准
+    const cvmInjectionBudget = this.overheadThrottled
+      ? Math.max(1, CVM_INJECTION_BASE_BUDGET - 2)
+      : CVM_INJECTION_BASE_BUDGET
+
+    // constitutional / immediate 完全豁免——不占预算配额，nonexempt 独立计数
+    const exempt = sorted.filter(e => e.tier === 'constitutional' || e.immediate === true)
+    const nonexempt = sorted.filter(e => e.tier !== 'constitutional' && e.immediate !== true)
+    if (nonexempt.length > cvmInjectionBudget) {
+      const keep = [...exempt, ...nonexempt.slice(0, cvmInjectionBudget)]
+      // 不在这里 recordDropped——下游账本过滤器（renderedKeys 已是裁剪后形态）
+      // 会自然覆盖这批 key；双记会让 ledger.dropped 对每个被裁 key 计 2 次
+      // （对抗审查 F1，收编 PR #82 时修正）。
+      sorted = keep
+    }
+
+    // 账本：本轮参与竞争但没拿到渲染位的条目（类别上限 / Top-N 截断 / 注入预算）。
     // holdout 扣留 ≠ 丢弃（单独计 heldOut,且照常进 delivered 核销）。
     const renderedKeys = new Set(sorted.map(e => e.key))
     const heldKeys = new Set(heldOut.map(e => e.key))
@@ -1185,27 +1210,6 @@ export class AdvisoryBus {
       expect: e.expect,
       shadow: true,
     })))
-
-    // ── Wave 2 统一注入预算 ──
-    // 上游 8 层降频机制各自判断后，此处单点约束最终进入 prompt 的总数。
-    // W6 throttle 信号 → 削减预算（替代隔周期 skip）；正常态预算 = 3。
-    const CVM_INJECTION_BASE_BUDGET = 3
-    const busCount = sorted.length
-    const srPending = this.srPendingDelivery.size
-    // ⚠ 按 key 数计数初期足够（SR 天然低频），后续可按 injectedTokens 加权校准
-    const cvmInjectionBudget = this.overheadThrottled
-      ? Math.max(1, CVM_INJECTION_BASE_BUDGET - 2)
-      : CVM_INJECTION_BASE_BUDGET
-
-    // constitutional / immediate 完全豁免——不占预算配额，nonexempt 独立计数
-    const exempt = sorted.filter(e => e.tier === 'constitutional' || e.immediate === true)
-    const nonexempt = sorted.filter(e => e.tier !== 'constitutional' && e.immediate !== true)
-    if (nonexempt.length > cvmInjectionBudget) {
-      const keep = [...exempt, ...nonexempt.slice(0, cvmInjectionBudget)]
-      const pruned = nonexempt.slice(cvmInjectionBudget)
-      this.recordDropped(pruned.map(e => e.key))
-      sorted = keep
-    }
 
     if (sorted.length === 0) {
       this.entries = []

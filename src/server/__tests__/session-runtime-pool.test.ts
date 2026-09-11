@@ -213,3 +213,27 @@ test('runAndWait is tied to its exact run across rapid next run', async () => {
   )
   assert.equal(listenerCount(manager, session.id), 0)
 })
+
+
+test('execute options.cwd 优先于池 defaultCwd（2026-09-11 F2：cron 任务在创建工作区跑）', async () => {
+  const env = setup()
+  const captured: Array<string | undefined> = []
+  const orig = env.manager.createSession.bind(env.manager)
+  env.manager.createSession = ((opts: { cwd?: string } & Record<string, unknown>) => {
+    captured.push(opts?.cwd)
+    return orig(opts)
+  }) as typeof env.manager.createSession
+
+  const handle = await env.pool.acquire('task-cwd')
+  const signal = new TrackedAbortSignal()
+  const withCwd = handle.execute('work', signal as unknown as AbortSignal, undefined, () => {}, { cwd: '/workspace/A' })
+  env.agents[0]!.finish(0)
+  await withCwd
+  const withoutCwd = handle.execute('work', signal as unknown as AbortSignal, undefined, () => {})
+  env.agents[1]!.finish(0)
+  await withoutCwd
+
+  assert.equal(captured[0], '/workspace/A', '任务自带 cwd 优先')
+  assert.equal(captured[1], '/tmp/work', '缺省回退池 defaultCwd（行为不变）')
+})
+

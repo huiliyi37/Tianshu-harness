@@ -1,7 +1,7 @@
 {
   "version": "3.18.1",
   "notes": "v3.18.1（修复版）——视觉桥三起故障收口：运行中配桥不重启不生效根修、推理档模型当桥返回空描述根修、image_strip 剥图重发落地（issue #94）+ Linux AppImage 启动即崩修复（issue #80）。已知：MiniMax-M3 视觉上游故障（其服务端 500），请暂改用 glm-4v-flash 等作桥。完整清单见 docs/releases/v3.18.1.md。",
-  "pub_date": "2026-09-11T09:24:45.866Z",
+  "pub_date": "2026-09-11T09:29:48.647Z",
   "platforms": {
     "darwin-aarch64": {
       "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_aarch64.app.tar.gz",
@@ -16,8 +16,8 @@
       "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_amd64.AppImage"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1NkSThWbW01djFaeU9oUkV0K2ZXRWp0dmFFaUZwME4wa0ZqUmpKRUx6ZHBqeXc4M2RzYUlKU0s5WTduVDlUL0JJbXJMWEpVZkRBcVU5aEhkanVqSEF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE1ODQ0CWZpbGU6VGlhbnNodV8zLjE4LjFfeDY0LXNldHVwLmV4ZQozV3BLMTZyU0FwaC9tazBMdFhsb0VHdEJ3TWRGY1d6Z3R0OG12TnJBeDUzUDQ1VitvcTJCdGJ3S01aN09lWTJlbnFIRmJzQ0tNcEovUmc2RnNDYzdCdz09Cg==",
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_x64-setup.exe"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1JKQTkvZms0OWE2YkN5K29sdldUTnVvNTMxU3FsM2ZEdm9YcmZ4d2x1VzdJSldWQVFZa1dmZjdWbXIyRW13aFd3dndXa2JqWVZscDV4ZzhzZ1NycHdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE4OTg1CWZpbGU6VGlhbnNodV8zLjE4LjFfeDY0LXNldHVwLmV4ZQpBUW9ZMm5BT0ZlUTNkeSsrSG5YQkxGNDl2c1BoZmtlZGJZTjVxcHdmb1FxRXpRbzczZjJ2d0RtOFRablBzMG4zV05OMzVQZWJsMlJvblAyYlBtdmhBZz09Cg=="
     }
   }
 }

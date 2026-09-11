@@ -339,9 +339,10 @@ export class RuntimeHookPipeline {
       let timedOut = false
       let outcome: RuntimeHookRunOutcome = 'completed'
       let message: string | undefined
+      let pending: Promise<void> | undefined
 
       try {
-        const pending = Promise.resolve().then(() => invoke(hook))
+        pending = Promise.resolve().then(() => invoke(hook))
         if (timeoutMs > 0) {
           await Promise.race([
             pending,
@@ -375,6 +376,22 @@ export class RuntimeHookPipeline {
           budgetMs: timeoutMs,
           slow: outcome === 'completed' && durationMs >= slowMs,
           message,
+        })
+      }
+
+      if (timedOut && pending) {
+        // 迟到收尾：race 超时后 pending 仍会 settle。迟到的 rejection 是
+        // unhandledRejection（main.ts 有 eperm-filter 兜底只打 stderr；未装
+        // 该 filter 的嵌入方/headless 在 Node ≥15 直接崩进程）；迟到的成功
+        // 则副作用照常落地却零记账。迟到失败在此送 onError 保留现场——
+        // run 统计已在上面 finally 以 timed_out 记账，不重复计 runs。
+        pending.catch(lateError => {
+          this.options.onError?.({
+            phase,
+            hookName: hook.name,
+            message: `late failure after timeout: ${toMessage(lateError)}`,
+            error: lateError,
+          })
         })
       }
     }

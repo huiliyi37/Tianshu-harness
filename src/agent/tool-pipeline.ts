@@ -1233,7 +1233,7 @@ async function executeToolUseInner(
         // 此前仅「先读后写」升级：未读过就写要多花一轮 request_path_access
         // 自愈，违背 skip 档的零打断语义。读/写统一当场授予；持久授权仍只能
         // 经用户 remember（persist）。
-        grantPath(dirname(p), pathGrantNeed.mode)
+        grantPath(dirname(p), pathGrantNeed.mode, { cwd: deps.cwd })
       }
     }
 

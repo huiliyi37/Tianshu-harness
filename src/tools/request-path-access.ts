@@ -52,7 +52,10 @@ export const REQUEST_PATH_ACCESS_TOOL: Tool = {
       root = dirname(target)
     }
 
-    const grant = grantPath(root, mode, { persist: remember, cwd: params.cwd })
+    // An interactive approval is ALWAYS scoped to this session's workspace —
+    // a missing cwd must fall back to the process cwd, never to an unscoped
+    // (process-wide) grant.
+    const grant = grantPath(root, mode, { persist: remember, cwd: params.cwd ?? process.cwd() })
     const lifetime = remember ? '已为本工作区持久化（重启后仍有效）' : '仅本会话'
     return {
       content: `已授予 ${grant.mode} 访问：${grant.root}\n范围：该目录及其下全部路径 — ${lifetime}。\n文件工具与 bash 现在可以在此${grant.mode === 'write' ? '读写' : '读取'}路径。`,

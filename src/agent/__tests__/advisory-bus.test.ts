@@ -926,3 +926,29 @@ describe('W3 穿透让位：验证债 MUTEX 对（2026-07-25 advisory-ecology-re
     assert.ok(!out.includes('virtue-encouragement'), '观察窗内「你有债」事实已被指认，表扬必须让位')
   })
 })
+
+describe('W6 注入预算 × 送达记账一致性（2026-09-10 audit：假送达修复）', () => {
+  it('被预算裁掉的条目不得进 delivered/ledgerRendered——两本账必须与实际渲染一致', () => {
+    const bus = new AdvisoryBus()
+    bus.setOverheadThrottled(true) // W6 节流 → cvmInjectionBudget = max(1, 3-2) = 1
+    bus.submitAll([
+      { key: 'turn-call-limit', priority: 0.9, category: 'discipline', content: 'A' },
+      { key: 'readonly-spiral', priority: 0.8, category: 'dead_end', content: 'B' },
+      { key: 'stale-plan', priority: 0.7, category: 'todo', content: 'C' },
+    ])
+    const out = bus.render(undefined, 1)
+    const delivered = bus.drainDelivered()
+    const ledger = bus.drainLedger()
+    const renderedKeys = [...out.matchAll(/<entry key="([^"]+)"/g)].map(m => m[1]!)
+
+    assert.equal(renderedKeys.length, 1, '预算=1 只放行 1 条')
+    assert.equal(delivered.length, renderedKeys.length,
+      'delivered 必须只含真正进 prompt 的条目——被裁条目进 delivered 会污染 readback/efficacy')
+    assert.equal(ledger.rendered, renderedKeys.length, 'ledgerRendered 同口径')
+    assert.equal(ledger.dropped, 2, '被裁 2 条在 dropped 里只计一次（不得与预算块重复记账）')
+    for (const key of ledger.droppedKeys) {
+      assert.ok(!delivered.some(d => d.key === key), `被裁 key ${key} 不得出现在 delivered`)
+    }
+  })
+
+})

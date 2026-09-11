@@ -2,7 +2,7 @@ import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { rivetHome } from '../../config/paths.js'
 import {
@@ -418,5 +418,82 @@ describe('isPathUnder (win32 case semantics)', () => {
   it('separator boundary holds in both modes', () => {
     assert.equal(isPathUnder('/a/b', '/a/bc/x', true), false)
     assert.equal(isPathUnder('/a/b', '/a/bc/x', false), false)
+  })
+})
+
+describe('授权表会话作用域（2026-09-11 F1：sidecar 多会话跨工作区泄漏修复）', () => {
+  beforeEach(() => _resetGrantsForTest())
+
+  it('A 工作区批准的授权对 B 工作区的会话不可见', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const outside = tmp()
+    // request-path-access 的真实姿势：A 会话批准工作区外目录可写
+    grantPath(outside, 'write', { persist: false, cwd: workspaceA })
+
+    assert.equal(isWriteGranted(outside, workspaceA), true, '批准方工作区照常可见')
+    assert.equal(isWriteGranted(outside, workspaceB), false, '未批准的工作区 B 不得继承 A 的授权')
+    assert.equal(isWriteGranted(outside), true, '无 cwd 的旧调用方保持全量视图（向后兼容）')
+  })
+
+  it('validatePathSafe 端到端：A 的批准不放行 B 的工作区外写入', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const target = join(tmp(), 'report.txt')
+    grantPath(dirname(target), 'write', { persist: false, cwd: workspaceA })
+
+    assert.equal(validatePathSafe(workspaceA, target, 'write').ok, true)
+    assert.equal(validatePathSafe(workspaceB, target, 'write').ok, false,
+      'B 工作区写工作区外路径必须仍走审批——修复前会静默放行（泄漏）')
+  })
+
+  it('loadPersistedGrants 只为本工作区注水，不灌进其他工作区的视图', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const outside = tmp()
+    grantPath(outside, 'write', { persist: true, cwd: workspaceA })
+    _resetGrantsForTest()
+
+    loadPersistedGrants(workspaceA)
+    assert.equal(isWriteGranted(outside, workspaceA), true, '本工作区的持久授权注水后可见')
+    assert.equal(isWriteGranted(outside, workspaceB), false,
+      '另一工作区（或其后续会话）不得看见 A 的持久授权')
+  })
+
+  it('config 级授权（无 cwd）保持进程级语义不变', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const outside = tmp()
+    applyConfiguredPathGrants({ additionalWriteDirs: [outside] })
+
+    assert.equal(isWriteGranted(outside, workspaceA), true)
+    assert.equal(isWriteGranted(outside, workspaceB), true, '用户显式配置的目录授权对所有会话生效（行为不变）')
+  })
+
+  it('writeGrantedRoots(cwd) 只列出对该会话可见的可写根（沙箱喂食点）', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const outsideA = tmp()
+    const outsideB = tmp()
+    grantPath(outsideA, 'write', { persist: false, cwd: workspaceA })
+    grantPath(outsideB, 'write', { persist: false, cwd: workspaceB })
+
+    const rootsA = writeGrantedRoots(workspaceA)
+    const rootsB = writeGrantedRoots(workspaceB)
+    assert.ok(rootsA.some(r => isPathUnder(r, outsideA)), 'A 看得见自己批准的根')
+    assert.ok(!rootsB.some(r => isPathUnder(r, outsideA)), 'B 的沙箱不得被 A 的授权撑宽')
+    assert.ok(rootsB.some(r => isPathUnder(r, outsideB)), 'B 看得见自己批准的根')
+  })
+
+  it('同一根目录可被不同工作区各自授权，互不串扰', () => {
+    const workspaceA = tmp()
+    const workspaceB = tmp()
+    const outside = tmp()
+    grantPath(outside, 'read', { persist: false, cwd: workspaceA })
+    grantPath(outside, 'write', { persist: false, cwd: workspaceB })
+
+    assert.equal(isReadGranted(outside, workspaceA), true)
+    assert.equal(isWriteGranted(outside, workspaceA), false, 'A 只批了读，B 的写授权不回流 A')
+    assert.equal(isWriteGranted(outside, workspaceB), true, 'B 的写授权只在 B 生效')
   })
 })

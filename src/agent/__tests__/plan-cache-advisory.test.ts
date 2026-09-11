@@ -115,7 +115,7 @@ describe('AgentLoop PlanCache advisory wiring', () => {
 
       assert.doesNotMatch(allMessageText(calls[0]), /plan-cache-advisory/)
     } finally {
-      rmSync(cwd, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
     }
   })
 
@@ -154,7 +154,7 @@ describe('AgentLoop PlanCache advisory wiring', () => {
       assert.match(text, /Informational only — not auto-executed\./)
       assert.equal(toolExecuted, false)
     } finally {
-      rmSync(cwd, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
     }
   })
 })

@@ -75,7 +75,8 @@ export const SCHEDULE_CREATE_TOOL: Tool = {
       required: ['prompt', 'trigger'],
     },
   },
-  async execute({ input }) {
+  async execute(params) {
+    const { input, cwd: sessionCwd } = params
     const scheduler = getActiveScheduler()
     if (!scheduler) return noScheduler()
     const parsed = createSchema.safeParse(input)
@@ -98,6 +99,9 @@ export const SCHEDULE_CREATE_TOOL: Tool = {
       ...(reviewPolicy ? { reviewPolicy } : {}),
       createdAt: new Date().toISOString(),
       triggerCount: 0,
+      // 快照创建时会话的工作区：任务到点在快照 cwd 里执行（桌面多项目下
+      // sidecar 的 process.cwd() 不是任何一个会话的工作区）。
+      ...(sessionCwd ? { cwd: sessionCwd } : { cwd: process.cwd() }),
     })
     return {
       content: `定时任务已创建（id: ${id}，触发器: ${trigger.type}${trigger.spec ? ` "${trigger.spec}"` : ''}）。它会按触发器自动执行并跨重启存活，可在「自动化」面板管理。`,

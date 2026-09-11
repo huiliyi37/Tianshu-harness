@@ -144,7 +144,7 @@ export async function tryShellClipboard(opts?: ShellClipboardOpts): Promise<Clip
   const uuid = opts?.randomUUID ?? randomUUID
 
   try {
-    if (pf === 'darwin') return await tryMacOSClipboard(ef, rf, td, uuid)
+    if (pf === 'darwin') return await tryMacOSClipboard(pf, ef, rf, td, uuid)
     if (pf === 'linux') return await tryLinuxClipboard(ef)
     if (pf === 'win32') return await tryWindowsClipboard(ef, rf, td, uuid)
   } catch {
@@ -156,6 +156,7 @@ export async function tryShellClipboard(opts?: ShellClipboardOpts): Promise<Clip
 // ── macOS: osascript（单次嵌套 coercion）──
 
 async function tryMacOSClipboard(
+  pf: NodeJS.Platform,
   ef: (bin: string, args: string[]) => Promise<{ stdout: string }>,
   rf: (path: string) => Promise<Buffer>,
   td: string,
@@ -226,7 +227,7 @@ async function tryMacOSClipboard(
     // 大多数视觉模型 API 不支持 TIFF，用 sips 转 PNG。
     const mime = detectImageMime(buf, 'clipboard.png')
     if (mime === 'image/tiff' || mime === 'image/bmp') {
-      const pngBuf = await convertToPng(buf, target, ef, td, uuid, rf)
+      const pngBuf = await convertToPng(pf, buf, target, ef, td, uuid, rf)
       if (pngBuf) return bufToClipboardImage(pngBuf, 'clipboard.png')
     }
     return bufToClipboardImage(buf, 'clipboard.png')
@@ -291,6 +292,7 @@ else { exit 1 }
 
 /** Convert TIFF/BMP buffer to PNG using macOS sips. Returns null on failure. */
 async function convertToPng(
+  pf: NodeJS.Platform,
   buf: Buffer,
   srcPath: string,
   ef: (bin: string, args: string[]) => Promise<{ stdout: string }>,
@@ -298,7 +300,10 @@ async function convertToPng(
   uuid: () => string,
   rf?: (path: string) => Promise<Buffer>,
 ): Promise<Buffer | null> {
-  if (process.platform !== 'darwin') return null
+  // 守卫必须看注入的 platform（ShellClipboardOpts.platform 的契约）：查真实
+  // process.platform 会让非 darwin 的测试/嵌入环境跳过转换，把 TIFF 原样返回
+  // （ubuntu CI 上 RED #8 假红的根因）。运行时 pf === process.platform，语义不变。
+  if (pf !== 'darwin') return null
   const pngPath = `${td}/rivet-clip-${uuid()}.png`
   try {
     await ef('sips', ['-s', 'format', 'png', srcPath, '--out', pngPath])

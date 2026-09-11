@@ -603,3 +603,47 @@ function futureISO(secondsAhead: number): string {
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+
+describe('ScheduledTask.cwd 创建工作区快照（2026-09-11 F2：多项目 sidecar 修复）', () => {
+  it('runNow 触发时 TaskDueMeta 携带任务 cwd', () => {
+    const metas: Array<{ cwd?: string }> = []
+    const scheduler = new CronScheduler({
+      schedulePath: join(tmpDir, 'f2-meta.json'),
+      tickIntervalMs: 60_000,
+    })
+    scheduler.subscribeTaskDue(async (_prompt, _tools, _agentId, meta) => {
+      metas.push({ cwd: meta?.cwd })
+    })
+    const task = createScheduledTask('deps check', { type: 'interval', spec: '3600000' }, [], { cwd: '/workspace/A' })
+    scheduler.add(task)
+    assert.equal(scheduler.runNow(task.id), true)
+    assert.equal(metas.length, 1)
+    assert.equal(metas[0]!.cwd, '/workspace/A', 'due handler 必须拿到任务的工作区快照')
+  })
+
+  it('cwd 经持久化 roundtrip 存活（跨重启语义）', () => {
+    const path = join(tmpDir, 'f2-persist.json')
+    const s1 = new CronScheduler({ schedulePath: path, tickIntervalMs: 60_000 })
+    s1.add(createScheduledTask('daily check', { type: 'interval', spec: '86400000' }, [], { cwd: '/workspace/A' }))
+    s1.stop()
+
+    const s2 = new CronScheduler({ schedulePath: path, tickIntervalMs: 60_000 })
+    s2.start()
+    s2.stop()
+    const loaded = s2.list()
+    assert.equal(loaded.length, 1)
+    assert.equal(loaded[0]!.cwd, '/workspace/A', '持久化必须保留 cwd（重启后任务仍在原工作区跑）')
+  })
+
+  it('旧持久化数据（无 cwd）normalize 后保持 undefined——回退 defaultCwd', () => {
+    const path = join(tmpDir, 'f2-legacy.json')
+    const s1 = new CronScheduler({ schedulePath: path, tickIntervalMs: 60_000 })
+    s1.add(createScheduledTask('legacy', { type: 'interval', spec: '86400000' }))
+    s1.stop()
+    const s2 = new CronScheduler({ schedulePath: path, tickIntervalMs: 60_000 })
+    s2.start()
+    s2.stop()
+    assert.equal(s2.list()[0]!.cwd, undefined)
+  })
+})

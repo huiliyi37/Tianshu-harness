@@ -39,7 +39,9 @@ describe('scan excludes', () => {
     ]
     for (const path of walkers) {
       const src = read(path)
-      assert.match(src, /scan-excludes\.js/, `${path} must derive from the shared baseline`)
+      // .js = 编译产物说明符约定，.ts = strip-types 运行时约定（CPU worker 按
+      // 原生 node 加载，.js 指向 .ts 文件会直接终止 worker）——两者都算派生。
+      assert.match(src, /scan-excludes\.(js|ts)/, `${path} must derive from the shared baseline`)
       assert.doesNotMatch(
         src,
         /'node_modules',\s*'\.git'/,

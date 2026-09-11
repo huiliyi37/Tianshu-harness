@@ -35,12 +35,36 @@ export interface PathGrant {
   grantedAt: number
   /** True when this grant was written through to the per-workspace store. */
   persisted?: boolean
+  /**
+   * Session scope: canonicalized cwd of the session that approved this grant.
+   * Interactively approved grants (request_path_access) and per-workspace
+   * persisted grants are ALWAYS scoped. Scope-less grants (config
+   * permissions.additional*Dirs, dependency-cache read grants, rivet runtime
+   * dirs) are user- or tool-level by design and visible to every session in
+   * the process.
+   *
+   * The sidecar (`rivet serve`) hosts many sessions — possibly across
+   * different workspaces — in ONE process, so an unscoped interactive grant
+   * approved in workspace A would silently authorize writes from workspace B.
+   * The header contract below ("a grant for project A must not leak into
+   * project B") is enforced through this field.
+   */
+  scope?: string
 }
 
 const RIVET_DIR = rivetHome()
 
-/** In-memory grants for the current process/session. */
+/** In-memory grants for the current process. Interactive/persisted grants are
+ *  session-scoped via PathGrant.scope; scope-less entries are user-level. */
 let _grants: PathGrant[] = []
+
+/** True when grant `g` is visible to the session running in `cwd`. An omitted
+ *  cwd (legacy callers) sees everything. */
+function scopeVisible(g: PathGrant, cwd?: string): boolean {
+  if (!cwd) return true
+  if (g.scope === undefined) return true
+  return g.scope === canonicalize(cwd)
+}
 
 /**
  * Canonicalize a path: resolve symlinks where the path (or its nearest existing
@@ -118,11 +142,21 @@ function grantsFile(cwd: string): string {
  * Grant access to a directory subtree. `root` is canonicalized. A write grant
  * supersedes a prior read grant on the same root. When `opts.persist` is set,
  * the grant is also written to the per-workspace store (requires opts.cwd).
+ *
+ * When `opts.cwd` is provided the grant is SCOPED to that workspace/session:
+ * it authorizes only sessions running in the same cwd. Interactively approved
+ * grants must always pass cwd — an unscoped grant would leak across every
+ * session the sidecar hosts. Callers that intentionally grant process-wide
+ * (config permissions, dependency caches, rivet runtime dirs) omit cwd.
  */
 export function grantPath(root: string, mode: GrantMode, opts?: { persist?: boolean; cwd?: string }): PathGrant {
   const canonical = canonicalize(root)
+  const scope = opts?.cwd ? canonicalize(opts.cwd) : undefined
   const persist = opts?.persist === true
-  const existing = _grants.find(g => foldCase(g.root) === foldCase(canonical))
+  const existing = _grants.find(g =>
+    foldCase(g.root) === foldCase(canonical)
+    && g.scope === scope,
+  )
   let grant: PathGrant
   if (existing) {
     // Upgrade read → write; never downgrade.
@@ -130,28 +164,28 @@ export function grantPath(root: string, mode: GrantMode, opts?: { persist?: bool
     if (persist) existing.persisted = true
     grant = existing
   } else {
-    grant = { root: canonical, mode, grantedAt: Date.now(), ...(persist ? { persisted: true } : {}) }
+    grant = { root: canonical, mode, grantedAt: Date.now(), ...(persist ? { persisted: true } : {}), ...(scope ? { scope } : {}) }
     _grants.push(grant)
   }
   if (persist && opts?.cwd) persistGrants(opts.cwd)
   return grant
 }
 
-/** True if `absPath` is under any granted root (read or write satisfies read). */
-export function isReadGranted(absPath: string): boolean {
+/** True if `absPath` is under any granted root visible to `cwd` (read or write satisfies read). */
+export function isReadGranted(absPath: string, cwd?: string): boolean {
   const target = canonicalize(absPath)
-  return _grants.some(g => isUnder(g.root, target))
+  return _grants.some(g => scopeVisible(g, cwd) && isUnder(g.root, target))
 }
 
-/** True if `absPath` is under any WRITE-granted root. */
-export function isWriteGranted(absPath: string): boolean {
+/** True if `absPath` is under any WRITE-granted root visible to `cwd`. */
+export function isWriteGranted(absPath: string, cwd?: string): boolean {
   const target = canonicalize(absPath)
-  return _grants.some(g => g.mode === 'write' && isUnder(g.root, target))
+  return _grants.some(g => g.mode === 'write' && scopeVisible(g, cwd) && isUnder(g.root, target))
 }
 
-/** All write-granted roots (consumed by the sandbox's writable-roots builder). */
-export function writeGrantedRoots(): string[] {
-  return _grants.filter(g => g.mode === 'write').map(g => g.root)
+/** Write-granted roots visible to `cwd` (consumed by the sandbox's writable-roots builder). */
+export function writeGrantedRoots(cwd?: string): string[] {
+  return _grants.filter(g => g.mode === 'write' && scopeVisible(g, cwd)).map(g => g.root)
 }
 
 /** Snapshot of current grants. */
@@ -203,9 +237,12 @@ export function listPersistedGrants(cwd: string): PathGrant[] {
 export function revokeGrant(root: string, opts: { cwd: string }): boolean {
   const canonical = canonicalize(root)
   const matches = (candidate: string): boolean => foldCase(canonicalize(candidate)) === foldCase(canonical)
+  // Only this workspace's scoped grants (plus scope-less user-level grants) are
+  // revocable here — another workspace's in-memory grant must not be touched.
+  const revocable = (g: PathGrant): boolean => matches(g.root) && (g.scope === undefined || g.scope === canonicalize(opts.cwd))
 
-  const hadInMemory = _grants.some(g => matches(g.root))
-  if (hadInMemory) _grants = _grants.filter(g => !matches(g.root))
+  const hadInMemory = _grants.some(revocable)
+  if (hadInMemory) _grants = _grants.filter(g => !revocable(g))
 
   const onDisk = readPersistedFile(opts.cwd)
   const kept = onDisk.filter(g => !matches(g.root))
@@ -225,7 +262,11 @@ export function revokeGrant(root: string, opts: { cwd: string }): boolean {
 function persistGrants(cwd: string): void {
   try {
     mkdirSync(RIVET_DIR, { recursive: true })
-    const toSave = _grants.filter(g => g.persisted)
+    // 只写本工作区作用域的持久授权——sidecar 单进程多会话共享 _grants，
+    // 不过滤会把 B 区 hydrated 的授权写进 A 的文件，A 下次启动即以 scope=A
+    // 注水（收编 PR #84 时补齐的泄漏面，评审遗漏接线点③）。
+    const scope = canonicalize(cwd)
+    const toSave = _grants.filter(g => g.persisted && g.scope === scope)
     writeFileAtomicSync(grantsFile(cwd), JSON.stringify(toSave, null, 2))
   } catch {
     /* best-effort: a persistence failure must not break the grant itself */
@@ -251,8 +292,13 @@ export function loadPersistedGrants(cwd: string): void {
     if (!g || typeof g.root !== 'string') continue
     if (!existsSync(g.root)) continue
     const mode: GrantMode = g.mode === 'write' ? 'write' : 'read'
-    grantPath(g.root, mode, { persist: false })
-    const stored = _grants.find(x => foldCase(x.root) === foldCase(canonicalize(g.root)))
+    // Scoped to this workspace: another workspace's persisted grants must not
+    // become visible to sessions running here (sidecar hosts many cwds).
+    grantPath(g.root, mode, { persist: false, cwd })
+    const stored = _grants.find(x =>
+      foldCase(x.root) === foldCase(canonicalize(g.root))
+      && x.scope === canonicalize(cwd),
+    )
     if (stored) stored.persisted = true
   }
 }

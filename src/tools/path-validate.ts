@@ -84,7 +84,10 @@ export function validatePathSafe(cwd: string, inputPath: string, mode: 'read' | 
     // Out of workspace — allow only if the user has granted access to this
     // subtree at the requested mode (the grant store is widened solely through
     // the approval flow; nothing here grants on its own).
-    const granted = mode === 'write' ? isWriteGranted(real) : isReadGranted(real)
+    // Scoped to this workspace's cwd: the sidecar hosts sessions from many
+    // workspaces in one process, so only grants approved by (or persisted for)
+    // THIS workspace — plus user-level config/cache grants — may widen it.
+    const granted = mode === 'write' ? isWriteGranted(real, cwd) : isReadGranted(real, cwd)
     if (granted) return { ok: true, path: resolved }
     return {
       ok: false,

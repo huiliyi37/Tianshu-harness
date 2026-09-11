@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { rivetHome } from '../../config/paths.js'
@@ -35,6 +35,40 @@ function cleanupRepo(repo: string): void {
 
 describe('checkpoint module', () => {
   describe('pruneOrphanCheckpoints', () => {
+    it('不可读（瞬态错误/损坏）的 checkpoint 保留不删——2026-09-11 F3 修复', () => {
+      const rivetDir = rivetHome()
+      mkdirSync(rivetDir, { recursive: true })
+      const tag = `prunekeep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const garbage = join(rivetDir, `checkpoint-${tag}.json`)
+      // 模拟瞬态读取失败/半写：内容不是合法 JSON（修复前：解析失败→当孤儿→删除）
+      writeFileSync(garbage, '{ truncated not json')
+      try {
+        pruneOrphanCheckpoints()
+        assert.equal(existsSync(garbage), true,
+          '读不了的 checkpoint 必须保留——Windows EBUSY/权限抖动不应不可逆删除回滚点')
+      } finally {
+        if (existsSync(garbage)) rmSync(garbage, { force: true })
+      }
+    })
+
+    it('读取抛错（EACCES）的 checkpoint 同样保留（unix）', () => {
+      if (process.platform === 'win32') return
+      const rivetDir = rivetHome()
+      mkdirSync(rivetDir, { recursive: true })
+      const tag = `pruneperm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const locked = join(rivetDir, `checkpoint-${tag}.json`)
+      const deadCwd = join(tmpdir(), `rivet-ck-gone-${Date.now()}`)
+      writeFileSync(locked, JSON.stringify({ version: 2, hash: 'x', timestamp: Date.now(), label: 'auto', cwd: deadCwd, preExistingDirtyFiles: [], preExistingUntrackedFiles: [], agentTouchedFiles: [] }))
+      chmodSync(locked, 0o000)
+      try {
+        pruneOrphanCheckpoints()
+        assert.equal(existsSync(locked), true, '读取抛错必须保留（修复前按孤儿删除）')
+      } finally {
+        chmodSync(locked, 0o644)
+        if (existsSync(locked)) rmSync(locked, { force: true })
+      }
+    })
+
     it('removes checkpoint files whose cwd no longer exists', () => {
       const rivetDir = rivetHome()
       mkdirSync(rivetDir, { recursive: true })

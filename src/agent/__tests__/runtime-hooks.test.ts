@@ -143,6 +143,30 @@ describe('RuntimeHookPipeline', () => {
     assert.equal(pipeline.getStats()[0]!.timeouts, 1)
   })
 
+  it('超时后迟到的 rejection 不成孤儿——迟到失败进 onError 保留现场（2026-09-10 修复）', async () => {
+    const errors: RuntimeHookError[] = []
+    const lateReject: PreTurnRuntimeHook = {
+      phase: 'preTurn',
+      name: 'late-reject',
+      // 超时窗（50ms）过后 80ms 才 reject——修复前是 unhandledRejection：
+      // main.ts 有 eperm-filter 兜底只打 stderr，未装的嵌入方在 Node ≥15 直接崩。
+      run: () => new Promise<void>((_, reject) => setTimeout(() => reject(new Error('essence LLM 网络错误')), 130)),
+    }
+    const pipeline = new RuntimeHookPipeline([lateReject], {
+      onError: error => errors.push(error),
+      hookTimeoutMs: 50,
+    })
+    await pipeline.runPreTurn(makeContext())
+    // 等迟到 rejection 落地
+    await new Promise(resolve => setTimeout(resolve, 250))
+
+    assert.equal(pipeline.getStats()[0]!.timeouts, 1, 'run 统计只记一次 timed_out，不重复计 runs')
+    const late = errors.find(e => e.message.includes('late failure after timeout'))
+    assert.ok(late, '迟到失败应进 onError 保留现场')
+    assert.equal(late!.hookName, 'late-reject')
+    assert.match(late!.message, /essence LLM 网络错误/)
+  })
+
   it('超时 hook 只报一条 onError，不重复标 slow（slow 只认 completed 结局）', async () => {
     // 生产默认 hookTimeoutMs=10_000 > hookSlowMs=2_000（runtime-hooks.ts L154-155）。
     // 现有超时测试 hookTimeoutMs:50 未设 slowMs（默认 2000），elapsed≈50 < 2000，

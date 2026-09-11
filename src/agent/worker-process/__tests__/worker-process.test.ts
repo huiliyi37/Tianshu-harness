@@ -1,6 +1,7 @@
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { getEventListeners } from 'node:events'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -208,7 +209,6 @@ describe('OOP 运行器（真子进程假 agent）', () => {
   })
 
   test('settle 后摘除 abort 监听——同一会话级信号多次委派不累积监听（2026-09-10 泄漏修复）', async () => {
-    const { getEventListeners } = await import('node:events')
     const fixture = writeFixture(dir, 'crash') // 最快 settle：init 后 exit(1)
     const controller = new AbortController()
     const spawnFx = (_e: string[], script: string) => spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })

@@ -499,6 +499,23 @@ const DEFAULT_PORT = 3100
  * all in-flight work, and the RuntimeSessionManager backing the multi-session
  * API. Throws if no token is available (fail-closed).
  */
+/**
+ * Create the sidecar's shared SessionRegistry and reap crashed sessions'
+ * rows/claims first. A hard-killed sidecar leaves its exclusive claims behind
+ * in the shared desktopDir database; without this sweep every later session is
+ * permanently blocked from writing those files (the TUI does the same reap
+ * against its own stateDir database at bootstrap). No auto-resume: crashed
+ * sessions stay recoverable explicitly via `--continue` / `--resume`.
+ */
+export async function initServeSessionRegistry(registryDir: string): Promise<SessionRegistry> {
+  const registry = await SessionRegistry.create(registryDir)
+  const crashed = registry.detectCrashedSessions()
+  if (crashed.length > 0) {
+    console.error(`[serve] ↺ 已清理 ${crashed.length} 个异常退出会话的锁定`)
+  }
+  return registry
+}
+
 export async function runServe(opts: RunServeOptions = {}): Promise<RunningServer> {
   // Pro 扩展点加载（spec 3b）：桌面 sidecar 生产路径。必须在 config-routes
   // 首次查询之前完成——否则 spark 节点不可见（合并视图查不到注册项）。
@@ -522,8 +539,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   // pre-built registry. Ephemeral mode (tests) skips it → behavior unchanged.
   let sessionRegistry: SessionRegistry | undefined = opts.sessionRegistry
   if (!sessionRegistry && !opts.ephemeral) {
-    const registryDir = desktopDir()
-    void SessionRegistry.create(registryDir)
+    void initServeSessionRegistry(desktopDir())
       .then((r) => { sessionRegistry = r })
       .catch((err) => {
         // Registry init failed (e.g. better-sqlite3 native build missing).

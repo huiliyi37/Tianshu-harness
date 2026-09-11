@@ -3,8 +3,8 @@
  *
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
  * description 字段人工维护，重新生成时按 name 保留。
- * 最后生成：2026-09-09T16:48:18.398Z
- * 共 169 个变量。
+ * 最后生成：2026-09-11T02:34:09.294Z
+ * 共 165 个变量。
  *
  * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
  * 当源码中新增 RIVET_* 引用但注册表未同步时，
@@ -93,6 +93,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_AST_EXCLUDE',
     defaultHint: '',
     files: ['tools/ast-shared.ts', 'tools/__tests__/ast-shared.test.ts'],
+    description: '',
+  },
+  {
+    name: 'RIVET_AST_SCAN_TIMEOUT_MS',
+    defaultHint: '',
+    files: ['tools/ast-shared.ts', 'tools/__tests__/ast-edit.test.ts', 'tools/__tests__/ast-grep.test.ts'],
     description: '',
   },
   {
@@ -207,36 +213,6 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_CROSS_SESSION_INJECT',
     defaultHint: '',
     files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_CDP',
-    defaultHint: '',
-    files: ['pro/computer-use/tool.ts', 'pro/computer-use/__tests__/tool.test.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_CDP_URL',
-    defaultHint: '',
-    files: ['pro/computer-use/cdp/chrome.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_COM',
-    defaultHint: '',
-    files: ['pro/computer-use/windows-uia-com.ts', 'pro/computer-use/__tests__/windows-driver.test.ts', 'pro/computer-use/__tests__/windows-uia-com.test.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_FEEDBACK',
-    defaultHint: '',
-    files: ['pro/computer-use/tool.ts'],
-    description: '',
-  },
-  {
-    name: 'RIVET_CU_HOST',
-    defaultHint: '',
-    files: ['pro/computer-use/script-host.ts'],
     description: '',
   },
   {
@@ -416,7 +392,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_HOME',
     defaultHint: '',
-    files: ['tui/engine/__tests__/connect-draft-engine.test.ts', 'tui/engine/__tests__/connect-wizard-list.test.ts', 'tui/engine/__tests__/overlay-deactivate-regression.test.ts', 'tui/__tests__/history-async.test.ts', 'tui/__tests__/updater.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/config-routes.test.ts', 'server/__tests__/mcp-hot-add.test.ts', 'server/__tests__/mcp-inject-tools.test.ts', 'server/__tests__/mcp-server-config.test.ts', 'server/__tests__/path-grants-routes.test.ts', 'server/__tests__/plugin-api.test.ts', 'server/__tests__/project-docs-routes.test.ts', 'server/__tests__/serve-switch-model.test.ts', 'server/__tests__/session-manager.test.ts', 'server/__tests__/session-routes.test.ts', 'server/__tests__/worker-log-route.test.ts', 'prompt/__tests__/block-policy.test.ts', 'plugins/__tests__/design-plugin-lib.test.ts', 'plugins/__tests__/plugin-installer.test.ts', 'plugins/__tests__/plugin-loader.test.ts', 'mcp/oauth/__tests__/connector.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/profile.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/remove-model.test.ts', 'cli/__tests__/prompt-version-warning.test.ts', 'auth/__tests__/login-flow.test.ts', 'api/deepseek-platform-client.ts', 'agent/__tests__/session-cd.test.ts', 'agent/__tests__/worker-session.test.ts'],
+    files: ['tui/engine/__tests__/connect-draft-engine.test.ts', 'tui/engine/__tests__/connect-wizard-list.test.ts', 'tui/engine/__tests__/overlay-deactivate-regression.test.ts', 'tui/__tests__/history-async.test.ts', 'tui/__tests__/updater.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/config-routes.test.ts', 'server/__tests__/mcp-hot-add.test.ts', 'server/__tests__/mcp-inject-tools.test.ts', 'server/__tests__/mcp-server-config.test.ts', 'server/__tests__/path-grants-routes.test.ts', 'server/__tests__/plugin-api.test.ts', 'server/__tests__/project-docs-routes.test.ts', 'server/__tests__/serve-switch-model.test.ts', 'server/__tests__/session-manager.test.ts', 'server/__tests__/session-routes.test.ts', 'server/__tests__/trust-api.test.ts', 'server/__tests__/worker-log-route.test.ts', 'prompt/__tests__/block-policy.test.ts', 'plugins/__tests__/design-plugin-lib.test.ts', 'plugins/__tests__/plugin-installer.test.ts', 'plugins/__tests__/plugin-loader.test.ts', 'mcp/oauth/__tests__/connector.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/profile.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/remove-model.test.ts', 'cli/__tests__/prompt-version-warning.test.ts', 'auth/__tests__/login-flow.test.ts', 'api/deepseek-platform-client.ts', 'agent/__tests__/session-cd.test.ts', 'agent/__tests__/worker-session.test.ts'],
     description: '',
   },
   {
@@ -872,7 +848,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_TRUST_PROJECT',
     defaultHint: '',
-    files: ['main.ts', 'tools/__tests__/monitor-tool.test.ts', 'tools/__tests__/run-tests-declared.test.ts', 'server/__tests__/hooks-route.test.ts', 'server/__tests__/serve-agent-config-merge.test.ts', 'server/__tests__/session-manager.test.ts', 'prompt/__tests__/volatile.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/verify-config.test.ts', 'agent/__tests__/typecheck-gate.test.ts', 'agent/__tests__/user-hooks-bridge.test.ts'],
+    files: ['main.ts', 'tools/__tests__/monitor-tool.test.ts', 'tools/__tests__/run-tests-declared.test.ts', 'server/__tests__/hooks-route.test.ts', 'server/__tests__/mcp-server-config.test.ts', 'server/__tests__/serve-agent-config-merge.test.ts', 'server/__tests__/session-manager.test.ts', 'server/__tests__/trust-api.test.ts', 'prompt/__tests__/volatile.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/project-trust.test.ts', 'config/__tests__/verify-config.test.ts', 'agent/__tests__/typecheck-gate.test.ts', 'agent/__tests__/user-hooks-bridge.test.ts'],
     description: '',
   },
   {
@@ -926,7 +902,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_VERSION',
     defaultHint: '\'0.0.0-dev\'',
-    files: ['server/serve.ts'],
+    files: ['server/serve.ts', 'api/provider-catalog.ts'],
     description: '',
   },
   {
@@ -1010,7 +986,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_WORKER_ISOLATION',
     defaultHint: '',
-    files: ['agent/worker-process/parent.ts'],
+    files: ['agent/worker-process/parent.ts', 'agent/worker-process/__tests__/worker-process.test.ts'],
     description: '',
   },
   {

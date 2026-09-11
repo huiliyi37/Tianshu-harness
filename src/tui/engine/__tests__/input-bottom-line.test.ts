@@ -34,10 +34,12 @@ test('输入框（botBorder）应为渲染帧最后一行：其后无状态行/�
   const botIdx = lines.findIndex(l => /^[╰└]/.test(l))
   assert.ok(botIdx >= 0, `应能找到输入框 botBorder，帧行: ${lines.join(' | ')}`)
   const afterBot = lines.slice(botIdx + 1)
-  assert.equal(
-    afterBot.length,
-    0,
-    `输入框之后不应有其他行（状态行等应在输入框上方），实际: ${afterBot.join(' | ')}`,
+  // 2026-09-09 v3.16.1 起输入框下方允许 prompt footer 键位提示行
+  // （prompt-footer.ts，对齐公开仓）；状态行/metrics 仍必须在输入框上方。
+  const footerOnly = afterBot.every(l => l.includes('ctrl+j 换行') || l.includes('ctrl+p 面板'))
+  assert.ok(
+    footerOnly,
+    `输入框之后只允许键位提示 footer（状态行等应在输入框上方），实际: ${afterBot.join(' | ')}`,
   )
 })
 

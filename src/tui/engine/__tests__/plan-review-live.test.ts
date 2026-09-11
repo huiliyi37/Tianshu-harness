@@ -18,7 +18,8 @@ test('钉底审阅卡在输入框上方，标日期不标模型', () => {
   app.openPlanApprovalPanel(PLAN, { body: BODY, date: '2026-08-26' })
   const plain = visible(out)
   assert.ok(plain.includes('计划审批'), `header: ${plain}`)
-  assert.ok(plain.includes('「重构缓存层」'))
+  // 卡头格式自 v3.16.1 起为 `☰ 计划审批 · 标题 · 日期`（无「」装饰）
+  assert.ok(plain.includes('重构缓存层'))
   assert.ok(plain.includes('2026-08-26'))
   assert.ok(plain.includes('批准并执行'))
   assert.ok(plain.includes('❯'), 'input remains')

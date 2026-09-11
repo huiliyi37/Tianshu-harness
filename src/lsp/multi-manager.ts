@@ -44,6 +44,8 @@ export interface MultiLspOptions {
 export const DEFAULT_LSP_INITIALIZE_TIMEOUT_MS = 45_000
 /** Shortest wait used by post-edit diagnostics so a cold LSP never stalls an edit. */
 export const LSP_DIAGNOSTIC_READY_WAIT_MS = 2_000
+/** 服务器崩死后允许的重启次数（有界，防 crash-loop 无限 spawn）。 */
+const MAX_LSP_RESTARTS = 2
 
 type LspSpawnFn = (cmd: string, args: string[], opts: Record<string, unknown>) => ChildProcess
 
@@ -81,6 +83,9 @@ export function createMultiLspManager(cwd: string, opts: MultiLspOptions = {}): 
     ready: Promise<boolean>
   }
   const managers = new Map<string, LspEntry>()
+  /** 每个 def 的累计重启次数。放在 managers 外：重启会删 entry 重建，
+   *  计数挂 entry 上会被一并清零——上限永远达不到（crash-loop 防护失效）。 */
+  const restartCounts = new Map<string, number>()
   let availableCache: LspServerDef[] | null = null
 
   const getAvailable = (): LspServerDef[] => {
@@ -139,6 +144,19 @@ export function createMultiLspManager(cwd: string, opts: MultiLspOptions = {}): 
         timer.unref?.()
       }),
     ])
+    if (ok && !entry.mgr.isReady()) {
+      // initialize 曾成功、但服务器进程此后死掉：entry.ready 永远停在 true，
+      // 没有本分支时之后每次 ensure() 都返回 null——LSP 对会话剩余时间静默
+      // 失效（崩溃一次 = 定义跳转/诊断全部降级且永不恢复）。丢弃条目让下次
+      // ensure 重新 spawn；有界重试防 crash-loop 打爆 spawn。
+      const restarts = (restartCounts.get(def.id) ?? 0) + 1
+      restartCounts.set(def.id, restarts)
+      if (restarts <= MAX_LSP_RESTARTS) {
+        try { entry.mgr.dispose() } catch { /* already dead */ }
+        managers.delete(def.id)
+        return ensure(def, waitMs)
+      }
+    }
     return ok && entry.mgr.isReady() ? entry.mgr : null
   }
 

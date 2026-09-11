@@ -5,6 +5,7 @@ import { createMultiLspManager, defaultLspSpawn, type MultiLspOptions } from '..
 import type { LspServerDef } from '../server-registry.js'
 import type { ChildProcess } from 'node:child_process'
 import { PassThrough } from 'node:stream'
+import { encodeMessage, decodeMessages } from '../rpc.js'
 
 function mockChild(): ChildProcess {
   return { kill: () => true, on: () => {}, pid: 0 } as unknown as ChildProcess
@@ -143,3 +144,90 @@ describe('defaultLspSpawn', () => {
     )
   })
 })
+
+
+describe('LSP 服务器崩溃后有界重启（2026-09-11 F4）', () => {
+  function makeRestartableMock() {
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    let serverBuf = ''
+    const exitHandlers: Array<(...args: unknown[]) => void> = []
+    stdin.on('data', (chunk: Buffer) => {
+      serverBuf += chunk.toString()
+      const { messages, rest } = decodeMessages(serverBuf)
+      serverBuf = rest
+      for (const msg of messages) {
+        if ('method' in msg && 'id' in msg) {
+          const id = (msg as { id: number }).id
+          const method = (msg as { method: string }).method
+          if (method === 'initialize') {
+            stdout.write(encodeMessage({
+              jsonrpc: '2.0' as const,
+              id,
+              result: { capabilities: { definitionProvider: true, referencesProvider: true } },
+            }))
+          } else if (method === 'textDocument/definition') {
+            stdout.write(encodeMessage({
+              jsonrpc: '2.0' as const,
+              id,
+              result: [{
+                uri: 'file:///tmp/test.ts',
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+              }],
+            }))
+          }
+        }
+      }
+    })
+    const proc = {
+      stdin,
+      stdout,
+      stderr,
+      kill: () => true,
+      on: (ev: string, cb: (...args: unknown[]) => void) => {
+        if (ev === 'exit') exitHandlers.push(cb)
+      },
+    } as unknown as ChildProcess
+    return { proc, emitExit: () => { for (const cb of [...exitHandlers]) cb(1, null) } }
+  }
+
+  it('崩死后下次调用重启出新进程；重启次数有界，crash-loop 不打爆 spawn', async () => {
+    const mocks: Array<ReturnType<typeof makeRestartableMock>> = []
+    const opts: MultiLspOptions = {
+      which: () => true,
+      spawnFor: () => {
+        const m = makeRestartableMock()
+        mocks.push(m)
+        return m.proc
+      },
+    }
+    const mgr = createMultiLspManager('/tmp', opts)
+    // 本文件的既有用例依赖上游 runner 的循环语义；此处显式保活，确保
+    // 重启链路（多次 spawn/init/exit）在任意环境下都能走完。
+    const keepAlive = setInterval(() => {}, 50)
+    try {
+      const loc1 = await mgr.gotoDefinition('test.ts', 1, 0)
+      assert.equal(mocks.length, 1)
+      assert.ok(loc1.length > 0, '首个实例正常服务')
+      mocks[0]!.emitExit() // 服务器崩死
+
+      const loc2 = await mgr.gotoDefinition('test.ts', 1, 0)
+      assert.equal(mocks.length, 2, `崩溃后必须重启出新进程（修复前 ensure 永远返回 null），spawns=${mocks.length}`)
+      assert.ok(loc2.length > 0, '重启后的实例正常服务')
+      mocks[1]!.emitExit()
+
+      await mgr.gotoDefinition('test.ts', 1, 0)
+      assert.equal(mocks.length, 3, '第二次重启')
+      mocks[2]!.emitExit()
+
+      const loc4 = await mgr.gotoDefinition('test.ts', 1, 0)
+      assert.equal(mocks.length, 3, '重启有界：额度耗尽不再 spawn')
+      assert.deepEqual(loc4, [], '额度耗尽后降级为空（不挂起）')
+    } finally {
+      mgr.dispose()
+      clearInterval(keepAlive)
+    }
+  })
+})
+

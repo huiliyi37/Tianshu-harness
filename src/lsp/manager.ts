@@ -122,6 +122,11 @@ export function createLspManager(
 
   return {
     async initialize() {
+      // 全新服务器进程对历史一无所知：崩溃后重新 initialize 必须清掉
+      // openedDocs/diagnosticCache，否则 openedDocs 短路 didOpen——新服务器
+      // 永远收不到那些文档的打开通知，诊断与定义静默失真。
+      openedDocs.clear()
+      diagnosticCache.clear()
       try {
         proc = spawnFn()
 

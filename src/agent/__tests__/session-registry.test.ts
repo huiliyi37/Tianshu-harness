@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { SessionRegistry } from '../session-registry.js'
+import { SessionRegistry, _setBackendForTest, _resetBackendForTest } from '../session-registry.js'
 
 describe('SessionRegistry', () => {
   let dbDir: string
@@ -262,5 +262,47 @@ describe('SessionRegistry', () => {
       const claims = registry.getActiveClaims('sess-1')
       assert.equal(claims.length, 2)
     })
+  })
+})
+
+// D-2: better-sqlite3 拿不到时 nullDb 降级桩的契约。README 与源码注释承诺
+// 「退化为内存库 / All method calls succeed silently」；曾经 run() 恒报
+// changes:0 导致 acquireClaim 恒 false，R2 写前守卫把全部写入拦死并谎报
+// 「正被另一个会话独占编辑（会话 undefined）」。降级语义 = 写入照常成功、
+// 无跨会话保护，而不是写入全线瘫痪。
+describe('SessionRegistry nullDb degrade path (better-sqlite3 unavailable)', () => {
+  let degradedDir: string
+  let degraded: SessionRegistry
+
+  beforeEach(async () => {
+    _setBackendForTest('null')
+    degradedDir = mkdtempSync(join(tmpdir(), 'sr-null-test-'))
+    degraded = await SessionRegistry.create(degradedDir)
+  })
+
+  afterEach(() => {
+    degraded.close()
+    rmSync(degradedDir, { recursive: true, force: true })
+    _resetBackendForTest()
+  })
+
+  it('register succeeds on the degrade path', () => {
+    assert.doesNotThrow(() => degraded.register('sess-null', '/project'))
+  })
+
+  it('first uncontended acquireClaim returns true (was false: R2 guard blocked all writes)', () => {
+    degraded.register('sess-null', '/project')
+    assert.equal(degraded.acquireClaim('sess-null', 'src/foo.ts', 'exclusive'), true)
+  })
+
+  it('checkClaim returns null so no phantom owner is reported', () => {
+    degraded.acquireClaim('sess-null', 'src/foo.ts', 'exclusive')
+    assert.equal(degraded.checkClaim('src/foo.ts'), null)
+  })
+
+  it('releaseAllClaims does not throw', () => {
+    degraded.register('sess-null', '/project')
+    degraded.acquireClaim('sess-null', 'src/foo.ts', 'exclusive')
+    assert.doesNotThrow(() => degraded.releaseAllClaims('sess-null'))
   })
 })

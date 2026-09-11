@@ -111,10 +111,23 @@ CREATE INDEX IF NOT EXISTS idx_fingerprints_created ON retrospect_fingerprints(c
 CREATE INDEX IF NOT EXISTS idx_fingerprints_project ON retrospect_fingerprints(project_hash);
 `
 
+// Test-only seam: force create() onto the nullDb degrade path so the fallback
+// contract can be regression-tested without uninstalling the native module
+// (same style as _setSandboxBackendForTest). Never set in production code.
+let _forceNullDbForTest = false
+export function _setBackendForTest(kind: 'null' | 'native'): void {
+  _forceNullDbForTest = kind === 'null'
+}
+export function _resetBackendForTest(): void {
+  _forceNullDbForTest = false
+}
+
 export class SessionRegistry {
   private db: any
 
   static async create(stateDir: string): Promise<SessionRegistry> {
+    // Test-only degrade-path injection; production never takes this branch.
+    if (_forceNullDbForTest) return new SessionRegistry(createNullDb())
     if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
     let db: any
     try {
@@ -548,10 +561,18 @@ export class SessionRegistry {
 /**
  * Creates a no-op database proxy when better-sqlite3 is unavailable.
  * All method calls succeed silently — session features degrade gracefully.
+ *
+ * run() must report changes:1, not 0: acquireClaim() interprets changes>0 as
+ * "claim staked". Reporting 0 made the R2 pre-write guard (tool-pipeline) block
+ * EVERY write_file/edit_file with a bogus「正被另一个会话独占编辑」error — the
+ * opposite of the documented degrade contract (README + comment above).
+ * changes:1 = writes/claims succeed with no cross-session protection, which is
+ * what degrade-to-in-memory means here. get()/all() still return nothing, so
+ * checkClaim() stays null and no phantom owner is ever reported.
  */
 function createNullDb(): any {
   const noopStmt = {
-    run: () => ({ changes: 0, lastInsertRowid: 0 }),
+    run: () => ({ changes: 1, lastInsertRowid: 0 }),
     all: () => [] as any[],
     get: () => undefined,
   }

@@ -223,3 +223,47 @@ test('RED #8: TIFF 剪贴板 → 单次读回后经 sips 转 PNG', async () => {
   assert.equal(result!.source, 'png')
   assert.ok(uuidSeq >= 2, 'TIFF 转换应再生成独立输出路径')
 })
+
+test('TIFF→sips 转换守卫看注入的 platform 而非 process.platform（ubuntu CI 复现回归）', async () => {
+  // RED #8 在维护者的 Mac 上永远绿：convertToPng 的守卫曾偷查真实
+  // process.platform（linux 上直接 return null，跳过 sips 转换返回原始 TIFF），
+  // 违背 ShellClipboardOpts.platform 的注入契约。本测试临时把真实平台改写为
+  // linux 复现 CI 条件——任何平台上都能抓住该回归。
+  const mod = await import('../clipboard-image.js')
+  const { tryShellClipboard } = mod
+
+  const pngBuf = Buffer.from(PNG_B64, 'base64')
+  const tiffBuf = Buffer.from('49492a000800000000000000', 'hex')
+  let sipsCalls = 0
+  const execFile = async (bin: string, args: string[]) => {
+    if (bin === 'osascript') return { stdout: 'TIFF' }
+    if (bin === 'sips') {
+      sipsCalls++
+      return { stdout: '' }
+    }
+    throw new Error(`unexpected exec: ${bin} ${args.join(' ')}`)
+  }
+  const readFile = async (p: string) => {
+    if (p.endsWith('.tiff')) return tiffBuf
+    if (p.endsWith('.png')) return pngBuf
+    throw new Error(`unexpected readFile: ${p}`)
+  }
+
+  const realPlatform = process.platform
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+  try {
+    const result = await tryShellClipboard({
+      execFile,
+      platform: 'darwin',
+      readFile,
+      tmpdir: '/tmp',
+      randomUUID: () => 'u',
+    } as any)
+    assert.ok(result, '注入 darwin 平台时 TIFF 流程应成功')
+    assert.equal(sipsCalls, 1, 'TIFF 应调用 sips 转换（守卫须看注入的 platform）')
+    assert.equal(result!.mime, 'image/png', '转换后应得到 PNG 而非原始 TIFF')
+    assert.equal(result!.source, 'png')
+  } finally {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+  }
+})

@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { FileHistory } from '../file-history.js'
+import { FileHistory, collectPostBoundaryEditIds } from '../file-history.js'
 
 const TMP = join(import.meta.dirname, '.fh-test-tmp')
 const BACKUP = join(import.meta.dirname, '.fh-test-backup')
@@ -189,5 +189,73 @@ describe('FileHistory', () => {
 
     const afterClean = readdirSync(sessionDir)
     assert.ok(!afterClean.includes('orphan_file'))
+  })
+})
+
+describe('collectPostBoundaryEditIds — E4 名单收口', () => {
+  let e4History: FileHistory
+
+  beforeEach(() => {
+    rmSync(TMP, { recursive: true, force: true })
+    rmSync(BACKUP, { recursive: true, force: true })
+    mkdirSync(TMP, { recursive: true })
+    mkdirSync(BACKUP, { recursive: true })
+    e4History = new FileHistory(BACKUP, 'test-session')
+  })
+
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true })
+    rmSync(BACKUP, { recursive: true, force: true })
+  })
+
+  // E4(=A2)：边界回溯名单此前只认 write_file/edit_file，hash_edit/ast_edit/
+  // apply_patch 的编辑对精确回溯全盲。名单收口为 WRITE_TOOL_NAMES 后，
+  // 五件写工具的 tool_use id 都要被收集——这是 rewindToBoundary 的输入。
+  it('collects post-boundary tool_use ids of all five write tools', () => {
+    const messages = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: '', tool_calls: [
+        { id: 'pre_write', function: { name: 'write_file', arguments: '{}' } },
+        { id: 'pre_read', function: { name: 'read_file', arguments: '{}' } },
+      ] },
+      { role: 'tool', tool_call_id: 'pre_write', content: 'ok' },
+      { role: 'user', content: 'boundary message' },
+      { role: 'assistant', content: '', tool_calls: [
+        { id: 'post_write', function: { name: 'write_file', arguments: '{}' } },
+        { id: 'post_edit', function: { name: 'edit_file', arguments: '{}' } },
+        { id: 'post_hash', function: { name: 'hash_edit', arguments: '{}' } },
+        { id: 'post_ast', function: { name: 'ast_edit', arguments: '{}' } },
+        { id: 'post_patch', function: { name: 'apply_patch', arguments: '{}' } },
+        { id: 'post_bash', function: { name: 'bash', arguments: '{}' } },
+      ] },
+    ] as any
+
+    const ids = collectPostBoundaryEditIds(messages, 4)
+    assert.deepEqual(
+      [...ids].sort(),
+      ['post_ast', 'post_edit', 'post_hash', 'post_patch', 'post_write'],
+      '边界之后的五件写工具 id 都应被收集；非写工具（bash/read_file）不收',
+    )
+    assert.ok(!ids.has('pre_write'), '边界之前的写不计入')
+
+    // 从第一个 assistant（更早边界）起算：只含截至切片末尾的写
+    const fromEarlier = collectPostBoundaryEditIds(messages.slice(0, 4), 1)
+    assert.deepEqual([...fromEarlier].sort(), ['pre_write'])
+  })
+
+  it('ids feed rewindToBoundary: a hash_edit snapshot key is honored', async () => {
+    const file = join(TMP, 'hash-target.txt')
+    writeFileSync(file, 'before-hash')
+    // 模拟 pipeline 对 hash_edit 的记账：trackEdit(messageId = tool_use id)
+    await e4History.trackEdit(file, 'post_hash')
+    writeFileSync(file, 'after-hash')
+
+    const ids = collectPostBoundaryEditIds([
+      { role: 'assistant', content: '', tool_calls: [
+        { id: 'post_hash', function: { name: 'hash_edit', arguments: '{}' } },
+      ] },
+    ] as any, 0)
+    await e4History.rewindToBoundary(ids)
+    assert.equal(readFileSync(file, 'utf-8'), 'before-hash', 'hash_edit 的记账应可被边界回溯恢复')
   })
 })

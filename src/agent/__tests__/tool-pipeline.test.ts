@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { join, resolve as resolvePath } from 'node:path'
 import { tmpdir } from 'node:os'
 import { executeToolUse, patchTargetPaths, type ToolPipelineDeps } from '../tool-pipeline.js'
+import { FileHistory } from '../file-history.js'
 import { createTurnBudget } from '../turn-budget.js'
 import { fingerprintToolCall } from '../trace-store.js'
 import { createPermissionOverlay } from '../permissions.js'
@@ -3602,5 +3603,229 @@ describe('TDD gate suggest annotation', () => {
     )
     assert.equal((result.toolResult as any).is_error ?? false, false)
     assert.equal(seen.length, 0, '空库时不得查询 meridian（analyzeImpact 各方法都不该被调）')
+  })
+})
+
+// ── E4 写工具记账与 LSP 通知收口（hash_edit / ast_edit / apply_patch）──────
+// 病灶：trackEdit 门槛、边界回溯名单、LSP changeFile 通知三处只认
+// write_file/edit_file。修复后以 WRITE_TOOL_NAMES + extractWriteFilePaths
+// （write-tool-helpers，单一事实源）接通五件写工具。
+describe('E4 写工具记账与 LSP 通知收口', () => {
+  const noopCb = { onToolResult: () => {}, onApprovalRequired: async () => true }
+
+  function makeDeps(cwd: string, overrides?: Partial<ToolPipelineDeps>): ToolPipelineDeps {
+    return {
+      config: {
+        toolRegistry: {
+          execute: async () => ({ content: 'ok', isError: false }),
+          get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+          needsApproval: () => false,
+          resolveName: (n: string) => n,
+        },
+        hooks: null,
+        lspEnabled: false,
+        fileHistory: undefined,
+        contextClaimStore: undefined,
+        sessionId: 'e4-test-session',
+        promptEngine: { markGitDirty: () => {}, getModel: () => 'test-model' },
+      } as any,
+      cwd,
+      harness: {
+        executeTool: async ({ execute }: any) => {
+          const r = await execute()
+          return { content: r.content, isError: r.isError ?? false, retried: false }
+        },
+      } as any,
+      prewarm: { get: () => null, invalidate: () => {} } as any,
+      evidence: mockEvidence,
+      traceStore: { events: [], toolFingerprints: [] } as any,
+      repairHintTracker: { recordSuccess: () => {}, recordFailure: () => {} } as any,
+      repairPipeline: { run: (input: any) => ({ output: input, telemetry: [] }) } as any,
+      importGraph: null,
+      lastConflictCheckCount: 0,
+      trajectory: { getEntries: () => [] } as any,
+      getDoomLoopLevel: () => 'none' as const,
+      latestRisk: { level: 'none' as const, reasons: [], suggestedAction: '' },
+      sessionTurnCount: 1,
+      sessionId: 'e4-test-session',
+      recordToolHistory: () => {},
+      turnBudget: createTurnBudget(0),
+      ...overrides,
+    }
+  }
+
+  function recordingLsp() {
+    const notified: string[] = []
+    const mgr = {
+      isReady: () => false, // 只测 changeFile 通知，诊断段不参与
+      changeFile: (p: string) => { notified.push(p) },
+    }
+    return { notified, mgr }
+  }
+
+  it('hash_edit 执行成功后 file-history 出现对应记账，且备份为编辑前内容', async () => {
+    const dir = mkdtempSync(join(testTmp(), 'e4-hashedit-'))
+    try {
+      const target = join(dir, 'a.ts')
+      writeFileSync(target, 'hello', 'utf-8')
+      const fh = new FileHistory(join(dir, '.backups'), 'e4-session')
+      const deps = makeDeps(dir, { config: { ...makeDeps(dir).config, fileHistory: fh } as any })
+
+      const result = await executeToolUse(
+        { id: 'tu-e4-hash', name: 'hash_edit', input: { file_path: target, old_string: 'hello', new_string: 'world' } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.equal((result.toolResult as any).is_error ?? false, false, 'hash_edit 应执行成功')
+      const snap = fh.getAllSnapshots().find(s => s.messageId === 'tu-e4-hash')
+      assert.ok(snap, 'hash_edit 的 tool_use id 应进 file-history 快照（/undo 与回溯的记账源头）')
+      const backup = snap!.trackedFileBackups[target]
+      assert.ok(backup, '目标文件应被记账')
+      assert.ok(backup!.backupFileName, '应有实体备份文件（写前版本化）')
+      assert.equal(
+        readFileSync(join(dir, '.backups', 'e4-session', backup!.backupFileName!), 'utf-8'),
+        'hello',
+        '备份内容应为编辑前内容',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('apply_patch 执行成功后按 diff 目标逐文件记账（备份粒度=文件）；纯删除补丁保持跳过', async () => {
+    const dir = mkdtempSync(join(testTmp(), 'e4-applypatch-'))
+    try {
+      const target = join(dir, 'b.ts')
+      writeFileSync(target, 'one\n', 'utf-8')
+      const fh = new FileHistory(join(dir, '.backups'), 'e4-session')
+      const deps = makeDeps(dir, { config: { ...makeDeps(dir).config, fileHistory: fh } as any })
+
+      // diff 头带绝对路径：extractWriteFilePaths 剥 b/ 前缀后即目标本身
+      const diffText = [
+        `--- a/${target}`,
+        `+++ b/${target}`,
+        '@@ -1 +1,2 @@',
+        ' one',
+        '+two',
+      ].join('\n')
+      const result = await executeToolUse(
+        { id: 'tu-e4-patch', name: 'apply_patch', input: { diff: diffText } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.equal((result.toolResult as any).is_error ?? false, false, 'apply_patch 应执行成功')
+      const snap = fh.getAllSnapshots().find(s => s.messageId === 'tu-e4-patch')
+      assert.ok(snap, 'apply_patch 的 tool_use id 应进 file-history 快照')
+      const backup = snap!.trackedFileBackups[target]
+      assert.ok(backup, 'diff 目标应被逐文件记账')
+      assert.ok(backup!.backupFileName, '应有实体备份文件')
+      assert.equal(
+        readFileSync(join(dir, '.backups', 'e4-session', backup!.backupFileName!), 'utf-8'),
+        'one\n',
+        '备份应为打补丁前的文件内容',
+      )
+
+      // 纯删除补丁（+++ /dev/null）：与既有 targets 提取保持一致的跳过语义
+      const delDiff = [
+        `--- a/${target}`,
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-one',
+      ].join('\n')
+      await executeToolUse(
+        { id: 'tu-e4-patch-del', name: 'apply_patch', input: { diff: delDiff } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.ok(
+        !fh.getAllSnapshots().some(s => s.messageId === 'tu-e4-patch-del'),
+        '纯删除补丁不应产生记账',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('LSP changeFile：apply_patch 的 diff 目标被逐个通知（删除经 --- 回退也在内）', async () => {
+    const dir = mkdtempSync(join(testTmp(), 'e4-lsp-patch-'))
+    try {
+      const { notified, mgr } = recordingLsp()
+      const deps = makeDeps(dir, { getLspManager: () => mgr as any })
+
+      const diffText = [
+        '--- a/src/a.ts',
+        '+++ b/src/a.ts',
+        '@@ -1 +1,2 @@',
+        '+x',
+        '--- a/src/gone.ts',
+        '+++ /dev/null',
+        '@@ -1 +0,0 @@',
+        '-y',
+      ].join('\n')
+      await executeToolUse(
+        { id: 'tu-e4-lsp-patch', name: 'apply_patch', input: { diff: diffText } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.deepEqual(
+        notified.sort(),
+        ['src/a.ts', 'src/gone.ts'],
+        'diff 的每个目标都应逐个 changeFile（此前读恒为 undefined 的 input.file_path，通知从未到达）',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('LSP changeFile：ast_edit 按 paths 通知、hash_edit 通知 file_path；dryRun/失败/缺路径不通知', async () => {
+    const dir = mkdtempSync(join(testTmp(), 'e4-lsp-paths-'))
+    try {
+      const { notified, mgr } = recordingLsp()
+      const deps = makeDeps(dir, { getLspManager: () => mgr as any })
+
+      await executeToolUse(
+        { id: 'tu-e4-lsp-ast', name: 'ast_edit', input: { paths: ['x.ts', 'y.ts'], ops: [{ find: 'a', replace: 'b' }] } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.deepEqual(notified.sort(), ['x.ts', 'y.ts'], 'ast_edit 的 paths 数组应被逐个通知')
+
+      notified.length = 0
+      await executeToolUse(
+        { id: 'tu-e4-lsp-ast-dry', name: 'ast_edit', input: { paths: ['x.ts'], ops: [{ find: 'a', replace: 'b' }], dryRun: true } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.equal(notified.length, 0, 'dryRun 不写盘，不应通知 LSP')
+
+      notified.length = 0
+      await executeToolUse(
+        { id: 'tu-e4-lsp-hash', name: 'hash_edit', input: { file_path: 'z.ts', old_string: 'a', new_string: 'b' } },
+        deps, noopCb as any, 1, false,
+      )
+      assert.deepEqual(notified, ['z.ts'], 'hash_edit 应按 file_path 通知')
+
+      const failDeps = makeDeps(dir, {
+        getLspManager: () => mgr as any,
+        config: {
+          ...makeDeps(dir).config,
+          toolRegistry: {
+            execute: async () => ({ content: 'boom', isError: true }),
+            get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+            needsApproval: () => false,
+            resolveName: (n: string) => n,
+          },
+        } as any,
+      })
+      notified.length = 0
+      await executeToolUse(
+        { id: 'tu-e4-lsp-ast-fail', name: 'ast_edit', input: { paths: ['x.ts'], ops: [{ find: 'a', replace: 'b' }] } },
+        failDeps, noopCb as any, 1, false,
+      )
+      assert.equal(notified.length, 0, '执行失败不通知（保留既有 isError 门）')
+
+      notified.length = 0
+      await executeToolUse(
+        { id: 'tu-e4-lsp-edit-nopath', name: 'edit_file', input: {} },
+        deps, noopCb as any, 1, false,
+      )
+      assert.equal(notified.length, 0, '解析不出路径时不通知（保留既有空值防御，且不再以 undefined 调用）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

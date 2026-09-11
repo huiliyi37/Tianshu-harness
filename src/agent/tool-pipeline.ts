@@ -62,6 +62,7 @@ import { buildSensitivePreflightMessage, shouldRequireSensitivePreflight } from 
 import { toolTargetFromInput } from './tool-target.js'
 import { execFileGit } from '../tools/spawn-git.js'
 import { patchTargetPaths, preWriteClaimPaths } from './pre-write-claims.js'
+import { WRITE_TOOL_NAMES, extractWriteFilePaths } from '../tools/write-tool-helpers.js'
 
 /** Headless prefix on denial messages — a stable marker so worker-session's
  *  detectApprovalDeadlock can distinguish "gated by approval" from "bad JSON". */
@@ -1356,9 +1357,21 @@ async function executeToolUseInner(
       recordAgentTouchedFile(deps.cwd, tu.input.file_path, deps.config.sessionId)
    }
 
-    if (deps.config.fileHistory && (tu.name === 'write_file' || tu.name === 'edit_file') && typeof tu.input.file_path === 'string') {
-      touchActivity(activityKey, `tool:${tu.name}:pre:track-edit`)
-      await deps.config.fileHistory.trackEdit(tu.input.file_path, tu.id)
+    // E4 记账收口：五件写工具（WRITE_TOOL_NAMES 单一事实源）的编辑都要在执行
+    // 前进 file-history——这是 /undo 与边界回溯的记账源头，此前只认
+    // write_file/edit_file，hash_edit/ast_edit/apply_patch 的编辑不可回溯。
+    // 路径按工具解析（extractWriteFilePaths）：write/edit/hash_edit →
+    // file_path；ast_edit → paths 数组（dryRun 为空，预览不记账）；
+    // apply_patch → diff 的 `+++ ` 头（纯删除 /dev/null 跳过，与既有
+    // targets 提取一致），备份粒度 = 文件。
+    if (deps.config.fileHistory && WRITE_TOOL_NAMES.has(tu.name)) {
+      const editPaths = extractWriteFilePaths(tu.name, tu.input)
+      if (editPaths.length > 0) {
+        touchActivity(activityKey, `tool:${tu.name}:pre:track-edit`)
+        for (const editPath of editPaths) {
+          await deps.config.fileHistory.trackEdit(editPath, tu.id)
+        }
+      }
    }
 
     // Execute via TurnHarness
@@ -1512,8 +1525,19 @@ async function executeToolUseInner(
 
     // LSP: notify the language server that a file changed on disk.
     // Must happen BEFORE diagnostics so the server's view is current.
-    if (!harnessResult.isError && (tu.name === 'edit_file' || tu.name === 'write_file' || tu.name === 'apply_patch')) {
-      (deps.getLspManager?.() ?? deps.lspManager)?.changeFile(tu.input.file_path as string)
+    // E4 通知收口：名单用 WRITE_TOOL_NAMES，路径按工具解析——write/edit/
+    // hash_edit → file_path；ast_edit → paths 数组；apply_patch → diff 头，
+    // 用 patchTargetPaths（删除经 `--- ` 回退也在内，让 LSP 得知文件消失，
+    // 清掉过期诊断）。解析不出路径就不通知（保留既有空值防御——旧代码对
+    // apply_patch 恒传 undefined 的 file_path，通知从未真正到达）。
+    if (!harnessResult.isError && WRITE_TOOL_NAMES.has(tu.name)) {
+      const changedPaths = tu.name === 'apply_patch' && typeof tu.input.diff === 'string'
+        ? patchTargetPaths(tu.input.diff)
+        : extractWriteFilePaths(tu.name, tu.input)
+      const lsp = deps.getLspManager?.() ?? deps.lspManager
+      for (const changedPath of changedPaths) {
+        lsp?.changeFile(changedPath)
+      }
    }
 
     // T4: LSP diagnostics via lspManager (async file-level, ~2s timeout)

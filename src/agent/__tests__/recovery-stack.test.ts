@@ -9,7 +9,6 @@ import {
   __resetEvictDebounceForTest,
 } from '../recovery-stack.js'
 import { readUnacknowledged } from '../recovery-journal.js'
-
 /** 造 N 个数字命名的备份目录（名字 = Date.now() 格式的时间戳，越早越旧）。 */
 function seedBackupDirs(backupsDir: string, count: number, startTs: number): void {
   for (let i = 0; i < count; i++) {
@@ -156,5 +155,77 @@ describe('recovery-stack', () => {
 
   after(() => {
     rmSync(cwd, { recursive: true, force: true })
+  })
+})
+
+// ── E5：journal 写失败不得把已成功的回滚报成失败（undo.ts 同纪律）──
+describe('restoreLatestBackup journal 容错（fail-open）', () => {
+  // 每用例独立临时 cwd：本组用例要把 journal 路径造成同名目录（EISDIR），
+  // 共享 cwd 会把损坏状态泄漏给后续用例。
+  const cwds: string[] = []
+  function makeCwd(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-recovery-journal-'))
+    cwds.push(dir)
+    return dir
+  }
+
+  /** 把 journal 文件路径变成同名目录——appendFileSync 必抛 EISDIR（跨平台：Windows chmod 不可靠勿用）。 */
+  function breakJournal(cwd: string): void {
+    mkdirSync(join(cwd, '.rivet', 'recovery-journal.jsonl'), { recursive: true })
+  }
+
+  it('journal 写失败（EISDIR）：内存分支回滚仍返回 true 且内容已恢复', async () => {
+    const cwd = makeCwd()
+    const target = join(cwd, 'src', 'mem.ts')
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    writeFileSync(target, 'v1-good', 'utf-8')
+    await trackFileChange(cwd, { filePath: 'src/mem.ts', action: 'write', toolCallId: 'j1' })
+    writeFileSync(target, 'v2-broken', 'utf-8')
+
+    breakJournal(cwd)
+    const restored = await restoreLatestBackup(cwd, 'src/mem.ts')
+
+    assert.equal(restored, true, '文件已恢复成功，journal 写失败不得翻转返回值')
+    assert.equal(readFileSync(target, 'utf-8'), 'v1-good', '目标文件内容确实已恢复为旧版本')
+  })
+
+  it('journal 写失败（EISDIR）：磁盘分支（copyFile 兜底）同样返回 true 且内容已恢复', async () => {
+    const cwd = makeCwd()
+    const target = join(cwd, 'src', 'disk.dat')
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    const bytes = Buffer.from([0x00, 0xde, 0xad, 0xbe, 0xef, 0x00])
+    writeFileSync(target, bytes)
+    // 二进制内容退回 copyFile 旧路径（不进内存备份）→ restoreLatestBackup 走磁盘分支。
+    const rec = await trackFileChange(cwd, { filePath: 'src/disk.dat', action: 'write', toolCallId: 'j2' })
+    assert.ok(rec.backupPath)
+    writeFileSync(target, Buffer.from([0x00, 0x0b, 0xad, 0x00]))
+
+    breakJournal(cwd)
+    const restored = await restoreLatestBackup(cwd, 'src/disk.dat')
+
+    assert.equal(restored, true, '磁盘分支语义必须与内存分支一致：回滚已成功即返回 true')
+    assert.deepEqual(readFileSync(target), bytes, '目标文件字节确实已恢复为旧版本')
+  })
+
+  it('正常路径：journal 可写时行为不变——返回 true 且 recordRecovery 确实落账', async () => {
+    const cwd = makeCwd()
+    const target = join(cwd, 'src', 'normal.ts')
+    mkdirSync(join(cwd, 'src'), { recursive: true })
+    writeFileSync(target, 'normal-v1', 'utf-8')
+    await trackFileChange(cwd, { filePath: 'src/normal.ts', action: 'write', toolCallId: 'j3' })
+    writeFileSync(target, 'normal-v2-broken', 'utf-8')
+
+    const restored = await restoreLatestBackup(cwd, 'src/normal.ts')
+
+    assert.equal(restored, true)
+    assert.equal(readFileSync(target, 'utf-8'), 'normal-v1')
+    const entries = readUnacknowledged(cwd).filter(e => e.file === 'src/normal.ts')
+    assert.equal(entries.length, 1, '恢复事件必须记录进 journal')
+    assert.equal(entries[0]!.action, 'restore latest backup')
+    assert.ok(entries[0]!.ts, 'journal 条目应带时间戳')
+  })
+
+  after(() => {
+    for (const dir of cwds) rmSync(dir, { recursive: true, force: true })
   })
 })

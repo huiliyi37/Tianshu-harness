@@ -19,6 +19,7 @@
 import { readUnacknowledged, recordRecovery, type RecoveryEntry } from './recovery-journal.js'
 import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
+import { debugLog } from '../utils/debug.js'
 
 /** Lightweight record of a file mutation with a backup for undo. */
 export interface FileChangeRecord {
@@ -138,26 +139,27 @@ export async function restoreLatestBackup(cwd: string, filePath: string, session
   const key = backupKey(cwd, filePath)
   // 内存优先：覆写前捕获的旧内容直接在手里（后台磁盘落盘可能仍在途）。
   const memory = memoryBackups.get(key)
-  if (memory) {
-    try {
+  try {
+    if (memory) {
       await memory.flush // 收尾后台落盘（不依赖其结果——回滚用内存内容）
       await writeFile(join(cwd, filePath), memory.content, 'utf-8')
-      recordRecovery(cwd, { file: filePath, action: 'restore latest backup', linesLost: 0 }, sessionId)
-      return true
-    } catch {
-      return false
+    } else {
+      const backupPath = latestBackups.get(key)
+      if (!backupPath || !(await pathExists(backupPath))) return false
+      await copyFile(backupPath, join(cwd, filePath))
     }
-  }
-  const backupPath = latestBackups.get(key)
-  if (!backupPath || !(await pathExists(backupPath))) return false
-  const absPath = join(cwd, filePath)
-  try {
-    await copyFile(backupPath, absPath)
-    recordRecovery(cwd, { file: filePath, action: 'restore latest backup', linesLost: 0 }, sessionId)
-    return true
   } catch {
     return false
   }
+  // Recovery-journal 记账是 best-effort 审计副作用：journal 写失败（如 cwd 不可写）
+  // 不得把已成功的回滚伪装成失败——文件此刻已恢复，向调用方报 false 会诱发重复
+  // 编辑，把刚恢复的旧内容又盖掉（与 undo.ts 的既有纪律一致）。
+  try {
+    recordRecovery(cwd, { file: filePath, action: 'restore latest backup', linesLost: 0 }, sessionId)
+  } catch (err) {
+    debugLog('[recovery-stack] recovery-journal 写失败（回滚已成功，忽略）：', err)
+  }
+  return true
 }
 
 /**

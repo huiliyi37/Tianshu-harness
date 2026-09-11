@@ -77,6 +77,10 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           // effort routing; users who need max can set it in config / Settings.
           reasoningEffort: 'high',
           tier: 'strong',
+          // 2026-09-14 下线：strong 档默认只解析到这一张 strong 卡，议事会/
+          // 路由会静默命中它——显式标弃用，命中处告警而非无提示回落。
+          deprecated: true,
+          deprecationNote: '2026-09-14 下线；strong 档默认仍指向它，建议切换 strong 档默认模型（如 GLM-5.2）。',
           pricing: { input: 3, output: 6, cacheRead: 0.025, cacheWrite: 3 },
         },
         {

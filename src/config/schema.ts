@@ -103,6 +103,11 @@ export const modelConfigSchema = z.object({
   }).optional(),
   /** Model tier for routing/fallback decisions. Overrides name-based inference. */
   tier: z.enum(['cheap', 'balanced', 'strong']).optional(),
+  /** 模型已弃用（如下线/切换为新代）：strong 档默认仍可能静默解析到它，
+   *  议事会/路由命中时应显式告警而非无提示回落。 */
+  deprecated: z.boolean().optional(),
+  /** 弃用说明（下线日期 / 替代模型），展示在告警中。 */
+  deprecationNote: z.string().optional(),
   /** Per-model capability overrides (e.g. Qwen3-max supports thinking, Qwen-plus
    *  does not). Semantic fields only — endpoint wire behavior lives at provider
    *  level. Merged on top of provider-level capabilities in `resolveCapabilities`. */

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { OpenAIClient, parseOpenAIError, type OpenAIClientConfig } from '../openai-client.js'
+import { classifyApiError } from '../error-classifier.js'
 
 const TEST_CONFIG: OpenAIClientConfig = {
   baseUrl: 'https://api.openai.com/v1',
@@ -943,5 +944,189 @@ describe('content→reasoning channel ordering (C→R 折叠防护)', () => {
     await promise
     assert.ok(thinkingParts.join('').includes('内部推理…'), 'tool-call 轮 reasoning 走 thinking')
     assert.ok(!textParts.join('').includes('内部推理…'), 'tool-call 轮 reasoning 不泄露为 text')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// image_strip 恢复：413 / 图片拒绝 → 剥图重发一次（issue #94）
+//
+// 分类器承诺 stripImages 后剥图重发，但全链路从未消费该字段：重试调用同一个
+// fn、发送逐字节相同的请求体，413 必然复现。这一组测试锁定修复后的行为。
+// ---------------------------------------------------------------------------
+describe('image_strip recovery', () => {
+  const originalFetch = globalThis.fetch
+
+  const NOOP_CALLBACKS = {
+    onTextDelta: () => {},
+    onThinkingDelta: () => {},
+    onContentBlock: () => {},
+    onStopReason: () => {},
+    onError: () => {},
+  }
+
+  /** fetch mock：按序消费 statuses（非 2xx），耗尽后回一段 SSE 成功流。
+   *  传对象可自定义错误体 message（图片处理错误走 message 匹配而非状态码）。 */
+  function mockFetchSequence(statuses: Array<number | { status: number; message: string }>): Array<{ body: string }> {
+    const calls: Array<{ body: string }> = []
+    let idx = 0
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls.push({ body: String(init.body ?? '') })
+      const step = statuses[idx++]
+      if (step !== undefined) {
+        const status = typeof step === 'number' ? step : step.status
+        const message = typeof step === 'number' ? 'Request too large' : step.message
+        return new Response(JSON.stringify({ error: { message } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const enc = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(enc.encode(
+            'data: {"choices":[{"delta":{"role":"assistant","content":""},"index":0}]}\n\n'
+            + 'data: {"choices":[{"delta":{"content":"ok"},"index":0,"finish_reason":"stop"}]}\n\n'
+            + 'data: [DONE]\n\n',
+          ))
+          controller.close()
+        },
+      })
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    return calls
+  }
+
+  function restoreFetch(): void {
+    globalThis.fetch = originalFetch
+  }
+
+  const IMAGE_REQUEST = {
+    model: 'gpt-4o',
+    stream: true,
+    max_tokens: 10,
+    messages: [
+      { role: 'system', content: 'sys' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe this' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        ],
+      },
+    ],
+  }
+
+  /** 第 2 条消息（用户消息）的 content parts。 */
+  function userContent(body: string): Array<{ type: string; text?: string }> {
+    const parsed = JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> }
+    return parsed.messages[1]!.content as Array<{ type: string; text?: string }>
+  }
+
+  it('413 → 剥掉 image_url 重发一次 → 恢复成功', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      const strippedCounts: number[] = []
+      let stopReason = ''
+      await client.stream(IMAGE_REQUEST as never, {
+        ...NOOP_CALLBACKS,
+        onStopReason: (r: string) => { stopReason = r },
+        onImageStripped: (info: { removedCount: number }) => { strippedCounts.push(info.removedCount) },
+      })
+
+      assert.equal(calls.length, 2, '一次带图尝试 + 一次剥图重发')
+      assert.ok(userContent(calls[0]!.body).some(p => p.type === 'image_url'), '首次必须原样带图')
+      const second = userContent(calls[1]!.body)
+      assert.ok(!second.some(p => p.type === 'image_url'), '重发必须已剥图')
+      assert.ok(second.some(p => p.type === 'text' && p.text === 'describe this'), '文本必须保留')
+      assert.equal(stopReason, 'end_turn')
+      assert.deepEqual(strippedCounts, [1], '剥离必须通知调用方（用户可见提示）')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('无图 413 → 不重发，直接失败（省掉一次注定失败的网络往返）', async () => {
+    const calls = mockFetchSequence([413, 413, 413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      const textOnly = {
+        model: 'gpt-4o',
+        stream: true,
+        messages: [{ role: 'user', content: 'text only' }],
+      }
+      await assert.rejects(
+        () => client.stream(textOnly as never, NOOP_CALLBACKS),
+        (err: unknown) => {
+          assert.equal(
+            classifyApiError(err).category,
+            'context_overflow',
+            '无图的 413 是上下文超限，不该承诺剥图',
+          )
+          return true
+        },
+      )
+      assert.equal(calls.length, 1, '无图 413 不得重发')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('剥图后仍 413 → 不再重发，错误改按上下文超限表述', async () => {
+    const calls = mockFetchSequence([413, 413, 413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      await assert.rejects(
+        () => client.stream(IMAGE_REQUEST as never, NOOP_CALLBACKS),
+        (err: unknown) => {
+          assert.equal(
+            classifyApiError(err).category,
+            'context_overflow',
+            '剥了图还是超限说明不是图片的锅，不该再指点用户删图',
+          )
+          return true
+        },
+      )
+      assert.equal(calls.length, 2, '带图一次 + 剥图一次；第三次必然重复已剥的体')
+      assert.ok(!userContent(calls[1]!.body).some(p => p.type === 'image_url'), '重发体已剥图')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('剥图只作用于本次请求体，不污染调用方的 messages（会话历史仍保图）', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      await client.stream(IMAGE_REQUEST as never, NOOP_CALLBACKS)
+      const original = (IMAGE_REQUEST.messages[1] as { content: Array<{ type: string }> }).content
+      assert.equal(original.length, 2, '原始请求的 content parts 数量不变')
+      assert.ok(original.some(p => p.type === 'image_url'), '会话历史里的图片必须还在')
+      assert.equal(calls.length, 2)
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('图片处理 400（image_strip 的第二条来源）→ 同样剥图重发', async () => {
+    // 分类器对「Could not process image」这类 400/500 也给 image_strip——
+    // 那条路径不带 413 标记，剥图同样必须真的发生。
+    const calls = mockFetchSequence([{ status: 400, message: 'Could not process image: bad format' }])
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      let stopReason = ''
+      await client.stream(IMAGE_REQUEST as never, {
+        ...NOOP_CALLBACKS,
+        onStopReason: (r: string) => { stopReason = r },
+      })
+
+      assert.equal(calls.length, 2, '一次带图尝试 + 一次剥图重发')
+      const second = userContent(calls[1]!.body)
+      assert.ok(!second.some(p => p.type === 'image_url'), '图片拒绝后重发必须已剥图')
+      assert.ok(second.some(p => p.type === 'text'), '文本必须保留')
+      assert.equal(stopReason, 'end_turn')
+    } finally {
+      restoreFetch()
+    }
   })
 })

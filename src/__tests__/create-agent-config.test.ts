@@ -215,6 +215,40 @@ describe('createAgentConfig', () => {
     assert.equal(cfg.visionBridge?.active, true)
   })
 
+  it('clamps the vision bridge reasoning effort to low — 推理档视觉模型按配置档推理会烧光 maxTokens 预算返回空描述', () => {
+    // deepseek-flash 类推理视觉模型（spec.reasoningEffort='medium'）在 OCR 结构化
+    // prompt 下 reasoning 达 1700+ 字符，1024 maxTokens 被推理吃光、finish=length、
+    // content 为零（「配 4.1-flash 也不行」根因）。桥客户端必须压到 'low'。
+    const reasoningVision: ProviderConfig = {
+      ...testProvider,
+      name: 'vprov',
+      apiKey: 'vision-key',
+      models: [{ id: 'v-cap', contextWindow: 128000, maxTokens: 8192, supportsVision: true, reasoningEffort: 'medium' }],
+    }
+    const cfg = createAgentConfig({
+      ...baseInput,
+      allProviders: { deepseek: testProvider, vprov: reasoningVision },
+      visionModel: { provider: 'vprov', model: 'v-cap', maxTokens: 1024 },
+    })
+    assert.ok(cfg.visionClient)
+    assert.equal((cfg.visionClient as unknown as { config: { reasoningEffort?: string } }).config.reasoningEffort, 'low')
+
+    // 非推理模型（未设 reasoningEffort）不受影响——客户端拿到 undefined，行为不变。
+    const plainVision: ProviderConfig = {
+      ...testProvider,
+      name: 'vprov2',
+      apiKey: 'vision-key',
+      models: [{ id: 'v-plain', contextWindow: 128000, maxTokens: 8192, supportsVision: true }],
+    }
+    const cfg2 = createAgentConfig({
+      ...baseInput,
+      allProviders: { deepseek: testProvider, vprov2: plainVision },
+      visionModel: { provider: 'vprov2', model: 'v-plain', maxTokens: 1024 },
+    })
+    assert.ok(cfg2.visionClient)
+    assert.equal((cfg2.visionClient as unknown as { config: { reasoningEffort?: string } }).config.reasoningEffort, undefined)
+  })
+
   it('wraps primary+backup vision models when a fallback is configured', () => {
     const vprov: ProviderConfig = {
       ...testProvider, name: 'vprov', apiKey: 'k1',

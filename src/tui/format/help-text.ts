@@ -52,6 +52,7 @@ export const HELP_TEXT = `Available commands:
 /effort [off|low|medium|high|max] — Set reasoning effort
 /permission [supervise|auto|unattended|manual|yolo|allow|deny|bash|remove|reset|test] — 权限模式：监督 / 自动 / 全自动
 /grant [path] [read|write] — 授权并记住工作区外目录（无参列出本工作区已记住的授权）
+/trust [status|off] — 授信当前项目：项目级 hooks 生效、配置安全键（verify/permissions/mcp…）参与合并（status 查询 · off 撤销；仅本机生效，绝不写回仓库）
 /login [provider] — OAuth 登录（codex 等订阅型服务商，浏览器授权；/connect 选 codex 后的下一步）
 
 ▌▌ 会话与项目 ▌▌

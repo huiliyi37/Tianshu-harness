@@ -7,8 +7,21 @@ import { createMcpToolWrapper, createMcpConnectorConsent, type McpConnectorConse
 import { classifyMcpError } from './failure-classifier.js'
 import { createTransport, type TransportResult } from './transport-factory.js'
 import { LogRingBuffer } from './log-buffer.js'
+import { getNetworkConfig } from '../config/manager.js'
+import type { McpNetworkConfig } from './stdio-env.js'
 
 const DEFAULT_MCP_TIMEOUT_MS = 60_000
+
+/** network 配置读取失败（坏 config.json）不应阻断 MCP 连接——配置错误由
+ *  配置加载自己的报错通道负责，这里降级为「无应用代理」。 */
+function readNetworkConfigSafe(): McpNetworkConfig | undefined {
+  try {
+    const net = getNetworkConfig()
+    return { proxy: net.proxy || undefined, noProxy: net.noProxy || undefined }
+  } catch {
+    return undefined
+  }
+}
 const NETWORK_RETRY_DELAY_MS = 800
 const RECONNECT_MAX_ATTEMPTS = 3
 const RECONNECT_BACKOFF_BASE_MS = 2_000
@@ -23,9 +36,9 @@ function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number): 
   })
 }
 
-function formatConnectError(err: unknown, stderrTail: string): string {
+function formatConnectError(err: unknown, stderrTail: string, context?: { transport?: 'stdio' | 'remote' }): string {
   const base = err instanceof Error ? err.message : String(err)
-  const classified = classifyMcpError(err)
+  const classified = classifyMcpError(err, context)
   const parts = [base]
   if (stderrTail) {
     const compact = stderrTail.replace(/\n+/g, ' | ').slice(0, 500)
@@ -272,14 +285,18 @@ export class McpManager {
                 isError: result.isError as boolean | undefined,
               }
             } catch (err) {
-              const classified = classifyMcpError(err)
+              const classified = classifyMcpError(err, {
+                transport: server.transportType === 'stdio' ? 'stdio' : 'remote',
+              })
               const current = this.states.get(serverId)
               this.states.set(serverId, {
                 serverId,
                 transport: server.transportType,
                 status: 'degraded',
                 toolCount: current?.toolCount ?? 0,
-                error: formatConnectError(err, ''),
+                error: formatConnectError(err, '', {
+                  transport: server.transportType === 'stdio' ? 'stdio' : 'remote',
+                }),
                 errorHint: classified.suggestion,
                 lastConnectedAt: current?.lastConnectedAt,
                 lastErrorClass: classified.class,
@@ -294,6 +311,7 @@ export class McpManager {
             perToolCallFn,
             this.connectorConsent,
             serverConfig.policy?.tools[mcpDef.name],
+            server.transportType === 'stdio' ? 'stdio' : 'remote',
           )
         })
 
@@ -315,7 +333,7 @@ export class McpManager {
         throw err
       }
     } catch (err) {
-      const classified = classifyMcpError(err)
+      const classified = classifyMcpError(err, { transport: transport === 'stdio' ? 'stdio' : 'remote' })
       // One automatic backoff retry for transient/network failures.
       if (classified.retryable && attempt === 0) {
         await new Promise((r) => setTimeout(r, NETWORK_RETRY_DELAY_MS))
@@ -326,7 +344,7 @@ export class McpManager {
         transport,
         status: 'error',
         toolCount: 0,
-        error: formatConnectError(err, stderrTail),
+        error: formatConnectError(err, stderrTail, { transport: transport === 'stdio' ? 'stdio' : 'remote' }),
         errorHint: classified.suggestion,
         lastErrorClass: classified.class,
         lastErrorAt: Date.now(),
@@ -349,7 +367,8 @@ export class McpManager {
       getHeaders?: () => Promise<Record<string, string>>
       getEnv?: () => Promise<Record<string, string>>
       timeoutMs?: number
-    } = { timeoutMs: this.timeoutMs }
+      network?: McpNetworkConfig
+    } = { timeoutMs: this.timeoutMs, network: readNetworkConfigSafe() }
     if (cfg.headers) {
       transportOpts.getHeaders = async () => cfg.headers as Record<string, string>
     }

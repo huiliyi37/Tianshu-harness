@@ -113,8 +113,13 @@ describe('createCoordinatorReviewDeps', () => {
     assert.equal(requests[0]?.profile, 'patcher')
     assert.equal(requests[0]?.kind, 'patch_proposal')
     assert.equal(requests[0]?.reviewDepth, 1)
+    // 审查链路声明写入与主控重叠 → isolation-policy 判 isolated（不就地写主树）
+    assert.equal(requests[0]?.scope.overlapsPrimary, true)
     assert.match(requests[0]?.objective ?? '', /missing review gate/)
     assert.equal(result.patched, true)
+    // 产物回流（I2）：changedFiles / patchSummary 必须到达主控，不再被剪成布尔
+    assert.deepEqual(result.changedFiles, ['src/agent/deliver-task.ts'])
+    assert.equal(result.patchSummary, 'added router gate')
   })
 
   it('spawns squadron through delegateBatch and maps high-severity findings', async () => {
@@ -141,6 +146,7 @@ describe('createCoordinatorReviewDeps', () => {
     assert.ok(capturedRequests.every(request => request.profile === 'reviewer'))
     assert.ok(capturedRequests.every(request => request.kind === 'review'))
     assert.ok(capturedRequests.every(request => request.reviewDepth === 1))
+    assert.ok(capturedRequests.every(request => request.scope.overlapsPrimary === true))
     assert.deepEqual(capturedRequests[0]?.scope.files, ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'])
 
     // Every inspector carries the core anti-rubber-stamp stance

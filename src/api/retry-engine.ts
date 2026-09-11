@@ -6,7 +6,7 @@
  */
 
 import { classifyApiError } from './error-classifier.js'
-import type { ClassifiedError } from './error-classifier.js'
+import type { ClassifiedError, ErrorCategory } from './error-classifier.js'
 
 // ---------------------------------------------------------------------------
 // Jittered exponential backoff
@@ -79,7 +79,16 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
 }
 
 function applyDelayJitter(delayMs: number): number {
-  return delayMs + Math.random() * delayMs * 0.5
+  return delayWithJitter(delayMs, LEGACY_JITTER_RATIO)
+}
+
+/** 历史抖动比例——未配置时的默认，保持既有行为（+0~50%）。 */
+const LEGACY_JITTER_RATIO = 0.5
+const DEFAULT_BACKOFF_BASE_MS = 1000
+const DEFAULT_BACKOFF_MAX_MS = 30_000
+
+function delayWithJitter(delayMs: number, jitterRatio: number): number {
+  return delayMs + Math.random() * jitterRatio * delayMs
 }
 
 // ---------------------------------------------------------------------------
@@ -101,13 +110,43 @@ export class RetryBudgetExhaustedError extends Error {
   }
 }
 
+/** Exponential-backoff shape (config: provider.providers.<name>.retry.backoff). */
+export interface RetryBackoffConfig {
+  /** Backoff base (ms) — used when the category has no delay of its own. */
+  baseDelayMs?: number
+  /** Per-wait ceiling (ms). Default 30000. */
+  maxDelayMs?: number
+  /** Jitter ratio (0–2): wait = capped + random() × ratio × capped. Default 0.5. */
+  jitterRatio?: number
+}
+
+/** Per-category retry overrides (config: retry.overrides.<category>). */
+export interface RetryCategoryOverride {
+  /** Retry ceiling for this category. Explicit values are no longer clamped
+   *  down by the classifier default (an explicit maxTotalRetries still caps). */
+  maxRetries?: number
+  /** Wait base for this category (ms) — the exponential start when backoff is set. */
+  retryDelayMs?: number
+}
+
+/** Optional retry policy carried from provider config. Absent = legacy behavior. */
+export interface RetryPolicy {
+  /** Setting this switches every retryable category onto a configurable
+   *  exponential curve; leaving it out keeps the historical fixed-delay path. */
+  backoff?: RetryBackoffConfig
+  overrides?: Partial<Record<ErrorCategory, RetryCategoryOverride>>
+}
+
 export interface RetryOptions {
-  /** Upper bound on total retry attempts (default: 5). */
+  /** Upper bound on total retry attempts. undefined = per-category classifier
+   *  default (explicit values are NOT clamped down by this bound's default). */
   maxTotalRetries?: number
   /** Upper bound on total elapsed time in ms across all attempts (default: no limit).
    *  When exceeded, the current attempt is abandoned and an error is thrown.
    *  Prevents retry loops from running for tens of minutes on unresponsive providers. */
   maxTotalDurationMs?: number
+  /** Retry policy from provider config (backoff curve + per-category overrides). */
+  policy?: RetryPolicy
   /** Called before each retry with diagnostic info. */
   onRetry?: (info: RetryInfo) => void
 }
@@ -119,6 +158,36 @@ export interface RetryInfo {
   classified: ClassifiedError
   /** Delay in ms before the next attempt. */
   nextDelayMs: number
+}
+
+/**
+ * Delay before the next attempt. Three regimes, checked in order:
+ *
+ *  1. Server named the wait (Retry-After) → fixed delay + jitter, never
+ *     exponentiated — the server decides, not the curve.
+ *  2. No backoff configured → historical behavior, unchanged: category fixed
+ *     delay + 50% jitter, or jittered exponential when the category carries
+ *     no delay of its own (retryDelayMs 0).
+ *  3. backoff configured → unified exponential curve for every retryable
+ *     category, based on the override/category delay (falling back to
+ *     backoff.baseDelayMs when the category has none), capped by maxDelayMs.
+ */
+function computeNextDelay(
+  attempt: number,
+  classified: ClassifiedError,
+  override: RetryCategoryOverride | undefined,
+  backoff: RetryBackoffConfig | undefined,
+): number {
+  const categoryDelay = classified.retryDelayMs
+  if (classified.retryDelayFromServer && categoryDelay > 0) {
+    return delayWithJitter(categoryDelay, backoff?.jitterRatio ?? LEGACY_JITTER_RATIO)
+  }
+  if (!backoff) {
+    return categoryDelay > 0 ? applyDelayJitter(categoryDelay) : jitteredBackoff(attempt)
+  }
+  const base = override?.retryDelayMs
+    ?? (categoryDelay > 0 ? categoryDelay : (backoff.baseDelayMs ?? DEFAULT_BACKOFF_BASE_MS))
+  return jitteredBackoff(attempt, base, backoff.maxDelayMs ?? DEFAULT_BACKOFF_MAX_MS, backoff.jitterRatio ?? LEGACY_JITTER_RATIO)
 }
 
 // ---------------------------------------------------------------------------
@@ -138,8 +207,11 @@ export async function withStructuredRetry<T>(
   signal?: AbortSignal,
   options?: RetryOptions,
 ): Promise<T> {
-  const maxTotal = options?.maxTotalRetries ?? 5
+  // undefined = 未显式配置：重试上限由各 category 的分类器默认值决定。不注入
+  // 隐式 5——全部可重试类别的默认值本就 ≤5，故默认行为不变，而显式配置不再被夹。
+  const maxTotal = options?.maxTotalRetries
   const maxDuration = options?.maxTotalDurationMs
+  const policy = options?.policy
   const startTime = maxDuration ? Date.now() : 0
 
   // attempt is 1-based and counts *retries* (not the initial call)
@@ -175,9 +247,20 @@ export async function withStructuredRetry<T>(
         throw err
       }
 
-      // The effective ceiling is the lower of the error's maxRetries and
-      // the caller's global maxTotalRetries.
-      const effectiveMax = Math.min(classified.maxRetries, maxTotal)
+      // Retry ceiling — explicit user config wins, classifier is the fallback:
+      //   1. overrides[category].maxRetries → 该类别显式值（仍受显式 maxTotalRetries 夹取）
+      //   2. 显式 maxTotalRetries → 直接生效（抬升分类器默认，消除「调了不生效」）
+      //   3. 两者都无 → 分类器默认（历史行为）
+      // stripImages 类别带一次性语义（只 strip 一次）：显式全局值只允许收紧。
+      const override = policy?.overrides?.[classified.category]
+      let effectiveMax: number
+      if (override?.maxRetries !== undefined) {
+        effectiveMax = maxTotal !== undefined ? Math.min(override.maxRetries, maxTotal) : override.maxRetries
+      } else if (maxTotal !== undefined) {
+        effectiveMax = classified.stripImages === true ? Math.min(classified.maxRetries, maxTotal) : maxTotal
+      } else {
+        effectiveMax = classified.maxRetries
+      }
 
       // +1 because `attempt` starts at 0 (the initial call is attempt 0,
       // first retry is attempt 1, etc.)
@@ -185,12 +268,8 @@ export async function withStructuredRetry<T>(
         throw err
       }
 
-      // Compute delay: prefer classifier-provided delay when present,
-      // otherwise fall back to jittered exponential backoff.
-      const nextDelayMs =
-        classified.retryDelayMs > 0
-          ? applyDelayJitter(classified.retryDelayMs)
-          : jitteredBackoff(attempt + 1)
+      // Delay decision — server instruction > configured curve > legacy path.
+      const nextDelayMs = computeNextDelay(attempt + 1, classified, override, policy?.backoff)
 
       // Notify caller
       options?.onRetry?.({
@@ -198,6 +277,23 @@ export async function withStructuredRetry<T>(
         classified,
         nextDelayMs,
       })
+
+      // Budget guard（核验补漏）: the budget is only checked at the top of each
+      // attempt, so a wait longer than the remaining budget would sleep to
+      // completion first — a server Retry-After of 30min hangs 30min despite a
+      // 10s maxTotalDurationMs. The next top-of-loop check is certain to fail
+      // in that case, so predict it and terminate before waiting.
+      if (maxDuration) {
+        const elapsed = Date.now() - startTime
+        if (elapsed + nextDelayMs > maxDuration) {
+          throw new RetryBudgetExhaustedError(
+            `Retry budget exhausted: total retry time would exceed ${Math.round(maxDuration / 1000)}s ` +
+            `across ${attempt + 1} attempt(s) (next wait ${Math.round(nextDelayMs / 1000)}s > ` +
+            `remaining ${Math.round((maxDuration - elapsed) / 1000)}s). ` +
+            `Provider may be unavailable — try again later or switch provider.`,
+          )
+        }
+      }
 
       // Wait (abort-aware)
       await abortableDelay(nextDelayMs, signal)

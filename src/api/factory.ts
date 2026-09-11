@@ -96,6 +96,8 @@ export function createProviderClient(
       model: params.model,
       maxTokens: params.maxTokens,
       auth: params.auth,
+      maxRetries: provider.maxRetries,
+      retry: provider.retry,
     })
   }
 
@@ -124,6 +126,7 @@ export function createProviderClient(
       thinkingBudget,
       requestTimeoutMs: provider.requestTimeoutMs,
       maxRetries: provider.maxRetries,
+      retry: provider.retry,
       temperature: provider.temperature,
       proxy: provider.proxy,
       userAgent: wire?.userAgent,
@@ -144,6 +147,7 @@ export function createProviderClient(
     // Advanced provider knobs and slow-thinking override are both runtime inputs.
     requestTimeoutMs: provider.requestTimeoutMs,
     maxRetries: provider.maxRetries,
+    retry: provider.retry,
     temperature: provider.temperature,
     proxy: provider.proxy,
     slowThinking: provider.slowThinking,

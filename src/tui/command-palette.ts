@@ -117,7 +117,7 @@ export function getPaletteCommands(): PaletteCommand[] {
     { name: '/plan-approve', description: '审批计划并开始执行（可指定选项）', argsHint: '<slug> [option]' },
     { name: '/plan-reject', description: '驳回计划并附反馈让 agent 修改', argsHint: '<slug> <反馈>' },
     { name: '/plan-close', description: '预览或应用计划收尾（归档/标记完成）' },
-    { name: '/review', description: 'L2 对抗审查：派单个验证审查员复核当前未提交改动。max 升 L3 五人编队，off/on 控制自动审查门', argsHint: 'max|off|on', tier: 'core' },
+    { name: '/review', description: 'L2 对抗审查：派单个验证审查员复核当前未提交改动。max 升 L3 五人编队；off/on/status 控制自动审查门并查看待终审累积', argsHint: 'max|off|on|status', tier: 'core' },
     { name: '/review max', description: 'L3 审查编队：5 名审查员并行复核当前改动——大改动或交付前用它兜底' },
     { name: '/review off', description: '关闭本会话自动审查门（省 token）；/review on 恢复，手动 /review 始终可用' },
     { name: '/constellation', description: '星图 — 项目蓝图与里程碑编年史' },

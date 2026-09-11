@@ -12,7 +12,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { McpServerConfig } from './config.js'
-import { resolveNpmCliCommand, buildStdioEnvWithNodePath } from '../platform/resolve-node-cli.js'
+import { resolveNpmCliCommand } from '../platform/resolve-node-cli.js'
+import { buildStdioChildEnv, type McpNetworkConfig } from './stdio-env.js'
 
 const DEFAULT_MCP_TIMEOUT_MS = 60_000
 
@@ -25,6 +26,10 @@ export interface TransportFactoryOptions {
   getEnv?: () => Promise<Record<string, string>>
   /** Connect timeout (ms). Defaults to 60s when unset. */
   timeoutMs?: number
+  /** App-level network proxy (settings `network.proxy`/`network.noProxy`) —
+   *  injected into the stdio child env so npx/server downloads can use the
+   *  same proxy as the rest of the app. Explicit per-server env always wins. */
+  network?: McpNetworkConfig
 }
 
 export interface TransportResult {
@@ -103,12 +108,12 @@ async function createStdioTransport(
   const fellBackToBareNpx = (bare === 'npx' || bare === 'npm')
     && resolved.command === cfg.command!
 
-  // Merge static env + dynamic OAuth env
+  // Merge static env + dynamic OAuth env, then layer app proxy + node-dir PATH
+  // injection. Priority handled inside buildStdioChildEnv: static > dynamic > network.
   const staticEnv = cfg.env as Record<string, string> | undefined
   const dynamicEnv = opts.getEnv ? await opts.getEnv() : {}
-  const mergedEnv: Record<string, string> = { ...staticEnv, ...dynamicEnv }
 
-  const env = buildStdioEnvWithNodePath(mergedEnv, { getDefaultEnvironment })
+  const env = buildStdioChildEnv(staticEnv, dynamicEnv, opts.network, { getDefaultEnvironment })
 
   const transport = new StdioClientTransport({
     command: resolved.command,

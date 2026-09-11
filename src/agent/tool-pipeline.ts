@@ -143,6 +143,15 @@ const BLOCKED_CLASSES: ReadonlySet<string> = new Set([
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000 // 2 minutes
 
+/** L3 同步段慢阈值（2026-09-10 纵深修复）：同步代码无法被 Promise.race 打断，
+ *  只能事后留痕——超过该值即在 stderr 打 [slow-sync-stage]（含工具/阶段/耗时）。
+ *  动机：edit_file 后处理曾静默 185s/221s，同步段"无痕"是定案障碍之一。 */
+const SLOW_SYNC_STAGE_MS = 3_000
+
+function warnSlowSyncStage(tool: string, stage: string, ms: number): void {
+  if (ms >= SLOW_SYNC_STAGE_MS) console.warn(`[slow-sync-stage] ${tool} ${stage} took ${ms}ms`)
+}
+
 /** TDD gate config — parsed once from env at module load. */
 const _TDD_GATE_CONFIG: TddGateConfig = parseTddGateConfig()
 
@@ -765,6 +774,11 @@ async function executeToolUseInner(
   let { traceStore, importGraph, lastConflictCheckCount, latestRisk } = deps
   let checkpointCreated = checkpointAlreadyCreated
 
+  // 无进展哨兵的活动 key（工具级，2026-09-10 纵深修复）：pre 段（审批/checkpoint/
+  // 快照）与 post 段（hooks/LSP/artifact/账本/影响面）都打在它上面——stall 告警
+  // 的 last 字段由此能指认"卡在哪个阶段"（旧形态只能指认到 tool:<name>:end）。
+  const activityKey = deps.sessionId ?? 'default'
+
   // Stream died while this call's arguments were still incomplete — input is
   // {} placeholder, NOT what the model asked for. Executing it ranges from a
   // misleading "X is required" error to actually running a half-received
@@ -1240,6 +1254,7 @@ async function executeToolUseInner(
     }
 
     if (shouldAsk) {
+      touchActivity(activityKey, `tool:${tu.name}:await-approval`)
       const approvalResult = await callbacks.onApprovalRequired(tu.id, tu.name, tu.input)
       const resolved: ApprovalResult = typeof approvalResult === 'boolean'
         ? { approved: approvalResult }
@@ -1348,6 +1363,7 @@ async function executeToolUseInner(
     // inside the rollback window, so the snapshot baseline has to be taken
     // before bash runs — not only before write_file/edit_file.
     if (isMutatingTool(tu.name) && !checkpointCreated) {
+      touchActivity(activityKey, `tool:${tu.name}:pre:checkpoint`)
       const cp = await createCheckpoint(deps.cwd, 'auto', deps.config.sessionId)
       checkpointCreated = true
       if (cp) callbacks.onCheckpoint?.(cp.hash)
@@ -1358,6 +1374,7 @@ async function executeToolUseInner(
    }
 
     if (deps.config.fileHistory && (tu.name === 'write_file' || tu.name === 'edit_file') && typeof tu.input.file_path === 'string') {
+      touchActivity(activityKey, `tool:${tu.name}:pre:track-edit`)
       await deps.config.fileHistory.trackEdit(tu.input.file_path, tu.id)
    }
 
@@ -1398,6 +1415,7 @@ async function executeToolUseInner(
     // failure here degrades to in-place — VSW must never break verification.
     if (tu.name === 'run_tests' && deps.verificationSnapshotManager) {
       try {
+        touchActivity(activityKey, `tool:${tu.name}:pre:snapshot`)
         const plan = await deps.verificationSnapshotManager.prepare(deps.ownershipLedger?.getOwnedFiles() ?? [])
         if (plan) params.verificationSnapshot = { path: plan.path, snapshotRef: plan.snapshotRef }
       } catch {
@@ -1423,6 +1441,7 @@ async function executeToolUseInner(
     }
 
     if (tu.name === 'deliver_task') {
+      touchActivity(activityKey, `tool:${tu.name}:pre:git-head`)
       preAbortHead = await gitHeadQuiet(deps.cwd)
     }
 
@@ -1435,7 +1454,7 @@ async function executeToolUseInner(
         // 无进展哨兵打点：工具执行起止（CLI/server 共用 agent 内核）。start
         // 后无 end = 卡在工具内（stall-observer 90s 后指认）；end 后无下一
         // start = 卡在回合处理。finally 保证 end 在成功/失败/超时都触达。
-        const activityKey = deps.sessionId ?? 'default'
+        // activityKey 定义在函数头（pre/post 段共用）。
         touchActivity(activityKey, `tool:${tu.name}:start`)
         try {
           // P5+P6: read_file must always go through real execute to honor the
@@ -1478,6 +1497,7 @@ async function executeToolUseInner(
    })
 
     if (shouldSampleToolInput && shouldEmitToolInputTrace(tu.name, beforeHookKeys, afterHookKeys, afterRepairKeys)) {
+      touchActivity(activityKey, `tool:${tu.name}:post:trace`)
       await emitToolInputTrace({
         cwd: deps.cwd,
         sessionId: deps.sessionId,
@@ -1489,6 +1509,7 @@ async function executeToolUseInner(
     }
 
     // PostToolUse hook
+    touchActivity(activityKey, `tool:${tu.name}:post:hooks`)
     const postHookResult = deps.config.hooks?.firePostToolUse({
       toolName: tu.name,
       input: tu.input as Record<string, unknown>,
@@ -1516,6 +1537,7 @@ async function executeToolUseInner(
     const mgr = deps.getLspManager?.() ?? deps.lspManager
     if (!harnessResult.isError && mgr?.isReady() && shouldRunDiagnostics(tu.name, tu.input.file_path as string | undefined)) {
       try {
+        touchActivity(activityKey, `tool:${tu.name}:post:lsp`)
         const diagnostics = await mgr.getFileDiagnostics(tu.input.file_path as string)
         if (diagnostics.length > 0) {
           // 作用域收敛: only surface diagnostics from the edit's changed region to
@@ -1564,6 +1586,7 @@ async function executeToolUseInner(
         const budgetFraction = deps.turnBudget.maxTokensPerTurn > 0
           ? 1 - (deps.turnBudget.usedTokens / deps.turnBudget.maxTokensPerTurn)
           : 1
+        touchActivity(activityKey, `tool:${tu.name}:post:artifact`)
         finalContent = await artifactIntercept(finalContent, tu.name, tu.input, deps.artifactStore, false, successThreshold, budgetFraction, deps.config.contextWindow)
         // Track eviction for GhostRegistry
         const evictedId = extractArtifactId(finalContent)
@@ -1685,6 +1708,7 @@ async function executeToolUseInner(
     // evaluate 处已短路返回,不计数,窗口保持)。
     deps.destructiveGate?.noteToolExecuted()
 
+    touchActivity(activityKey, `tool:${tu.name}:post:ledger`)
     // B1 归属星轨：record tool events into TaskLedger
     if (deps.taskLedger) {
       let filePath = (tu.input.file_path ?? tu.input.path) as string | undefined
@@ -1987,6 +2011,7 @@ async function executeToolUseInner(
       }
     }
 
+    touchActivity(activityKey, `tool:${tu.name}:post:impact`)
     // Evidence tracking + import graph
     if (tu.name === 'read_file' && !harnessResult.isError) {
       deps.evidence.trackFileRead(tu.input.file_path as string)
@@ -2032,14 +2057,18 @@ async function executeToolUseInner(
       // indexer=null 同路落回 importGraph；索引非空但无 impact 才是真无影响，不兜底
       // （避免每写工具全量扫仓——issue #61 已修路径）。
       if (db && db.hasFiles() && !relFilePath.startsWith('..') && !isAbsolute(relFilePath)) {
+        const impactT0 = Date.now()
         const impact = analyzeImpact(db, [relFilePath])
+        warnSlowSyncStage(tu.name, 'meridian-impact', Date.now() - impactT0)
         if (impact.direct.length > 0 || impact.tests.length > 0) {
           deps.evidence.trackImpact(impact.direct, impact.tests)
         }
       } else {
         if (!importGraph) {
           try {
+            const graphT0 = Date.now()
             importGraph = buildImportGraph(deps.cwd)
+            warnSlowSyncStage(tu.name, 'import-graph', Date.now() - graphT0)
           } catch {
             // Best-effort impact analysis — must never produce tool errors.
             // collectTsFiles already catches per-dir errors; this is a belt

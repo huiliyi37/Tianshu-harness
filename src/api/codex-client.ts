@@ -6,12 +6,19 @@ import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
+import { acquireRateLimitSlot } from './rate-limiter.js'
+import type { ProviderRetryConfig } from '../config/retry-schema.js'
 
 export interface CodexClientConfig {
   baseUrl: string
   model: string
   maxTokens: number
   auth?: import('../auth/types.js').AuthProvider
+  /** 显式重试上限；undefined = 分类器 per-category 默认（显式值不再被夹取），0 = 禁用。 */
+  maxRetries?: number
+  /** Provider-level retry policy (issue #75)：退避曲线 / 类别覆盖 / 客户端限速。
+   *  undefined = 历史行为（分类器固定延迟 + 内置预算）。 */
+  retry?: ProviderRetryConfig
 }
 
 const CODEX_USER_AGENT = 'codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9'
@@ -56,6 +63,8 @@ export class CodexClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
+      await acquireRateLimitSlot(this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
@@ -88,7 +97,9 @@ export class CodexClient implements StreamClient {
 
       await this.processSSEStream(response, callbacks, signal, lifecycle)
     }, signal, {
-      maxTotalDurationMs: 10 * 60_000,
+      maxTotalDurationMs: this.config.retry?.maxTotalDurationMs ?? 10 * 60_000,
+      maxTotalRetries: this.config.maxRetries,
+      policy: this.config.retry,
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)

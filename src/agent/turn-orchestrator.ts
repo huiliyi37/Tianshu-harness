@@ -46,6 +46,8 @@ export interface StreamTurnParams {
     onStreamStart: () => void
     onError: AgentCallbacks['onError']
     onRateLimit: (retryDelayMs?: number) => void
+    /** 413 / 图片被拒导致本次请求剥掉了图片——模型这一轮看不到它们（issue #94）。 */
+    onImageStripped?: (info: { removedCount: number }) => void
   }
 }
 
@@ -712,6 +714,13 @@ export class TurnOrchestrator {
             onRateLimit: (retryDelayMs) => {
               rateLimitOccurred = true
               rateLimitRetryMs = retryDelayMs ?? 0
+            },
+            onImageStripped: (info) => {
+              // 413 / 图片被拒后请求体已剥掉图片——模型这一轮看不到图了。必须可见：
+              // 静默剥图会被读成「模型没理我的截图」（issue #94）。
+              callbacks.onPhaseChange?.('image-stripped', {
+                reason: `图片已从本次请求移除（${info.removedCount} 张）——本轮模型看不到这些图`,
+              })
             },
           },
         })

@@ -65,6 +65,9 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 
 **怎么修**：确认项目可信后执行 `/trust` 授信（仅对本机生效、不写回仓库；安全键自下次会话起生效，需重启）。授信后仍连不上，按 `/debug mcp` 的 error 文案修 server 配置本身。
 
+> 完整配置字段（`env` / `timeoutMs` / 代理注入 / 远程型 / `-32000` 排查）见 mcp-servers.md。
+
+
 ## 5. 权限弹窗太频繁
 
 **现象**：几乎每个工具调用都弹确认，打断心流。

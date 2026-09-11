@@ -76,6 +76,7 @@ import { loadHistory, searchHistory } from './tui/history.js'
 import { parseScrollbackTranscript } from './tui/scrollback-transcript.js'
 import { buildWorkerDetailContent } from './tui/worker-detail.js'
 import { killAllSync } from './tools/process-tracker.js'
+import { registerExitCleanup } from './tui/engine/exit-cleanup.js'
 import { getTheme, getActiveThemeName, setTheme, THEMES, listCustomThemes, resolveThemeEntry, type ThemeName } from './tui/theme.js'
 import { loadCustomThemes } from './tui/theme-custom.js'
 import { detectTerminalBackground, autoThemeFor } from './tui/theme-detect.js'
@@ -272,24 +273,11 @@ async function shutdown(code: number = 0): Promise<void> {
 process.on('SIGINT', () => { void shutdown(0) })
 process.on('SIGTERM', () => { void shutdown(0) })
 
-// Last-resort sync hook: even if shutdown() threw or an uncaughtException
-// skipped it, the process-exit event still fires (unless SIGKILL).
-//
-// Terminal modes come first — an uncaught throw skips shutdown()/dispose()
-// entirely, stranding the user with a hidden cursor, bracketed paste still
-// armed and the terminal in raw mode (`tput reset` territory). We deliberately
-// do NOT register an `uncaughtException` listener to do this: that would
-// suppress Node's default crash behaviour for genuine synchronous errors
-// (see platform/eperm-filter.ts). This hook fires either way.
-//
-// MCP child processes (e.g. context7-mcp) are spawned via StdioClientTransport
-// and would otherwise orphan to PPID=1, accumulating across dev restarts.
-process.on('exit', () => {
-  try { app?.restoreTerminalSync() } catch { /* best-effort */ }
-  try {
-    if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false)
-  } catch { /* best-effort */ }
-  try { ctx?.refs.mcpManager?.killChildrenSync?.() } catch { /* best-effort */ }
+// 进程退出兜底清场（终端态恢复 + MCP 子进程 + tracked 进程树）——独立模块，
+// 细节见 exit-cleanup.ts。
+registerExitCleanup({
+  restoreTerminalSync: () => app?.restoreTerminalSync(),
+  killMcpChildrenSync: () => ctx?.refs.mcpManager?.killChildrenSync?.(),
 })
 
 // ── Main ───────────────────────────────────────────────────────

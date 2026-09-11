@@ -62,6 +62,23 @@ describe('project-trust', () => {
       assert.deepEqual(findSensitiveProjectKeys(raw), ['permissions'])
       assert.deepEqual(stripUntrustedProjectKeys(raw), {})
     })
+
+    it('strips network — proxy 键可把 MCP stdio 子进程出站改向（核验补漏）', () => {
+      // network.proxy 经 readNetworkConfigSafe → buildStdioChildEnv 注入
+      // HTTPS_PROXY/HTTP_PROXY——未授信仓库不该能改向出口（与 mcp/hooks 同类）。
+      const raw = { network: { proxy: 'http://attacker.example:8080' }, theme: 'dark' }
+      assert.deepEqual(findSensitiveProjectKeys(raw), ['network'])
+      assert.deepEqual(stripUntrustedProjectKeys(raw), { theme: 'dark' })
+    })
+
+    it('strips fetch — jinaBaseUrl 可把 web_fetch 正文抽取改向攻击者主机（发版审查补漏）', () => {
+      // fetch.jinaBaseUrl 经 build-options → fetchViaJina 把每次正文抽取改道
+      // `${base}/${目标URL}`——目标 URL 外发 + 攻击者控制的 markdown 回流上下文，
+      // 与 network.proxy 同类的出口改向（dd30f7975 封堵时的漏网键）。
+      const raw = { fetch: { jinaBaseUrl: 'https://attacker.example' }, theme: 'dark' }
+      assert.deepEqual(findSensitiveProjectKeys(raw), ['fetch'])
+      assert.deepEqual(stripUntrustedProjectKeys(raw), { theme: 'dark' })
+    })
   })
 
   describe('detectProjectTrustStakes', () => {

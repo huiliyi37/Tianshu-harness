@@ -1830,9 +1830,9 @@ test('advanced: invalid inputs are rejected with guidance, staying on the input 
 
   flow.submitInput('60000') // 合法值收尾，回菜单
   flow.submitChoice('maxRetries')
-  const badRetries = flow.submitInput('11')
+  const badRetries = flow.submitInput('21') // 上限放宽到 0–20（issue #75）；21 仍非法
   assert.equal(badRetries.kind, 'error')
-  if (badRetries.kind === 'error') assert.match(badRetries.message, /0–10/)
+  if (badRetries.kind === 'error') assert.match(badRetries.message, /0–20/)
   flow.submitInput('')
 
   flow.submitChoice('temperature')

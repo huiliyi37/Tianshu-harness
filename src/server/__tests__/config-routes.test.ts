@@ -775,6 +775,36 @@ describe('POST /config/providers/tunables', () => {
     assert.equal(res.status, 200)
   }
 
+  it('writes retry/maxRetries and reports them on the provider list', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    await createCustomProvider(router)
+
+    const res = await router('POST', '/config/providers/tunables', {
+      providerName: 'my-spark',
+      fields: { maxRetries: 8, retry: { rateLimit: { requestsPerSecond: 5 } } },
+    }, AUTH)
+    assert.equal(res.status, 200)
+
+    // 落盘生效：GET 列表透出 maxRetries / retry（桌面端配置面板据此回显）
+    const list = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (list.body as {
+      providers: { name: string; maxRetries?: number; retry?: { rateLimit?: { requestsPerSecond?: number } } }[]
+    }).providers
+    const spark = providers.find(p => p.name === 'my-spark')!
+    assert.equal(spark.maxRetries, 8)
+    assert.equal(spark.retry?.rateLimit?.requestsPerSecond, 5)
+  })
+
+  it('leaves retry undefined for providers that never configured it', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    await createCustomProvider(router)
+    const list = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (list.body as { providers: { name: string; maxRetries?: number; retry?: unknown }[] }).providers
+    const spark = providers.find(p => p.name === 'my-spark')!
+    assert.equal(spark.maxRetries, undefined, 'absent config must not synthesize a default')
+    assert.equal(spark.retry, undefined)
+  })
+
   it('updates whitelisted tunables and reports them', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
     await createCustomProvider(router)

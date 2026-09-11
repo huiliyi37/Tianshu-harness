@@ -3067,7 +3067,66 @@ describe('deliver_task abort — post-abort commit attribution', () => {
       )
       assert.ok(result.toolResult, 'tool executed')
       const last = getLastActivity('touch-wiring-test')
-      assert.equal(last.source, 'tool:write_file:end', 'execute must touch tool:end after settling')
+      // 2026-09-10 纵深修复后：end 之后还有 post 段的阶段打点，末次活动是 post:impact
+      // （阶段可见性的代价——告警的 last 从含糊的 :end 升级为可指认的具体阶段）。
+      assert.equal(last.source, 'tool:write_file:post:impact', 'post 段末次阶段打点应成为末次活动')
+      _resetStallObserverForTest()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stage touch: pre 段在 trackEdit 前可指认（stall-observer 纵深 2026-09-10）', async () => {
+    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-stage-pre-'))
+    try {
+      const { _resetStallObserverForTest, getLastActivity } = await import('../stall-observer.js')
+      _resetStallObserverForTest()
+      let observed = ''
+      const deps = makeDeps(dir, {
+        sessionId: 'stage-pre-test',
+        config: {
+          ...makeDeps(dir).config,
+          fileHistory: {
+            trackEdit: async () => { observed = getLastActivity('stage-pre-test').source },
+          },
+        } as any,
+      })
+      await executeToolUse(
+        { id: 'tu-stage-pre', name: 'edit_file', input: { file_path: join(dir, 'a.ts'), old_string: 'a', new_string: 'b' } },
+        deps, noopCallbacks as any, 1, false,
+      )
+      assert.equal(observed, 'tool:edit_file:pre:track-edit', 'pre 段应在 fileHistory.trackEdit 前打点指认阶段')
+      _resetStallObserverForTest()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('stage touch: post 段在 firePostToolUse 前可指认（stall-observer 纵深 2026-09-10）', async () => {
+    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-stage-post-'))
+    try {
+      const { _resetStallObserverForTest, getLastActivity } = await import('../stall-observer.js')
+      _resetStallObserverForTest()
+      let observed = ''
+      const deps = makeDeps(dir, {
+        sessionId: 'stage-post-test',
+        config: {
+          ...makeDeps(dir).config,
+          hooks: {
+            firePreToolUse: () => ({}),
+            firePostToolUse: () => { observed = getLastActivity('stage-post-test').source; return {} },
+          },
+        } as any,
+      })
+      const result = await executeToolUse(
+        { id: 'tu-stage-post', name: 'write_file', input: { file_path: join(dir, 'b.ts'), content: 'export {}' } },
+        deps, noopCallbacks as any, 1, false,
+      )
+      const lastTouch = getLastActivity('stage-post-test').source
+      assert.equal(
+        observed, 'tool:write_file:post:hooks',
+        `post 段应在 firePostToolUse 前打点指认阶段（hookSeen=${JSON.stringify(observed)} lastTouch=${lastTouch} result=${JSON.stringify((result.toolResult as any)?.content ?? '').slice(0, 120)}）`,
+      )
       _resetStallObserverForTest()
     } finally {
       rmSync(dir, { recursive: true, force: true })

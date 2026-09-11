@@ -4,6 +4,7 @@ import {
   jitteredBackoff,
   abortableDelay,
   withStructuredRetry,
+  RetryBudgetExhaustedError,
 } from '../retry-engine.js'
 import type { RetryInfo } from '../retry-engine.js'
 
@@ -316,5 +317,171 @@ describe('withStructuredRetry', () => {
     } finally {
       mock.timers.reset()
     }
+  })
+
+  it('Retry-After 超出剩余预算时不空等——立即预算终结（核验补漏）', async () => {
+    // 服务器指定 30 分钟等待 vs 10s 总预算：预算只在每轮 attempt 顶部检查，
+    // 修复前会把 30 分钟（含 jitter 后更长）真实睡满，才在下一轮发现超预算——
+    // 与「防挂死」目标背道而驰。修复后：预测「本次等待必然超预算」立即终结。
+    const err = Object.assign(new Error('429 rate limit exceeded'), {
+      status: 429,
+      retryAfterMs: 30 * 60_000,
+    })
+    const ac = new AbortController()
+    const guard = setTimeout(() => ac.abort(), 3_000)
+    guard.unref?.()
+    const t0 = Date.now()
+    try {
+      await assert.rejects(
+        () => withStructuredRetry(() => Promise.reject(err), ac.signal, {
+          maxTotalDurationMs: 10_000,
+        }),
+        (e: unknown) => e instanceof RetryBudgetExhaustedError,
+        '应直接以 RetryBudgetExhaustedError 终结；修复前会进入 30min 等待（被 3s 后的 abort 打断为 AbortError）',
+      )
+      assert.ok(Date.now() - t0 < 1_000, `不应进入长等待（实测 ${Date.now() - t0}ms）`)
+    } finally {
+      clearTimeout(guard)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Retry policy config (issue #75)
+// ---------------------------------------------------------------------------
+
+describe('withStructuredRetry policy config', () => {
+  it('keeps the legacy fixed+jitter delay for 429 when no backoff is configured', async () => {
+    const { infos, onRetry } = createCollector()
+    const fn = flakyFactory('ok', 1, 429)
+    const result = await withStructuredRetry(fn, undefined, { onRetry })
+    assert.equal(result, 'ok')
+    // No policy → 429 keeps the historical fixed 2000ms + 0–50% jitter.
+    const delay = infos[0]!.nextDelayMs
+    assert.ok(delay >= 2000 && delay <= 3000, `expected 2000..3000, got ${delay}`)
+  })
+
+  it('grows delay exponentially from the category override base when backoff is configured', async () => {
+    const { infos, onRetry } = createCollector()
+    const fn = flakyFactory('ok', 3, 429)
+    const result = await withStructuredRetry(fn, undefined, {
+      onRetry,
+      policy: {
+        backoff: { maxDelayMs: 60_000, jitterRatio: 0 },
+        overrides: { rate_limit: { retryDelayMs: 4, maxRetries: 8 } },
+      },
+    })
+    assert.equal(result, 'ok')
+    // base=4 → 4, 8, 16 (jitterRatio 0 → deterministic series).
+    assert.deepEqual(infos.map(i => i.nextDelayMs), [4, 8, 16])
+  })
+
+  it('uses the classifier delay as the exponential base when no override delay is set', async () => {
+    const { infos, onRetry } = createCollector()
+    const fn = flakyFactory('ok', 2, 429)
+    const result = await withStructuredRetry(fn, undefined, {
+      onRetry,
+      policy: { backoff: { jitterRatio: 0 } },
+    })
+    assert.equal(result, 'ok')
+    // 429's classifier delay (2000) becomes the base: 2000, 4000.
+    assert.deepEqual(infos.map(i => i.nextDelayMs), [2000, 4000])
+  })
+
+  it('keeps server Retry-After delays fixed even with backoff configured', async () => {
+    const { infos, onRetry } = createCollector()
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      if (calls <= 2) {
+        const err = new FakeApiError('Rate limited (429)', 429) as FakeApiError & { retryAfterMs?: number }
+        err.retryAfterMs = 20
+        throw err
+      }
+      return 'ok'
+    }
+    const result = await withStructuredRetry(fn, undefined, {
+      onRetry,
+      policy: { backoff: { jitterRatio: 0 } },
+    })
+    assert.equal(result, 'ok')
+    // Server named the wait (20ms): stays fixed across attempts, no exponential growth.
+    assert.deepEqual(infos.map(i => i.nextDelayMs), [20, 20])
+  })
+
+  it('falls back to the classifier ceiling when neither maxRetries nor overrides set a count', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Server error (500)', 500)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, {
+      // Delay override only — the retry count must still come from the classifier (3).
+      policy: { overrides: { server_error: { retryDelayMs: 1 } } },
+    }))
+    assert.equal(calls, 4, `expected 1 + 3 classifier retries, got ${calls}`)
+  })
+
+  it('lets an explicit maxTotalRetries raise the classifier ceiling', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Server error (500)', 500)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 6,
+      policy: { overrides: { server_error: { retryDelayMs: 1 } } },
+    }))
+    // Explicit 6 wins over the classifier's 3 — the §3 gap from issue #75.
+    assert.equal(calls, 7, `expected 1 + 6, got ${calls}`)
+  })
+
+  it('honors a per-category maxRetries override', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Rate limited (429)', 429)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, {
+      policy: { overrides: { rate_limit: { maxRetries: 2, retryDelayMs: 1 } } },
+    }))
+    assert.equal(calls, 3, `expected 1 + 2, got ${calls}`)
+  })
+
+  it('caps a per-category override by an explicit maxTotalRetries', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Rate limited (429)', 429)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 3,
+      policy: { overrides: { rate_limit: { maxRetries: 8, retryDelayMs: 1 } } },
+    }))
+    assert.equal(calls, 4, `expected 1 + min(8, 3), got ${calls}`)
+  })
+
+  it('does not let maxTotalRetries inflate the one-shot image_strip budget', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Payload Too Large (413)', 413)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 20,
+      policy: { overrides: { image_strip: { retryDelayMs: 1 } } },
+    }))
+    // stripImages carries one-shot semantics: min(classifier 1, 20) = 1.
+    assert.equal(calls, 2, `expected 1 + 1, got ${calls}`)
+  })
+
+  it('disables retries entirely with maxTotalRetries 0', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Server error (500)', 500)
+    }
+    await assert.rejects(() => withStructuredRetry(fn, undefined, { maxTotalRetries: 0 }))
+    assert.equal(calls, 1, `expected a single call, got ${calls}`)
   })
 })

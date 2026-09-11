@@ -10,6 +10,7 @@ import { DEFAULT_CONFIG } from '../../config/default.js'
 import type { Config } from '../../config/schema.js'
 import { distillSkillDraft, persistSkillDraft, listSkillDrafts } from '../../agent/skill-distill.js'
 import type { LogEntry } from '../log-state.js'
+import { addPendingReviewFiles, peekPendingReview, __resetPostCommitReviewPending } from '../../agent/post-commit-review-pending.js'
 import { makeTestDir, cleanupTestDir } from './_test-tmp.js'
 
 function makeCtx(overrides?: Partial<SlashHandlerContext>): SlashHandlerContext {
@@ -152,6 +153,61 @@ describe('/review off|on|status — 会话级审查门开关', () => {
     assert.equal(handled, true)
     assert.equal(reviewGateRef.current, 'off', 'status 不得改变开关')
     assert.match(captured, /已关闭（off）/)
+  })
+
+  it('/review status 显示待终审累积——defer 攒下的范围有处可查', async () => {
+    let captured = ''
+    __resetPostCommitReviewPending()
+    const reviewGateRef: { current: 'auto' | 'off' } = { current: 'auto' }
+    addPendingReviewFiles('sess-status-view', ['src/a.ts', 'src/b.ts'])
+    const ctx = makeCtx({
+      parts: ['/review', 'status'],
+      currentSessionId: 'sess-status-view',
+      reviewGateRef,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    const handled = await handleSlashCommand(ctx)
+    assert.equal(handled, true)
+    assert.match(captured, /待终审：1 个提交、2 个文件已累积/)
+    assert.match(captured, /敲 \/review 立即审查/, '必须给出用户可执行的动作，不只是陈述数量')
+  })
+
+  it('/review status 无累积时明示「无」，不留空白歧义', async () => {
+    let captured = ''
+    __resetPostCommitReviewPending()
+    const reviewGateRef: { current: 'auto' | 'off' } = { current: 'auto' }
+    const ctx = makeCtx({
+      parts: ['/review', 'status'],
+      currentSessionId: 'sess-status-empty',
+      reviewGateRef,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    await handleSlashCommand(ctx)
+    assert.match(captured, /待终审：无/)
+  })
+
+  it('/review 有待终审累积时审查累积范围并消费——「敲 /review 立即审查」不再是死胡同', async () => {
+    __resetPostCommitReviewPending()
+    addPendingReviewFiles('sess-consume', ['src/b.ts'])
+    addPendingReviewFiles('sess-consume', ['src/a.ts', 'src/b.ts'])
+    let captured = ''
+    let reviewed: string[] | null = null
+    const ctx = makeCtx({
+      parts: ['/review'],
+      currentSessionId: 'sess-consume',
+      runReview: (async (change: { files: string[] }) => {
+        reviewed = change.files
+        return { verdict: 'verified', tier: 'L1', rounds: 1 }
+      }) as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    const handled = await handleSlashCommand(ctx)
+    assert.equal(handled, true)
+    // makeCtx 的 agent.cwd='/cwd' 不存在 → collectDirtyFiles 返回 []，
+    // 审查范围完全来自 pending 累积（修复前此场景直接报「没有未提交的改动」）。
+    assert.deepEqual(reviewed, ['src/a.ts', 'src/b.ts'])
+    assert.match(captured, /已并入待终审累积：2 个提交、2 个文件/)
+    assert.equal(peekPendingReview('sess-consume'), null, 'pending 已消费——收尾终审不再二审同批文件')
   })
 
   it('无 reviewGateRef 注入时明确提示，不静默丢输入', async () => {

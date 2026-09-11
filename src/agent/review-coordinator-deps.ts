@@ -88,7 +88,11 @@ function childReviewDepth(options: CoordinatorReviewDepsOptions): number {
 }
 
 function scope(change: ChangeSet): DelegationRequest['scope'] {
-  return { files: files(change) }
+  // overlapsPrimary: 审查链路全部 worker 的 scope 都由这里构造——它的 files
+  // 就是被审文件，也就是主控刚写完并提交的那批，必然与主控争用同一批路径
+  // （并且磁盘上可能已被并发修改）。判定据此把这些 worker 推进独立 worktree，
+  // 见 isolation-policy.ts。
+  return { files: files(change), overlapsPrimary: true }
 }
 
 function request(input: {
@@ -222,9 +226,20 @@ function verifierResult(run: CoordinatorRun): VerifierResult {
 }
 
 function patcherResult(run: CoordinatorRun): PatcherResult {
-  const patched = run.status === 'completed'
-    && run.results.some(result => result.status === 'passed' && (result.changedFiles.length > 0 || Boolean(result.patchSummary)))
-  return { patched }
+  const patchedRun = run.status === 'completed'
+    ? run.results.find(result => result.status === 'passed' && (result.changedFiles.length > 0 || Boolean(result.patchSummary)))
+    : undefined
+  if (!patchedRun) return { patched: false }
+  // 产物随结果回流（I2）：隔离模式下补丁工的改动在它自己的 worktree 内，
+  // 不回流主控就再也看不到它——此处原先在类型层被剪成单个布尔。
+  return {
+    patched: true,
+    ...(patchedRun.changedFiles.length > 0 ? { changedFiles: [...patchedRun.changedFiles] } : {}),
+    ...(patchedRun.patchSummary ? { patchSummary: patchedRun.patchSummary } : {}),
+    // 落盘句柄必须跟着回流：隔离 worktree 会被清理，句柄是主控取回补丁的唯一途径。
+    // 在这一层丢掉它，披露行就只能说「改了什么」而给不出补丁。
+    ...(patchedRun.diffArtifactId ? { diffArtifactId: patchedRun.diffArtifactId } : {}),
+  }
 }
 
 function verifierObjective(change: ChangeSet): string {

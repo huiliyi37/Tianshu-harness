@@ -1,11 +1,14 @@
 import type { StreamClient, StreamCallbacks } from './stream-client.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
+import { oaiMessagesHaveImageParts, stripOaiImageParts } from './oai-types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { parseJsonObjectWithEscapeRepair } from './json-escape-repair.js'
 import { ProxyAgent } from 'undici'
+import { acquireRateLimitSlot } from './rate-limiter.js'
+import type { ProviderRetryConfig } from '../config/retry-schema.js'
 
 export interface AnthropicClientConfig {
   baseUrl: string
@@ -15,8 +18,11 @@ export interface AnthropicClientConfig {
   thinkingBudget?: number
   /** 总时限（ms）：替换内置 10min 硬顶，显式配置即严格。 */
   requestTimeoutMs?: number
-  /** 重试次数覆盖；undefined = 内置默认（5），0 = 禁用。 */
+  /** 重试次数覆盖；undefined = 分类器 per-category 默认（显式值不再被夹取），0 = 禁用。 */
   maxRetries?: number
+  /** Provider-level retry policy (issue #75)：退避曲线 / 类别覆盖 / 客户端限速。
+   *  undefined = 历史行为（分类器固定延迟 + 内置预算）。 */
+  retry?: ProviderRetryConfig
   /** 采样温度默认值（clamp 到 Anthropic 合法的 0–1）；thinking 启用时不注入
    *  （Anthropic 要求 thinking 请求 temperature=1）。 */
   temperature?: number
@@ -115,9 +121,25 @@ export class AnthropicClient implements StreamClient {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
-    const body = this.buildRequestBody(request)
+    // image_strip 恢复状态（与 openai-client.sendStream 同构，那里有完整说明）：
+    // 首次原样带图 → 分类器判 image_strip 后剥图重发一次 → 仍 413 时请求体已
+    // 无图，错误上的 payloadHadImages: false 让分类器改判 context_overflow。
+    let stripRequested = false
+    let imagesStripped = false
 
     await withStructuredRetry(async () => {
+      // 剥图重发：只重建本次请求体，不动调用方的 messages（会话历史仍保图）。
+      let wireMessages = request.messages
+      if (stripRequested && !imagesStripped) {
+        const stripped = stripOaiImageParts(wireMessages)
+        if (stripped.removedCount > 0) {
+          wireMessages = stripped.messages
+          imagesStripped = true
+          callbacks.onImageStripped?.({ removedCount: stripped.removedCount })
+        }
+      }
+      const body = this.buildRequestBody({ ...request, messages: wireMessages })
+
       // 共享 lifecycle controller（见 openai-client 同名注释）：传给 fetch，
       // 由外部 signal 联动并在 processSSEStream 的 finally 中 abort。
       const lifecycle = new AbortController()
@@ -125,6 +147,8 @@ export class AnthropicClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
+      await acquireRateLimitSlot(this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const response = await fetchWithTimeout(`${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -145,7 +169,14 @@ export class AnthropicClient implements StreamClient {
         const errorBody = await response.text().catch(() => '')
         const err = Object.assign(
           new Error(`Anthropic API error (${response.status}): ${errorBody}`),
-          { status: response.status },
+          {
+            status: response.status,
+            // 413 的两种成因在 wire 层同形——只有这里知道刚发出去的体里有没有图。
+            // 标在错误上让分类器分流（无图 = 纯上下文超限，重发无用）。
+            ...(response.status === 413
+              ? { payloadHadImages: oaiMessagesHaveImageParts(wireMessages) }
+              : {}),
+          },
         )
         const retryAfter = response.headers.get('retry-after')
         if (retryAfter) {
@@ -159,12 +190,18 @@ export class AnthropicClient implements StreamClient {
 
       await this.processSSEStream(response, callbacks, signal, lifecycle)
     }, signal, {
-      maxTotalDurationMs: 10 * 60_000,
+      maxTotalDurationMs: this.config.retry?.maxTotalDurationMs ?? 10 * 60_000,
       // provider 级 maxRetries 显式配置时覆盖内置默认（0 = 禁用重试）。
       maxTotalRetries: this.config.maxRetries,
+      policy: this.config.retry,
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)
+        }
+        // image_strip = 上一次失败被判为图片负载问题：下一次 attempt 剥图再发
+        //（剥离点见上面的 wireMessages）。分类器只在请求体带图时给这个类别。
+        if (info.classified.category === 'image_strip') {
+          stripRequested = true
         }
       },
     })

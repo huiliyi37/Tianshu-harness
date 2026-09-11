@@ -1,6 +1,6 @@
 import type { CompactionConfig } from '../compact/constants.js'
 import { WorktreeCoordinator } from './worktree-coordinator.js'
-import { getCurrentGitRef } from './worktree.js'
+import { getCurrentGitRef, revParseHead } from './worktree.js'
 import { collectDiff, formatDiffArtifact } from './diff-collector.js'
 import {
   buildBlockedWorkerResult,
@@ -134,23 +134,46 @@ export async function runHandsSession(config: HandsSessionConfig): Promise<Hands
   let inPlace = false
   if (config.sharedWorkspace) {
     // Shared-worktree mode: run directly in the controller's single shared cwd.
-    // No per-worker worktree, no isolated diff — orthogonal shards write disjoint
-    // files and the file-claim registry prevents same-file stomping.
+    // No per-worker worktree, no isolated diff. Only sound when the write scopes
+    // are disjoint from the primary's — the caller establishes that through the
+    // isolation policy (isolation-policy.ts), not through a global switch. Note
+    // that the file-claim registry is NOT the guarantee here: it is keyed by
+    // session id, and workers claim under the primary's session id, so
+    // same-session workers never block one another (see
+    // .rivet/plans/worker-isolation-design.md §3).
     wt = { path: config.cwd }
     inPlace = true
   } else {
-    // Worktree isolation requires git. When git is absent (or the cwd isn't a git
-    // repo), createWorktree throws — we fall back to running in-place in the
-    // primary cwd. This mirrors session-manager's isolatedWorktree fallback
-    // (session-manager.ts). In-place is safe because Rivet's file-claim registry
-    // already prevents cross-worker write conflicts on the same branch — same
-    // guarantee that lets multiple sessions share a cwd. The only loss is the
-    // worktree-scoped diff (collected below only when a real worktree exists).
+    // Isolated mode: this worker's write scope overlaps the primary's (review /
+    // patch workers write the very files the primary just committed), so it must
+    // NOT run in the primary worktree. The caller picks this branch through the
+    // isolation policy (isolation-policy.ts), not through a global switch.
     try {
       wt = await config.wtCoordinator.create(config.order.id)
-    } catch {
-      wt = { path: config.cwd }
-      inPlace = true
+    } catch (err) {
+      // Two failure classes, deliberately split apart:
+      //  · structurally unavailable (cwd is not a git repo) — isolation was never
+      //    possible here, and this is the long-standing no-git graceful
+      //    degradation (hands-session.test.ts "runs in-place (no worktree) when
+      //    git is unavailable"). The user has no git worktree to pollute.
+      //  · transient/local failure inside a git repo (.git/worktrees lock
+      //    contention, permissions, disk) — isolation should have worked. A
+      //    silent in-place fallback is exactly how a review patcher ends up
+      //    rewriting the user's working tree (worker-isolation-design.md §2.3)
+      //    → abstain and report; never guess.
+      if (!revParseHead(config.cwd)) {
+        wt = { path: config.cwd }
+        inPlace = true
+      } else {
+        return {
+          result: buildBlockedWorkerResult(
+            config.order,
+            `Worktree isolation unavailable — refusing to run in the primary worktree: ${err instanceof Error ? err.message : String(err)}`,
+            'policy_short_circuit',
+          ),
+          usage: {},
+        }
+      }
     }
   }
   config.order.workerCwd = wt.path

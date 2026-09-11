@@ -26,6 +26,7 @@ import {
   isTrustPromptDismissed,
   trustProject,
   untrustProject,
+  dismissProjectTrustPrompt,
   findSensitiveProjectKeys,
 } from '../config/project-trust.js'
 
@@ -94,6 +95,18 @@ export function buildTrustRoutes(apiToken?: string): Record<string, RouteHandler
       if (data.trusted) trustProject(projectDir)
       else untrustProject(projectDir)
       return { status: 200, body: { cwd, projectDir, trusted: isProjectTrusted(projectDir) } }
+    }, apiToken),
+
+    // POST /project/trust/dismiss — 记「不再提示」（与 TUI 的启动提示同一存储：
+    // project-trust.json 的 dismissed 表）。此前只有 TUI 能写这个标记，桌面端只能
+    // 用 localStorage 各记各的——同一个项目在两端行为不一致。授信会清掉该标记
+    // （trustProject 内置），故无需反向端点。
+    'POST /project/trust/dismiss': withAuth((body) => {
+      const cwd = resolveDir((body as { cwd?: unknown } | undefined)?.cwd)
+      if (!cwd) return { status: 400, body: { error: 'cwd is required' } }
+      const { projectDir } = projectDirFor(cwd)
+      dismissProjectTrustPrompt(projectDir)
+      return { status: 200, body: { cwd, projectDir, dismissed: isTrustPromptDismissed(projectDir) } }
     }, apiToken),
   }
 }

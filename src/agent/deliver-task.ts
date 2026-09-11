@@ -87,7 +87,7 @@ import { commitScopedFiles, type ScopedCommitResult } from './scoped-git-commit.
 import { buildReviewPrincipleChecklist } from './review-principle-checklist.js'
 import { checkCommitCohesion } from './commit-cohesion.js'
 import { isCrossModule, isFixContext, shouldRouteReviewWorkflow, GENERAL_DEV_DISCIPLINES, LARGE_FILE_WARN_THRESHOLD, type ChangeSet, type ReviewScale } from './review-discipline.js'
-import { routeReviewWorkflow, reviewWorkflowBudgetMs, type ReviewRouterDeps, type ReviewOutcome, type ReviewMode } from './review-router.js'
+import { routeReviewWorkflow, reviewWorkflowBudgetMs, formatPatcherArtifacts, type ReviewRouterDeps, type ReviewOutcome, type ReviewMode } from './review-router.js'
 import { isReviewDisciplineEnabled } from '../config/review-discipline-config.js'
 import type { ReviewConfig } from '../config/schema.js'
 import { recordAutoReviewRun } from './review-health.js'
@@ -104,7 +104,7 @@ import { declaredVerificationCommands, reconcileVerificationCommands, formatVeri
 import { getStoredPlan } from './plan-store.js'
 import { deserializeUnifiedPlan } from './unified-plan.js'
 import { enqueuePostCommitReviewOutcome } from './post-commit-review-queue.js'
-import { addPendingReviewFiles, consumePendingReview, __resetPostCommitReviewPending } from './post-commit-review-pending.js'
+import { addPendingReviewFiles, consumePendingReview, formatDeferredReviewNotice, __resetPostCommitReviewPending } from './post-commit-review-pending.js'
 import { isUiFilePath, isVisualVerifyTool } from './hooks/render-verify-hook.js'
 import { findUnverifiedClaimRefs } from './hooks/external-claim-tracking-hook.js'
 import { isScoutFirewallEnabled } from '../config/scout-firewall-config.js'
@@ -266,6 +266,7 @@ export function formatReviewOutcomeLines(outcome: ReviewOutcome): string[] {
     lines.push('通用开发方法论：')
     for (const directive of GENERAL_DEV_DISCIPLINES) lines.push(`  - ${directive}`)
   }
+  lines.push(...formatPatcherArtifacts(outcome.patcherArtifacts))
   return lines
 }
 
@@ -1266,7 +1267,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
           // goal-achieved L3 / 下一次换审统一消费，本轮不起 worker。
           if (reviewPolicy === 'defer' && !explicitReviewLevel) {
             const scope = addPendingReviewFiles(ctx.sessionId, filesToCommit, { escalate: change.forceLevel === 'L3' })
-            lines.push('', `⏭ 提交后审查已延迟（review_policy=defer）：会话已累积 ${scope.commits} 个 commit、${scope.files.size} 个文件待审。收尾用 review_policy:'final' 或 /review max 统一审查。`)
+            lines.push('', ...formatDeferredReviewNotice(scope.commits, scope.files.size))
           } else {
             // 批量约束只作用于系统触发的审查。显式 review_level（手动 /review）
             // 与 goal-achieved L3 终审是明确意图，不被冷却/在飞单例跳过；

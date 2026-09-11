@@ -86,6 +86,7 @@ import { detectEnv, formatEnvGuidance, recommendUvSetup, isPythonProject } from 
 import { getResolvedEnv, getResolvedPathDiff } from '../tools/resolved-env.js'
 import { getShellCommand } from '../platform.js'
 import { createCoordinatorReviewDeps } from '../agent/review-coordinator-deps.js'
+import { consumePendingReview, peekPendingReview } from '../agent/post-commit-review-pending.js'
 import { routeReviewWorkflow, type ReviewMode, type ReviewOutcome } from '../agent/review-router.js'
 import type { ChangeSet } from '../agent/review-discipline.js'
 import { HELP_TEXT } from './format/help-text.js'
@@ -833,7 +834,14 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         }
         if (sub === 'status') {
           const state = gateRef.current === 'off' ? '已关闭（off）' : '开启（auto）'
-          pushStatic(createLogEntry({ type: 'system', content: `审查门状态：${state}。/review off 关闭自动审查，/review on 恢复；手动 /review [max] 始终可用。` }))
+          // 待终审累积：defer/final 模式下 commit 范围攒在 pending 里，此前只在
+          // 交付那一刻的文案里提一次，用户随后无处可查——/review status 是
+          // 「现在攒了多少、要不要提前审」的自然落点。
+          const pend = peekPendingReview(ctx.currentSessionId)
+          const pendLine = pend
+            ? `\n待终审：${pend.commits} 个提交、${pend.files.size} 个文件已累积 — 敲 /review 立即审查，或等收尾自动终审。`
+            : '\n待终审：无（本次会话没有累积的延迟审查）。'
+          pushStatic(createLogEntry({ type: 'system', content: `审查门状态：${state}。/review off 关闭自动审查，/review on 恢复；手动 /review [max] 始终可用。${pendLine}` }))
         } else {
           gateRef.current = sub === 'off' ? 'off' : 'auto'
           pushStatic(createLogEntry({ type: 'system', content: sub === 'off'
@@ -864,27 +872,37 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       type ChangeSet = import('../agent/review-discipline.js').ChangeSet
       type ReviewMode = import('../agent/review-router.js').ReviewMode
 
-      // 从 git diff 构造 ChangeSet
+      // 从 git diff 构造 ChangeSet。defer/冷却/在飞攒下的待终审范围一并非入——
+      // formatDeferredReviewNotice 与 /review status 都承诺「敲 /review 立即审查」，
+      // 此前 /review 只看未提交改动：干净工作树下该承诺是死胡同，且 pending 不被
+      // 消费会让收尾终审对同批文件二审。pending 文件已 commit，审的是其当前内容
+      // （与 deliver_task 补审/final 消费同一语义）。
       const dirtyFiles = await collectDirtyFiles(ctx.agent.cwd)
-      if (dirtyFiles.length === 0) {
+      const pend = peekPendingReview(ctx.currentSessionId)
+      const files = pend ? [...new Set([...pend.files, ...dirtyFiles])].sort() : dirtyFiles
+      if (files.length === 0) {
         pushStatic(createLogEntry({ type: 'system', content: '没有未提交的改动可以审查。' }))
         setIsStreaming(false)
         return true
       }
+      // 确认有内容可审才消费——早退路径不白丢累积范围。
+      if (pend) consumePendingReview(ctx.currentSessionId)
+      const effectiveForce = forceLevel ?? (pend?.escalate ? 'L3' as const : undefined)
 
       const change: ChangeSet = {
-        files: dirtyFiles,
-        crossModule: isCrossModule(dirtyFiles),
+        files,
+        crossModule: isCrossModule(files),
         isFix: isFixContext(focus || ''),
-        ...(forceLevel ? { forceLevel } : {}),
+        ...(effectiveForce ? { forceLevel: effectiveForce } : {}),
       }
 
       const mode: ReviewMode = 'manual'
-      const budgetSec = forceLevel === 'L1'
+      const budgetSec = effectiveForce === 'L1'
         ? 0
-        : Math.round(reviewWorkflowBudgetMs(mode, forceLevel === 'L3' ? 'L3' : forceLevel === 'L2' ? 'L2' : undefined) / 1000)
-      const levelLabel = forceLevel === 'L3' ? 'L3 Squadron (5 inspectors)' : forceLevel ?? 'auto-classify'
-      pushStatic(createLogEntry({ type: 'system', content: `⏳ 审查启动中 (${levelLabel}, ≤${budgetSec}s)...\n` }))
+        : Math.round(reviewWorkflowBudgetMs(mode, effectiveForce === 'L3' ? 'L3' : effectiveForce === 'L2' ? 'L2' : undefined) / 1000)
+      const levelLabel = effectiveForce === 'L3' ? 'L3 Squadron (5 inspectors)' : effectiveForce ?? 'auto-classify'
+      const pendNote = pend ? `\n   已并入待终审累积：${pend.commits} 个提交、${pend.files.size} 个文件（收尾不再重复终审）。` : ''
+      pushStatic(createLogEntry({ type: 'system', content: `⏳ 审查启动中 (${levelLabel}, ≤${budgetSec}s)...${pendNote}\n` }))
 
       try {
         const outcome = await ctx.runReview(change, mode, focus || undefined)
@@ -1161,7 +1179,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           `项目信任状态：${isProjectTrusted(agent.cwd) ? '已授信' : '未授信'}`,
           `启动授信提示：${isTrustPromptDismissed(agent.cwd) ? '已关闭（/trust 授信即恢复）' : '开启'}`,
           `已授信项目数：${listTrustedProjects().length}（清单存于 ~/.rivet/project-trust.json）`,
-          '未授信时：项目 hooks 不执行；项目配置的 permissions/mcp/hooks/providers/env/ui.statusLine/agent.approval 等安全键被忽略。',
+          '未授信时：项目 hooks 不执行；项目配置的 permissions/mcp/hooks/providers/env/network/fetch/ui.statusLine/agent.approval 等安全键被忽略。',
         )
       } else if (action === undefined) {
         trustProject(agent.cwd)

@@ -1025,9 +1025,9 @@ describe('deliver-task — semantic task delivery tool', () => {
     })
 
     const d1 = await tool.execute({ ...params, input: { commit: true, message: 'feat: step 1', files: ['src/a.ts'], review_policy: 'defer' } })
-    assert.match(d1.content, /已延迟（review_policy=defer）：会话已累积 1 个 commit、1 个文件/)
+    assert.match(d1.content, /已并入批量终审：已累积 1 个提交、1 个文件/)
     const d2 = await tool.execute({ ...params, input: { commit: true, message: 'feat: step 2', files: ['src/b.ts'], review_policy: 'defer' } })
-    assert.match(d2.content, /会话已累积 2 个 commit、2 个文件/)
+    assert.match(d2.content, /已累积 2 个提交、2 个文件/)
     assert.equal(routedFiles.length, 0, 'defer must never spawn a review worker')
 
     const fin = await tool.execute({ ...params, input: { commit: true, message: 'feat: step 3', files: ['src/c.ts'], review_policy: 'final' } })
@@ -1068,7 +1068,7 @@ describe('deliver-task — semantic task delivery tool', () => {
     })
 
     const d1 = await tool.execute({ ...params, input: { commit: true, message: 'feat: step 1', files: ['src/a.ts'], review_policy: 'defer' } })
-    assert.match(d1.content, /已延迟（review_policy=defer）/)
+    assert.match(d1.content, /已并入批量终审/)
     assert.equal(routeCalls, 0, 'defer must not route')
 
     // Final commit with explicit review_level='L3' — now detached, but

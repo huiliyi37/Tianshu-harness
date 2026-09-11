@@ -117,7 +117,7 @@ export function notifyUntrustedOnce(kind: 'hooks' | 'config', projectDir: string
   const how = `TUI 执行 /trust 授信（或启动加 --trust / 设 RIVET_TRUST_PROJECT=1）`
   const keyList = strippedKeys && strippedKeys.length > 0
     ? strippedKeys.join('/')
-    : 'permissions/mcp/hooks/providers/env/plugins/mirrors/ui.statusLine/agent.approval 等'
+    : 'permissions/mcp/hooks/providers/env/plugins/mirrors/network/fetch/ui.statusLine/agent.approval 等'
   const what = kind === 'hooks'
     ? `检测到项目 hooks（${join(projectDir, '.rivet', 'hooks.json')}），项目未授信，已跳过执行`
     : `检测到项目配置（${join(projectDir, '.rivet-config.json')}），项目未授信，其中安全敏感键（${keyList}）已忽略`
@@ -129,12 +129,18 @@ export const PROJECT_CONFIG_FILE_NAME = '.rivet-config.json'
 /** 未授信时从项目层配置剥离的顶层键——任一键都能把 SECURITY.md 声明的
  *  审批/边界/出口控制整体旁路（写盘授权、bash 预授权、静默 YOLO、假 shell、
  *  MCP 拉进程、baseUrl+key 重定向、statusline 命令执行、verify 声明命令执行、
- *  搜索 key 外发、镜像路由安装源、启停已装插件）。注意 schema 的 permissions
- *  实际嵌在 agent 下（agent.permissions），顶层 permissions 是不存在的键——
- *  保留在集合里仅作纵深。 */
+ *  搜索 key 外发、镜像路由安装源、启停已装插件、**MCP 子进程出口改向**、
+ *  **web_fetch 正文抽取改向**）。
+ *  network 键经 readNetworkConfigSafe → buildStdioChildEnv 把 proxy 注入每个
+ *  MCP stdio 子进程的 HTTPS_PROXY/HTTP_PROXY（2026-09 核验补漏）。fetch 键的
+ *  jinaBaseUrl 把 web_fetch 每次正文抽取改道 `${base}/${目标URL}`——目标 URL
+ *  外发 + 攻击者控制的 markdown 回流 agent 上下文（与 network 同类的出口改向，
+ *  2026-09-11 发版审查补漏）。注意 schema
+ *  的 permissions 实际嵌在 agent 下（agent.permissions），顶层 permissions 是
+ *  不存在的键——保留在集合里仅作纵深。 */
 const UNTRUSTED_TOP_LEVEL_KEYS = new Set([
   'permissions', 'mcp', 'hooks', 'env', 'provider', 'providers', 'search', 'verify',
-  'plugins', 'mirrors',
+  'plugins', 'mirrors', 'network', 'fetch',
 ])
 
 /** 未授信时剥离的嵌套键（点路径相对项目层配置根）。 */

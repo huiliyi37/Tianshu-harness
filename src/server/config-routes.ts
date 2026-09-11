@@ -89,6 +89,7 @@ import { writeFileAtomicSync } from '../fs-atomic.js'
 import { join } from 'node:path'
 import { rivetHome } from '../config/paths.js'
 import { isKeylessProviderEntry } from '../config/provider-presets.js'
+import type { ProviderRetryConfig } from '../config/retry-schema.js'
 import { allPresetKeys, resolvePreset, resolvePresetBaseUrl, resolvePresetLabel } from '../api/pro-registry.js'
 import { modelConfigSchema, type ModelConfig } from '../config/schema.js'
 import { queryDeepSeekBalance, type BalanceResult } from '../api/balance-client.js'
@@ -189,6 +190,10 @@ export interface ProviderListItem {
   allowProFallback: boolean
   /** 三态：undefined = 按名称/baseUrl 启发式；true/false 压过启发式。 */
   slowThinking?: boolean
+  /** 显式重试上限（0–20）；undefined = 按错误类别默认（issue #75）。 */
+  maxRetries?: number
+  /** 重试策略块（退避/类别覆盖/客户端限速）；undefined = 未配置（历史行为）。 */
+  retry?: ProviderRetryConfig
 }
 
 export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigChanged?: (approval: string) => void }): Record<string, RouteHandler> {
@@ -221,6 +226,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
             : {}),
           allowProFallback: p.allowProFallback ?? false,
           ...(p.slowThinking !== undefined ? { slowThinking: p.slowThinking } : {}),
+          ...(p.maxRetries !== undefined ? { maxRetries: p.maxRetries } : {}),
+          ...(p.retry !== undefined ? { retry: p.retry } : {}),
         })
       }
       providers.sort((a, b) => {

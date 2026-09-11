@@ -34,6 +34,9 @@ export interface TurnStreamCallbacks {
   onStreamStart?: () => void
   onError: (error: Error) => void
   onRateLimit?: (retryDelayMs?: number) => void
+  /** 413 / 图片被拒导致本次请求剥掉了 image_url——模型这一轮看不到这些图，
+   *  调用方应告知用户，否则会被读成「模型没理我的截图」。 */
+  onImageStripped?: (info: { removedCount: number }) => void
 }
 
 export interface TurnStreamDeps {
@@ -209,6 +212,9 @@ export class TurnStreamController {
       },
       onRateLimit: (retryDelayMs) => {
         input.callbacks.onRateLimit?.(retryDelayMs)
+      },
+      onImageStripped: (info) => {
+        input.callbacks.onImageStripped?.(info)
       },
       onStreamAttemptAborted: (info) => {
         this.deps.recordStreamAttemptAborted?.(info)

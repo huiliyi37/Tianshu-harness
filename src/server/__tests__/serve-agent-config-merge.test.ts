@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mergeProjectAgentConfig } from '../serve-agent.js'
+import { mergeProjectAgentConfig, resolveSessionBaseConfig } from '../serve-agent.js'
 import type { Config } from '../../config/schema.js'
 
 function startupConfig(overrides?: Partial<Config['agent']>): Config {
@@ -114,5 +114,25 @@ describe('mergeProjectAgentConfig', () => {
     assert.equal(merged.agent.desktopTools, true)
     // Other fields preserved
     assert.equal(merged.agent.crossSessionEnabled, true)
+  })
+})
+
+describe('resolveSessionBaseConfig — 视觉桥 P0：运行中改配置对新会话生效', () => {
+  it('有 reload（生产 sidecar）时用磁盘新值——运行中配的识图桥不再落空', () => {
+    const base = startupConfig()
+    const ctx = { config: base } as unknown as import('../serve.js').ServeContext
+    const fresh = startupConfig()
+    fresh.agent.visionModel = { provider: 'zhipu-vision', model: 'glm-4v-flash', maxTokens: 1024 }
+    const reload = () => ({ config: fresh }) as unknown as import('../serve.js').ServeContext
+    const resolved = resolveSessionBaseConfig(ctx, reload)
+    assert.equal(resolved, fresh, '必须取 reload 的新值而非启动快照')
+    assert.equal(resolved.agent.visionModel?.model, 'glm-4v-flash')
+  })
+
+  it('无 reload（注入 ctx 的测试/CLI 路径）回落启动快照——确定性不变', () => {
+    const base = startupConfig()
+    const ctx = { config: base } as unknown as import('../serve.js').ServeContext
+    assert.equal(resolveSessionBaseConfig(ctx), base)
+    assert.equal(resolveSessionBaseConfig(ctx).agent.visionModel, undefined)
   })
 })

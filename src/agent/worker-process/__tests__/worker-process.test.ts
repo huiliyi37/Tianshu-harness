@@ -1,7 +1,7 @@
 import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createFrameDecoder, encodeFrame } from '../protocol.js'
@@ -12,6 +12,7 @@ import {
 } from '../parent.js'
 import type { WorkerSessionConfig, WorkerSessionRun } from '../../worker-session.js'
 import type { WorkOrder } from '../../work-order.js'
+import { getActiveCount } from '../../../tools/process-tracker.js'
 
 // ── 协议单测 ─────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ describe('NDJSON 帧解码', () => {
  *  - hang：init 后一声不吭（watchdog 击杀用）
  *  - crash：init 后 exit(1)
  *  - echo-steer：收到 steer 帧后把它放进 result.summary 证明下行通路 */
-function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer' | 'big-frame'): string {
+function writeFixture(dir: string, mode: 'ok' | 'hang' | 'crash' | 'echo-steer' | 'big-frame' | 'grandchild-hang' | 'grandchild-survive'): string {
   const src = `
 const { createInterface } = require('node:readline')
 const dec = (${createFrameDecoder.toString()})()
@@ -49,6 +50,29 @@ const rl = createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   for (const msg of dec.feed(line + '\\n')) {
     if (msg.t === 'init') {
+      if (mode === 'grandchild-hang') {
+        // 孙进程：不设 detached（继承本进程组），pid 落盘供父侧断言。
+        // 模拟 worker 里的 stdio MCP/LSP 服务器等非 detached 后代。
+        const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+        require('node:fs').writeFileSync(__filename + '.grandchild-pid', String(g.pid))
+        return // 一声不吭 → watchdog → 击杀梯应组杀连带孙进程
+      }
+      if (mode === 'grandchild-survive') {
+        // worker 正常发 result 并退出，但孙进程留在其进程组内——模拟 worker
+        // 结束自身清理没覆盖的 stdio MCP/LSP 后代。settle 后父侧 post-result
+        // cleanup 应组杀连带（否则无人组杀、成孤儿）。
+        const g = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+        require('node:fs').writeFileSync(__filename + '.grandchild-pid', String(g.pid))
+        send({ t: 'result', run: {
+          result: { workOrderId: 'wo_gcs', status: 'passed', summary: 'survive', findings: [], artifacts: [], changedFiles: [], risks: [], nextActions: [], evidenceStatus: 'verified' },
+          transcript: { text: '', thinking: '', toolUses: [], toolResults: [], repairAttempts: 0, errors: [] },
+          usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          messages: [{ role: 'user', content: 'x' }],
+          turnCount: 1,
+        } })
+        process.stdout.end(() => process.exit(0))
+        return
+      }
       if (mode === 'hang') return // 一声不吭
       if (mode === 'crash') { process.exit(1) }
       if (mode === 'big-frame') {
@@ -161,6 +185,51 @@ describe('OOP 运行器（真子进程假 agent）', () => {
     assert.equal(run.result.evidenceStatus, 'skipped')
   })
 
+  test('watchdog 组杀连带孙进程——kill(-pid) 须真正作用到 worker 进程组（Unix）', async () => {
+    if (process.platform === 'win32') return // Windows 走 taskkill /T 父子关系语义
+    const fixture = writeFixture(dir, 'grandchild-hang')
+    // 不用 spawnOverride：直接走生产 doSpawn——修复前无 detached，kill(-pid) ESRCH
+    // 回退 child.kill()，孙进程（stdio MCP/LSP 服务器等非 detached 后代）成孤儿。
+    const run = await runWorkerSessionOop(makeConfig(), {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 900, // 压过心跳下限（测试专用）
+      entryOverride: { execArgs: [], script: fixture },
+    })
+    assert.equal(run.result.failureReason, 'stalled')
+    const grandchildPid = Number(readFileSync(fixture + '.grandchild-pid', 'utf-8'))
+    const dead = await new Promise<boolean>(resolve => {
+      const started = Date.now()
+      const poll = (): void => {
+        try {
+          process.kill(grandchildPid, 0)
+          if (Date.now() - started > 5000) resolve(false)
+          else setTimeout(poll, 100)
+        } catch { resolve(true) }
+      }
+      poll()
+    })
+    assert.ok(dead, '孙进程应随 worker 进程组被击杀')
+  })
+
+  test('doSpawn 的 worker 注册进 process-tracker（主进程退出 killAllSync 可组杀它）', async () => {
+    if (process.platform === 'win32') return
+    const fixture = writeFixture(dir, 'grandchild-hang')
+    const pidFile = fixture + '.grandchild-pid'
+    const p = runWorkerSessionOop(makeConfig(), {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 5000, // watchdog 5s 后才动手，断言窗充裕
+      entryOverride: { execArgs: [], script: fixture },
+    })
+    const deadline = Date.now() + 3000
+    while (!existsSync(pidFile) && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50))
+    }
+    assert.ok(existsSync(pidFile), '孙进程 pid 应已落盘')
+    assert.ok(getActiveCount() >= 1, 'OOP worker 应注册进 process-tracker 的退出清理集合')
+    const run = await p
+    assert.equal(run.result.failureReason, 'stalled')
+  })
+
   test('watchdog：子进程 hang → SIGTERM/SIGKILL 阶梯 → 合成 stalled', async () => {
     const fixture = writeFixture(dir, 'hang')
     const run = await runWorkerSessionOop(makeConfig(), {
@@ -171,6 +240,56 @@ describe('OOP 运行器（真子进程假 agent）', () => {
     })
     assert.equal(run.result.status, 'failed')
     assert.equal(run.result.failureReason, 'stalled', '击杀梯收尾后合成 stalled 而非 worker_crash')
+  })
+
+  test('settle 后摘除 abort 监听——同一会话级信号多次委派不累积监听', async () => {
+    // @types/node 22 只声明 EventEmitter.getEventListeners 静态形态（模块级导出
+    // 无类型），运行时 Node 24 两者等价——用静态形态过 typecheck。
+    const { EventEmitter } = await import('node:events')
+    const fixture = writeFixture(dir, 'crash') // 最快 settle：init 后 exit(1)
+    const controller = new AbortController()
+    const spawnFx = (_e: string[], script: string) => spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const opts = (): WorkerOopOptions => ({ ...baseOpts(fixture), spawnOverride: spawnFx })
+
+    // abortSignal 是会话级合成信号（AbortSignal.any([session, order])）时，order 级
+    // 不触发 abort 则 once 永不消耗——修复前监听钉在会话信号上每次委派 +1，
+    // 长会话单调泄漏并最终触发 MaxListenersExceededWarning。
+    const run1 = await runWorkerSessionOop(makeConfig({ abortSignal: controller.signal }), opts())
+    assert.equal(run1.result.status, 'failed')
+    assert.equal(EventEmitter.getEventListeners(controller.signal, 'abort').length, 0, '第一次委派 settle 后监听已摘除')
+
+    const run2 = await runWorkerSessionOop(makeConfig({ abortSignal: controller.signal }), opts())
+    assert.equal(run2.result.status, 'failed')
+    assert.equal(EventEmitter.getEventListeners(controller.signal, 'abort').length, 0, '第二次委派后同样不残留')
+  })
+
+  test('settle 后组杀清理遗留后代——worker 正常退出而孙进程仍活', async () => {
+    if (process.platform === 'win32') return
+    const fixture = writeFixture(dir, 'grandchild-survive')
+    const run = await runWorkerSessionOop(makeConfig(), {
+      getMemoryBlock: () => 'mb',
+      stallMsOverride: 15000,
+      entryOverride: { execArgs: [], script: fixture },
+    })
+    assert.equal(run.result.status, 'passed')
+    const grandchildPid = Number(readFileSync(fixture + '.grandchild-pid', 'utf-8'))
+    try {
+      const dead = await new Promise<boolean>(resolve => {
+        const started = Date.now()
+        const poll = (): void => {
+          try {
+            process.kill(grandchildPid, 0)
+            if (Date.now() - started > 8000) resolve(false)
+            else setTimeout(poll, 100)
+          } catch { resolve(true) }
+        }
+        poll()
+      })
+      assert.ok(dead, 'worker settle 后 post-result cleanup 应组杀连带遗留孙进程')
+    } finally {
+      // 测试卫生：断言失败（修复前孙进程存活）时兜底清场，不留孤儿烧 CPU
+      try { process.kill(grandchildPid, 'SIGKILL') } catch { /* 已死 */ }
+    }
   })
 
   test('abort 下行 → 子进程返回 blocked/caller_aborted', async () => {

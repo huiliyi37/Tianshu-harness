@@ -593,7 +593,12 @@ function tryBuildVisionClientFrom(
   const client = createProviderClient(prov, caps, {
     apiKey,
     model: spec.id,
-    reasoningEffort: spec.reasoningEffort,
+    // 桥是工具化描述调用，中等强度推理是纯粹的预算浪费，且在 OCR 结构化 prompt
+    // 下会失控：deepseek-flash 实测 reasoning 1717 字符烧光 1024 maxTokens、
+    // finish=length、content 为零——「配 4.1-flash 多模态也不行」的根因。压到
+    // low（同请求实测 reasoning 1717→290、content 正常返回）；非推理模型
+    // （reasoningEffort 未设）不发该参数，行为不变。
+    reasoningEffort: spec.reasoningEffort ? 'low' : undefined,
     maxTokens,
     auth,
     sessionId: input.sessionId,

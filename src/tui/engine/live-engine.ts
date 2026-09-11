@@ -662,3 +662,17 @@ export class LiveEngine {
     this.setParked(null)
   }
 }
+
+/**
+ * 推理区显示行预算（display rows）——thinking 段在 live 区的高度上限。
+ *
+ * 矮终端（rows<=16）两档收缩（2026-09-11 用户反馈「回复被顶到上一屏」：
+ * thinking 段 + 流式尾部吃满 live 高水位，跨轮不缩使历史只剩约 1 行可见）：
+ * 流式期（phase=streaming，用户此刻在看回复）压到 1 行；其余时相下限 2。
+ * rows>=18 时 floor(rows/6)>=3 不触发下限，大屏预算不变。
+ */
+export function thinkingRowBudgetFor(rows: number, phase: string, maxRows: number): number {
+  const r = rows || 24
+  if (r <= 16 && phase === 'streaming') return 1
+  return Math.max(2, Math.min(maxRows, Math.floor(r / 6)))
+}

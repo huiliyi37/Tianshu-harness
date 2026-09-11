@@ -51,6 +51,18 @@ describe('S3: phaseStatusLabel', () => {
     assert.equal(phaseStatusLabel('convergence-warning'), null)
   })
 
+  // --- image-stripped：413/图片被拒剥图后模型看不到图，用户必须知道（issue #94）---
+  it('maps image-stripped with a reason into a visible line', () => {
+    const label = phaseStatusLabel('image-stripped', {
+      reason: '图片已从本次请求移除（2 张）——本轮模型看不到这些图',
+    })
+    assert.ok(label, 'label must be visible')
+    assert.ok(label.includes('图片'), `label should name what was dropped: ${label}`)
+  })
+  it('returns null for image-stripped without a reason', () => {
+    assert.equal(phaseStatusLabel('image-stripped'), null)
+  })
+
   // --- 未知 phase → null（不覆盖 heartbeatStatus）---
   it('returns null for unmapped phases', () => {
     assert.equal(phaseStatusLabel('tianshu-planning'), null)

@@ -71,3 +71,19 @@ export function consumePendingReview(sessionId: string | undefined): PendingRevi
 export function __resetPostCommitReviewPending(): void {
   pendingBySession.clear()
 }
+
+/**
+ * defer 模式下给**终端用户**的提示（不是给 agent 的日志）：说清为什么延迟、
+ * 想立刻看怎么办、不操作会怎样。此前这行文案暴露 review_policy:'final' 这类
+ * agent 内部参数名，用户敲不出来；且止于「已延迟」三字，无从判断该做什么。
+ *
+ * 放在本模块而非渲染方 deliver-task：语义同域（它描述的就是 pending 累积），
+ * 且 deliver-task 是点名行数棘轮的巨石，不宜再涨。
+ */
+export function formatDeferredReviewNotice(commits: number, files: number): string[] {
+  return [
+    `⏭ 本次提交的审查已并入批量终审：已累积 ${commits} 个提交、${files} 个文件（长任务省 token 的策略）。`,
+    '   现在就想看审查意见 → 敲 /review（单验证员）或 /review max（五人编队）',
+    '   不操作也可以 → 收尾时会自动合并成一次终审，无需额外动作',
+  ]
+}

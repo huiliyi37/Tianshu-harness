@@ -1,6 +1,6 @@
 {
   "name": "tianshu-tui",
-  "version": "3.16.1",
+  "version": "3.18.1",
   "description": "Terminal coding agent optimized for DeepSeek V4 prefix cache",
   "license": "Apache-2.0",
   "type": "module",

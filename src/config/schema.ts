@@ -1,5 +1,8 @@
 import { z } from 'zod'
 import { mcpConfigSchema, type McpConfig } from '../mcp/config.js'
+import { providerRetrySchema } from './retry-schema.js'
+
+export type { ProviderRetryConfig } from './retry-schema.js'
 import { THEME_NAMES } from '../tui/theme.js'
 import { MIN_MAX_EVENTS_DISK_BYTES, MIN_MAX_LOADED_SESSIONS, MIN_IDLE_AGENT_TTL_MS } from './runtime-lean.js'
 
@@ -179,8 +182,13 @@ export const providerBaseSchema = z.object({
    */
   requestTimeoutMs: z.number().int().positive().optional(),
   /** Max retry attempts for retryable API errors (0 disables). undefined =
-   *  保留客户端内置默认。消费点：openai/anthropic 重试预算。 */
-  maxRetries: z.number().int().min(0).max(10).optional(),
+   *  保留客户端内置默认。消费点：openai/anthropic/codex 重试预算。
+   *  显式配置即生效：不再被分类器的 per-category 默认值向下夹取（0–20；
+   *  更细的按类别覆盖见 retry.overrides）。 */
+  maxRetries: z.number().int().min(0).max(20).optional(),
+  /** 细粒度重试策略（退避曲线 / 类别覆盖 / 客户端限速）。未设置时行为与内置
+   *  默认完全一致；见 docs/user-guide-provider-config.md「重试与速率限制」。 */
+  retry: providerRetrySchema.optional(),
   /** Provider-level sampling temperature default。思考模式下不注入（推理服务端
    *  拒绝调温 / Anthropic 要求 thinking temperature=1）；per-model 覆盖为后续波次。 */
   temperature: z.number().min(0).max(2).optional(),
@@ -995,7 +1003,7 @@ export type Config = {
 
 export type ProviderConfig = z.infer<typeof providerSchema>
 /** Optional advanced knobs carried through wizard commits and drafts. */
-export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxRetries' | 'temperature' | 'proxy'>
+export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxRetries' | 'temperature' | 'proxy' | 'retry'>
 export type AuthConfig = z.infer<typeof authConfigSchema>
 export type ProviderCapabilitiesConfig = z.infer<typeof providerCapabilitiesSchema>
 export type ModelConfig = z.infer<typeof modelConfigSchema>

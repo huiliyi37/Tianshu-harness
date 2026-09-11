@@ -437,6 +437,17 @@ function buildSessionStores(
 }
 
 /**
+ * 会话级全局配置基座：生产 sidecar（serve.ts 传入 specReload）经 reload 取磁盘
+ * 新值——运行中经 Settings 修改的 agent.visionModel / visionAutoBridge 等会话级
+ * 配置对「下一个新会话」必须生效（此前这里恒读启动快照，桌面端配识图桥不重启
+ * 永远落空——视觉桥 P0 回归根因）。注入 ctx 的路径（测试/CLI）无 reload，
+ * 回落启动快照保持确定性。
+ */
+export function resolveSessionBaseConfig(ctx: ServeContext, reload?: () => ServeContext): Config {
+  return reload ? reload().config : ctx.config
+}
+
+/**
  * Merge project-level .rivet-config.json agent block into the startup config.
  * Only agent fields are merged — provider/model/auth stay on the startup snapshot
  * (the sidecar may have been started unconfigured, and the key was set later via
@@ -511,6 +522,7 @@ function assembleAgentLoop(
   registry?: SessionRegistry,
   shared?: SharedRuntime,
   allowedTools?: string[],
+  reload?: () => ServeContext,
 ): AgentLoop {
   // Wave J: domainKnowledgeStore 优先从 sidecar SharedRuntime.domainStores
   // 按 cwd 取；fallback 是 per-call new（与 bootstrap 单 session 行为一致——
@@ -525,7 +537,7 @@ function assembleAgentLoop(
   // 过 registry，但 switchModel 重建路径需要在每次调用都确保 refs 同步）。
   if (registry) stores.refs.sessionRegistry = registry
 
-  const mergedConfig = mergeProjectAgentConfig(ctx.config, cwd)
+  const mergedConfig = mergeProjectAgentConfig(resolveSessionBaseConfig(ctx, reload), cwd)
 
   const { agent } = createAgentRuntime({
     provider: spec.provider,
@@ -710,7 +722,7 @@ export function buildAgentLoop(
 ): BuiltAgent {
   const stores = buildSessionStores(ctx, cwd, sessionId, registry, shared)
   const spec = resolveInitialSpec(ctx, reload)
-  const agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared)
+  const agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared, undefined, reload)
   return { agent, sessionId }
 }
 
@@ -748,7 +760,7 @@ export function buildManagedAgent(
         ? resolveModelSpecWithReload(ctx, preferredModelId, reload)
         : resolveModelSpecWithReload(ctx, preferredModelId)
       : null) ?? resolveInitialSpec(ctx, reload)
-  let agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared, allowedTools)
+  let agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared, allowedTools, reload)
   // Rebuild the loop on a new spec, preserving conversation + stores. Shared
   // by switchModel and the run pre-flight self-heal below.
   const rebuildOnSpec = (next: ResolvedModelSpec) => {
@@ -757,7 +769,7 @@ export function buildManagedAgent(
     void oldAgent.cancelIdleCompaction()
     spec = next
     const liveApprovalMode = oldAgent.config.approvalMode
-    agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, liveApprovalMode, registry, shared, allowedTools)
+    agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, liveApprovalMode, registry, shared, allowedTools, reload)
     if (oldCoordinator && oldCoordinator !== stores.refs.coordinator) {
       try { oldCoordinator.shutdown() } catch { /* best-effort: shutdown is fail-open */ }
     }

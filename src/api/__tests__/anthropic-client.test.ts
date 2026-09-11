@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { AnthropicClient } from '../anthropic-client.js'
-import { parseRetryAfterMs } from '../error-classifier.js'
+import { parseRetryAfterMs, classifyApiError } from '../error-classifier.js'
 
 function makeClient() {
   return new AnthropicClient({
@@ -623,5 +623,138 @@ describe('AnthropicClient HTTP request construction', () => {
     ).catch(() => {})
     assert.equal(capturedUrl, 'https://api.anthropic.com/v1/messages')
     ;(globalThis as any).fetch = undefined
+  })
+})
+
+// ---------------------------------------------------------------------------
+// image_strip 恢复（Anthropic 侧，与 openai-client 同构；issue #94）
+// ---------------------------------------------------------------------------
+describe('image_strip recovery', () => {
+  const originalFetch = globalThis.fetch
+
+  const NOOP_CALLBACKS = {
+    onTextDelta: () => {},
+    onThinkingDelta: () => {},
+    onContentBlock: () => {},
+    onStopReason: () => {},
+    onError: () => {},
+  }
+
+  /** fetch mock：按序消费 statuses（非 2xx），耗尽后回一段最小 Claude SSE。 */
+  function mockFetchSequence(statuses: number[]): Array<{ body: string }> {
+    const calls: Array<{ body: string }> = []
+    let idx = 0
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls.push({ body: String(init.body ?? '') })
+      const status = statuses[idx++]
+      if (status !== undefined) {
+        return new Response(JSON.stringify({ type: 'error', error: { message: 'Request too large' } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const sse = 'event: message_start\n'
+        + 'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+        + 'event: content_block_delta\n'
+        + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n'
+        + 'event: message_delta\n'
+        + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n'
+        + 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    return calls
+  }
+
+  function restoreFetch(): void {
+    globalThis.fetch = originalFetch
+  }
+
+  const IMAGE_REQUEST = {
+    model: 'claude-opus-4-7',
+    max_tokens: 4096,
+    messages: [
+      { role: 'system', content: 'sys' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe this' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+        ],
+      },
+    ],
+  }
+
+  /** Anthropic 请求体里顶层 system 被提走，messages[0] 即用户消息。 */
+  function userBlocks(body: string): Array<{ type: string; text?: string }> {
+    const parsed = JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> }
+    return parsed.messages[0]!.content as Array<{ type: string; text?: string }>
+  }
+
+  it('413 → 剥掉 image 块重发一次 → 请求体变小', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = makeClient()
+      await client.stream(IMAGE_REQUEST as never, NOOP_CALLBACKS, undefined).catch(() => {})
+
+      assert.equal(calls.length, 2, '一次带图尝试 + 一次剥图重发')
+      assert.ok(userBlocks(calls[0]!.body).some(b => b.type === 'image'), '首次必须原样带图')
+      const second = userBlocks(calls[1]!.body)
+      assert.ok(!second.some(b => b.type === 'image'), '重发必须已剥图')
+      assert.ok(second.some(b => b.type === 'text' && b.text === 'describe this'), '文本必须保留')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('剥离必须通知调用方（用户可见提示）', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = makeClient()
+      const strippedCounts: number[] = []
+      await client
+        .stream(IMAGE_REQUEST as never, {
+          ...NOOP_CALLBACKS,
+          onImageStripped: (info: { removedCount: number }) => { strippedCounts.push(info.removedCount) },
+        }, undefined)
+        .catch(() => {})
+      assert.deepEqual(strippedCounts, [1])
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('无图 413 → 不重发，直接按上下文超限失败', async () => {
+    const calls = mockFetchSequence([413, 413, 413])
+    try {
+      const client = makeClient()
+      await assert.rejects(
+        () => client.stream({
+          model: 'claude-opus-4-7',
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: 'text only' }],
+        }, NOOP_CALLBACKS, undefined),
+        (err: unknown) => {
+          assert.equal(classifyApiError(err).category, 'context_overflow')
+          return true
+        },
+      )
+      assert.equal(calls.length, 1, '无图 413 不得重发')
+    } finally {
+      restoreFetch()
+    }
+  })
+
+  it('剥图只改本次请求体，不污染调用方的 messages', async () => {
+    const calls = mockFetchSequence([413])
+    try {
+      const client = makeClient()
+      await client.stream(IMAGE_REQUEST as never, NOOP_CALLBACKS, undefined).catch(() => {})
+      const original = (IMAGE_REQUEST.messages[1] as { content: Array<{ type: string }> }).content
+      assert.equal(original.length, 2, '原始请求 content parts 数量不变')
+      assert.ok(original.some(p => p.type === 'image_url'), '会话历史里的图片必须还在')
+      assert.equal(calls.length, 2)
+    } finally {
+      restoreFetch()
+    }
   })
 })

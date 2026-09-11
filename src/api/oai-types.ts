@@ -101,6 +101,65 @@ export function isUserMessage(msg: OaiMessage): msg is OaiUserMessage {
   return msg.role === 'user'
 }
 
+/** 剥图重发时替换「纯图片用户消息」的占位文本：保住角色交替与非空用户轮次，
+ *  同时让模型知道这里原本有一张图，而不是面对一条空消息。 */
+export const STRIPPED_IMAGE_PLACEHOLDER = '[image removed to reduce payload size]'
+
+/** 请求里是否至少有一条用户消息带多模态 image_url part。
+ *  retry 路径据此判断 image_strip 恢复还有没有牌可打。 */
+export function oaiMessagesHaveImageParts(messages: OaiMessage[]): boolean {
+  return messages.some(
+    m => m.role === 'user'
+      && Array.isArray(m.content)
+      && m.content.some(p => p.type === 'image_url'),
+  )
+}
+
+export interface StrippedOaiMessages {
+  /** 已移除 image_url part 的消息（无图可剥时返回原数组引用）。 */
+  messages: OaiMessage[]
+  /** 被移除的 image_url part 数量。 */
+  removedCount: number
+}
+
+/**
+ * 返回 `messages` 的副本，去掉其中所有多模态 image_url part，文本与消息/角色
+ * 结构原样保留。这是 413 / 图片被拒的重试恢复：去掉图重发，而不是把同一个
+ * 过大的请求再发一遍（那样必然再次 413）。
+ *
+ * 纯函数，绝不修改入参——调用方的会话历史仍保图（下一轮用户再说「这张图」
+ * 时图片还在）。无图可剥时返回**同一个数组引用**，调用方可零成本识别 no-op。
+ * 纯图片消息（没有 text part）替换为一句占位文本，使剥图后的请求仍有非空
+ * 用户轮次、角色交替依然合法。
+ */
+export function stripOaiImageParts(
+  messages: OaiMessage[],
+  placeholder: string = STRIPPED_IMAGE_PLACEHOLDER,
+): StrippedOaiMessages {
+  let removedCount = 0
+  let next: OaiMessage[] | undefined
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
+    const imageCount = msg.content.reduce(
+      (n, p) => (p.type === 'image_url' ? n + 1 : n),
+      0,
+    )
+    if (imageCount === 0) continue
+
+    removedCount += imageCount
+    next ??= messages.slice()
+    const kept = msg.content.filter(p => p.type !== 'image_url')
+    const content: OaiContentPart[] = kept.length > 0
+      ? kept
+      : [{ type: 'text', text: placeholder }]
+    next[i] = { ...msg, content }
+  }
+
+  return { messages: next ?? messages, removedCount }
+}
+
 /**
  * Extract plain text from any OaiMessage content (handles multimodal user messages).
  * Use this instead of `msg.content` when you need a string regardless of content type.

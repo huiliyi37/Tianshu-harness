@@ -82,12 +82,20 @@ describe('routeReviewWorkflow', () => {
     const outcome = await routeReviewWorkflow(fixChange, {
       ...okDeps,
       spawnVerifier: async () => verdicts.shift() ?? { verdict: 'verified', evidence: 'ran: fallback' },
-      spawnPatcher: async () => { patcherCalls++; return { patched: true } },
+      spawnPatcher: async () => {
+        patcherCalls++
+        return { patched: true, changedFiles: ['package.json'], patchSummary: '补了 scripts.test' }
+      },
     }, { maxRounds: 2 })
 
     assert.equal(outcome.verdict, 'verified')
     assert.equal(outcome.rounds, 2)
     assert.equal(patcherCalls, 1)
+    // verified 路径也要披露补丁产物——补丁工的改动不在主控工作树里，
+    // 不披露就会被读成「修复已落地」（I2）。
+    assert.deepEqual(outcome.patcherArtifacts, [
+      { round: 1, changedFiles: ['package.json'], patchSummary: '补了 scripts.test' },
+    ])
   })
 
   it('closed loop is bounded by maxRounds and then escalates', async () => {
@@ -96,7 +104,7 @@ describe('routeReviewWorkflow', () => {
     const outcome = await routeReviewWorkflow(fixChange, {
       ...okDeps,
       spawnVerifier: async () => { verifierCalls++; return { verdict: 'rejected', evidence: 'counterexample: concurrent create duplicates task' } },
-      spawnPatcher: async () => { patcherCalls++; return { patched: true } },
+      spawnPatcher: async () => { patcherCalls++; return { patched: true, changedFiles: ['package.json'] } },
     }, { maxRounds: 3 })
 
     assert.equal(outcome.tier, 'L2')
@@ -105,6 +113,9 @@ describe('routeReviewWorkflow', () => {
     assert.equal(outcome.rounds, 3)
     assert.equal(verifierCalls, 3)
     assert.equal(patcherCalls, 3)
+    // rejected 路径：逐轮累积披露，主控能看到补丁工每轮改了什么
+    assert.deepEqual(outcome.patcherArtifacts?.map(a => a.round), [1, 2, 3])
+    assert.deepEqual(outcome.patcherArtifacts?.[0]?.changedFiles, ['package.json'])
   })
 
   it('routes L3 through squadron before verifier workflow', async () => {
@@ -476,5 +487,48 @@ describe('routeReviewWorkflow', () => {
     )
     assert.equal(l3.verdict, 'verified')
     assert.equal(seen.squadron, onActivity)
+  })
+
+  // ── 补丁产物句柄透传 + verified 出口覆盖（本轮修复） ──
+
+  it('rejected 出口：diffArtifactId 一路透传到 patcherArtifacts', async () => {
+    const outcome = await routeReviewWorkflow(fixChange, {
+      ...okDeps,
+      spawnVerifier: async () => ({ verdict: 'rejected', evidence: 'counterexample: x' }),
+      spawnPatcher: async () => ({ patched: true, changedFiles: ['package.json'], diffArtifactId: 'art_r1' }),
+    })
+
+    assert.equal(outcome.verdict, 'rejected')
+    assert.equal(
+      outcome.patcherArtifacts?.[0]?.diffArtifactId,
+      'art_r1',
+      '补丁句柄在 review 内部被丢弃——主控拿不到补丁，只能重新派发',
+    )
+  })
+
+  it('maxRounds≥2 且第二轮验证通过：verified 出口同样携带补丁产物与句柄', async () => {
+    let verifierCalls = 0
+    const outcome = await routeReviewWorkflow(
+      fixChange,
+      {
+        ...okDeps,
+        spawnVerifier: async () => {
+          verifierCalls++
+          return verifierCalls === 1
+            ? { verdict: 'rejected', evidence: 'counterexample: x' }
+            : { verdict: 'verified', evidence: 'ran: ok after patch' }
+        },
+        spawnPatcher: async () => ({ patched: true, changedFiles: ['package.json'], diffArtifactId: 'art_r2' }),
+      },
+      { maxRounds: 2 },
+    )
+
+    assert.equal(outcome.verdict, 'verified')
+    assert.deepEqual(
+      outcome.patcherArtifacts?.map(a => a.round),
+      [1],
+      'verified 出口漏掉补丁产物 → 主控会把「验证通过」读成「修复已落地」',
+    )
+    assert.equal(outcome.patcherArtifacts?.[0]?.diffArtifactId, 'art_r2')
   })
 })

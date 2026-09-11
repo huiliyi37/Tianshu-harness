@@ -1,6 +1,6 @@
 import type { StreamClient, WireDivergence } from './stream-client.js'
 import type { StreamCallbacks } from './stream-client.js'
-import { normalizeOaiMessage } from './oai-types.js'
+import { normalizeOaiMessage, oaiMessagesHaveImageParts, stripOaiImageParts } from './oai-types.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { proRegistry } from './pro-registry.js'
 import { estimateOaiTokens } from '../compact/micro.js'
@@ -17,6 +17,8 @@ import { repairInvalidJsonEscapes } from './json-escape-repair.js'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { ProxyAgent } from 'undici'
+import { acquireRateLimitSlot } from './rate-limiter.js'
+import type { ProviderRetryConfig } from '../config/retry-schema.js'
 
 /**
  * Parse accumulated tool_call arguments into an input object.
@@ -188,9 +190,13 @@ export interface OpenAIClientConfig {
    * 不受影响，谁先到谁生效。
    */
   requestTimeoutMs?: number
-  /** Max retry attempts for retryable API errors. undefined = 保留内置默认
-   *  （thinking 1 次 / slow-thinking 2 次 / 非 thinking 5 次）；0 = 禁用重试。 */
+  /** Max retry attempts for retryable API errors. undefined = 分类器 per-category
+   *  默认（显式值不再被向下夹取）；0 = 禁用重试。thinking 模式仍受内置节流
+   *  （slow-thinking 2 次 / 其余 1 次），显式配置覆盖之。 */
   maxRetries?: number
+  /** Provider-level retry policy (issue #75)：退避曲线 / 类别覆盖 / 客户端限速。
+   *  undefined = 历史行为（分类器固定延迟 + 内置预算）。 */
+  retry?: ProviderRetryConfig
   /** Provider-level sampling temperature default (0–2)。仅当请求未显式指定
    *  temperature 且 thinking 未启用时注入——推理模式下多数服务端拒绝调温。 */
   temperature?: number
@@ -674,6 +680,13 @@ export class OpenAIClient implements StreamClient {
     const reasoningRef = { content: '' }
     const isThinking = this.config.thinking === 'enabled'
 
+    // image_strip 恢复状态：上一次失败是否被判定为图片负载问题（要求剥图重发）、
+    // 是否已经剥过。流程：首次原样带图 → 分类器判 image_strip 时剥图重发一次 →
+    // 若仍 413，这一次请求体已无图，client 会在错误上标 payloadHadImages: false，
+    // 分类器据此改判 context_overflow（不可重试），不会再发第三次。
+    let stripRequested = false
+    let imagesStripped = false
+
     // Size-scaled first-byte budget (B): estimate prompt size once (stable across
     // retries; the per-retry reasoning re-injection is negligible) and derive a
     // first-byte timeout that grows with input so large cold-context prefills are
@@ -706,15 +719,33 @@ export class OpenAIClient implements StreamClient {
       // the increment and causes GLM to re-reason from scratch (the exact
       // "推理到一半中断然后从头推一遍" symptom). GLM retains reasoning server-side,
       // so skipping client-side reinjection is safe.
+      // 剥图重发（上一次失败被判为 image_strip）：在 reasoning 注入之前先把
+      // image_url part 摘掉。只改本次请求体，绝不 in-place 改 body——会话历史与
+      // 后续轮次仍保图（用户下一句「这张图里…」还能对上）。stripOaiImageParts
+      // 是纯函数，无图可剥时返回原引用，下面按引用比较走原路径。
+      let wireMessages = body.messages as OaiMessage[]
+      if (stripRequested && !imagesStripped) {
+        const stripped = stripOaiImageParts(wireMessages)
+        if (stripped.removedCount > 0) {
+          wireMessages = stripped.messages
+          imagesStripped = true
+          // 模型这一轮再也看不到这些图了——必须让调用方有机会告诉用户，
+          // 否则「模型没理我的截图」会被当成模型变笨。
+          callbacks.onImageStripped?.({ removedCount: stripped.removedCount })
+        }
+      }
+
       let effectiveBody = body
       const isGlm = this.config.providerName === 'glm'
       if (isThinking && reasoningRef.content && !isGlm) {
-        const msgs = [...(body.messages as unknown[]), {
+        const msgs = [...wireMessages, {
           role: 'assistant',
           content: '',
           reasoning_content: reasoningRef.content,
         }]
         effectiveBody = { ...body, messages: msgs }
+      } else if (wireMessages !== body.messages) {
+        effectiveBody = { ...body, messages: wireMessages }
       }
 
       // Resolve auth headers: AuthProvider takes precedence over static apiKey
@@ -735,6 +766,8 @@ export class OpenAIClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
+      await acquireRateLimitSlot(this.config.providerName ?? this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const response = await fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -754,7 +787,15 @@ export class OpenAIClient implements StreamClient {
         const errorBody = await response.text().catch(() => '')
         const err = Object.assign(
           new Error(parseOpenAIError(response.status, errorBody, { providerName: this.config.providerName, baseUrl: this.config.baseUrl, apiKeyEnv: this.config.apiKeyEnv })),
-          { status: response.status },
+          {
+            status: response.status,
+            // 413 的两种成因（图片过重 / 上下文超限）在 wire 层同形，分类器无法
+            // 自行区分——只有这里知道刚发出去的体里有没有图。标在错误上让分类器
+            // 分流：无图 = 纯上下文超限，重发同一个体必然再 413，不该重试。
+            ...(response.status === 413
+              ? { payloadHadImages: oaiMessagesHaveImageParts((effectiveBody.messages as OaiMessage[]) ?? []) }
+              : {}),
+          },
         )
         // Attach parsed retry-after for the error classifier to use
         const retryAfter = response.headers.get('retry-after')
@@ -787,7 +828,8 @@ export class OpenAIClient implements StreamClient {
 
       await this.parseStreamFromReader(reader, callbacks, signal, reasoningRef, lifecycle, firstByteMs)
     }, signal, {
-      maxTotalDurationMs: this.config.providerName === 'glm' ? 20 * 60_000 : 10 * 60_000,
+      maxTotalDurationMs: this.config.retry?.maxTotalDurationMs
+        ?? (this.config.providerName === 'glm' ? 20 * 60_000 : 10 * 60_000),
       // Thinking retries are normally throttled to 1 because re-reasoning is costly.
       // 例外：slow-thinking providers 在被中止的那次尝试里已把整个 prompt 灌进服务端
       // 前缀缓存，重试命中近 100% 缓存（实测 deepseek 99.4% hit、~12s 完成），代价极低。
@@ -797,9 +839,16 @@ export class OpenAIClient implements StreamClient {
       maxTotalRetries: this.config.maxRetries ?? (isThinking
         ? (this.isSlowThinking ? 2 : 1)
         : undefined),
+      policy: this.config.retry,
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)
+        }
+        // image_strip 分类 = 上一次失败被判定为图片负载问题：下一次 attempt
+        // 剥掉 image_url 再发（剥离点见 fn 内的 wireMessages）。分类器只在
+        // 「请求体带图」时才给这个类别，所以这里不必再判有无图可剥。
+        if (info.classified.category === 'image_strip') {
+          stripRequested = true
         }
       },
     })

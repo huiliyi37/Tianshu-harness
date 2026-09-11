@@ -1077,7 +1077,7 @@ export class ConnectFlow {
           stepLabel: this.confirmStepLabel(),
           options: [
             { id: 'requestTimeoutMs', label: '请求超时', description: adv.requestTimeoutMs !== undefined ? `${adv.requestTimeoutMs} ms` : '未设置（内置 10 分钟硬顶）' },
-            { id: 'maxRetries', label: '重试次数', description: adv.maxRetries !== undefined ? `${adv.maxRetries} 次` : '未设置（内置默认）' },
+            { id: 'maxRetries', label: '重试次数', description: adv.maxRetries !== undefined ? `${adv.maxRetries} 次` : '未设置（按错误类别默认）' },
             { id: 'temperature', label: '采样温度', description: adv.temperature !== undefined ? String(adv.temperature) : '未设置（思考模式下不生效）' },
             { id: 'proxy', label: 'HTTP 代理', description: adv.proxy ?? '未设置（跟随全局 network.proxy）' },
             { id: 'done', label: '完成', recommended: true },
@@ -1096,9 +1096,9 @@ export class ConnectFlow {
         return {
           kind: 'input',
           title: '高级设置：重试次数',
-          subtitle: '可重试错误（限流/超时/网络抖动）的最大重试次数，0 = 禁用；回车清空 = 恢复内置',
+          subtitle: '可重试错误（限流/超时/网络抖动）的最大重试次数，0 = 禁用；回车清空 = 按错误类别默认（细粒度退避与客户端限速见 config 的 retry 块）',
           stepLabel: this.confirmStepLabel(),
-          placeholder: '0–10',
+          placeholder: '0–20',
         }
       case 'advanced-temperature':
         return {
@@ -1835,8 +1835,8 @@ export class ConnectFlow {
           this.applyAdvancedKnob('maxRetries', undefined)
         } else {
           const parsed = Number.parseInt(value, 10)
-          if (!Number.isFinite(parsed) || parsed < 0 || parsed > 10) {
-            return { kind: 'error', message: '请填写 0–10 的整数（0 = 禁用重试），或回车清空恢复内置默认。', view: this.view() }
+          if (!Number.isFinite(parsed) || parsed < 0 || parsed > 20) {
+            return { kind: 'error', message: '请填写 0–20 的整数（0 = 禁用重试），或回车清空恢复内置默认。', view: this.view() }
           }
           this.applyAdvancedKnob('maxRetries', parsed)
         }

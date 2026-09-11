@@ -3,11 +3,11 @@
  * slash 补全循环等通过 TuiApp 按键路径正确操作 InputController 状态字段。
  *
  * 覆盖缺口（L3 审查标识）：
- *  1. idle 首次 Ctrl+C（空或有输入）→ 进入 pending 窗口，输入内容保留（不退出）
+ *  1. idle 空输入首次 Ctrl+C → 进入 pending 窗口（不退出）
  *  2. idle 2s 内再次 Ctrl+C → 触发 exit callback
- *  3. idle 有输入 Ctrl+C → 保留草稿进入退出确认（对齐 Claude Code，不再清空）
+ *  3. idle 有输入 Ctrl+C → 清空草稿（readline 惯例，不进窗口；agent 活跃仍中断）
  *  4. idle 空输入双击 Esc → 激活 rewind overlay
- *  5. idle 有输入 Esc → 清空输入框（Esc 承担「清空输入」职责，Ctrl+C 不再承担）
+ *  5. idle 有输入 Esc → 清空输入框（Esc 与 Ctrl+C 均承担「清空输入」）
  */
 
 import { test } from 'node:test'
@@ -43,7 +43,7 @@ test('idle 空输入首次 Ctrl+C → 不退出，进入 pending 窗口', async 
   assert.equal(app.getInputValue(), '', '输入框仍空')
 })
 
-test('idle 有输入 Ctrl+C → 草稿保留、进入退出确认（不退出、不清空）', async () => {
+test('idle 有输入 Ctrl+C → 清空草稿（不进退出确认、不退出）', async () => {
   const { app, stdin } = makeApp()
   let exitCalled = false
   app.onExit(() => { exitCalled = true })
@@ -53,9 +53,9 @@ test('idle 有输入 Ctrl+C → 草稿保留、进入退出确认（不退出、
   stdin.dataHandler!('\x03')
   await tick()
   assert.equal(exitCalled, false, '有输入时 Ctrl+C 不应退出')
-  assert.equal(app.getInputValue(), 'some draft text', 'Ctrl+C 不清空草稿（对齐 Claude Code）')
+  assert.equal(app.getInputValue(), '', 'Ctrl+C 应清空草稿（readline 惯例）')
   const pending = (app as any).inputController.ctrlCPendingSince as number
-  assert.ok(pending > 0, '进入退出确认窗口')
+  assert.equal(pending, 0, '有输入时首按不进退出确认窗口')
 })
 
 test('idle 空输入 Esc → 清空已有输入', async () => {

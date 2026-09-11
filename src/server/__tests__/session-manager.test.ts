@@ -833,7 +833,7 @@ test('Phase 2: retractQueued flips a queued entry and echoes queue_status', asyn
   assert.equal(manager.retractQueued('nope', laneId), 'not_found')
 })
 
-test('Phase 2: queued entries merge into the next prompt with a section header', async () => {
+test('Phase 2: run 收尾自动 flush lane——归并格式与手动路径一致（2026-09-11 方案 A）', async () => {
   const { manager, agents } = makeManager()
   const s = manager.createSession({ prompt: 'go' })
   const a = manager.queue(s.id, 'lane one') as { laneId: string }
@@ -843,15 +843,15 @@ test('Phase 2: queued entries merge into the next prompt with a section header',
   const c = manager.queue(s.id, 'retracted one') as { laneId: string }
   manager.retractQueued(s.id, c.laneId)
   agents[0]!.finish()
-  await new Promise((r) => setTimeout(r, 0))
+  // 收尾后 lane 自动 flush（不再等待「下次 prompt」）：prompts[1] = 归并文本。
+  await waitUntil(() => agents[0]!.prompts.length === 2)
 
-  assert.equal(manager.run(s.id, 'next prompt'), true)
   const expected =
     'steer residue\n\n' +
     '[排队跟进 — 上轮运行期间排队，请一并处理]\n' +
-    'lane one\n\nlane two\n\n' +
-    'next prompt'
+    'lane one\n\nlane two'
   assert.equal(agents[0]!.prompts[1], expected)
+  assert.equal(manager.getSession(s.id)!.status, 'running', 'flush 开的新一轮在跑')
   // 归并后两条 queued 全部置 merged（逐条 queue_status），retracted 不再动。
   const status = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'queue_status')
   assert.deepEqual(
@@ -862,11 +862,40 @@ test('Phase 2: queued entries merge into the next prompt with a section header',
       [b.laneId, 'merged'],
     ],
   )
-  // lane 已清空（无 queued 残留）：再次 run 不会重复归并。
+  // lane 已清空：再次收尾零动作（不产生第三个 run）。
   agents[0]!.finish()
-  await new Promise((r) => setTimeout(r, 0))
+  await settle()
+  assert.equal(agents[0]!.prompts.length, 2, 'lane 空时收尾不触发 flush')
+  // lane 空时手动 run 原样透传（不被 flush 干扰）。
   assert.equal(manager.run(s.id, 'third'), true)
   assert.equal(agents[0]!.prompts[2], 'third')
+})
+
+test('Phase 2: abort 后收尾自动 flush——打断后发的消息不再躺 lane（用户场景）', async () => {
+  const { manager, agents } = makeManager()
+  const s = manager.createSession({ prompt: 'go' })
+  // 运行中排队一条：对应「打断后立即发消息时，客户端状态滞后走 queue 路径」。
+  manager.queue(s.id, 'after interrupt')
+  assert.equal(manager.abort(s.id), true)
+  await settle()
+
+  assert.equal(agents[0]!.prompts.length, 2, 'abort 收尾同样 flush lane')
+  assert.match(agents[0]!.prompts[1]!, /after interrupt/)
+  assert.equal(manager.getSession(s.id)!.status, 'running', 'flush 开的新一轮接管会话')
+})
+
+test('Phase 2: watchdog stall 时 flush 让位——lane 由续跑的 run 归并（不抢跑吞续跑）', async () => {
+  const { manager, agents } = makeManager()
+  const s = manager.createSession({ prompt: 'go' })
+  manager.queue(s.id, 'queued during stall')
+  agents[0]!.watchdogAbort('watchdog')
+  await settle()
+
+  // 唯一下一轮是 watchdog 的续跑（'continue'），lane 被它归并。若无让位守卫，
+  // flush 会抢跑开一轮（prompts[1] 只有 lane 文本）并让 watchdog 见 running 放弃续跑。
+  assert.equal(agents[0]!.prompts.length, 2)
+  assert.match(agents[0]!.prompts[1]!, /queued during stall/)
+  assert.match(agents[0]!.prompts[1]!, /continue/)
 })
 
 // ── T4: structured per-worker delegation ────────────────────────────

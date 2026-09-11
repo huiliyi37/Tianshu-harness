@@ -385,3 +385,59 @@ describe('runHandsSession — shared-worktree mode', () => {
     assert.equal(readFileSync(join(baseDir, 'src', 'mod-b.ts'), 'utf8'), 'export const B = 2\n')
   })
 })
+
+
+describe('runHandsSession — isolated 策略 fail-closed', () => {
+  let baseDir: string
+
+  before(() => {
+    baseDir = mkdtempSync(join(tmpdir(), 'rivet-hands-iso-'))
+    initGitRepo(baseDir)
+  })
+
+  after(() => {
+    rmSync(baseDir, { recursive: true, force: true })
+  })
+
+  it('建树失败时 abstain：不运行 worker、不写主工作树、显式上报', async () => {
+    // isolated 策略（decideWorkspaceIsolation → sharedWorkspace: false）下，
+    // 建树失败 = 无法在不污染主工作树的前提下执行。fail-open 到 in-place 会让
+    // 审查/补丁 worker 静默写进用户的工作树（设计稿 §2.3 失效点、§7 L2）。
+    const wtCoordinator = {
+      create() { throw new Error('git worktrees unavailable (simulated .git/worktrees lock)') },
+      remove() {},
+      cleanupAll() {},
+      getActiveCount() { return 0 },
+    } as unknown as WorktreeCoordinator
+
+    const order = testOrder({ id: 'wo-iso-fail' })
+    let workerRan = false
+    const config: HandsSessionConfig = {
+      order,
+      wtCoordinator,
+      cwd: baseDir,
+      sharedWorkspace: false,
+      maxTurns: 2,
+      contextWindow: 128_000,
+      compact: { enabled: false, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
+      runAgent: async (_prompt, _callbacks, workerCwd) => {
+        workerRan = true
+        writeFileSync(join(workerCwd, 'leaked.ts'), 'export const leaked = 1\n')
+        return JSON.stringify({
+          workOrderId: order.id, status: 'passed', summary: 'wrote leaked.ts',
+          findings: [], artifacts: [], changedFiles: ['leaked.ts'],
+          risks: [], nextActions: [], evidenceStatus: 'verified',
+        })
+      },
+    }
+
+    const run = await runHandsSession(config)
+
+    // I1：审查/补丁类 worker 运行期间主工作树完全不可变
+    assert.equal(workerRan, false, 'isolated 建树失败时不得运行 worker（fail-closed）')
+    assert.equal(existsSync(join(baseDir, 'leaked.ts')), false, '主工作树必须不可变')
+    // L2：显式上报 infra 失败，而不是静默降级
+    assert.equal(run.result.status, 'blocked')
+    assert.match(run.result.summary, /worktree|isolation/i)
+  })
+})

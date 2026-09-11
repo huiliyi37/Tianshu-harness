@@ -726,3 +726,62 @@ describe('OpenCode Go wire headers', () => {
     assert.equal(capturedBody.reasoning_effort, 'high')
   })
 })
+
+describe('retry config end-to-end (issue #75)', () => {
+  it('forwards the retry block into the client config', () => {
+    const provider = providerSchema.parse({
+      ...deepseekProvider,
+      retry: { backoff: { baseDelayMs: 500 }, rateLimit: { requestsPerSecond: 3 } },
+    })
+    const client = createProviderClient(provider, resolveCapabilities('deepseek'), runtimeParams)
+    const config = (client as unknown as { config: { retry?: { backoff?: { baseDelayMs?: number } } } }).config
+    assert.equal(config.retry?.backoff?.baseDelayMs, 500, 'retry block must reach the client')
+  })
+
+  it('honors a per-category maxRetries override (1 + 8 attempts, not the classifier 5)', async () => {
+    // thinking: 'disabled' keeps the slow-thinking budget (2) out of the way —
+    // this test targets the config-driven ceiling only.
+    const provider = providerSchema.parse({
+      ...deepseekProvider,
+      thinking: 'disabled',
+      retry: { overrides: { rate_limit: { maxRetries: 8, retryDelayMs: 1 } } },
+    })
+    const client = createProviderClient(provider, resolveCapabilities('deepseek'), runtimeParams)
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = mock.fn(async () => {
+      calls++
+      return new Response('rate limited', { status: 429 })
+    }) as unknown as typeof fetch
+    try {
+      await assert.rejects(() => client.stream(
+        { model: 'deepseek-r1', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 },
+        { onTextDelta: () => {}, onThinkingDelta: () => {}, onContentBlock: () => {}, onStopReason: () => {}, onError: () => {} },
+      ))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert.equal(calls, 9, `override should reach 9 attempts, got ${calls}`)
+  })
+
+  it('keeps classifier defaults when no retry block is configured', async () => {
+    const provider = providerSchema.parse({ ...deepseekProvider, thinking: 'disabled' })
+    const client = createProviderClient(provider, resolveCapabilities('deepseek'), runtimeParams)
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = mock.fn(async () => {
+      calls++
+      // 'invalid sse ...' → stream_parse（分类器 maxRetries 2 / retryDelayMs 1000）
+      throw new Error('invalid sse stream chunk')
+    }) as unknown as typeof fetch
+    try {
+      await assert.rejects(() => client.stream(
+        { model: 'deepseek-r1', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 },
+        { onTextDelta: () => {}, onThinkingDelta: () => {}, onContentBlock: () => {}, onStopReason: () => {}, onError: () => {} },
+      ))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert.equal(calls, 3, `classifier default (2 retries) should stop at 3 attempts, got ${calls}`)
+  })
+})

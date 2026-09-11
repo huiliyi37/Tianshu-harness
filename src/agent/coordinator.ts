@@ -44,6 +44,7 @@ import {
   deriveWorkerSessionId,
   normalizeReviewVerdictStatus,
 } from './work-order.js'
+import { resolveSharedWorkspace } from './isolation-policy.js'
 import { buildContractProjection, type ContractProjection } from './contract-projection.js'
 import { reconcileWithObjective } from './worker-objective-gate.js'
 import { buildPrimaryWorkerPacket } from './worker-prompts.js'
@@ -2617,7 +2618,7 @@ export class DelegationCoordinator {
             order,
             wtCoordinator: new WorktreeCoordinator(cwd),
             cwd,
-            sharedWorkspace: this.config.sharedWorktree,
+            sharedWorkspace: resolveSharedWorkspace(this.config, order),
             maxTurns: workerConfig.maxTurns,
             contextWindow: workerConfig.contextWindow,
             compact: workerConfig.compact,
@@ -2733,7 +2734,7 @@ export class DelegationCoordinator {
                   order,
                   wtCoordinator: new WorktreeCoordinator(retryCwd),
                   cwd: retryCwd,
-                  sharedWorkspace: this.config.sharedWorktree,
+                  sharedWorkspace: resolveSharedWorkspace(this.config, order),
                   maxTurns: workerConfig.maxTurns,
                   contextWindow: workerConfig.contextWindow,
                   compact: workerConfig.compact,
@@ -2892,7 +2893,7 @@ export class DelegationCoordinator {
                 const escalateWorkerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order.id))
                 const handsRun = await wrapAbort(this.runHands({
                   order, wtCoordinator: new WorktreeCoordinator(cwd), cwd,
-                  sharedWorkspace: this.config.sharedWorktree,
+                  sharedWorkspace: resolveSharedWorkspace(this.config, order),
                   maxTurns: upgradedConfig.maxTurns,
                   contextWindow: upgradedConfig.contextWindow,
                   compact: upgradedConfig.compact,

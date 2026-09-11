@@ -124,10 +124,46 @@ test('POST /project/trust：缺 cwd 时 400', async () => {
   })
 })
 
-test('两个路由都 auth-gated（fail-closed）', async () => {
+test('POST /project/trust/dismiss：记「不再提示」，授信后清除（两端同一存储）', async () => {
+  await withTempHome(async () => {
+    const cwd = makeProject({ verify: { typecheck: 'tsc --noEmit' } })
+    try {
+      const routes = buildTrustRoutes('tok')
+      const dismiss = () => routes['POST /project/trust/dismiss']!({ cwd }, undefined, AUTH, undefined)
+      const get = () => routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
+      const dismissedNow = async (): Promise<boolean> =>
+        ((await get()).body as { dismissed: boolean }).dismissed
+
+      assert.equal(await dismissedNow(), false)
+      const res = await dismiss()
+      assert.equal(res.status, 200)
+      assert.equal((res.body as { dismissed: boolean }).dismissed, true)
+      assert.equal(await dismissedNow(), true)
+      await dismiss() // 幂等
+      assert.equal(await dismissedNow(), true)
+
+      // 授信会清掉「不再提示」——恢复参与提示语义（与 CLI /trust 一致）。
+      await routes['POST /project/trust']!({ cwd, trusted: true }, undefined, AUTH, undefined)
+      assert.equal(await dismissedNow(), false)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  })
+})
+
+test('POST /project/trust/dismiss：缺 cwd 时 400', async () => {
+  await withTempHome(async () => {
+    const routes = buildTrustRoutes('tok')
+    const res = await routes['POST /project/trust/dismiss']!({}, undefined, AUTH, undefined)
+    assert.equal(res.status, 400)
+  })
+})
+
+test('三个路由都 auth-gated（fail-closed）', async () => {
   await withTempHome(async () => {
     const routes = buildTrustRoutes('tok')
     assert.equal((await routes['GET /project/trust']!({}, {}, {}, undefined)).status, 401)
     assert.equal((await routes['POST /project/trust']!({ trusted: true }, {}, {}, undefined)).status, 401)
+    assert.equal((await routes['POST /project/trust/dismiss']!({ cwd: '/tmp' }, {}, {}, undefined)).status, 401)
   })
 })

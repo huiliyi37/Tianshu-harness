@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { killProcessTree } from '../../tools/process-kill.js'
+import { track } from '../../tools/process-tracker.js'
 import { deriveWorkerStallMs } from '../worker-liveness.js'
 import type { WorkerSessionConfig, WorkerSessionRun } from '../worker-session.js'
 import type { SessionContext } from '../context.js'
@@ -181,8 +182,15 @@ export async function runWorkerSessionOop(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
       windowsHide: true,
+      // Unix 上 worker 必须自成进程组，killProcessTree 的 kill(-pid) 组杀才
+      // 作用得到（否则 ESRCH 静默回退 child.kill()，stdio MCP/LSP 服务器等
+      // 非 detached 后代全成孤儿）。与 bash.ts 工具子进程的 detached 写法同款。
+      // Windows 的组杀走 taskkill /T（按父子关系），detached 不适用。
+      detached: process.platform !== 'win32',
     }))
-  const child = doSpawn(entry.execArgs, entry.script)
+  // track 进退出清理集合：主进程 shutdown 的 killAllSync 据此组杀 worker 树
+  // （detached 后 worker 自成进程组，组杀连带 stdio MCP/LSP 等后代）。
+  const child = track(doSpawn(entry.execArgs, entry.script))
   if (!child.stdin || !child.stdout || !child.stderr) {
     throw new WorkerOopUnavailable('child stdio unavailable')
   }
@@ -203,10 +211,13 @@ export async function runWorkerSessionOop(
   let watchdogTimer: ReturnType<typeof setTimeout> | undefined
   let killTimer: ReturnType<typeof setTimeout> | undefined
   let killStage: 'none' | 'term' | 'kill' = 'none'
+  // settle 时摘除 abort 监听（见下方 abort 接线处的说明）
+  let detachAbort: (() => void) | undefined
 
   const cleanup = (): void => {
     if (watchdogTimer) clearTimeout(watchdogTimer)
     if (killTimer) clearTimeout(killTimer)
+    detachAbort?.()
   }
 
   const killLadder = (reason: string): void => {
@@ -237,7 +248,11 @@ export async function runWorkerSessionOop(
       cleanup()
       // 终态后给子进程一点自然退出时间；仍挂着就走击杀梯（防僵尸）。
       setTimeout(() => {
-        if (child.exitCode === null && child.pid) killLadder('post-result cleanup')
+        // worker 未退：击杀梯杀它。worker 已退：kill(-pid) 打到其遗留进程组
+        // （非 detached 的 stdio MCP/LSP 后代在 worker 死后仍留在组内——settle
+        // 前 worker 自然退出时无人组杀它们）；组空则 ESRCH 回退 child.kill
+        // 对已死 pid 同样 ESRCH 静默，全部无害。
+        if (child.pid) killLadder('post-result cleanup')
       }, CHILD_KILL_GRACE_MS).unref?.()
       resolve(run)
     }
@@ -329,7 +344,15 @@ export async function runWorkerSessionOop(
         try { stdin.write(encodeFrame({ t: 'abort', reason: String(config.abortSignal?.reason ?? 'caller_aborted') })) } catch { /* stdin 已关——close 事件兜底 */ }
       }
       if (config.abortSignal.aborted) onAbort()
-      else config.abortSignal.addEventListener('abort', onAbort, { once: true })
+      else {
+        config.abortSignal.addEventListener('abort', onAbort, { once: true })
+        // settle 后摘除：abortSignal 常是会话级合成信号（AbortSignal.any([会话, order])，
+        // coordinator.ts mergedSignal），order 级先触发 abort 时 once 不消耗、监听继续挂在
+        // 会话信号上——把整个运行闭包（ChildProcess 句柄、解码器、含会话史的 initPayload）
+        // 钉在会话生命周期。长会话多次委派单调泄漏，第 11 个监听触发
+        // MaxListenersExceededWarning。wrapAbort / worker-session 路径已有同款摘除纪律。
+        detachAbort = () => config.abortSignal?.removeEventListener('abort', onAbort)
+      }
     }
 
     // steer 桥：coordinator 的 onSteerDrain 在父侧排空队列 → 转发子进程。

@@ -453,3 +453,50 @@ describe('errorRecoveryGuidance（终态「下一步」，与重试中过程文�
     assert.match(g, /\/logs/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 413 分流：图片过重（可剥图重发） vs 上下文超限（不可重试）
+//
+// wire 层无法区分二者（都是 413），区分所需的信息只有 API client 有——
+// 它知道自己刚发出去的请求体里有没有 image_url。client 在错误上留
+// `payloadHadImages` 标记，分类器据此分流。
+// ---------------------------------------------------------------------------
+
+describe('413 payload-shape split (image_strip vs context_overflow)', () => {
+  function tagged413(payloadHadImages: boolean): Error {
+    return Object.assign(new FakeApiError('Payload too large', 413), { payloadHadImages })
+  }
+
+  it('请求带图 → image_strip（剥图重发一次）', () => {
+    const result = classifyApiError(tagged413(true))
+    assert.equal(result.category, 'image_strip')
+    assert.equal(result.retryable, true)
+    assert.equal(result.maxRetries, 1)
+    assert.equal(result.stripImages, true)
+  })
+
+  it('请求无图 → context_overflow，不可重试（重发同样的体必然再 413）', () => {
+    const result = classifyApiError(tagged413(false))
+    assert.equal(result.category, 'context_overflow')
+    assert.equal(result.retryable, false, '纯上下文超限重发无意义')
+    assert.equal(result.maxRetries, 0)
+    assert.equal(result.stripImages, undefined, '无图可剥，不得承诺剥离')
+  })
+
+  it('无标记（第三方网关转述 413）→ 保持乐观的 image_strip', () => {
+    const result = classifyApiError(new FakeApiError('Payload too large (413)', 413))
+    assert.equal(result.category, 'image_strip')
+    assert.equal(result.retryable, true)
+  })
+
+  it('无图 413 的用户指引指向压缩上下文，不是「去掉图片」', () => {
+    const guidance = errorRecoveryGuidance(tagged413(false))
+    assert.ok(guidance.includes('/compact'), `应指引压缩上下文，实得：${guidance}`)
+    assert.ok(!guidance.includes('图片'), `无图请求不该被指点去删图，实得：${guidance}`)
+  })
+
+  it('有图 413 的用户指引仍指向图片', () => {
+    const guidance = errorRecoveryGuidance(tagged413(true))
+    assert.ok(guidance.includes('图片'), `实得：${guidance}`)
+  })
+})

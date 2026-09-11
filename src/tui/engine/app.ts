@@ -13,7 +13,7 @@
 
 import type { WriteStream, ReadStream } from 'node:tty'
 import { CommitEngine } from './commit-engine.js'
-import { LiveEngine, padDynamicRegion, type LiveRegionLine } from './live-engine.js'
+import { LiveEngine, padDynamicRegion, thinkingRowBudgetFor, type LiveRegionLine } from './live-engine.js'
 import { installOutputGuard, type OutputGuard } from './output-guard.js'
 import { OverlayEngine } from './overlay-engine.js'
 import { InputHandler, type KeyPress } from './input-handler.js'
@@ -1199,11 +1199,11 @@ export class TuiApp {
           } else {
             process.exit(0)
           }
+        } else if (!this.isAgentActive() && this.inputLine.value.length > 0) {
+          this.inputLine.setValue('') // 空闲 + 有输入：清空草稿；空输入才进退出确认
+          this.renderLive()
         } else {
-          // 活跃时首按仍是 interrupt，但与退出窗口并行开启——否则卡住的 agent
-          // 会把退出通道一并吞掉。空闲首按只进窗口，内容原样保留（对齐 Claude
-          // Code：Ctrl+C 从不清空，清空是 idle Esc 职责）；owned timer 防重入
-          // 窗口被旧定时器截断，Esc/编辑/粘贴/提交经 clearExitConfirm 清理。
+          // 活跃首按 = interrupt 并并行开窗（卡死逃生，app-exit-escape 不变量）；空输入首按只进窗。
           if (this.isAgentActive()) this.handleAbort()
           const ic = this.inputController
           if (ic.ctrlCExitTimer !== null) clearTimeout(ic.ctrlCExitTimer)
@@ -6117,9 +6117,10 @@ export class TuiApp {
    *
    * 按显示行而非逻辑行封顶：推理文本多是长句，窄终端上一个逻辑行 wrap 成三四行，
    * 逐字增长时它是动态段里最大的单块，峰值会被定高视口固化成常驻空白。
+   * 小屏收缩策略与理由见 thinkingRowBudgetFor（live-engine.ts）。
    */
   private thinkingRowBudget(): number {
-    return Math.max(3, Math.min(THINKING_ROWS_MAX, Math.floor((this.rows || 24) / 6)))
+    return thinkingRowBudgetFor(this.rows, this.state.phase, THINKING_ROWS_MAX)
   }
 
   private getThinkingLines(expanded: boolean): string[] {

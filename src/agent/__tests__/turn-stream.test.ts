@@ -79,6 +79,32 @@ describe('TurnStreamController', () => {
     assert.equal(turnCaches[0]?.usage.cache_read_input_tokens, 70)
   })
 
+  it('forwards onImageStripped to the caller（剥图提示链路的中间段）', async () => {
+    const client: StreamClient = {
+      stream: mock.fn(async (_request: OaiChatRequest, cb: StreamCallbacks) => {
+        cb.onImageStripped?.({ removedCount: 2 })
+        cb.onStopReason('end_turn', {})
+      }),
+    }
+    const { controller } = makeController(client)
+    const stripped: Array<{ removedCount: number }> = []
+
+    await controller.streamTurn({
+      request,
+      turn: 1,
+      lastTurnTextFingerprint: '',
+      callbacks: {
+        onTextDelta: () => {},
+        onThinkingDelta: () => {},
+        onToolUse: () => {},
+        onError: () => {},
+        onImageStripped: info => { stripped.push(info) },
+      },
+    })
+
+    assert.deepEqual(stripped, [{ removedCount: 2 }], '剥图事件必须到达 agent 层')
+  })
+
   it('pushes text deltas in real-time during stream', async () => {
     let callbacksDuringStream: string[] = []
     const client: StreamClient = {

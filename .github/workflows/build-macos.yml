@@ -1,0 +1,92 @@
+name: Build macOS Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    paths:
+      - 'desktop/**'
+      - 'src/**'
+      - '.github/workflows/build-macos.yml'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install rivet runtime deps
+        working-directory: .
+        run: npm ci
+
+      - name: Build rivet runtime
+        working-directory: .
+        run: npm run build
+
+      - name: Install desktop frontend deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Fetch bundled Node runtime
+        working-directory: desktop
+        run: node scripts/fetch-node-runtime.js
+
+      - name: Build Tauri app (macOS)
+        working-directory: desktop
+        run: npx tauri build
+        env:
+          # 未配置 Apple Developer ID 时使用 ad-hoc 签名，产出未公证的 .app/.dmg。
+          # 配置以下 secrets 后自动签名并公证：
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # Tauri updater 签名（createUpdaterArtifacts: true 时产出 .sig）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload DMG + signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: tianshu-macos-dmg
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg.sig
+          if-no-files-found: warn
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: tianshu-macos-app
+          path: |
+            desktop/src-tauri/target/release/bundle/macos/天枢.app
+          if-no-files-found: warn
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg.sig
+          draft: true
+          generate_release_notes: true

@@ -158,4 +158,23 @@ describe('SessionJobs', () => {
     assert.ok(list.length <= SessionJobs.MAX_TERMINAL_JOBS, `终态应封顶 ${SessionJobs.MAX_TERMINAL_JOBS}，实际 ${list.length}`)
     assert.ok(list.some(j => j.id === ids[total - 1]), '最新 job 必须保留')
   })
+
+  it('await 等待期间按心跳上报（绑真实状态；resolve 后停止）', async () => {
+    const beats: string[] = []
+    const hbDir = mkdtempSync(join(tmpdir(), 'rivet-jobs-hb-'))
+    const hbStore = new SessionJobs(join(hbDir, 'jobs'), (s) => beats.push(s), 40)
+    try {
+      const snap = hbStore.spawn({ command: "sh -c 'sleep 1'", rawCommand: 'sleep 1', cwd: hbDir, env })
+      const res = await hbStore.await(snap.id, { timeoutMs: 700 })
+      assert.ok(res)
+      assert.ok(beats.length >= 2, `等待期间应至少上报 2 次心跳，实际 ${beats.length}`)
+      assert.ok(beats.every((b) => b === `job:await:${snap.id}`), '心跳 source 必须携带 job id')
+      const n = beats.length
+      await new Promise((r) => setTimeout(r, 150))
+      assert.equal(beats.length, n, 'await resolve 后心跳必须停止')
+    } finally {
+      hbStore.killAll()
+      rmSync(hbDir, { recursive: true, force: true })
+    }
+  })
 })

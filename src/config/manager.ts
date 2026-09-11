@@ -4,7 +4,7 @@ import { resolve, join, dirname } from 'path'
 import { isProjectTrusted, stripUntrustedProjectKeys, notifyUntrustedOnce, findSensitiveProjectKeys } from './project-trust.js'
 import { z } from 'zod'
 import { resolveProfileName, resolveProfileOverlay, resolveHookDisabledEnv } from './profile.js'
-import { configSchema, providerBaseSchema, reviewConfigSchema, workersSchema, councilConfigSchema, editorSchema, mirrorsSchema, prDefaultsSchema, envSchema, uiSchema, permissionsSchema, networkSchema, fetchSchema, searchSchema, modelConfigSchema, type Config, type ProviderConfig, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderAdvancedConfig, type ReviewConfig, type WorkersConfig, type CouncilConfig, type EditorConfig, type MirrorsConfig, type PrDefaultsConfig, type UiConfig } from './schema.js'
+import { configSchema, reviewConfigSchema, workersSchema, councilConfigSchema, editorSchema, mirrorsSchema, prDefaultsSchema, envSchema, uiSchema, permissionsSchema, networkSchema, fetchSchema, searchSchema, modelConfigSchema, type Config, type ProviderConfig, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderAdvancedConfig, type ReviewConfig, type WorkersConfig, type CouncilConfig, type EditorConfig, type MirrorsConfig, type PrDefaultsConfig, type UiConfig } from './schema.js'
 import { DEFAULT_CONFIG } from './default.js'
 import { userConfigPath } from './paths.js'
 import { findPresetModel, isProviderPresetKey, type ProviderPresetKey } from './provider-presets.js'
@@ -16,6 +16,7 @@ import { invalidatePromptBlocks } from '../prompt/block-policy.js'
 import { validateRuntimeLeanSlice, type RuntimeLeanConfigSlice } from './runtime-lean.js'
 import { formatProviderCard, formatSuccess, formatError, formatMcpServerList, type FormatOpts } from './cli-format.js'
 import { formatZodError } from './format-zod-error.js'
+import { applyProviderTunables } from './provider-tunables.js'
 
 const APPROVAL_MODES = ['auto-safe', 'manual', 'auto-accept', 'dangerously-skip-permissions'] as const
 type ApprovalModeConfig = typeof APPROVAL_MODES[number]
@@ -1758,6 +1759,7 @@ function applyAdvancedConfig(target: ProviderConfig, advanced?: ProviderAdvanced
   if (advanced.maxRetries !== undefined) target.maxRetries = advanced.maxRetries
   if (advanced.temperature !== undefined) target.temperature = advanced.temperature
   if (advanced.proxy !== undefined) target.proxy = advanced.proxy
+  if (advanced.retry !== undefined) target.retry = advanced.retry   // 嵌套对象：整体替换（子键合并会留下删不掉的幽灵字段）
 }
 
 /** Persist the config first; a failed secret write must not leave a dangling keyRef. */
@@ -1915,46 +1917,16 @@ export function registerProvider(options: RegisterProviderOptions): void {
 }
 
 /**
- * 白名单字段：存量 provider 的可调运行时参数（schema.ts 已认，但创建路径之外
- * 没有写入通道——2026-08-09 计划任务 2 补齐编辑路径）。
- * 字段值 undefined 或 null = 删除该键，恢复按名称/baseUrl 的启发式推导
- * （slowThinking 三态的「默认」档；firstByteTimeoutMs/thinkingStallTimeoutMs 的
- * undefined = 用推导值）。null 是 JSON.stringify 下唯一可传输的删键编码——
- * undefined 属性会被序列化丢弃（传输层静默失效，见 config-routes 往返测试）。
- */
-const TUNABLE_FIELD_KEYS = ['slowThinking', 'firstByteTimeoutMs', 'thinkingStallTimeoutMs'] as const
-
-/**
  * 字段级更新已存在 provider 的 tunable 参数。白名单外字段、非法值一律拒收
- * （抛错不落盘）；每个字段复用 providerSchema 对应字段的 zod 校验，与创建路径
- * 同源。返回更新后的 ProviderConfig。
+ * （抛错不落盘）。校验、嵌套合并与白名单本体见 provider-tunables.ts（结构
+ * 棘轮拆分：本文件零余量，逻辑主体在子模块，此处只留装配）。
  */
 export function updateProviderTunables(providerName: string, fields: Record<string, unknown>): ProviderConfig {
   const cfg = loadConfig()
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
 
-  const shape = providerBaseSchema.shape as Record<string, z.ZodTypeAny>
-  for (const [key, value] of Object.entries(fields)) {
-    if (!(TUNABLE_FIELD_KEYS as readonly string[]).includes(key)) {
-      throw new Error(`Unknown tunable field "${key}". Allowed: ${TUNABLE_FIELD_KEYS.join(', ')}`)
-    }
-    if (value === undefined || value === null) {
-      delete (provider as unknown as Record<string, unknown>)[key]
-      continue
-    }
-    // ③ 审查项：白名单与 schema 的对应关系不是类型强制的——未来白名单加键
-    // 而忘加 schema 字段时，这里必须报友好错误而不是裸 TypeError。
-    const fieldSchema = shape[key]
-    if (!fieldSchema) {
-      throw new Error(`Internal inconsistency: tunable field "${key}" has no schema entry — add it to providerSchema`)
-    }
-    const parsed = fieldSchema.safeParse(value)
-    if (!parsed.success) {
-      throw new Error(`Invalid value for "${key}": ${parsed.error.message}`)
-    }
-    ;(provider as unknown as Record<string, unknown>)[key] = parsed.data
-  }
+  applyProviderTunables(provider, fields)
   saveConfig(cfg)
   return provider
 }

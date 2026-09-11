@@ -44,6 +44,25 @@ describe('classifyMcpError', () => {
     assert.equal(result.class, 'tool_error')
   })
 
+  it('classifies stdio connection closed as process error (issue #72 现场形态)', () => {
+    const err = new Error('MCP error -32000: Connection closed')
+    const result = classifyMcpError(err, { transport: 'stdio' })
+    assert.equal(result.class, 'process')
+    assert.equal(result.retryable, false)
+    assert.match(result.suggestion, /stderr|command/i)
+  })
+
+  it('classifies remote connection closed as network error（保留重试语义）', () => {
+    const result = classifyMcpError(new Error('MCP error -32000: Connection closed'), { transport: 'remote' })
+    assert.equal(result.class, 'network')
+    assert.equal(result.retryable, true)
+  })
+
+  it('无 transport 上下文时 Connection closed 不判为 process（保守，落 network）', () => {
+    const result = classifyMcpError(new Error('Connection closed'))
+    assert.equal(result.class, 'network')
+  })
+
   it('handles null/undefined input', () => {
     const result = classifyMcpError(null)
     assert.equal(result.class, 'tool_error')

@@ -1,0 +1,73 @@
+name: Build Linux Desktop
+
+# Linux AppImage 打包线（release/3.15-stable）。与 build-macos/build-windows
+# 同模式，但仅手动触发：AppImage 产物走 workflow artifact，签名与上传
+# release 由本地完成（minisign 私钥不进 CI——tauri signer 在本地对
+# AppImage 补签，与 mac/windows 的 .sig 同一密钥体系）。
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri v2 Linux 系统依赖（webkit2gtk 4.1 + appindicator + xdo）。
+      # ubuntu-22.04 的 glibc 基线保证 AppImage 在主流发行版可跑。
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: linux-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Install rivet runtime deps
+        working-directory: .
+        run: npm ci
+
+      - name: Build rivet runtime
+        working-directory: .
+        run: npm run build
+
+      - name: Install desktop frontend deps
+        working-directory: desktop
+        run: npm ci
+
+      # 原生 x64 Linux 主机构建：fetch/stage 脚本按宿主平台取 linux-x64
+      # 运行时与原生依赖（无交叉编译；codesign-nested 非 darwin 自动 no-op）。
+      - name: Fetch bundled Node runtime
+        working-directory: desktop
+        run: node scripts/fetch-node-runtime.js
+
+      # tauri:build:appimage = tauri build --bundles appimage + repack-appimage-pango.sh
+      # （issue #80：内置新 pango 需要 harfbuzz≥3.3 符号，与 22.04 系统 harfbuzz 2.7.4
+      # 错配导致启动即崩——剔除内置 pango 改走系统配套链，本地手动构建也用同一入口）
+      - name: Build Tauri app (AppImage)
+        working-directory: desktop
+        run: npm run tauri:build:appimage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: tianshu-linux-appimage
+          path: |
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

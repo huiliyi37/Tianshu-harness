@@ -24,6 +24,19 @@ export type ErrorCategory =
   | 'reasoning_repetition'
   | 'unknown'
 
+/** 全部错误类别的运行时清单——config 侧（schema.ts 的 retry.overrides 键枚举）
+ *  以此为单一真源：字段拼错在 loadConfig 时就报错，而不是静默失效。 */
+export const ERROR_CATEGORIES = [
+  'rate_limit', 'overloaded', 'server_error', 'timeout', 'auth_error',
+  'client_error', 'context_overflow', 'image_strip', 'stream_parse',
+  'reasoning_repetition', 'unknown',
+] as const satisfies readonly ErrorCategory[]
+
+// 编译期穷尽检查：类型新增类别而清单漏列时，下面这行报错（无运行时代价）。
+type _AllCategoriesListed = ErrorCategory extends (typeof ERROR_CATEGORIES)[number] ? true : never
+const _allCategoriesListed: _AllCategoriesListed = true
+void _allCategoriesListed
+
 export interface ClassifiedError {
   retryable: boolean
   retryDelayMs: number
@@ -34,6 +47,10 @@ export interface ClassifiedError {
   /** When true, the retry engine should strip image_url content from
    * messages before retrying. Does not consume retry budget (first strip only). */
   stripImages?: boolean
+  /** True when `retryDelayMs` came from the server's Retry-After header rather
+   *  than the category default — the retry engine keeps such delays fixed
+   *  (jitter only, no exponential growth; the server named the wait). */
+  retryDelayFromServer?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -74,8 +91,10 @@ function extractMessage(error: unknown): string | null {
   return null
 }
 
-/** Classify based on HTTP status code. Returns null if status is unrecognised. */
-function classifyByStatus(status: number): ClassifiedError | null {
+/** Classify based on HTTP status code. Returns null if status is unrecognised.
+ *  `payloadHadImages` 由 API client 打标（它知道自己发出了什么）——413 靠它
+ *  区分「图片过重」与「上下文超限」，见 413 分支的注释。 */
+function classifyByStatus(status: number, payloadHadImages?: boolean): ClassifiedError | null {
   // Rate limit
   if (status === 429) {
     return {
@@ -136,12 +155,24 @@ function classifyByStatus(status: number): ClassifiedError | null {
     }
   }
 
-  // 413 Payload Too Large — two scenarios:
-  //   a) Image-heavy payload: strip images and retry (doesn't consume budget)
-  //   b) Genuine context overflow: not retryable
-  // We default to image_strip because the retry engine upgrades to Fatal
-  // if no images are found to strip (see retry-engine.ts).
+  // 413 Payload Too Large — 两种成因在 wire 层长得一模一样，区分所需的信息只有
+  // API client 有：它知道自己刚发出去的请求体里有没有 image_url。client 在错误上
+  // 留 `payloadHadImages` 标记，这里据此分流：
+  //   true      → 图片过重：剥离 image_url 后重发一次（剥离由 client 在重试时执行）
+  //   false     → 请求本就没图：纯上下文超限，重发同一个体必然再 413，不可重试
+  //   undefined → 第三方网关转述的 413（client 没打过标）：乐观按 image_strip，
+  //               client 侧无图可剥时会即时失败，不会空转一轮
   if (status === 413) {
+    if (payloadHadImages === false) {
+      return {
+        retryable: false,
+        retryDelayMs: 0,
+        shouldReconnect: false,
+        category: 'context_overflow',
+        userMessage: 'Payload too large (413) — the request exceeds the provider limit.',
+        maxRetries: 0,
+      }
+    }
     return {
       retryable: true,
       retryDelayMs: 0,
@@ -370,6 +401,16 @@ function extractRetryAfter(error: unknown): number | undefined {
   return undefined
 }
 
+/** 读 API client 留在 413 错误上的「这次请求体是否含图」标记。
+ *  true/false 是 client 的确定判断；undefined = 没打过标（第三方网关转述的 413）。 */
+function extractPayloadHadImages(error: unknown): boolean | undefined {
+  if (error != null && typeof error === 'object') {
+    const v = (error as Record<string, unknown>).payloadHadImages
+    if (typeof v === 'boolean') return v
+  }
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -424,12 +465,12 @@ export function classifyApiError(error: unknown): ClassifiedError {
 
   // 1. Try status-code based classification first
   if (status !== null) {
-    const result = classifyByStatus(status)
+    const result = classifyByStatus(status, extractPayloadHadImages(error))
     if (result) {
       // Override delay with server-provided retryAfterMs if available
       const retryAfter = extractRetryAfter(error)
       if (retryAfter !== undefined) {
-        return { ...result, retryDelayMs: retryAfter }
+        return { ...result, retryDelayMs: retryAfter, retryDelayFromServer: true }
       }
       return result
     }

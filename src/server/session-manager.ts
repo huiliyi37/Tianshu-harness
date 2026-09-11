@@ -2368,6 +2368,9 @@ export class RuntimeSessionManager {
               )
             }
             if (!ownsDurability()) {
+              // abort 升代使本 run 失去 durability 走早退——会话仍归本 manager 时
+              // 补 lane flush（打断后排队/立即发的消息不落下）；真移交由新所有者负责。
+              if (this.ownsSessionDurability(session)) this.scheduleQueueLaneFlush(session)
               if (this.ownsSessionDurability(session) && session.record.archived) {
                 this.unloadSession(session)
               }
@@ -2396,6 +2399,7 @@ export class RuntimeSessionManager {
               }
             })
             this.maybeWatchdogAutoContinue(session)
+            this.scheduleQueueLaneFlush(session)
             if (session.record.archived) this.unloadSession(session)
           } finally {
             runSettlement.resolve()
@@ -2756,7 +2760,7 @@ export class RuntimeSessionManager {
    *  wire its lifecycle events into the SSE stream. Idempotent. */
   private ensureJobs(session: InternalSession): SessionJobs {
     if (!session.jobs) {
-      const jobs = new SessionJobs(join(session.record.cwd, '.rivet', 'artifacts', 'jobs'))
+      const jobs = new SessionJobs(join(session.record.cwd, '.rivet', 'artifacts', 'jobs'), source => touchActivity(session.record.id, source))
       jobs.on('event', (ev: JobEvent) => {
         this.append(session, 'job', {
           id: ev.job.id,
@@ -5402,6 +5406,36 @@ export class RuntimeSessionManager {
       ?? session.agent?.getGoalTracker?.()
       ?? null
     return tracker?.isActive() === true
+  }
+
+  /**
+   * run 收尾后的 queue lane flush（2026-09-11，方案 A）。
+   *
+   * lane 唯一消费点是下次 run 入口的归并——「下次 prompt 时归并」假设用户总会
+   * 再发一条；打断/不再发言场景下条目永躺 lane（死信）。收尾后主动开新一轮消费，
+   * 排队语义回到「本轮结束后执行」。
+   * 让位：watchdog stall（lastAbortReason 前缀）跳过——其续跑自身归并 lane，抢跑
+   * 会让 watchdog 见 running 放弃；已有新 run/已归档/会话已替换同样跳过。
+   * merged 标记与 queue_status echo 走 mergeQueuedIntoPrompt 同一路径。
+   */
+  private scheduleQueueLaneFlush(session: InternalSession): void {
+    if (session.lastAbortReason?.startsWith('watchdog')) return
+    setImmediate(() => {
+      try {
+        if (this.sessions.get(session.record.id) !== session) return
+        if (session.record.archived) return
+        if (session.running || session.activeRunSettlement) return
+        if (session.record.status === 'running') return
+        if (!session.queueLane.some((e) => e.status === 'queued')) return
+        // 传空 prompt 取归并文本；run 入口会再 merge 一次（lane 已空，no-op）。
+        const merged = this.mergeQueuedIntoPrompt(session, '').trimEnd()
+        if (!merged) return
+        this.run(session.record.id, merged)
+      } catch {
+        // best-effort：flush 失败不回滚已 merged 的 lane（文本已 echo 在流中、
+        // 用户可见），也不向收尾路径抛错。
+      }
+    })
   }
 
   /**

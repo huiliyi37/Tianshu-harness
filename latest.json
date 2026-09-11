@@ -1,19 +1,23 @@
 {
-  "version": "3.16.1",
-  "notes": "v3.16.1（修复版）——供应商「测试连接/测试模型调用」误报修复：只填 URL+Key 测连接不再误报（连通性验证与模型真测语义分层）、模型名带视觉词但网关不支持图片时按纯文本测、思考型网关 max_tokens 兼容。完整清单见 docs/releases/v3.16.1.md。",
-  "pub_date": "2026-09-09T09:40:22.438Z",
+  "version": "3.18.1",
+  "notes": "v3.18.1（修复版）——视觉桥三起故障收口：运行中配桥不重启不生效根修、推理档模型当桥返回空描述根修、image_strip 剥图重发落地（issue #94）+ Linux AppImage 启动即崩修复（issue #80）。已知：MiniMax-M3 视觉上游故障（其服务端 500），请暂改用 glm-4v-flash 等作桥。完整清单见 docs/releases/v3.18.1.md。",
+  "pub_date": "2026-09-11T09:24:45.866Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2NpTFgwem96cjdvREprUXBzbi8rMzc2VklsNEVsUmJpb1lMdmtRKzZaVlRGTGxGVEtrUWZCQU9hZGFmNVNsQXlEMVlMZ012UlY5V0xLSWkrRU0rbkFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM5NDE2CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6Cnl4SW5RK01DYTl6V2VTS3pEUUhwYVJ0a2dJZW9MMm9GdmhLY3pDdmY1VXNSbEhvNFJPOFZmL1pPd05LY0ZXRDF3L1pKR2JISlYxRzVwZGRYZHA3aEN3PT0K"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2NCNlEyUXl2alEwc1Yyb3RibkZQclV0bEVDWFhqc2trZHVyMTZGWEFjYkpKNmRwVmFjc0c5djdwSDdpdnN4VHdIN09NU2xkMzVHa2dpTWFBZ2FpRWdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE0OTU0CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6ClJVaGEycS9mcTQwUXRWMEdyWHc4N3Roajk0RUhCY1lZYWRzQW5VWHFyYnFvaWJsbGptTGJlMFY4dFh5Tm9YVStzQXV1Ry9vbGdmcFM4TVBEZzNMNEJ3PT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1RJcDh3Y2tnTk83Z3ZpSWhpdGNPc3E1WkpwMjJYcXlIWTJTWnErQVlFNCtnaUJQS2Q1THgvaWdQbzN3Sm9LTllQalJNbDBTd2ZJTnU2bTZ4bk1IbWdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTM5NzcwCWZpbGU6VGlhbnNodS5hcHAudGFyLmd6ClRJa1BUbGdzNXlVVjZuVFBSZnMyMWg2L21KMXNSeTlEVWJNcVRsS2NtRjAzNGhlV2F3d2VWYmp1SjZNd1IzYVRRVnJYNW9Hd0l1WXRYTGgzZkM1L0RnPT0K"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1p5N3Y4OWptTFY3RE5vaGJLK3BRVmhKYi9oNkxEb2Jua1hZNkI5ZWtyMEdRUDUybkk2cFdiOW5nc1E5SFdSN0wwYjl2ZGlzZ2hyWGQ5eExCM0Nua2dvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE1MzExCWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CmdHeTczcTh4aENFZ1dGVGpnSnFzSkpCT05QZndLYm4rTTNPTDJEUVpaTjdTbXA4eHk4MmtscXh2MGdaYTMvQ016YjFaZFpuZlhaOFYzTnBaOElYZUJRPT0K"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1JVeXRnYWMrR21LcWZZbDE2Y1hhWDBmVkN1Z3lkUGlsVUpiQytGNndPUjNDQjQwTVhHSTc2anJOMlB6cXppbXd4ZkRRRlltNlk5bi9qek4wQzBrZWdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE4MDc1CWZpbGU6VGlhbnNodV8zLjE4LjFfYW1kNjQuQXBwSW1hZ2UKeDBOSWNLdWhDOGpJZjl3VnJaYS96VExJeWUwa0pMbHA1R0xDbnZ1ODgzZitxbGdWQlVOYjFkSGpSSUp2eURrcEM1N3lRQ3JCVjRqUTBoY1dKQTR6QlE9PQo=",
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_amd64.AppImage"
     },
     "windows-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.16.1/Tianshu_3.16.1_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1gzc0c5b3R6S1JZaUs3Sll1OWJlM1IwT2J1ZWduMFQ3aVpjYTd6WFJsYXkzcnJwRW4rUUFKQ0EzUUVYdDlxdE4vekZMSWNvbHlrb3kwdFVKbTc4d3drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4OTQ2ODE4CWZpbGU6VGlhbnNodV8zLjE2LjFfeDY0LXNldHVwLmV4ZQpCY01sSVAzMHlWSEJFQlR3OGE2KzFTWlZWVUZiRnljaUNYMFVqKzJTN1NScmhXTHgyaktxZXl3T2txTmtXc0pQcGZsVUJnOXVROU1yOXRYdGhya3REZz09Cg=="
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1NkSThWbW01djFaeU9oUkV0K2ZXRWp0dmFFaUZwME4wa0ZqUmpKRUx6ZHBqeXc4M2RzYUlKU0s5WTduVDlUL0JJbXJMWEpVZkRBcVU5aEhkanVqSEF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5MTE1ODQ0CWZpbGU6VGlhbnNodV8zLjE4LjFfeDY0LXNldHVwLmV4ZQozV3BLMTZyU0FwaC9tazBMdFhsb0VHdEJ3TWRGY1d6Z3R0OG12TnJBeDUzUDQ1VitvcTJCdGJ3S01aN09lWTJlbnFIRmJzQ0tNcEovUmc2RnNDYzdCdz09Cg==",
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.18.1/Tianshu_3.18.1_x64-setup.exe"
     }
   }
 }

@@ -83,6 +83,13 @@ export const workOrderScopeSchema = z.object({
   externalUrls: z.array(z.string()).optional(),
   maxFiles: z.number().int().positive().optional(),
   maxTokens: z.number().int().min(1000).optional(),
+  /**
+   * 派发方声明：本 order 的写入对象与主控（primary）已写/已提交的文件重叠。
+   * 审查链路（review-coordinator-deps 的 scope()）恒为 true——它的 files 就是
+   * 被审文件，即主控刚写完的那批。判定消费见 isolation-policy.ts：
+   * overlapsPrimary=true 的写工不得就地跑在主工作树。
+   */
+  overlapsPrimary: z.boolean().optional(),
 })
 
 export type WorkOrderScope = z.infer<typeof workOrderScopeSchema>

@@ -7,8 +7,8 @@
       "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复）"
     },
     "src/server/session-manager.ts": {
-      "ceiling": 5958,
-      "note": "session-manager 增长：跨盘审批广播/applyGlobalApprovalMode（93956f5e2+970b05196 回流 2026-09-07）——ceiling 5800→5830（时点实际 5820，10 行缓冲）。5820→5942 的 +122 为 2026-09-07~09-09 间 11 笔提交累计欠账（38b246ba6 stall-observer 接线 / f512c450a+b738faffc images·continuationReason 透传 / a93b36f13 handoff 容差 / 029421c36 前的 settlement 演进等，均未同步账本——f35d922ea 曾误记整段为 029421c36 的 +9，实为 +8/-1 净增 7，此条更正）。ceiling 对齐实际 5949（零缓冲，+1 即触警）。5949→5956：issue #63 残留（编辑重发对含 hook 注入的会话失效）——配对纯函数（buildUserAnchors/stripInjectedSuffix）已沿接缝拆到新模块 src/server/rewind-anchors.ts，此处只剩 import + userEventListFor（环被截尾时读磁盘全量事件，rewind 的 anchorSeq 才不丢）。5956→5958：合并两个来源的技能加载错误（import + getSkillLoadErrors 合并共 +2）——记录侧在新模块 src/server/skill-load-errors.ts，此处只剩读合并。"
+      "ceiling": 5992,
+      "note": "session-manager 增长：跨盘审批广播/applyGlobalApprovalMode（93956f5e2+970b05196 回流 2026-09-07）——ceiling 5800→5830（时点实际 5820，10 行缓冲）。5820→5942 的 +122 为 2026-09-07~09-09 间 11 笔提交累计欠账（38b246ba6 stall-observer 接线 / f512c450a+b738faffc images·continuationReason 透传 / a93b36f13 handoff 容差 / 029421c36 前的 settlement 演进等，均未同步账本——f35d922ea 曾误记整段为 029421c36 的 +9，实为 +8/-1 净增 7，此条更正）。ceiling 对齐实际 5949（零缓冲，+1 即触警）。5949→5956：issue #63 残留（编辑重发对含 hook 注入的会话失效）——配对纯函数（buildUserAnchors/stripInjectedSuffix）已沿接缝拆到新模块 src/server/rewind-anchors.ts，此处只剩 import + userEventListFor（环被截尾时读磁盘全量事件，rewind 的 anchorSeq 才不丢）。5956→5958：合并两个来源的技能加载错误（import + getSkillLoadErrors 合并共 +2）——记录侧在新模块 src/server/skill-load-errors.ts，此处只剩读合并。 5958→5992：queue lane 收尾 flush（797b38def，2026-09-11 方案 A）——run 收尾后主动开新一轮消费排队消息（scheduleQueueLaneFlush + abort 升代早退分支补调度）。flush 与 mergeQueuedIntoPrompt/run/会话私有状态（sessions map、queueLane、durability 判定均为私有）强耦合，拆出需大量回调注入、收益负；账本随债对齐（零缓冲）。"
     },
     "src/tui/slash-commands.ts": {
       "ceiling": 4620,
@@ -19,15 +19,15 @@
       "note": "coordinator 增长：续跑冻结快照回传（e67af8a4f 1e 回流 2026-09-07）欠账收口——ceiling 3495→3540"
     },
     "src/agent/loop.ts": {
-      "ceiling": 2943,
-      "note": "2854→2928：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；其中捆绑技能消融移除 pin 链并挂 <plan-executing> 卸载点（净增约 15 行）。 2928→2943：免审批档权限提示接线（def690436 +4）+ 楔死族后续修复 setApprovalMode 双写（0e792e26e +15/-4）——落地时未上账，2026-09-09 审查补记"
+      "ceiling": 2944,
+      "note": "2854→2928：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；其中捆绑技能消融移除 pin 链并挂 <plan-executing> 卸载点（净增约 15 行）。 2928→2943：免审批档权限提示接线（def690436 +4）+ 楔死族后续修复 setApprovalMode 双写（0e792e26e +15/-4）——落地时未上账，2026-09-09 审查补记。 2943→2944：工具管线纵深修复第一波（job 长等待心跳注入 touchActivity，+1，2026-09-10）"
     },
     "src/bootstrap.ts": {
       "ceiling": 2511
     },
     "src/config/manager.ts": {
-      "ceiling": 2705,
-      "note": "2219→2606：hooks 配置 Wave 3a 等配置面增长（先于本调整已在 HEAD 超限）+ / 项目信任门接线（未授信剥离，+9 行）——按现值对齐。 2606→2648：账本对齐实际行数（68a961c20 预设新增模型回流存量快照，已合入 HEAD 后超限）。 2648→2664：config login 子命令（OAuth 登录落地，/login 幽灵指引闭环）——case +12、帮助文本 +1、帮助示例区 +3。 2664→2682：setDefaultModelConfig 扩展 defaultEffort（undefined=不动/null·auto=删字段/显式档=落盘，+17）——/model 面板 effort 随默认持久化（CC 对标）。 2682→2643：migratePresetModelBackfill 迁出至 preset-model-backfill.ts（结构棘轮拆分；随迁收紧 userSaved 判据——用户删模型不再被预设回流）。 2682→2705：API key 删除原语 clearApiKey（947f8b6e1，+42 未收口欠账，2026-09-07 审查补记）"
+      "ceiling": 2706,
+      "note": "2219→2606：hooks 配置 Wave 3a 等配置面增长（先于本调整已在 HEAD 超限）+ / 项目信任门接线（未授信剥离，+9 行）——按现值对齐。 2606→2648：账本对齐实际行数（68a961c20 预设新增模型回流存量快照，已合入 HEAD 后超限）。 2648→2664：config login 子命令（OAuth 登录落地，/login 幽灵指引闭环）——case +12、帮助文本 +1、帮助示例区 +3。 2664→2682：setDefaultModelConfig 扩展 defaultEffort（undefined=不动/null·auto=删字段/显式档=落盘，+17）——/model 面板 effort 随默认持久化（CC 对标）。 2682→2643：migratePresetModelBackfill 迁出至 preset-model-backfill.ts（结构棘轮拆分；随迁收紧 userSaved 判据——用户删模型不再被预设回流）。 2682→2705：API key 删除原语 clearApiKey（947f8b6e1，+42 未收口欠账，2026-09-07 审查补记） 2705→2706：applyAdvancedConfig 支持 retry 配置块（issue #75，+1 行挂载；retry 的 zod 定义主体拆在 src/config/retry-schema.ts 新模块）"
     },
     "src/main.ts": {
       "ceiling": 2417,
@@ -37,8 +37,8 @@
       "ceiling": 2071
     },
     "src/agent/tool-pipeline.ts": {
-      "ceiling": 2168,
-      "note": "tool-pipeline 增长：出界首触即授（970b05196）+ approvalMode 注入（f8bc60ffe 回流 2026-09-07）——ceiling 2099→2115 2115→2168：楔死族加固（0e792e26e +38 / b76861adc 写后挂起事故族 +9 净）+ stall-observer 工具打点（38b246ba6 +10 净）+ meridian 队列让出（d1c06e5ac +5 净）——多笔落地未上账，2026-09-09 审查补记"
+      "ceiling": 2197,
+      "note": "tool-pipeline 增长：出界首触即授（970b05196）+ approvalMode 注入（f8bc60ffe 回流 2026-09-07）——ceiling 2099→2115 2115→2168：楔死族加固（0e792e26e +38 / b76861adc 写后挂起事故族 +9 净）+ stall-observer 工具打点（38b246ba6 +10 净）+ meridian 队列让出（d1c06e5ac +5 净）——多笔落地未上账，2026-09-09 审查补记。 2168→2197：工具管线纵深修复第一波（pre/post 阶段打点 11 处 + [slow-sync-stage] 同步段计时，+29，2026-09-10）"
     },
     "src/server/session-routes.ts": {
       "ceiling": 2121,
@@ -61,12 +61,12 @@
       "note": "1492→1678：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
     },
     "src/api/openai-client.ts": {
-      "ceiling": 1592,
-      "note": "1492→1563：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 1563→1587：wire 探针 tools 维（4f85c6b1f +22）+ reasoning-repetition guard 接线（609e0964a +2 净）——落地时未上账，2026-09-09 审查补记 1587→1592：可配置会话头名 sessionHeader（OpenCode Go 强制 x-opencode-session，字段 + header 注入，+5）"
+      "ceiling": 1641,
+      "note": "1492→1563：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 1563→1587：wire 探针 tools 维（4f85c6b1f +22）+ reasoning-repetition guard 接线（609e0964a +2 净）——落地时未上账，2026-09-09 审查补记 1587→1592：可配置会话头名 sessionHeader（OpenCode Go 强制 x-opencode-session，字段 + header 注入，+5） 1592→1602：retry 策略接线（issue #75：config.retry 字段声明 + maxTotalDurationMs 可配 + policy 透传 + fetch 前限速过桶，+10）——全部是接线行，逻辑主体在 retry-engine.ts 与 rate-limiter.ts 新模块 1602→1641：image_strip 恢复接线（issue #94：分类器承诺的「剥图重发」此前全链路没有消费方，413/图片被拒只是原样重发。本文件加剥图状态位 + 413 错误上的 payloadHadImages 标记 + onRetry 挂钩，纯函数主体在 oai-types.ts，分类分流在 error-classifier.ts）"
     },
     "src/agent/turn-orchestrator.ts": {
-      "ceiling": 1491,
-      "note": "1462→1471：B2 收敛轨迹门（会话 506a5e86 优化，deps getter + AND 门判定，+9 行）。1471→1485：stall-observer 修复接线——wrapCallbacksWithHeartbeat 加可选 getSessionId 参 + isFinal 回合完成打 markIdle（交付后等待用户免误报，+14 行，2026-09-09）。 1485→1491：markIdle 时序收口 try/finally（b3329e590 +6，stall 误告警 P2 修复）"
+      "ceiling": 1500,
+      "note": "1462→1471：B2 收敛轨迹门（会话 506a5e86 优化，deps getter + AND 门判定，+9 行）。1471→1485：stall-observer 修复接线——wrapCallbacksWithHeartbeat 加可选 getSessionId 参 + isFinal 回合完成打 markIdle（交付后等待用户免误报，+14 行，2026-09-09）。 1485→1491：markIdle 时序收口 try/finally（b3329e590 +6，stall 误告警 P2 修复） 1491→1500：image_strip 恢复的用户可见提示接线（剥图后模型看不到图，静默处理会被读成「模型没理我的截图」——onImageStripped → onPhaseChange('image-stripped')，issue #94）"
     },
     "src/agent/loop-factory.ts": {
       "ceiling": 1517,
@@ -159,8 +159,8 @@
       "note": "944→956：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）956→962：RIVET_ORCHESTRATION_HINT 登记（+6）962→968：RIVET_ADAPTIVE_MEMORY 的 shadow/on/off 发布开关登记（+6）968→974：RIVET_MEMORY_AUTO_CAPTURE 登记（+6）974→980：RIVET_MEMORY_CONSOLIDATION 登记（+6）980→986：RIVET_MEMORY_BACKFILL 登记（+6，历史会话回填 opt-in 开关）。 986→1040：gen-env-registry 重生成收口（153→169 条，含 8 个存量漏注册 RIVET_APPROVAL_TIMEOUT_MS/RIVET_CPU_POOL_IDLE_MS/RIVET_FETCH_SKIP_COMPILE/RIVET_PROFILE/RIVET_TEST_ENV_KEY_PROV/RIVET_TRUST_PROJECT/RIVET_WELCOME_ANIM/RIVET_WORKER_ISOLATION 与新增 RIVET_WELCOME_GREETING；自动生成文件随注册数机械增长，2026-09-09）"
     },
     "src/server/config-routes.ts": {
-      "ceiling": 1136,
-      "note": "config-routes 增长：onApprovalConfigChanged hook 适配（93956f5e2 回流 2026-09-07）——ceiling 1055→1065 1065→1074：DELETE key 端点（947f8b6e1，+15 未收口欠账，2026-09-07 审查补记） 1074→1118：POST /config/providers/test completion 级真测端点（7f0cc7c1c，+44 落地时未上账，2026-09-09 审查补记） 1118→1117：test-key/test 解析链抽共享 resolveProviderProbeTarget（4cdff0bd9，-1 回收）。ceiling 对齐实际 1117。 1117→1136：存量漂移收口（2026-09-09 结构门禁对齐实际行数，非本 PR 引入）"
+      "ceiling": 1143,
+      "note": "config-routes 增长：onApprovalConfigChanged hook 适配（93956f5e2 回流 2026-09-07）——ceiling 1055→1065 1065→1074：DELETE key 端点（947f8b6e1，+15 未收口欠账，2026-09-07 审查补记） 1074→1118：POST /config/providers/test completion 级真测端点（7f0cc7c1c，+44 落地时未上账，2026-09-09 审查补记） 1118→1117：test-key/test 解析链抽共享 resolveProviderProbeTarget（4cdff0bd9，-1 回收）。ceiling 对齐实际 1117。 1117→1136：存量漂移收口（2026-09-09 结构门禁对齐实际行数，非本 PR 引入） 1136→1143：provider retry/maxRetries 回显接线（issue #75 桌面端配置面板：ProviderListItem +2 字段、GET 组装 +2 行、类型 import +1，共 +7）"
     },
     "src/pro/computer-use/cdp/driver.ts": {
       "ceiling": 899
@@ -173,7 +173,7 @@
     },
     "src/config/schema.ts": {
       "ceiling": 1025,
-      "note": "1004→1025：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
+      "note": "1004→1025：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；issue #75 的 retry 子 schema 拆至 src/config/retry-schema.ts 新模块（-37 行，实测 1022，ceiling 未动——余量留给并发的配置面变更）"
     },
     "src/agent/session-persist.ts": {
       "ceiling": 876,

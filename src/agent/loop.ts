@@ -63,6 +63,7 @@ import { CompactionController } from './compaction-controller.js'
 import { resolveActiveDomain, type ActiveStarDomain, type StarDomainId } from './star-domain.js'
 import { starDomainRegistry } from './star-domain-registry.js'
 import { DomainDriftDetector } from './domain-drift-detector.js'
+import { touchActivity } from './stall-observer.js'
 import { buildDomainKnowledgeBlock } from './domain-knowledge-block.js'
 import { mintNumericId, buildAgentMark, VOID_SYMBOL } from './void-identity.js'
 import { buildDepartureMilestone } from '../constellation/milestone.js'
@@ -814,7 +815,7 @@ export class AgentLoop {
       this.artifactStore = new ArtifactStore(artifactDir, this.config.sessionId)
       const stateManager = new SessionStateManager(this.config.sessionId)
       this.sessionStateManager = stateManager
-      this._jobs = new SessionJobs(join(artifactDir, 'jobs'))
+      this._jobs = new SessionJobs(join(artifactDir, 'jobs'), source => touchActivity(this.config.sessionId ?? 'default', source))
     }
     // MonitorRegistry 无条件创建（无会话时 getJobs 返回 undefined，subscribe 优雅降级）。
     this._monitors = new MonitorRegistry(() => this._jobs, { telemetry: this.telemetryWriter })

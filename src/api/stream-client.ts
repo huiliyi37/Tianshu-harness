@@ -31,6 +31,11 @@ export interface StreamCallbacks {
   onToolCallDelta?: () => void
   /** Called when a rate limit (429) is encountered and being retried. Optional. */
   onRateLimit?: (retryDelayMs?: number) => void
+  /** Called when image_url parts were dropped to recover from a 413 / image
+   *  rejection — the retry carries a smaller body without images. The caller is
+   *  expected to surface it: the model answering that turn never saw the images,
+   *  so a silent strip reads as "the model ignored my screenshot". Optional. */
+  onImageStripped?: (info: { removedCount: number }) => void
   /** Called when a stream attempt aborts after receiving partial output (each failed attempt, before any retry). Optional. */
   onStreamAttemptAborted?: (info: StreamAttemptAbortedInfo) => void
 }

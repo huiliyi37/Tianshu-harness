@@ -12,6 +12,53 @@ export interface VerifierResult {
 
 export interface PatcherResult {
   patched: boolean
+  /** 补丁工实际改动的文件。隔离模式下这些改动落在其 worktree 内，未落主树——
+   *  主控据此决定采纳或忽略（I2：产物必可见）。 */
+  changedFiles?: string[]
+  /** 补丁工的自述摘要。 */
+  patchSummary?: string
+  /** 落盘补丁的可取回句柄（= WorkerResult.diffArtifactId）。
+   *  隔离 worktree 在 worker 结束后必然清理，这个句柄是主控**唯一**能取回补丁的
+   *  途径——只披露 changedFiles 而不给句柄，等于告诉主控「改了什么」却不给补丁，
+   *  「如需采纳请手动移植」就成了做不到的建议。 */
+  diffArtifactId?: string
+}
+
+/** 一轮补丁的产物摘要（累积进 ReviewOutcome.patcherArtifacts）。 */
+export interface PatcherArtifact {
+  round: number
+  changedFiles: string[]
+  patchSummary?: string
+  /** 落盘补丁的可取回句柄；缺失表示未落盘（无 artifactStore 或落盘失败）。 */
+  diffArtifactId?: string
+}
+
+/** 把补丁工产物渲染成给主控看的披露行（I2：产物必可见）。
+ *  放在这里而不是渲染层：它描述的是「审查结果里有什么」，与产物的产生同域；
+ *  且 deliver-task 是点名行数棘轮的巨石，不宜继续膨胀。
+ *  调用方必须在 **verified 与 rejected 两个分支之后都调用**——只披露 rejected
+ *  会让人把「验证通过」读成「修复已落地」。 */
+export function formatPatcherArtifacts(artifacts: PatcherArtifact[] | undefined): string[] {
+  if (!artifacts || artifacts.length === 0) return []
+  const files = [...new Set(artifacts.flatMap(a => a.changedFiles))]
+  const where = files.length > 0
+    ? `改动了 ${files.length} 个文件：${files.slice(0, 6).join(', ')}${files.length > 6 ? ` (+${files.length - 6})` : ''}`
+    : `产出了 ${artifacts.length} 轮补丁`
+  const lines = [`   ⚙ 补丁工在隔离 worktree 中工作（改动未落入你的工作树）——${where}`]
+  const summaries = artifacts.map(a => a.patchSummary).filter((s): s is string => Boolean(s))
+  if (summaries.length > 0) lines.push(`     摘要：${summaries.slice(0, 3).join(' | ')}`)
+
+  // 隔离 worktree 在 worker 结束后必然清理（hands-session 的 finally），落盘句柄因此是
+  // 主控**唯一**能取回补丁的途径。没有句柄就别承诺「手动移植」——那是个做不到的动作。
+  const handles = [...new Set(artifacts.map(a => a.diffArtifactId).filter((h): h is string => Boolean(h)))]
+  if (handles.length > 0) {
+    const calls = handles.slice(0, 3).map(h => `read_section(artifactId="${h}", section="c0-c50000")`).join('、')
+    lines.push(`     → 取回补丁：${calls}${handles.length > 3 ? `（另有 ${handles.length - 3} 个）` : ''}`)
+    lines.push('     → 隔离保护：这些改动不会污染工作树；采纳后按取回的 patch 手动应用，不需要则忽略。')
+  } else {
+    lines.push('     → 隔离保护：这些改动不会污染工作树。本次未留下可取回的补丁，如需采纳请重新派发。')
+  }
+  return lines
 }
 
 export type ReviewFindingSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
@@ -93,6 +140,10 @@ export interface ReviewOutcome {
   recoveredByRetry?: boolean
   /** Non-code review infrastructure caveats from L3 squadron workers. */
   infraFailures?: ReviewInfraFailure[]
+  /** 补丁工在隔离 worktree 内产生的改动（每轮一条，**未落入主工作树**）。
+   *  隔离模式下这是主控了解「补丁工到底做了什么」的唯一出口（I2：产物必可见）；
+   *  不回流时主控会把「验证通过」误读成「改动已落地」。 */
+  patcherArtifacts?: PatcherArtifact[]
 }
 
 // ─── Review workflow budgets ────────────────────────────────────────
@@ -305,6 +356,9 @@ export async function routeReviewWorkflow(
 
   const maxRounds = Math.max(1, options.maxRounds ?? 1)
   let last: VerifierResult = { verdict: 'rejected', evidence: '' }
+  /** 补丁工在隔离 worktree 内的产物，逐轮累积。verified / rejected 两条出口都要
+   *  带上——否则主控无从得知补丁工做过什么、改在哪（I2）。 */
+  const patcherArtifacts: PatcherArtifact[] = []
 
   for (let round = 1; round <= maxRounds; round++) {
     last = normalizeVerifierResult(await deps.spawnVerifier(change, signal, options.onActivity))
@@ -318,9 +372,20 @@ export async function routeReviewWorkflow(
         evidence: infraEvidence,
         rounds: round,
         ...(infraFailures.length > 0 ? { infraFailures } : {}),
+        // 经过修复才通过时，主控必须知道「谁修的、修在哪儿」——那些改动不在它
+        // 的工作树里，不披露就会被误读成「已落地」。
+        ...(patcherArtifacts.length > 0 ? { patcherArtifacts } : {}),
       }
     }
     const patcher = await deps.spawnPatcher(change, last, signal, options.onActivity)
+    if (patcher.changedFiles?.length || patcher.patchSummary || patcher.diffArtifactId) {
+      patcherArtifacts.push({
+        round,
+        changedFiles: patcher.changedFiles ?? [],
+        ...(patcher.patchSummary ? { patchSummary: patcher.patchSummary } : {}),
+        ...(patcher.diffArtifactId ? { diffArtifactId: patcher.diffArtifactId } : {}),
+      })
+    }
     if (!patcher.patched) {
       return {
         tier,
@@ -328,6 +393,7 @@ export async function routeReviewWorkflow(
         evidence: last.evidence,
         escalated: true,
         rounds: round,
+        ...(patcherArtifacts.length > 0 ? { patcherArtifacts } : {}),
       }
     }
   }
@@ -338,5 +404,6 @@ export async function routeReviewWorkflow(
     evidence: last.evidence,
     escalated: true,
     rounds: maxRounds,
+    ...(patcherArtifacts.length > 0 ? { patcherArtifacts } : {}),
   }
 }

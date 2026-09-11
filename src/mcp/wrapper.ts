@@ -57,6 +57,8 @@ export function createMcpToolWrapper(
   callTool: CallToolFn,
   consent?: McpConnectorConsent,
   securityPolicy?: McpToolSecurityPolicy,
+  /** 传输类型——供错误归因区分「stdio 子进程退出」与「远程断连」。 */
+  transport?: 'stdio' | 'remote',
 ): Tool {
   const rivetName = mcpToolName(serverId, mcpDef.name)
   const desc = mcpDef.description ?? `MCP tool: ${mcpDef.name} (from ${serverId})`
@@ -107,7 +109,7 @@ export function createMcpToolWrapper(
         }
         return { content: `${content}\n${annotation}` }
       } catch (err) {
-        const classified = classifyMcpError(err)
+        const classified = classifyMcpError(err, { transport })
         const annotation = `[MCP: ${serverId} · ${policy.capability}${needsApproval ? ' · approval-required' : ''} · error: ${classified.class} · ${classified.suggestion}]`
         // annotation 已含 class + suggestion 作为精简信号；模型 content 只取错误首行，
         // 完整消息走 uiContent。

@@ -1225,6 +1225,67 @@ describe('executeToolUse', () => {
     assert.equal((result.toolResult as any).is_error, true)
   })
 
+  it('E6: checkpoint creation failure appends a rollback warning and does NOT latch checkpointCreated', async () => {
+    let checkpointCalls = 0
+    const deps = makeDeps({
+      createCheckpoint: async () => { checkpointCalls++; return null },
+    })
+
+    const result = await executeToolUse(
+      { id: 'tu-cp-fail', name: 'write_file', input: { file_path: 'foo.ts', content: 'x' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.equal(checkpointCalls, 1, 'first mutating tool of the turn must attempt the baseline')
+    assert.equal(result.checkpointCreated, false, 'failure must NOT latch the flag — the next tool/turn must retry the baseline')
+    const content = (result.toolResult as any).content as string
+    assert.match(content, /\[checkpoint\] 回滚基线创建失败/, 'result must carry the rollback-window warning')
+    assert.match(content, /自动回滚不可用/, 'warning must state the rollback is unavailable this turn')
+  })
+
+  it('E6: after a failed baseline the next mutating tool retries the checkpoint (window not silently lost)', async () => {
+    let fail = true
+    const deps = makeDeps({
+      createCheckpoint: async () => (fail ? null : { hash: 'deadbeef', timestamp: 1, message: 'auto' }),
+    })
+
+    const first = await executeToolUse(
+      { id: 'tu-cp-retry-1', name: 'write_file', input: { file_path: 'a.ts', content: 'x' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+    assert.equal(first.checkpointCreated, false)
+
+    fail = false
+    const second = await executeToolUse(
+      { id: 'tu-cp-retry-2', name: 'write_file', input: { file_path: 'b.ts', content: 'x' } },
+      deps, noopCallbacks as any, 1, first.checkpointCreated,
+    )
+    assert.equal(second.checkpointCreated, true, 'retry on the next mutating tool must succeed and latch')
+    assert.doesNotMatch((second.toolResult as any).content as string, /回滚基线创建失败/, 'recovered path must not warn')
+  })
+
+  it('E6: successful checkpoint latches, fires onCheckpoint, and appends no warning', async () => {
+    let checkpointCalls = 0
+    let onCheckpointHash = ''
+    const callbacks = {
+      ...noopCallbacks,
+      onCheckpoint: (hash: string) => { onCheckpointHash = hash },
+    }
+    const deps = makeDeps({
+      createCheckpoint: async () => { checkpointCalls++; return { hash: 'deadbeef', timestamp: 1, message: 'auto' } },
+    })
+
+    const result = await executeToolUse(
+      { id: 'tu-cp-ok', name: 'write_file', input: { file_path: 'foo.ts', content: 'x' } },
+      deps, callbacks as any, 1, false,
+    )
+
+    assert.equal(checkpointCalls, 1)
+    assert.equal(result.checkpointCreated, true, 'success must latch the flag (no re-checkpoint per tool)')
+    assert.equal(onCheckpointHash, 'deadbeef', 'success must surface the baseline hash via onCheckpoint')
+    assert.doesNotMatch((result.toolResult as any).content as string, /\[checkpoint\]/, 'success path must stay warning-free')
+  })
+
   it('executes a tool and returns result', async () => {
     const deps = makeDeps()
     const result = await executeToolUse(

@@ -431,6 +431,9 @@ export interface ToolPipelineDeps {
   onGateBlocked?: (kind: string) => void
   /** P1b: TDD gate 同 target 被拦计数回调 */
   onTddBlocked?: (target?: string) => void
+  /** E6 测试接缝：覆写 checkpoint 工厂，让回归测试能模拟创建失败（git
+   *  index.lock 争用、非 git 目录等）。生产路径不传 → 用真实现。 */
+  createCheckpoint?: typeof createCheckpoint
 }
 
 export interface ToolExecResult {
@@ -756,6 +759,9 @@ async function executeToolUseInner(
 ): Promise<ToolExecResult> {
   let { traceStore, importGraph, lastConflictCheckCount, latestRisk } = deps
   let checkpointCreated = checkpointAlreadyCreated
+  // E6：本回合首个破坏性工具前建基线失败时置起——追加到该工具结果尾部，
+  // 让模型与用户都看到「本回合自动回滚不可用」（见下方 checkpoint 块）。
+  let checkpointFailureNote: string | undefined
 
   // 无进展哨兵的活动 key（工具级，2026-09-10 纵深修复）：pre 段（审批/checkpoint/
   // 快照）与 post 段（hooks/LSP/artifact/账本/影响面）都打在它上面——stall 告警
@@ -1347,9 +1353,18 @@ async function executeToolUseInner(
     // before bash runs — not only before write_file/edit_file.
     if (isMutatingTool(tu.name) && !checkpointCreated) {
       touchActivity(activityKey, `tool:${tu.name}:pre:checkpoint`)
-      const cp = await createCheckpoint(deps.cwd, 'auto', deps.config.sessionId)
-      checkpointCreated = true
-      if (cp) callbacks.onCheckpoint?.(cp.hash)
+      const cp = await (deps.createCheckpoint ?? createCheckpoint)(deps.cwd, 'auto', deps.config.sessionId)
+      // E6：创建失败（git index.lock 争用、非 git 目录等）不得置位——旧代码
+      // 无条件置位让失败被掩盖：本回合剩余破坏性操作全部落在回滚窗外，且
+      // 后续回合以为基线已建、永不再重试（静默蒸发，打脸 approval-risk 的
+      // 「YOLO 免审的 safety net 是 checkpoints + rollback」承诺）。保留
+      // false = 同回合/后续回合首个破坏性工具前会重试基线。
+      if (cp) {
+        checkpointCreated = true
+        callbacks.onCheckpoint?.(cp.hash)
+      } else {
+        checkpointFailureNote = '[checkpoint] 回滚基线创建失败——本回合的自动回滚不可用，请谨慎操作'
+      }
    }
 
     if ((tu.name === 'write_file' || tu.name === 'edit_file') && typeof tu.input.file_path === 'string') {
@@ -1675,6 +1690,12 @@ async function executeToolUseInner(
     // 追加在结果尾部 = 对话历史末尾，前缀缓存的已冻结前缀不变。
     if (tddSuggestNote && !harnessResult.isError) {
       finalContent = `${finalContent}\n\n[TDD] ${tddSuggestNote}`
+    }
+
+    // E6：回滚窗警示放最后追加——截断/artifact 化都动不到它（同 tddSuggestNote
+    // 的尾部追加模式），保证模型与用户真的看到。
+    if (checkpointFailureNote) {
+      finalContent = `${finalContent}\n\n${checkpointFailureNote}`
     }
 
     // Normalize isError: tools may omit isError on success (undefined),

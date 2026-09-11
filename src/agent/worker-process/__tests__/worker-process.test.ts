@@ -4,6 +4,10 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+// 静态命名导入（Node 官方文档姿势）。动态 import 解构会在 @types/node 22.19.x
+// 下报 TS2339：该版本把 node:events 声明为 `export = EventEmitter`，getEventListeners
+// 只挂在类 static 上、不在模块类型面里，CI typecheck 因此全红。
+import { getEventListeners } from 'node:events'
 import { createFrameDecoder, encodeFrame } from '../protocol.js'
 import {
   runWorkerSessionOop, resolveChildEntry, WorkerOopUnavailable,
@@ -208,7 +212,6 @@ describe('OOP 运行器（真子进程假 agent）', () => {
   })
 
   test('settle 后摘除 abort 监听——同一会话级信号多次委派不累积监听（2026-09-10 泄漏修复）', async () => {
-    const { getEventListeners } = await import('node:events')
     const fixture = writeFixture(dir, 'crash') // 最快 settle：init 后 exit(1)
     const controller = new AbortController()
     const spawnFx = (_e: string[], script: string) => spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })

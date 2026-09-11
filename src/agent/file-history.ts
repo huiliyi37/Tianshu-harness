@@ -59,6 +59,20 @@ export class FileHistory {
     private sessionId: string,
   ) {}
 
+  /**
+   * /cd 换工作区后按新备份根重建实例（备份根焊死构造期 cwd，不能原地复用）。
+   * 备份文件已随 migrateSessionFiles 整体迁到新 slug 目录，内存快照与 tracked
+   * 名单原样随迁——新实例对接管前的全部 undo 历史仍然可读可回滚，无缝接管。
+   * 继续复用旧实例的后果：rewind 读旧路径备份 ENOENT 被当「missing」静默跳过
+   * （撤销无声丢失）、新编辑在旧项目路径 mkdir 复活旧会话目录（跨项目状态脑裂）。
+   */
+  withBackupRoot(backupDir: string): FileHistory {
+    const next = new FileHistory(backupDir, this.sessionId)
+    next.snapshots = this.snapshots
+    next.trackedFiles = this.trackedFiles
+    return next
+  }
+
   async trackEdit(filePath: string, messageId: string): Promise<void> {
     this.trackedFiles.add(filePath)
 

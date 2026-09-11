@@ -34,7 +34,7 @@ import { SessionContext } from './agent/context.js'
 import { SessionPersist, evictOldSessions, getSessionDir } from './agent/session-persist.js'
 import { runGateCompletion } from './agent/gate-completion.js'
 import { memoryBackfillEnabled, runMemoryBackfill } from './memory/backfill.js'
-import { migrateSessionFiles } from './agent/session-cd.js'
+import { migrateSessionFiles, rebuildStoresAfterCwdMove } from './agent/session-cd.js'
 import { decideStartupSession, RESUME_FRESHNESS_MS } from './agent/session-recovery.js'
 import { runResumePreflightOai } from './context/resume-preflight.js'
 import {
@@ -1819,6 +1819,12 @@ export async function switchAgentCwd(ctx: BootstrapContext, target: string): Pro
   const oldEngine = ctx.agent.config.promptEngine
   const oldCoordinator = ctx.refs.coordinator
   const newPersist = new SessionPersist(sessionId, newCwd)
+  // D-1：fileHistory/claimStore 的磁盘根都焊死构造期 cwd（备份根 persist.getBackupDir()、
+  // claims 根 getSessionDir(cwd)），原引用直接复用会让 undo 读旧路径备份 ENOENT 被
+  // 当「missing」静默跳过（撤销无声丢失）、新编辑在旧项目路径复活旧会话目录（脑裂），
+  // 旧目录搬不空更让回程 /cd rename ENOTEMPTY 确定性砖化。会话文件已整体迁到新 slug
+  // 目录（第 4 步），容器按 newPersist 重建即无缝接管。
+  const rebuiltStores = rebuildStoresAfterCwdMove(ctx.fileHistory, newPersist)
 
   const { agent } = createAgentRuntime({
     provider: ctx.provider,
@@ -1829,8 +1835,8 @@ export async function switchAgentCwd(ctx: BootstrapContext, target: string): Pro
     cwd: newCwd,
     toolRegistry: ctx.toolRegistry,
     persist: newPersist,
-    claimStore: ctx.claimStore,
-    fileHistory: ctx.fileHistory,
+    claimStore: rebuiltStores.claimStore,
+    fileHistory: rebuiltStores.fileHistory,
     refs: ctx.refs,
     domainKnowledgeStore: ctx.domainKnowledgeStore,
     modelId: currentModelId,
@@ -1843,6 +1849,8 @@ export async function switchAgentCwd(ctx: BootstrapContext, target: string): Pro
   const oldLspManager = ctx.refs.lspManager
   ctx.agent = agent
   ctx.persist = newPersist
+  ctx.fileHistory = rebuiltStores.fileHistory
+  ctx.claimStore = rebuiltStores.claimStore
   ctx.cwd = newCwd
   ctx.refs.promptEngine = agent.config.promptEngine
   wireFrozenSnapshotPersist(newPersist, agent.config.promptEngine)

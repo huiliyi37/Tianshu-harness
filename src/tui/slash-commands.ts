@@ -3915,7 +3915,9 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       setCacheHitRate: (v: number) => { cacheHitRate = v },
       setSummaryState: () => {},
       mcpManagerRef: { current: ctx.refs.mcpManager },
-      claimStoreRef: { current: ctx.claimStore },
+      // getter 惰性读 ctx——/cd 重建 claimStore 后（bootstrap switchAgentCwd 原地
+      // 更新 ctx.claimStore），/context claims* 等检视命令读到的仍是当前 store。
+      claimStoreRef: { get current() { return ctx.claimStore } },
       banditState: ctx.refs.banditState ?? undefined,
       onDomainChange: (domainName: string | undefined) => {
         app.setSessionStarDomain(domainName)

@@ -314,6 +314,10 @@ export function loadConfig(options?: {
   sessionOverlay?: Record<string, unknown>
   /** 显式 profile 名（优先于 RIVET_PROFILE env）。见 profile.ts。 */
   profile?: string
+  /** 内部守卫专用：跳过 profile 层，得到可持久视图（defaults ⊕ user）。
+   *  只应经 loadPersistableConfig() 被 saveConfig 的持久化守卫消费——
+   *  对外读取一律走含 profile 层的完整合并。 */
+  skipProfileOverlay?: boolean
 }): Config {
   // Layer 1: defaults
   let base = DEFAULT_CONFIG as unknown as Record<string, unknown>
@@ -373,7 +377,9 @@ export function loadConfig(options?: {
   // Layer 3.5: profile overlay（RIVET_PROFILE env / --profile flag，见 profile.ts）。
   // 命名配置覆盖块：$RIVET_HOME/profiles/<name>.json 或内置 lean。位于 project 与
   // session overlay 之间——profile 可覆盖项目配置，session overlay 可覆盖 profile。
-  const profileOverlay = resolveProfileOverlay(resolveProfileName(options?.profile))
+  const profileOverlay = options?.skipProfileOverlay
+    ? {}
+    : resolveProfileOverlay(resolveProfileName(options?.profile))
   if (Object.keys(profileOverlay).length > 0) {
     base = deepMerge(base, profileOverlay)
   }
@@ -446,6 +452,68 @@ export function loadConfigDefault(): Config {
   return loadConfig()
 }
 
+/**
+ * 可持久视图（defaults ⊕ user，无 profile 层）。saveConfig 的写盘源以它为
+ * 基准剥掉 profile 临时层——profile 的覆盖值只活在内存读路径（C1 守卫）。
+ */
+export function loadPersistableConfig(): Config {
+  return loadConfig({ skipProfileOverlay: true })
+}
+
+function jsonDeepEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * 沿 profile 覆盖块的路径，把写入对象还原为可持久层（defaults ⊕ user）现值。
+ * 只动「写入值与 overlay 贡献值不可区分」的路径（setter 本轮没碰它）；
+ * setter 显式改过的路径（写入值 ≠ overlay 值）保持写入值，编辑不被吞掉。
+ */
+function restorePersistableValues(
+  node: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+  persistable: Record<string, unknown>,
+): void {
+  for (const [key, ov] of Object.entries(overlay)) {
+    if (ov !== null && typeof ov === 'object' && !Array.isArray(ov)) {
+      const child = node[key]
+      if (child === null || typeof child !== 'object' || Array.isArray(child)) continue
+      const perChild = persistable[key]
+      restorePersistableValues(
+        child as Record<string, unknown>,
+        ov as Record<string, unknown>,
+        perChild !== null && typeof perChild === 'object' && !Array.isArray(perChild)
+          ? perChild as Record<string, unknown>
+          : {},
+      )
+      // 整条路径都还原自 overlay 时容器会变空——{} 深合并等于不存在，删掉保持写盘整洁
+      if (Object.keys(child as Record<string, unknown>).length === 0) delete node[key]
+      continue
+    }
+    if (jsonDeepEqual(node[key], ov)) {
+      const per = persistable[key]
+      if (per === undefined) delete node[key]
+      else node[key] = structuredClone(per)
+    }
+  }
+}
+
+/**
+ * C1 持久化守卫：profile 层是临时活层（profile.ts「回滚语义：删 profile 文件
+ * 或换 profile 即回滚（文件即配置，无状态）」），与 sessionOverlay 的
+ * 「never persisted here」同一纪律。此前 saveConfig 把 loadConfig() 的完整
+ * 合并结果写盘——RIVET_PROFILE（--profile 注入 env）活跃期间，任何一次无关
+ * setter 都会把 profile 覆盖值永久烘焙进 config.json，此后删/换 profile 无法
+ * 回滚。写盘前在此剥掉：profile 覆盖的路径还原为可持久层现值。
+ * 读路径不受影响——getter/setter 计算仍走含 profile 的完整合并。
+ */
+function unBakeProfileOverlay(toWrite: Config): void {
+  const overlay = resolveProfileOverlay(resolveProfileName())
+  if (Object.keys(overlay).length === 0) return
+  const persistable = structuredClone(loadPersistableConfig()) as unknown as Record<string, unknown>
+  restorePersistableValues(toWrite as unknown as Record<string, unknown>, overlay, persistable)
+}
+
 export function saveConfig(config: Config): void {
   // provider.apiKey is a runtime-only materialized value. Persisted provider
   // credentials must be either keyRef or apiKeyEnv; config.json never receives
@@ -462,6 +530,7 @@ export function saveConfig(config: Config): void {
       delete (provider as unknown as { protocol?: string }).protocol
     }
   }
+
   // 墓碑保全：用户层 providers[name]=null 是「删除内置预设」的标记
   // （deepMerge null=删键，见 deepMerge）。saveConfig 整体重写用户层——不带回
   // 磁盘上既有墓碑的话，下一次任意写配置都会让被删预设从 DEFAULT_CONFIG 复活。
@@ -474,6 +543,8 @@ export function saveConfig(config: Config): void {
       }
     }
   }
+  // profile 层只活在内存——写盘内容永远是 defaults ⊕ user ⊕ setter 本轮的显式改动
+  unBakeProfileOverlay(toWrite)
   writeFileAtomicSync(configPath, JSON.stringify(toWrite, null, 2) + '\n')
 }
 

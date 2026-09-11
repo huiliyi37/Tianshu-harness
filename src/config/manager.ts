@@ -1758,6 +1758,7 @@ function applyAdvancedConfig(target: ProviderConfig, advanced?: ProviderAdvanced
   if (advanced.maxRetries !== undefined) target.maxRetries = advanced.maxRetries
   if (advanced.temperature !== undefined) target.temperature = advanced.temperature
   if (advanced.proxy !== undefined) target.proxy = advanced.proxy
+  if (advanced.retry !== undefined) target.retry = advanced.retry
 }
 
 /** Persist the config first; a failed secret write must not leave a dangling keyRef. */

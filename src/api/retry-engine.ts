@@ -6,7 +6,13 @@
  */
 
 import { classifyApiError } from './error-classifier.js'
-import type { ClassifiedError } from './error-classifier.js'
+import type { ClassifiedError, ErrorCategory } from './error-classifier.js'
+import {
+  DEFAULT_RETRY_BACKOFF,
+  resolveBackoff,
+  type RetryBackoffConfig,
+  type RetryCategoryOverride,
+} from './retry-policy.js'
 
 // ---------------------------------------------------------------------------
 // Jittered exponential backoff
@@ -78,8 +84,16 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
   })
 }
 
-function applyDelayJitter(delayMs: number): number {
-  return delayMs + Math.random() * delayMs * 0.5
+/**
+ * Jitter the classifier-supplied base delay. Shares the `jitterRatio` knob with
+ * `jitteredBackoff` so one config value shapes both delay paths; the default
+ * (0.5) is the historical hardcoded value.
+ */
+function applyDelayJitter(
+  delayMs: number,
+  jitterRatio: number = DEFAULT_RETRY_BACKOFF.jitterRatio,
+): number {
+  return delayMs + Math.random() * delayMs * jitterRatio
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +122,20 @@ export interface RetryOptions {
    *  When exceeded, the current attempt is abandoned and an error is thrown.
    *  Prevents retry loops from running for tens of minutes on unresponsive providers. */
   maxTotalDurationMs?: number
+  /**
+   * Shape of the jittered exponential backoff. Absent fields fall back to
+   * `DEFAULT_RETRY_BACKOFF` (the historical hardcoded values).
+   */
+  backoff?: RetryBackoffConfig
+  /**
+   * Per-category budget / delay overrides keyed by `ErrorCategory`.
+   *
+   * Precedence for a category's retry budget is
+   * `min(overrides[cat].maxRetries ?? classified.maxRetries, maxTotalRetries)`,
+   * i.e. the override wins over the classifier's built-in cap but the global
+   * ceiling still applies. Without an override the behavior is unchanged.
+   */
+  overrides?: Partial<Record<ErrorCategory, RetryCategoryOverride>>
   /** Called before each retry with diagnostic info. */
   onRetry?: (info: RetryInfo) => void
 }
@@ -128,9 +156,12 @@ export interface RetryInfo {
 /**
  * Execute `fn` with structured retry based on classified errors.
  *
- * - Calls `fn()` once, then retries up to `min(classified.maxRetries, maxTotalRetries)` times.
+ * - Calls `fn()` once, then retries up to `min(categoryMax, maxTotalRetries)` times,
+ *   where `categoryMax` is `overrides[category].maxRetries` when configured and
+ *   `classified.maxRetries` otherwise.
  * - If the classifier says `!retryable`, the error is re-thrown immediately.
- * - Delay uses `classified.retryDelayMs` when > 0, otherwise falls back to `jitteredBackoff`.
+ * - Delay uses the (possibly overridden) category delay when > 0, otherwise
+ *   falls back to `jitteredBackoff`. Both paths honour `options.backoff`.
  * - Respects `AbortSignal` — rejects with `AbortError` if aborted during a delay.
  */
 export async function withStructuredRetry<T>(
@@ -140,6 +171,7 @@ export async function withStructuredRetry<T>(
 ): Promise<T> {
   const maxTotal = options?.maxTotalRetries ?? 5
   const maxDuration = options?.maxTotalDurationMs
+  const backoff = resolveBackoff(options?.backoff)
   const startTime = maxDuration ? Date.now() : 0
 
   // attempt is 1-based and counts *retries* (not the initial call)
@@ -175,9 +207,13 @@ export async function withStructuredRetry<T>(
         throw err
       }
 
-      // The effective ceiling is the lower of the error's maxRetries and
-      // the caller's global maxTotalRetries.
-      const effectiveMax = Math.min(classified.maxRetries, maxTotal)
+      // A user override replaces the classifier's built-in cap for THIS
+      // category; the caller's global ceiling still applies on top. This is
+      // what makes `overrides.rate_limit.maxRetries = 8` effective — before,
+      // raising the provider-level `maxRetries` alone did nothing for 429
+      // because min(5, maxTotal) stayed 5.
+      const override = options?.overrides?.[classified.category]
+      const effectiveMax = Math.min(override?.maxRetries ?? classified.maxRetries, maxTotal)
 
       // +1 because `attempt` starts at 0 (the initial call is attempt 0,
       // first retry is attempt 1, etc.)
@@ -185,12 +221,13 @@ export async function withStructuredRetry<T>(
         throw err
       }
 
-      // Compute delay: prefer classifier-provided delay when present,
-      // otherwise fall back to jittered exponential backoff.
+      // Compute delay: prefer the (possibly overridden) classifier delay when
+      // present, otherwise fall back to jittered exponential backoff.
+      const baseDelayMs = override?.retryDelayMs ?? classified.retryDelayMs
       const nextDelayMs =
-        classified.retryDelayMs > 0
-          ? applyDelayJitter(classified.retryDelayMs)
-          : jitteredBackoff(attempt + 1)
+        baseDelayMs > 0
+          ? applyDelayJitter(baseDelayMs, backoff.jitterRatio)
+          : jitteredBackoff(attempt + 1, backoff.baseDelayMs, backoff.maxDelayMs, backoff.jitterRatio)
 
       // Notify caller
       options?.onRetry?.({

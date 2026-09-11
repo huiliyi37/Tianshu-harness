@@ -124,6 +124,9 @@ export function createProviderClient(
       thinkingBudget,
       requestTimeoutMs: provider.requestTimeoutMs,
       maxRetries: provider.maxRetries,
+      // Retry policy (backoff shape / per-category overrides / rate limit).
+      retry: provider.retry,
+      providerName: provider.name,
       temperature: provider.temperature,
       proxy: provider.proxy,
       userAgent: wire?.userAgent,

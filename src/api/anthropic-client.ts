@@ -2,6 +2,8 @@ import type { StreamClient, StreamCallbacks } from './stream-client.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
+import type { RetryPolicyConfig } from './retry-policy.js'
+import { acquireProviderSlot } from './rate-limiter.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { parseJsonObjectWithEscapeRepair } from './json-escape-repair.js'
@@ -17,6 +19,13 @@ export interface AnthropicClientConfig {
   requestTimeoutMs?: number
   /** 重试次数覆盖；undefined = 内置默认（5），0 = 禁用。 */
   maxRetries?: number
+  /**
+   * 重试策略（退避曲线 / 分类覆盖 / 总时长上限 / 客户端限速）。
+   * undefined = 完全保持内置硬编码行为。来源：`provider.providers.<name>.retry`。
+   */
+  retry?: RetryPolicyConfig
+  /** Provider name — rate-limiter bucket key（缺省回退到 baseUrl）。 */
+  providerName?: string
   /** 采样温度默认值（clamp 到 Anthropic 合法的 0–1）；thinking 启用时不注入
    *  （Anthropic 要求 thinking 请求 temperature=1）。 */
   temperature?: number
@@ -102,6 +111,11 @@ export class AnthropicClient implements StreamClient {
     this.proxyDispatcher = config.proxy ? new ProxyAgent(config.proxy) : undefined
   }
 
+  /** Rate-limiter bucket key — see OpenAIClient.rateLimitKey. */
+  private get rateLimitKey(): string {
+    return this.config.providerName ?? this.config.baseUrl
+  }
+
   setReasoningEffort(_effort: string): void {
     // Anthropic doesn't use reasoning_effort — thinking budget is set at construction
   }
@@ -125,6 +139,9 @@ export class AnthropicClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // Client-side rate limit (opt-in) — see openai-client for rationale.
+      await acquireProviderSlot(this.rateLimitKey, this.config.retry?.rateLimit, lifecycle.signal)
+
       const response = await fetchWithTimeout(`${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -159,9 +176,14 @@ export class AnthropicClient implements StreamClient {
 
       await this.processSSEStream(response, callbacks, signal, lifecycle)
     }, signal, {
-      maxTotalDurationMs: 10 * 60_000,
+      // Precedence: explicit retry.maxTotalDurationMs → built-in 10min cap.
+      maxTotalDurationMs: this.config.retry?.maxTotalDurationMs ?? 10 * 60_000,
       // provider 级 maxRetries 显式配置时覆盖内置默认（0 = 禁用重试）。
-      maxTotalRetries: this.config.maxRetries,
+      // Precedence: retry.maxTotalRetries → legacy maxRetries → engine default.
+      maxTotalRetries: this.config.retry?.maxTotalRetries ?? this.config.maxRetries,
+      // Backoff shape + per-category budget overrides (undefined = built-in).
+      backoff: this.config.retry?.backoff,
+      overrides: this.config.retry?.overrides,
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)

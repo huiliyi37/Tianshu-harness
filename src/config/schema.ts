@@ -126,6 +126,72 @@ export const authConfigSchema = z.discriminatedUnion('type', [
   }),
 ])
 
+/**
+ * Per-category retry budget override (`retry.overrides.<category>`).
+ * Keys mirror `ErrorCategory` in src/api/error-classifier.ts. Declared
+ * explicitly rather than as `z.record()` so config.json gets key completion
+ * and a typo'd category is rejected instead of silently ignored.
+ */
+export const retryCategoryOverrideSchema = z.object({
+  /** Retry budget for this category. Still clamped by the global ceiling
+   *  (`retry.maxTotalRetries` / `maxRetries`). */
+  maxRetries: z.number().int().min(0).max(50).optional(),
+  /** Base delay (ms) before a retry of this category; replaces the built-in
+   *  classifier value. 0 = retry immediately (still jittered). */
+  retryDelayMs: z.number().int().min(0).max(600_000).optional(),
+})
+
+export const retryOverridesSchema = z.object({
+  rate_limit: retryCategoryOverrideSchema.optional(),
+  overloaded: retryCategoryOverrideSchema.optional(),
+  server_error: retryCategoryOverrideSchema.optional(),
+  timeout: retryCategoryOverrideSchema.optional(),
+  client_error: retryCategoryOverrideSchema.optional(),
+  context_overflow: retryCategoryOverrideSchema.optional(),
+  image_strip: retryCategoryOverrideSchema.optional(),
+  stream_parse: retryCategoryOverrideSchema.optional(),
+  reasoning_repetition: retryCategoryOverrideSchema.optional(),
+  auth_error: retryCategoryOverrideSchema.optional(),
+  unknown: retryCategoryOverrideSchema.optional(),
+})
+// Strict: a typo'd category key must fail loudly, not be stripped by zod's
+// default unknown-key handling — a silently-ignored override looks like it is
+// in effect while the built-in budget keeps winning.
+.strict()
+
+/**
+ * `provider.providers.<name>.retry` — user-level retry policy.
+ *
+ * Entirely optional: every field absent = the built-in hardcoded behavior
+ * (see src/api/retry-policy.ts), so existing configs are unaffected.
+ * Consumption points: src/api/retry-engine.ts (backoff + overrides),
+ * src/api/rate-limiter.ts (rateLimit), openai-client / anthropic-client
+ * (composition + maxTotalDurationMs).
+ */
+export const retryPolicySchema = z.object({
+  /** Hard ceiling on retries, all categories. Takes precedence over the legacy
+   *  top-level `maxRetries`. undefined = client built-in default. */
+  maxTotalRetries: z.number().int().min(0).max(50).optional(),
+  /** Ceiling on total elapsed retry time (ms). undefined = built-in per-protocol
+   *  default (10min, glm 20min). Prevents a slow provider from retrying for
+   *  tens of minutes. */
+  maxTotalDurationMs: z.number().int().positive().max(86_400_000).optional(),
+  /** Jittered exponential backoff shape. */
+  backoff: z.object({
+    baseDelayMs: z.number().int().min(0).max(600_000).optional(),
+    maxDelayMs: z.number().int().min(0).max(3_600_000).optional(),
+    /** Jitter fraction added on top of the computed delay (0 = none). */
+    jitterRatio: z.number().min(0).max(5).optional(),
+  }).optional(),
+  /** Per-category overrides. */
+  overrides: retryOverridesSchema.optional(),
+  /** Opt-in client-side token bucket. Absent / requestsPerSecond <= 0 = off. */
+  rateLimit: z.object({
+    requestsPerSecond: z.number().positive().max(1000).optional(),
+    burst: z.number().int().min(1).max(10_000).optional(),
+  }).optional(),
+})
+
 export const providerBaseSchema = z.object({
   name: z.string(),
   apiKey: z.string().nullable().optional().transform(value => value ?? undefined),
@@ -179,8 +245,16 @@ export const providerBaseSchema = z.object({
    */
   requestTimeoutMs: z.number().int().positive().optional(),
   /** Max retry attempts for retryable API errors (0 disables). undefined =
-   *  保留客户端内置默认。消费点：openai/anthropic 重试预算。 */
-  maxRetries: z.number().int().min(0).max(10).optional(),
+   *  保留客户端内置默认。消费点：openai/anthropic 重试预算。
+   *  注意：这是全局「上限」，某个 category 自带的重试次数（error-classifier）
+   *  会先与它取 min，所以单靠抬高本值无法放宽 429（rate_limit 内置 5）——
+   *  需要配合 `retry.overrides.rate_limit.maxRetries`。 */
+  maxRetries: z.number().int().min(0).max(20).optional(),
+  /**
+   * 重试策略（退避曲线 / 分类覆盖 / 客户端限速）。整块可选，缺省即保持
+   * 内置硬编码行为。详见 src/api/retry-policy.ts。
+   */
+  retry: retryPolicySchema.optional(),
   /** Provider-level sampling temperature default。思考模式下不注入（推理服务端
    *  拒绝调温 / Anthropic 要求 thinking temperature=1）；per-model 覆盖为后续波次。 */
   temperature: z.number().min(0).max(2).optional(),
@@ -994,8 +1068,9 @@ export type Config = {
 }
 
 export type ProviderConfig = z.infer<typeof providerSchema>
+export type RetryPolicyConfig = z.infer<typeof retryPolicySchema>
 /** Optional advanced knobs carried through wizard commits and drafts. */
-export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxRetries' | 'temperature' | 'proxy'>
+export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxRetries' | 'temperature' | 'proxy' | 'retry'>
 export type AuthConfig = z.infer<typeof authConfigSchema>
 export type ProviderCapabilitiesConfig = z.infer<typeof providerCapabilitiesSchema>
 export type ModelConfig = z.infer<typeof modelConfigSchema>

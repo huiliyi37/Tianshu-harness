@@ -7,6 +7,8 @@ import { estimateOaiTokens } from '../compact/micro.js'
 import type { ProviderProfile } from './provider-profile.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { withStructuredRetry } from './retry-engine.js'
+import type { RetryPolicyConfig } from './retry-policy.js'
+import { acquireProviderSlot } from './rate-limiter.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { sanitizeMessageContent } from '../utils/sanitize.js'
@@ -191,6 +193,11 @@ export interface OpenAIClientConfig {
   /** Max retry attempts for retryable API errors. undefined = 保留内置默认
    *  （thinking 1 次 / slow-thinking 2 次 / 非 thinking 5 次）；0 = 禁用重试。 */
   maxRetries?: number
+  /**
+   * 重试策略（退避曲线 / 分类覆盖 / 总时长上限 / 客户端限速）。
+   * undefined = 完全保持内置硬编码行为。来源：`provider.providers.<name>.retry`。
+   */
+  retry?: RetryPolicyConfig
   /** Provider-level sampling temperature default (0–2)。仅当请求未显式指定
    *  temperature 且 thinking 未启用时注入——推理模式下多数服务端拒绝调温。 */
   temperature?: number
@@ -391,6 +398,16 @@ export class OpenAIClient implements StreamClient {
       : ''
     this._sanitizedCount = 0
     this.proxyDispatcher = config.proxy ? new ProxyAgent(config.proxy) : undefined
+  }
+
+  /**
+   * Rate-limiter bucket key. Prefer the provider name so entries that point at
+   * the same provider share one bucket across client instances (the factory
+   * builds a client per request); fall back to baseUrl for unnamed custom
+   * endpoints.
+   */
+  private get rateLimitKey(): string {
+    return this.config.providerName ?? this.config.baseUrl
   }
 
   /** 慢思考端点判定（名称/URL/显式配置三级，见 isSlowThinkingProvider）。 */
@@ -735,6 +752,12 @@ export class OpenAIClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // Client-side rate limit (opt-in): pace outgoing requests per provider so a
+      // wave of subagents cannot stampede the same quota and all collect 429s.
+      // No-op unless `retry.rateLimit.requestsPerSecond` is configured. Waits on
+      // the lifecycle signal so user cancellation also aborts the queue.
+      await acquireProviderSlot(this.rateLimitKey, this.config.retry?.rateLimit, lifecycle.signal)
+
       const response = await fetchWithTimeout(`${this.config.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -787,16 +810,22 @@ export class OpenAIClient implements StreamClient {
 
       await this.parseStreamFromReader(reader, callbacks, signal, reasoningRef, lifecycle, firstByteMs)
     }, signal, {
-      maxTotalDurationMs: this.config.providerName === 'glm' ? 20 * 60_000 : 10 * 60_000,
+      // Precedence: explicit retry.maxTotalDurationMs → built-in per-provider cap.
+      maxTotalDurationMs: this.config.retry?.maxTotalDurationMs
+        ?? (this.config.providerName === 'glm' ? 20 * 60_000 : 10 * 60_000),
       // Thinking retries are normally throttled to 1 because re-reasoning is costly.
       // 例外：slow-thinking providers 在被中止的那次尝试里已把整个 prompt 灌进服务端
       // 前缀缓存，重试命中近 100% 缓存（实测 deepseek 99.4% hit、~12s 完成），代价极低。
       // 给它们 2 次重试，让「单次服务端 thinking 卡死」甚至「连续两次卡死」都能自愈而
       // 不冒泡成错误。maxTotalDurationMs 仍是总时长兜底，防 runaway。
       // An explicit provider maxRetries overrides the built-in thinking budget (0 disables retries).
-      maxTotalRetries: this.config.maxRetries ?? (isThinking
-        ? (this.isSlowThinking ? 2 : 1)
-        : undefined),
+      // Precedence: retry.maxTotalRetries → legacy maxRetries → built-in thinking budget.
+      maxTotalRetries: this.config.retry?.maxTotalRetries
+        ?? this.config.maxRetries
+        ?? (isThinking ? (this.isSlowThinking ? 2 : 1) : undefined),
+      // Backoff shape + per-category budget overrides (undefined = built-in).
+      backoff: this.config.retry?.backoff,
+      overrides: this.config.retry?.overrides,
       onRetry: (info) => {
         if (info.classified.category === 'rate_limit') {
           callbacks.onRateLimit?.(info.classified.retryDelayMs)

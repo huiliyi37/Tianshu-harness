@@ -318,3 +318,91 @@ describe('withStructuredRetry', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Retry policy overrides (provider.providers.<name>.retry)
+// ---------------------------------------------------------------------------
+
+describe('retry policy overrides', () => {
+  // Zero backoff everywhere in this suite: budget semantics are what we assert,
+  // not delay pacing (that has its own cases below).
+  const FAST_BACKOFF = { baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
+
+  it('raises a category budget above the classifier built-in cap', async () => {
+    // rate_limit is capped at 5 by the classifier; an override of 8 must win.
+    // The engine's own global ceiling (maxTotalRetries) still applies on top.
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Rate limited (429)', 429)
+    }
+    await assert.rejects(
+      () => withStructuredRetry(fn, undefined, {
+        maxTotalRetries: 8,
+        overrides: { rate_limit: { maxRetries: 8 } },
+        backoff: FAST_BACKOFF,
+      }),
+    )
+    // 1 initial + 8 retries = 9
+    assert.equal(calls, 9, `expected 9 calls, got ${calls}`)
+  })
+
+  it('clamps a category override by the global maxTotalRetries ceiling', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Rate limited (429)', 429)
+    }
+    await assert.rejects(
+      () => withStructuredRetry(fn, undefined, {
+        maxTotalRetries: 3,
+        overrides: { rate_limit: { maxRetries: 8 } },
+        backoff: FAST_BACKOFF,
+      }),
+    )
+    // global ceiling 3 wins: 1 initial + 3 retries = 4
+    assert.equal(calls, 4, `expected 4 calls, got ${calls}`)
+  })
+
+  it('replaces the classifier delay with the category override delay', async () => {
+    const { infos, onRetry } = createCollector()
+    const fn = flakyFactory('done', 1, 429)
+    await withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 5,
+      overrides: { rate_limit: { retryDelayMs: 1 } },
+      backoff: { jitterRatio: 0 },
+      onRetry,
+    })
+    assert.equal(infos.length, 1)
+    // 429 classifier delay is 2000; the override replaces it.
+    assert.equal(infos[0]!.nextDelayMs, 1)
+    assert.equal(infos[0]!.classified.category, 'rate_limit')
+  })
+
+  it('honours a custom backoff shape when no classifier delay applies', async () => {
+    // image_strip carries retryDelayMs 0 → falls back to jitteredBackoff, which
+    // must now honour the configured shape instead of the hardcoded defaults.
+    const { infos, onRetry } = createCollector()
+    const fn = flakyFactory('done', 1, 413)
+    await withStructuredRetry(fn, undefined, {
+      maxTotalRetries: 5,
+      backoff: { baseDelayMs: 1, maxDelayMs: 1000, jitterRatio: 0 },
+      onRetry,
+    })
+    assert.equal(infos.length, 1)
+    assert.equal(infos[0]!.nextDelayMs, 1, 'attempt 1 delay = baseDelayMs with zero jitter')
+  })
+
+  it('leaves behavior unchanged when no overrides are configured', async () => {
+    let calls = 0
+    const fn = async (): Promise<string> => {
+      calls++
+      throw new FakeApiError('Rate limited (429)', 429)
+    }
+    await assert.rejects(
+      () => withStructuredRetry(fn, undefined, { backoff: FAST_BACKOFF }),
+    )
+    // classifier cap for rate_limit is 5: 1 initial + 5 retries = 6
+    assert.equal(calls, 6, `expected 6 calls, got ${calls}`)
+  })
+})

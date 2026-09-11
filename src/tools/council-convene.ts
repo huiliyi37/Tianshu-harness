@@ -5,6 +5,7 @@ import { runCouncil, runCouncilDebate, buildSeatObjective, type CouncilDeps } fr
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
 import { summarizeCouncilPlan } from '../agent/council/council-render.js'
 import { encodeCouncilPanel, type CouncilPanelModel } from '../tui/council-panel-model.js'
+import { PROVIDER_PRESETS } from '../config/provider-presets.js'
 import { DEFAULT_COUNCIL_SEATS, THREE_PILLAR_COUNCIL_SEATS, mergeSeatOverrides, type CouncilSeat, type CouncilRoutingShadowEvent } from '../agent/council/council-routing.js'
 import { isCouncilEnabled } from '../agent/council/council-gate.js'
 import { buildCouncilSessionEvent, type CouncilSessionEvent } from '../agent/council/council-telemetry.js'
@@ -18,6 +19,23 @@ import { storePlan } from '../agent/plan-store.js'
 import { executePlan, type PlanExecutorDeps } from '../agent/plan-executor.js'
 import { createDelegationActivityMapper, terminalActivity } from './worker-activity-stream.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
+
+/** 弃用模型 → 告警说明。议事会/路由会静默命中弃用模型（如 deepseek-v4-pro——
+ *  2026-09-14 下线，且是 DeepSeek preset 唯一的 strong 卡），用于显式提示，
+ *  避免「会话默认显示 v4.1f，实际却走了 v4pro」的错觉与下线前无预警调用。 */
+const DEPRECATED_MODEL_NOTES: ReadonlyMap<string, string> = (() => {
+  const m = new Map<string, string>()
+  for (const preset of Object.values(PROVIDER_PRESETS)) {
+    for (const model of preset.provider.models) {
+      if (model.deprecated) m.set(model.id, model.deprecationNote ?? '该模型已标记弃用')
+    }
+  }
+  return m
+})()
+
+function modelDeprecation(modelId?: string): string | undefined {
+  return modelId ? DEPRECATED_MODEL_NOTES.get(modelId) : undefined
+}
 
 /** Coordinator surface the council tool needs — only `delegateBatch` drives the
  *  single-round seat fanout. Telemetry/shadow recorders are optional旁路.
@@ -344,7 +362,8 @@ export function createCouncilConveneTool(
             if (!seatId) continue
             const round = seatId.endsWith('-r2') ? 2 : 1
             const authority = seatId.replace(/(-(r2|retry|reconvene))+$/, '')
-            degradedSeats.push({ authority, status: r.status, round, modelUsed: modelMap.get(r.workOrderId) })
+            const seatModel = modelMap.get(r.workOrderId)
+            degradedSeats.push({ authority, status: r.status, round, modelUsed: seatModel, deprecated: modelDeprecation(seatModel) != null })
           }
         }
         const degradedPanel: CouncilPanelModel = {
@@ -531,7 +550,8 @@ export function createCouncilConveneTool(
           const authority = seatId.replace(/(-(r2|retry|reconvene))+$/, '')
           // merge: later batch results for same authority overwrite earlier
           const existing = councilPanelSeats.findIndex(s => s.authority === authority)
-          const seat = { authority, status: r.status, round, modelUsed: modelMap.get(r.workOrderId) }
+          const seatModel = modelMap.get(r.workOrderId)
+          const seat = { authority, status: r.status, round, modelUsed: seatModel, deprecated: modelDeprecation(seatModel) != null }
           if (existing >= 0) councilPanelSeats[existing] = seat
           else councilPanelSeats.push(seat)
         }
@@ -557,6 +577,17 @@ export function createCouncilConveneTool(
         failedSeats: plan.meta.failedSeats,
         qliphothCount: plan.meta.qliphoth?.length,
       }
+
+      // 透明化：把每个席位「实际命中的模型」摊开给用户看，避免「会话默认显示
+      // v4.1f，实际却静默走了 v4pro」的错觉。命中弃用模型额外标 ⚠ + 说明。
+      // （strong 档默认只解析到 deepseek-v4-pro 这一张 strong 卡，且 09-14 下线。）
+      const modelLines: string[] = []
+      for (const s of councilPanelSeats) {
+        const note = modelDeprecation(s.modelUsed)
+        const flag = note ? ` ⚠ 弃用模型：${note}` : ''
+        modelLines.push(`- ${s.authority}: ${s.modelUsed ?? '未知'}${flag}`)
+      }
+      parts.push('', '## 席位实际调用模型（与会话默认模型可能不同）', ...modelLines)
 
       return {
         content: parts.join('\n') + proGateNote,

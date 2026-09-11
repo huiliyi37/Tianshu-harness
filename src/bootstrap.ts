@@ -1439,6 +1439,8 @@ export function switchAgentRuntime(ctx: BootstrapContext, modelId: string, targe
     const oldCoordinator = ctx.refs.coordinator
     // 旧 agent 的 fs.watch 句柄随丢弃释放（三条 switch 路径统一纪律）。
     try { ctx.agent.stopFsWatcher() } catch { /* best-effort */ }
+    // config 热载 watcher 同款释放：不关则旧实例 watcher 僵尸存活，继续回调死管线。
+    try { ctx.agent.stopConfigWatcher() } catch { /* best-effort */ }
 
     const { agent } = createAgentRuntime({
       provider,
@@ -1628,6 +1630,8 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
   try { ctx.agent.stigmergyStore.flushSync() } catch { /* best-effort */ }
   // 旧 agent 的 fs.watch 句柄随丢弃释放（三条 switch 路径统一纪律）。
   try { ctx.agent.stopFsWatcher() } catch { /* best-effort */ }
+  // config 热载 watcher 同款释放：不关则旧实例 watcher 僵尸存活，继续回调死管线。
+  try { ctx.agent.stopConfigWatcher() } catch { /* best-effort */ }
 
   const oldId = ctx.sessionId
   // Wave K (P0 同源修复): 与 switchAgentRuntime 同源——createAgentRuntime 会
@@ -1857,6 +1861,8 @@ export async function switchAgentCwd(ctx: BootstrapContext, target: string): Pro
   }
   // 旧 agent 的 fs.watch 句柄随丢弃释放（/model、/resume 同款统一纪律）。
   try { oldAgent.stopFsWatcher() } catch { /* best-effort */ }
+  // config 热载 watcher 同款释放：不关则旧实例 watcher 僵尸存活，继续回调死管线。
+  try { oldAgent.stopConfigWatcher() } catch { /* best-effort */ }
 
   // 7. 会话归属账本：meta.cwd（跨 cwd resume 守卫读它）+ pointer + registry。
   try { newPersist.updateMetadata({ cwd: newCwd }) } catch { /* best-effort */ }

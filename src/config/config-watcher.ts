@@ -1,4 +1,5 @@
 import { watch, existsSync, readFileSync, type FSWatcher } from 'node:fs'
+import { dirname, basename } from 'node:path'
 import { loadConfig, findProjectConfig } from './manager.js'
 import { userConfigPath } from './paths.js'
 import { resolveProfileName, profilePath } from './profile.js'
@@ -108,7 +109,25 @@ export function watchConfigForHooks(options: ConfigWatcherOptions): ConfigWatche
 
   for (const p of paths) {
     try {
-      watchers.push(watch(p, { persistent: false }, schedule))
+      // Watch 父目录而非文件本身：全仓 config 写盘走 fs-atomic 的 tmp+rename
+      // 原子替换（writeFileAtomicSync/Async），rename 会把被 watch 路径下的
+      // inode 整个换掉——kqueue/inotify 的 vnode watch 钉在旧 inode 上，第一
+      // 次（往往就是 TUI 自己的 setHookDisabled→saveConfig）原子保存后 watcher
+      // 永久失聪（nodejs/node#3428 同类问题）。目录 inode 稳定，文件被整体替
+      // 换后依然能收到事件。回调按文件名过滤：只有目标文件本身（或平台拿不到
+      // 文件名时的 null——宽松放行，宁可多跑一次有 diff 门兜底的 reload）才
+      // schedule，同目录的 *.tmp 原子写中间产物与其他无关文件不触发。
+      const dir = dirname(p)
+      const base = basename(p)
+      const w = watch(dir, { persistent: false }, (_event, filename) => {
+        if (filename === null || filename === base) schedule()
+      })
+      // 目录被删（如会话内 rm -rf 项目目录/RIVET_HOME）时部分平台会 emit
+      // 'error'；无监听器会变成 uncaughtException 打崩会话，降级为日志。
+      w.on('error', e => {
+        debugLog(`[config-watcher] watch ${dir} error: ${e instanceof Error ? e.message : String(e)}`)
+      })
+      watchers.push(w)
     } catch (e) {
       debugLog(`[config-watcher] watch ${p} failed: ${e instanceof Error ? e.message : String(e)}`)
     }

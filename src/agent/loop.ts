@@ -538,7 +538,8 @@ export class AgentLoop {
   vigorState: VigorState = createVigorState()
   runtimeHooks: RuntimeHookPipeline
   /** P2 Wave 2: config HMR watcher（非 headless 模式装配）。persistent:false
-   *  不阻塞进程退出；AgentLoop 会话结束即随实例回收。 */
+   *  不阻塞进程退出；但不会随实例 GC 自动消失（FSWatcher 持有原生句柄），整个
+   *  AgentLoop 被丢弃时须经 stopConfigWatcher() 显式 close（switch 三路径）。 */
   configWatcher: ConfigWatcherHandle | null = null
   perception: TurnPerceptionController
   intent: TurnIntentController
@@ -2331,6 +2332,17 @@ export class AgentLoop {
   stopFsWatcher(): void {
     this.fsWatcher?.stop()
     this.latestFsWatcherState = { eventRate: 0, eventCount: 0, active: false }
+  }
+
+  /** 释放 config 热载 watcher。configWatcher 生命周期=实例（构造期装配，无
+   *  per-run start/stop），因此只能在整个 AgentLoop 被丢弃时关闭（/model、
+   *  /resume、/cd 三条 switch 路径统一纪律，与 stopFsWatcher 同源调用）——
+   *  不能并入 stopFsWatcher（那个每轮 run() 的 finally 都会跑，会把热载在
+   *  第一条用户消息后关死）。不关则旧实例的 watcher 僵尸存活，继续回调死
+   *  管线的 setDisabledHookIds。 */
+  stopConfigWatcher(): void {
+    try { this.configWatcher?.close() } catch { /* best-effort */ }
+    this.configWatcher = null
   }
 
   isRunning(): boolean {

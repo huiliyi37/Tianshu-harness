@@ -14,7 +14,7 @@ import { tmpdir } from 'os'
 /** execFile promisified — used for engine detection. */
 function execFileAsync(binary: string, args: string[], opts?: { timeout?: number }): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(binary, args, { timeout: opts?.timeout ?? 30_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(binary, args, { timeout: opts?.timeout ?? 30_000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) reject(err)
       else resolve({ stdout, stderr })
     })
@@ -177,6 +177,7 @@ function execTextutil(filePath: string): Promise<string> {
     execFile('textutil', ['-convert', 'txt', '-stdout', filePath], {
       timeout: 30_000,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
+      windowsHide: true,
     }, (err, stdout) => {
       if (err) reject(new Error(`textutil failed: ${err.message}`))
       else resolve(stdout)
@@ -192,6 +193,7 @@ function execSoffice(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cachedSofficeBinary, ['--headless', '--convert-to', 'txt', '--outdir', tmpdir(), filePath], {
       timeout: 60_000,
+      windowsHide: true,
     }, async (err) => {
       if (err) {
         reject(new Error(`${cachedSofficeBinary} failed: ${err.message}`))

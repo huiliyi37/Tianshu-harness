@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { ConnectFlow, suggestProviderName } from '../connect-flow.js'
 import { PROVIDER_PRESETS, providerPresetKeys } from '../../config/provider-presets.js'
+import { matchModelId } from '../../api/model-id-matcher.js'
 import type { ProbeReport } from '../../api/provider-probe.js'
 import type { ConnectDraft } from '../connect-draft.js'
 
@@ -131,8 +132,13 @@ test('preset path: 6 steps — key → endpoint → connectivity → models → 
   const modelsView = flow.view()
   assert.equal(modelsView.kind, 'multi-choice')
   assert.equal(modelsView.stepLabel, '步骤 4 / 6')
-  assert.deepEqual(modelsView.options?.map(o => o.label), ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash-vision-exp'])
-  assert.deepEqual(modelsView.options?.map(o => o.checked), [true, true, true, true])
+  // 选项 = 预设模板 ∪ 探测新发现。模板列表随版本增删（2026-09 退役 v4-pro /
+  // vision-exp），从 preset 现值推导而非钉死——c6537d191 的语义化先例。
+  // 探测到的 v4-pro 官方档已退役、沦为「发现项」，但仍被别名表认识（代理
+  // fleet preset 仍携带），故非聚合 preset 下同样默认勾选。
+  const templateIds = PROVIDER_PRESETS.deepseek.provider.models.map(m => m.id)
+  assert.deepEqual(modelsView.options?.map(o => o.label), [...templateIds, 'deepseek-v4-pro'])
+  assert.deepEqual(modelsView.options?.map(o => o.checked), modelsView.options?.map(() => true))
   assert.match(modelsView.options?.[0]?.description ?? '', /预设/)
 
   // [5/6] Capability check — measured rows + metadata inferences.
@@ -334,8 +340,13 @@ test('diy path: known model backfills contextWindow and keeps its own capabiliti
   assert.equal(result.commit.providerName, 'my-relay')
   const model = result.commit.models[0]!
   assert.equal(model.id, 'deepseek-v4-pro')
-  assert.equal(model.contextWindow, 1_000_000)
-  assert.equal(model.maxTokens, 384_000)
+  // 回填值来自别名表元数据，而别名表由全仓 preset 合成、随版本增删演化
+  // （v4-pro 官方档 2026-09 退役后，首个携带者变为代理 fleet 的 64K 档）——
+  // 断言「回填发生且等于别名表现值」，不钉死具体数字。
+  const known = matchModelId('deepseek-v4-pro').entry
+  assert.ok(known, 'deepseek-v4-pro 应仍被别名表认识（某 preset 携带）')
+  assert.equal(model.contextWindow, known.metadata.contextWindow)
+  assert.equal(model.maxTokens, known.metadata.maxTokens)
 })
 
 test('diy path: probe with no models but working completion falls back to manual entry', () => {
@@ -1471,7 +1482,11 @@ test('D1: aggregator preset defaults ALL models to unchecked (template + discove
   plain.submitInput('')
   plain.applyProbe(report({ models: ['deepseek-v4-pro'] }))
   plain.submitChoice('continue')
-  assert.deepEqual(plain.view().options?.map(o => o.checked), [true, true, true, true])
+  // 与上半的聚合「全不勾」对称：非聚合 preset 模板 ∪ 发现项全默认勾。
+  // 个数随 preset 增删变化（模板数 + 1 个发现项），钉长度语义不钉死数组。
+  const plainOpts = plain.view().options ?? []
+  assert.equal(plainOpts.length, PROVIDER_PRESETS.deepseek.provider.models.length + 1)
+  assert.deepEqual(plainOpts.map(o => o.checked), plainOpts.map(() => true))
 })
 
 test('D1: aggregator with nothing checked cannot confirm (guarded error)', () => {

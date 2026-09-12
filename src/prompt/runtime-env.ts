@@ -26,7 +26,7 @@ export type VersionProbe = (command: string, args: string[]) => string | null
 
 const defaultProbe: VersionProbe = (command, args) => {
   try {
-    const r = spawnSync(command, args, { encoding: 'utf-8', timeout: 2000 })
+    const r = spawnSync(command, args, { encoding: 'utf-8', timeout: 2000, windowsHide: true })
     if (r.status !== 0) return null
     const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim()
     return out || null

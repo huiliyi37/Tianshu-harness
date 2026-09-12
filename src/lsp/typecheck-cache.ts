@@ -36,6 +36,7 @@ import {
   statSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { freeDiskBytes, diskWarnThresholdMb } from '../utils/disk-space.js'
 
 /** tsc 一次运行的原始产物。缓存的是它而不是解析后的诊断——调用方的 filePath
  *  过滤发生在解析之后，缓存原始输出才能让不同 filePath 的调用共享同一份。 */
@@ -57,6 +58,7 @@ export type TypecheckShareEvent =
   | { kind: 'waiting'; holderPid: number | undefined }
   | { kind: 'wait-timeout'; waitedMs: number }
   | { kind: 'stale-lock-cleared'; holderPid: number | undefined }
+  | { kind: 'cache-skip-low-disk'; freeBytes: number }
   | { kind: 'ran'; fingerprint: string | undefined; durationMs: number; cached: boolean }
 
 export interface TypecheckShareDeps {
@@ -118,6 +120,7 @@ function git(cwd: string, args: string[]): string | undefined {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 10_000,
       maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
     })
   } catch {
     return undefined
@@ -125,11 +128,19 @@ function git(cwd: string, args: string[]): string | undefined {
 }
 
 /** 只有能影响 `tsc --noEmit` 结果的路径才进指纹。改一篇 markdown 不该让所有
- *  会话的缓存失效——过滤掉它们能显著抬高命中率。 */
+ *  会话的缓存失效——过滤掉它们能显著抬高命中率。
+ *  2026-09-12 改为目录无关（cwd 感知）：此前只认 src/ 下 .ts，desktop/ 等
+ *  非 src 树的改动不改变指纹——ad-hoc 调用（bash tsc，cwd 可以是任意子项目）
+ *  开回放后会拿到陈旧结果。现按扩展名与清单文件判定（node_modules 除外），
+ *  跨项目共用一份保守正确的指纹：无关子项目的改动只降低命中率，不影响正确性。 */
 export function affectsTypecheck(path: string): boolean {
-  if (path === 'tsconfig.json' || path === 'package.json' || path === 'package-lock.json') return true
-  if (!path.startsWith('src/')) return false
-  return path.endsWith('.ts') || path.endsWith('.tsx') || path.endsWith('.mts') || path.endsWith('.cts')
+  if (path.includes('/node_modules/') || path.startsWith('node_modules/')) return false
+  const base = path.split('/').pop() ?? path
+  if (
+    base === 'tsconfig.json' || /^tsconfig\..+\.json$/.test(base) || base === 'jsconfig.json' ||
+    base === 'package.json' || base === 'package-lock.json' || base === 'pnpm-lock.yaml' || base === 'yarn.lock'
+  ) return true
+  return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte|json)$/.test(base)
 }
 
 /**
@@ -337,6 +348,82 @@ export function isLockHeld(cacheDir: string): boolean {
   return existsSync(lockDirPath(cacheDir))
 }
 
+// ── ad-hoc 调用串行（bash 工具收口） ─────────────────────────────────────
+
+/**
+ * 判断一条 shell 命令是否是「全量类型检查」形态——npx/pnpm 直跑 tsc --noEmit
+ * 或包管理器的 typecheck script。worker/会话经 bash 工具 ad-hoc 跑 tsc 时绕过
+ * 门禁的串行锁，N 个并发 tsc 抢同一批核心是超线性退化（2026-09-12 galaxy 波
+ * 实测工作区 17-19 个并发 tsc 互相饿死、无一取得 exit code）。tsc --watch
+ * 等长跑形态不在此列（它们走后台 job 通道）。
+ */
+export function isTypecheckCommand(command: string): boolean {
+  // tsc --noEmit（允许 npx/pnpm/yarn/bun(bunx)/npm exec 前缀、vue-tsc 变体、
+  // 路径形态调用）——前缀必须落在命令边界（^/&/;/|/( 或路径 /），字符串里
+  // 提及 tsc 不算数；--watch 等长跑形态不匹配（走后台 job 通道）。
+  if (/(?:^|[;&|(/])\s*(?:(?:npx|pnpm|yarn|bun|bunx|npm)\s+(?:exec\s+(?:--\s*)?)?)?(?:vue-tsc|tsc)\b[^;&|]*--noEmit\b/i.test(command)) return true
+  // 包管理器的 typecheck script（script 内同样是 tsc --noEmit）；typecheck:watch
+  // 等派生 script 不匹配。
+  if (/(?:^|[;&|])\s*(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?typecheck(?:\s|$|[;&|)])/i.test(command)) return true
+  return false
+}
+
+/**
+ * 锁/缓存根解析：cwd 的 git 顶层——在子目录里起的会话与在根目录的调用共享
+ * 同一把锁（此前锁键是裸 cwd，`cd src/` 起会话就脱出 repo 级串行）。隔离
+ * worktree 的 toplevel 是 worktree 自身，但其 node_modules 是指向主仓的
+ * symlink → 缓存目录物理上仍是主仓同一把。非 git 目录回退 cwd 本身。
+ */
+export function resolveTypecheckLockRoot(cwd: string): string {
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim()
+    return top || cwd
+  } catch {
+    return cwd
+  }
+}
+
+/**
+ * bash 工具的 ad-hoc tsc 收口：锁根 git-toplevel 化 + 共享缓存去重/串行。
+ * 回放安全前提：variant = cwd + 原始命令全文（同目录同命令才共享结果），
+ * 且 affectsTypecheck 已目录无关（desktop 等子项目改动同样使指纹失效）。
+ * 真跑时 `run` 同时交出原始结果（live）与可缓存 outcome——调用方据此区分
+ * 「真跑」与「回放」，回放时自行重建带标注的结果。
+ */
+export async function runAdhocTypecheckShared<T>(options: {
+  cwd: string
+  command: string
+  run: () => Promise<{ live: T; outcome: TscRunOutcome }>
+  /** 额外否决缓存写（如内容含会话级 artifact 引用，跨会话回放会悬空）。 */
+  cacheable?: (outcome: TscRunOutcome) => boolean
+  onEvent?: (event: TypecheckShareEvent) => void
+}): Promise<{ kind: 'live'; live: T } | { kind: 'replay'; outcome: TscRunOutcome }> {
+  let live: T | undefined
+  const outcome = await runTypecheckShared({
+    cwd: resolveTypecheckLockRoot(options.cwd),
+    variant: `bash-adhoc\n${options.cwd}\n${options.command}`,
+    cacheable: options.cacheable,
+    onEvent: options.onEvent,
+    run: async () => {
+      const r = await options.run()
+      live = r.live
+      return r.outcome
+    },
+  })
+  return live !== undefined ? { kind: 'live', live } : { kind: 'replay', outcome }
+}
+
+/** 后台 job 通道的尽力串行：拿得到锁就持有到 job 退出（调用方负责释放），
+ *  拿不到 fail-open 直接跑——闸门只护负载，从不阻断检查本身。 */
+export function tryAcquireAdhocLock(cwd: string): LockHandle | undefined {
+  return tryAcquireLock(defaultCacheDir(resolveTypecheckLockRoot(cwd)), undefined)
+}
+
 // ── 编排 ────────────────────────────────────────────────────────────────
 
 export interface RunSharedOptions extends TypecheckShareDeps {
@@ -355,6 +442,10 @@ export interface RunSharedOptions extends TypecheckShareDeps {
   /** 调用形态标识（通常就是 tsc 参数）。输出格式不同的调用不可互相回放，
    *  见 {@link computeSourceFingerprint}。 */
   variant?: string
+  /** 额外的缓存写否决（默认放行）。ad-hoc 调用方用它排除「内容含会话级
+   *  artifact 引用」等跨进程回放会悬空的结果——与 isCacheableOutcome 是
+   *  与关系。 */
+  cacheable?: (outcome: TscRunOutcome) => boolean
 }
 
 /** 与陈旧锁上限对齐：超过它说明持锁者虽然活着但已经不正常，那时自己跑才有意义。 */
@@ -421,9 +512,19 @@ export async function runTypecheckShared(options: RunSharedOptions): Promise<Tsc
     // 复算指纹：这几十秒里源码若被别的会话改过，这份结果对应哪个版本已不可知，
     // 缓存它就是在为后来者埋一个「看起来命中、其实检查的是旧代码」的坑。
     // 先判可缓存性再算指纹——超时结果无论如何都不写，省掉一次 git 调用。
-    const settled = isCacheableOutcome(outcome) && computeSourceFingerprint(cwd, options.variant) === fingerprint
+    const settled = isCacheableOutcome(outcome)
+      && (options.cacheable?.(outcome) ?? true)
+      && computeSourceFingerprint(cwd, options.variant) === fingerprint
     if (settled) {
-      writeCachedTypecheck(cacheDir, { ...outcome, fingerprint, finishedAt: now(), durationMs })
+      // 磁盘水位防线（2026-09-12，termux worker 被 100% 满磁盘卡死事故）：
+      // 低水位时写缓存只会再失败或再挤占——跳过并出事件，不阻断结果返回。
+      const free = freeDiskBytes(cacheDir)
+      const thresholdMb = diskWarnThresholdMb()
+      if (free !== undefined && thresholdMb > 0 && free < thresholdMb * 1024 * 1024) {
+        emit({ kind: 'cache-skip-low-disk', freeBytes: free })
+      } else {
+        writeCachedTypecheck(cacheDir, { ...outcome, fingerprint, finishedAt: now(), durationMs })
+      }
     }
     emit({ kind: 'ran', fingerprint, durationMs, cached: settled })
     return outcome

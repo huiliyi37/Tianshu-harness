@@ -3,8 +3,8 @@
   "redline": 800,
   "budgets": {
     "src/tui/engine/app.ts": {
-      "ceiling": 7692,
-      "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复）"
+      "ceiling": 7754,
+      "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复） 7692→7754：Termux 手机端适配回流（alpha 42f550c8c：Ctrl+S/Ctrl+Q 接管 XOFF/XON 输出冻结 + 解冻按序补放；矮屏 rows<14 隐藏状态行 / rows<24 高水位半屏，+62，2026-09-12 Mobile Remote 回流）"
     },
     "src/server/session-manager.ts": {
       "ceiling": 5992,
@@ -37,16 +37,16 @@
       "ceiling": 2071
     },
     "src/agent/tool-pipeline.ts": {
-      "ceiling": 2197,
-      "note": "tool-pipeline 增长：出界首触即授（970b05196）+ approvalMode 注入（f8bc60ffe 回流 2026-09-07）——ceiling 2099→2115 2115→2168：楔死族加固（0e792e26e +38 / b76861adc 写后挂起事故族 +9 净）+ stall-observer 工具打点（38b246ba6 +10 净）+ meridian 队列让出（d1c06e5ac +5 净）——多笔落地未上账，2026-09-09 审查补记。 2168→2197：工具管线纵深修复第一波（pre/post 阶段打点 11 处 + [slow-sync-stage] 同步段计时，+29，2026-09-10）"
+      "ceiling": 2180,
+      "note": "tool-pipeline 增长：出界首触即授（970b05196）+ approvalMode 注入（f8bc60ffe 回流 2026-09-07）——ceiling 2099→2115 2115→2168：楔死族加固（0e792e26e +38 / b76861adc 写后挂起事故族 +9 净）+ stall-observer 工具打点（38b246ba6 +10 净）+ meridian 队列让出（d1c06e5ac +5 净）——多笔落地未上账，2026-09-09 审查补记。 2168→2197：工具管线纵深修复第一波（pre/post 阶段打点 11 处 + [slow-sync-stage] 同步段计时，+29，2026-09-10） 2197→2180：R2 写前认领路径解析拆出 pre-write-claims.ts（2026-09-12 拆分落地收紧）"
     },
     "src/server/session-routes.ts": {
       "ceiling": 2121,
       "note": "1995→1997：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）。 1997→2019：账本对齐实际行数（HEAD 2005 已超 8，欠账）+ 自定义模型解析修复回流（main 74ac20588：409 附因分类接线 classifyModelSpecMiss，+14，2026-09-07） 2019→2040：A1 describeModelSwitchFailure 分流（272123ac0，+21，2026-09-07 审查修复） 2040→2054：B4 reloadConfig 附因刷新（682161674，+14，2026-09-07 审查修复） 2054→2121：issue #63 保存并重发（98888ab2b +8 净）+ IntelligenceMenu 透传（471807189 +24）+ git/branches 校验（cdb93489a +11）+ images 校验抽取（f512c450a +15 净）+ 楔死族（0e792e26e +9）——多笔落地未上账，2026-09-09 审查补记"
     },
     "src/prompt/engine.ts": {
-      "ceiling": 1657,
-      "note": "1624→1635：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；其中捆绑技能消融加 planExecutingBlock 字段/setter/getter（净增约 13 行）。 1635→1657：updateTools 幂等守卫（4f85c6b1f +8）+ approvalMode 字段与 setter（def690436 +14）——落地时未上账，2026-09-09 审查补记"
+      "ceiling": 1679,
+      "note": "1624→1635：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；其中捆绑技能消融加 planExecutingBlock 字段/setter/getter（净增约 13 行）。 1635→1657：updateTools 幂等守卫（4f85c6b1f +8）+ approvalMode 字段与 setter（def690436 +14）——落地时未上账，2026-09-09 审查补记 1657→1679：多模态 parts 保真（buildOaiRequest 的 volatile trailer 合并对 parts 数组取空串，用户附图的图片被静默丢弃、模型一律答「看不到图片」；改为把 volatile 前缀作为独立 text part，纯文本路径字节不变）+ trailerTextPrefix / buildTraileredUserContent 两个私有 helper（须访问引擎私有 volatile 状态，外移会增调用处样板）"
     },
     "src/agent/compaction-controller.ts": {
       "ceiling": 1647,
@@ -131,8 +131,8 @@
       "note": "995→1004：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
     },
     "src/server/serve.ts": {
-      "ceiling": 1120,
-      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记）。1116→1120：/project/trust 路由注册（import + 注册调用共 +3）——路由主体、参数校验与 6 条测试都在新模块 src/server/trust-api.ts，此处只剩接线。"
+      "ceiling": 1184,
+      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记）。1116→1120：/project/trust 路由注册（import + 注册调用共 +3）——路由主体、参数校验与 6 条测试都在新模块 src/server/trust-api.ts，此处只剩接线。 1120→1184：Mobile Remote 服务端回流（alpha 9899d9dca/b1c5fa100：RunServeOptions host/allowedHosts/mobileDir + RIVET_SERVE_HOST/ALLOW/MOBILE_DIR 解析 + --host/--mobile-dir + /remote/info 装配 + parseHostsAllow fail-open 修复，+64，2026-09-12）"
     },
     "src/agent/starflow-orchestrator.ts": {
       "ceiling": 1075,
@@ -147,16 +147,16 @@
       "note": "BASE_PROMPT 反过度提问等提交（62e0fb3e9 2026-09-07）欠账收口——ceiling 976→985 985→991：meridian 队列 follow-up 接线（b078f617b +11 / 641c5c9d7 +2）落地时未上账，2026-09-09 审查补记"
     },
     "src/tools/bash.ts": {
-      "ceiling": 995,
-      "note": "943→950：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 950→995：skip 档沙箱拒绝首触即授判定（f8bc60ffe 回流，2026-09-07）"
+      "ceiling": 1037,
+      "note": "943→950：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 950→995：skip 档沙箱拒绝首触即授判定（f8bc60ffe 回流，2026-09-07） 995→1000：ad-hoc tsc 经跨进程锁串行收口（isTypecheckCommand + runTypecheckSerialized 接线，主体在 src/lsp/typecheck-cache.ts，2026-09-12 galaxy 并发 tsc 饥饿事故修复） 1000→1037：ad-hoc 四项收口升级（共享缓存回放 + git-toplevel 锁根 + 后台 job 持锁 + 磁盘水位警告前缀，主体在 typecheck-cache.ts 与 src/utils/disk-space.ts，2026-09-12）"
     },
     "src/skills/skill-loader.ts": {
-      "ceiling": 1022,
-      "note": "941→1022：捆绑技能退役清理——RETIRED_BUNDLED_SKILLS 名单（名字+SHA-256）+ retireMatchingSkillCopies 一次性清理逻辑（撤出三项 + 消融两项的存量副本清理，+81）。"
+      "ceiling": 1040,
+      "note": "941→1022：捆绑技能退役清理——RETIRED_BUNDLED_SKILLS 名单（名字+SHA-256）+ retireMatchingSkillCopies 一次性清理逻辑（撤出三项 + 消融两项的存量副本清理，+81）。 1022→1040：.agents/skills 双槽位自动扫描 + 内建机制文档同步（issue #100，2026-09-12）"
     },
     "src/config/env-registry.ts": {
-      "ceiling": 1040,
-      "note": "944→956：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）956→962：RIVET_ORCHESTRATION_HINT 登记（+6）962→968：RIVET_ADAPTIVE_MEMORY 的 shadow/on/off 发布开关登记（+6）968→974：RIVET_MEMORY_AUTO_CAPTURE 登记（+6）974→980：RIVET_MEMORY_CONSOLIDATION 登记（+6）980→986：RIVET_MEMORY_BACKFILL 登记（+6，历史会话回填 opt-in 开关）。 986→1040：gen-env-registry 重生成收口（153→169 条，含 8 个存量漏注册 RIVET_APPROVAL_TIMEOUT_MS/RIVET_CPU_POOL_IDLE_MS/RIVET_FETCH_SKIP_COMPILE/RIVET_PROFILE/RIVET_TEST_ENV_KEY_PROV/RIVET_TRUST_PROJECT/RIVET_WELCOME_ANIM/RIVET_WORKER_ISOLATION 与新增 RIVET_WELCOME_GREETING；自动生成文件随注册数机械增长，2026-09-09）"
+      "ceiling": 1064,
+      "note": "944→956：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）956→962：RIVET_ORCHESTRATION_HINT 登记（+6）962→968：RIVET_ADAPTIVE_MEMORY 的 shadow/on/off 发布开关登记（+6）968→974：RIVET_MEMORY_AUTO_CAPTURE 登记（+6）974→980：RIVET_MEMORY_CONSOLIDATION 登记（+6）980→986：RIVET_MEMORY_BACKFILL 登记（+6，历史会话回填 opt-in 开关）。 986→1040：gen-env-registry 重生成收口（153→169 条，含 8 个存量漏注册 RIVET_APPROVAL_TIMEOUT_MS/RIVET_CPU_POOL_IDLE_MS/RIVET_FETCH_SKIP_COMPILE/RIVET_PROFILE/RIVET_TEST_ENV_KEY_PROV/RIVET_TRUST_PROJECT/RIVET_WELCOME_ANIM/RIVET_WORKER_ISOLATION 与新增 RIVET_WELCOME_GREETING；自动生成文件随注册数机械增长，2026-09-09） 1040→1064：gen-env-registry 重生成（169→173 条：RIVET_MOBILE_DIR/RIVET_SERVE_HOST/RIVET_SERVE_HOSTS_ALLOW 登记 + 存量漏注册 1 条，2026-09-12 Mobile Remote 回流）"
     },
     "src/server/config-routes.ts": {
       "ceiling": 1143,
@@ -180,8 +180,8 @@
       "note": "870→876：2026-09-08 楔死族后续修复（0e792e26e，+8/-2：工具总闸/续跑降级/磁盘对账/loop-lag 归因中的持久化侧改动）落地时未上账，2026-09-09 审查补记，ceiling 对齐实际。"
     },
     "src/repo/meridian-db.ts": {
-      "ceiling": 946,
-      "note": "797→884：schema v2 遥测保留机制（migrateToV2/cleanupExpiredRows/WAL checkpoint/LIKE 前缀索引，2026-08-17 存储膨胀修复）。 884→903：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 903→912：P1-2 hasFiles 冷库探测（LIMIT 1，2026-09-07 审查修复） 912→946：同步索引阻塞事件循环四项修复（641c5c9d7，+34：read 廉价探针入队/write 去抖/批量符号查询/批间让出）落地时未上账，2026-09-09 审查补记。"
+      "ceiling": 952,
+      "note": "797→884：schema v2 遥测保留机制（migrateToV2/cleanupExpiredRows/WAL checkpoint/LIKE 前缀索引，2026-08-17 存储膨胀修复）。 884→903：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25） 903→912：P1-2 hasFiles 冷库探测（LIMIT 1，2026-09-07 审查修复） 912→946：同步索引阻塞事件循环四项修复（641c5c9d7，+34：read 廉价探针入队/write 去抖/批量符号查询/批间让出）落地时未上账，2026-09-09 审查补记。 946→952：GLOB 前缀 JS 整体绑定修复全表扫描（slow-sync-stage meridian-impact 4s 事故实测根修，2026-09-12，+6 注释）"
     },
     "src/tui/settings-model.ts": {
       "ceiling": 945,

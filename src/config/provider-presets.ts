@@ -34,7 +34,10 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
     key: 'deepseek',
     label: 'DeepSeek',
     description: '官方旗舰：1M 上下文 + 深度推理，适合重活主控',
-    // 2026-09-10：V4-Pro 延至 14 日下线——默认档切 v4-flash（不指向将下线或全新模型），
+    // 2026-09-11：V4-Pro 退役（官方 14 日下线，且能力已弱于 V4.1-Flash 线）——条目已移除，
+    // 存量用户快照由 manager.ts 的 migrateDeepseekV4ProRetirement 清理（preset 改动单靠
+    // deepMerge 到不了存量配置）。默认档为 v4-flash；强档落点改由 deepseek-flash
+    // （V4.1 线）承接，见下方 models。
     // 与新装首模型（models[0]，无 agent.defaultModel 时的启动兜底）保持一致。
     defaultModelId: 'deepseek-v4-flash',
     keyUrl: 'https://platform.deepseek.com/api_keys',
@@ -67,42 +70,19 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 },
         },
         {
-          // 2026-09-10 消息：14 日下线；保留至下线，默认档已切 v4-flash。
-          id: 'deepseek-v4-pro',
-          description: '旗舰推理档，1M 上下文',
-          alias: 'v4-pro',
-          contextWindow: 1_000_000,
-          maxTokens: 384_000,
-          // Cost default: high (not max). Routine turns can step down further via
-          // effort routing; users who need max can set it in config / Settings.
-          reasoningEffort: 'high',
-          tier: 'strong',
-          pricing: { input: 3, output: 6, cacheRead: 0.025, cacheWrite: 3 },
-        },
-        {
           // 2026-09-10 接入（V4.1 Flash 线，用户指定 id）：1M 上下文 + 原生多模态，
           // 定价与 v4-flash 同档。图片按尺寸换算 token 计入计费。
+          // 2026-09-11 起承接 strong 档：V4-Pro 退役后本卡是 DeepSeek 唯一的强档卡，
+          // 议事会瑶光门席位（天府 / 三柱护栏席）与 planning 路由都落在它上面。
+          // 名字里的 "flash" 只标定价档位、不代表能力——路由读的是 tier 字段，
+          // 勿据模型名把它降档。
           id: 'deepseek-flash',
-          description: '新一代快速档：1M 上下文 + 原生多模态（图像输入）',
+          description: '旗舰档：V4.1 线，1M 上下文 + 原生多模态（图像输入）',
           alias: 'v4.1-flash',
           contextWindow: 1_000_000,
           maxTokens: 384_000,
           reasoningEffort: 'medium',
-          tier: 'cheap',
-          supportsVision: true,
-          pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 },
-        },
-        {
-          // 官方（api-docs.deepseek.com/zh-cn/quick_start/pricing）：1M 上下文、
-          // 384K 输出、支持思考/非思考、Json/Tool/前缀续写齐全、FIM 不支持；
-          // 定价与 v4-flash 同档。图片按尺寸换算 token 计入计费。
-          id: 'deepseek-v4-flash-vision-exp',
-          description: '视觉实验档：支持图像输入（截图看图），1M 上下文',
-          alias: 'v4-vision',
-          contextWindow: 1_000_000,
-          maxTokens: 384_000,
-          reasoningEffort: 'medium',
-          tier: 'cheap',
+          tier: 'strong',
           supportsVision: true,
           pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 },
         },
@@ -261,7 +241,10 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           alias: 'go-ds4p',
           description: 'DeepSeek V4 Pro：1M 上下文，重活主控',
           contextWindow: 1_000_000,
-          maxTokens: 64_000,
+          // 官方标称 1M/384K（2026-09-11 公告：V4 Pro 不下线、继续服务、计费
+          // 不变）。此处是官方条目删除后别名表的首个携带者（first-wins）——标
+          // 64K 会让所有 v4-pro 回填跟着塌；64K 另有 2026-07-01 推理截断事故先例。
+          maxTokens: 384_000,
           reasoningEffort: 'max',
           tier: 'strong',
         },
@@ -270,7 +253,8 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           alias: 'go-ds4f',
           description: 'DeepSeek V4 Flash：1M 上下文，快且省',
           contextWindow: 1_000_000,
-          maxTokens: 64_000,
+          // 同 v4-pro：官方标称 384K（与 V4.1 Flash 同表）。
+          maxTokens: 384_000,
           reasoningEffort: 'high',
           tier: 'strong',
         },

@@ -62,7 +62,9 @@ export type KeyName =
   | 'ctrl_n'
   | 'ctrl_o'
   | 'ctrl_p'
+  | 'ctrl_q'
   | 'ctrl_r'
+  | 'ctrl_s'
   | 'ctrl_t'
   | 'ctrl_v'
   | 'ctrl_b'
@@ -132,7 +134,9 @@ const CTRL_CODES: Record<number, KeyName> = {
   0x0e: 'ctrl_n',
   0x0f: 'ctrl_o',
   0x10: 'ctrl_p',
+  0x11: 'ctrl_q', // XON 对偶——解冻输出的别名键
   0x12: 'ctrl_r',
+  0x13: 'ctrl_s', // XOFF——raw mode 下内核流控失效，TUI 自语义接管：冻结输出
   0x14: 'ctrl_t',
   0x15: 'ctrl_u',
   0x16: 'ctrl_v',

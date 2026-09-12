@@ -10,6 +10,7 @@ import { userConfigPath } from './paths.js'
 import { findPresetModel, isProviderPresetKey, type ProviderPresetKey } from './provider-presets.js'
 import { cloneResolvedPreset, resolvePreset } from '../api/pro-registry.js'
 import { backfillPresetModelFields, migratePresetModelBackfill } from './preset-model-backfill.js'
+import { migrateDeepseekV4ProRetirement, migrateDeepseekVisionExpRetirement } from './preset-model-retirement.js'
 import { writeSecret, readSecret, deleteSecret } from './secrets-store.js'
 import { invalidateToolPreset } from '../tools/tool-preset.js'
 import { invalidatePromptBlocks } from '../prompt/block-policy.js'
@@ -324,13 +325,15 @@ export function loadConfig(options?: {
     const cpMigrated = migrateLegacyCheckpointInterval(raw)
     const dsChanged = migrateDeepseekMaxTokens(cpMigrated)
     const flashChanged = migrateV4FlashEffort(cpMigrated)
+    const proRetired = migrateDeepseekV4ProRetirement(cpMigrated)
+    const visionExpRetired = migrateDeepseekVisionExpRetirement(cpMigrated)
     const keysMoved = migrateInlineApiKeys(cpMigrated)
     const capsChanged = migrateLegacyCapabilities(cpMigrated)
     const protoChanged = migrateAnthropicProtocol(cpMigrated)
     const backfillChanged = migratePresetModelBackfill(cpMigrated)
     // Write back if any migration modified the raw config so the fix
     // persists across restarts (one-shot, idempotent).
-    if (cpMigrated !== raw || dsChanged || flashChanged || keysMoved || capsChanged || protoChanged || backfillChanged) {
+    if (cpMigrated !== raw || dsChanged || flashChanged || proRetired || visionExpRetired || keysMoved || capsChanged || protoChanged || backfillChanged) {
       try {
         writeFileAtomicSync(configPath, JSON.stringify(cpMigrated, null, 2) + '\n')
       } catch {
@@ -348,6 +351,7 @@ export function loadConfig(options?: {
     const cpMigrated = migrateLegacyCheckpointInterval(raw)
     migrateDeepseekMaxTokens(cpMigrated)
     migrateV4FlashEffort(cpMigrated)
+    migrateDeepseekV4ProRetirement(cpMigrated)
     migrateLegacyCapabilities(cpMigrated)
     migrateAnthropicProtocol(cpMigrated)
     // 信任门：项目配置可能来自不可信仓库。未授信时剥离安全敏感键再合并

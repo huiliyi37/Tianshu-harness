@@ -96,8 +96,10 @@ const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 
 /** Cap on a single CI check log payload returned to the desktop (tail-kept). */
 const MAX_CHECK_LOG_CHARS = 200_000
-/** Per-image decoded byte cap (safety net; the client compresses to ~256KB). */
-const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024
+/** Per-image decoded byte cap — 与 TUI（image-attach.ts）、桌面端压缩出口
+ *  （image-compress.ts MAX_OUTPUT_BYTES）、read_file 工具统一 10MB；
+ *  DeepSeek 官方 base64 内联上限 32MiB，10MB 在安全区内。 */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const ACCEPTED_IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,.+$/i
 
 /** Decoded byte size of a `data:...;base64,<payload>` URL (without decoding it). */
@@ -126,7 +128,7 @@ function validateImagesPayload(value: unknown): { images?: string[]; error?: str
       return { error: 'Each image must be a data:image/(png|jpeg|webp|gif);base64 URL' }
     }
     if (decodedBase64Bytes(img) > MAX_IMAGE_BYTES) {
-      return { error: `Each image must be <= ${Math.round(MAX_IMAGE_BYTES / 1024)}KB` }
+      return { error: `Each image must be <= ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB` }
     }
   }
   return { images: value as string[] }

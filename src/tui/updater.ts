@@ -77,7 +77,7 @@ let cachedGlobalNpmPrefix: string | null | undefined
 
 function runNpmCommand(args: string): string | null {
   try {
-    return execSync(`npm ${args}`, { encoding: 'utf-8', timeout: 5_000 }).trim()
+    return execSync(`npm ${args}`, { encoding: 'utf-8', timeout: 5_000, windowsHide: true }).trim()
   } catch {
     return null
   }
@@ -103,7 +103,7 @@ function getGlobalNpmRoot(): string | null {
 export function findNpm(): string | null {
   try {
     const cmd = process.platform === 'win32' ? 'where npm' : 'which npm'
-    const out = execSync(cmd, { encoding: 'utf8', timeout: 5_000 }).trim()
+    const out = execSync(cmd, { encoding: 'utf8', timeout: 5_000, windowsHide: true }).trim()
     const lines = out.split(/\r?\n/)
     if (process.platform === 'win32') {
       // `where npm` 第一个结果通常是无扩展名的 POSIX shell 脚本 (npm.sh),
@@ -138,7 +138,7 @@ function findPowerShell(): string | null {
   const candidates = ['pwsh.exe', 'powershell.exe', 'powershell']
   for (const name of candidates) {
     try {
-      const out = execSync(`where ${name}`, { encoding: 'utf-8', timeout: 5_000 }).trim()
+      const out = execSync(`where ${name}`, { encoding: 'utf-8', timeout: 5_000, windowsHide: true }).trim()
       const first = out.split(/\r?\n/)[0]
       if (first) return first
     } catch {

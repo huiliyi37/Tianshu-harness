@@ -339,13 +339,20 @@ function deriveVisionBridgeStatus(
   input: AgentConfigInput,
 ): AgentConfig['visionBridge'] {
   if (primarySupportsVision) {
-    return { active: true, source: 'none', detail: '主模型原生支持识图，无需桥接' }
+    // source 必须与「桥接生效」可区分：桌面端只把 'native' 渲染成「原生支持」，
+    // 其余 active 状态一律显示「识图桥已生效」——沿用 'none' 会让用户看到一句
+    // 不实的状态（配了视觉主模型却被告知桥在工作）。2026-09-12 核实。
+    return { active: true, source: 'native', detail: '主模型原生支持识图，无需桥接' }
   }
   if (bridge) {
     return {
       active: true,
       source: bridge.source,
-      detail: bridge.source === 'auto' ? `自动选用 ${bridge.ref}` : bridge.ref,
+      detail: bridge.source === 'auto'
+        ? `自动选用 ${bridge.ref}`
+        : bridge.source === 'same-provider'
+          ? `与主模型同一 provider，自动启用 ${bridge.ref}`
+          : bridge.ref,
     }
   }
   if (input.visionModel) {
@@ -553,7 +560,7 @@ interface VisionBridgeBuild {
   prompt?: string
   maxTokens: number
   /** configured=用户显式指定；auto=未配但自动选了个可用视觉模型。 */
-  source: 'configured' | 'auto'
+  source: 'configured' | 'auto' | 'same-provider'
   /** 选中的 provider/model，供 UI 显示。 */
   ref: string
 }
@@ -611,8 +618,14 @@ function tryBuildVisionClientFrom(
  * same provider as the primary > minimax > glm > others. Declaration-only (no
  * credential probing, no client construction) so callers that just want to *name*
  * a candidate don't pay for one.
+ *
+ * `sameProviderOnly` 只保留与主模型同一 provider 的候选——图片不出该 provider
+ * 边界，是「默认允许自动桥」成立的前提（见 buildVisionClient）。
  */
-function visionCandidates(input: AgentConfigInput): Array<{ prov: ProviderConfig; spec: ModelConfig }> {
+function visionCandidates(
+  input: AgentConfigInput,
+  opts?: { sameProviderOnly?: boolean },
+): Array<{ prov: ProviderConfig; spec: ModelConfig }> {
   const providers = input.allProviders
   if (!providers) return []
   // zhipu-vision (glm-4v-flash, 免费) 排末位 —— 有付费视觉模型时优先用付费的
@@ -624,6 +637,7 @@ function visionCandidates(input: AgentConfigInput): Array<{ prov: ProviderConfig
   }
   const candidates: Array<{ prov: ProviderConfig; spec: ModelConfig }> = []
   for (const prov of Object.values(providers)) {
+    if (opts?.sameProviderOnly && prov.name !== input.provider.name) continue
     for (const spec of prov.models) {
       if (spec.supportsVision) candidates.push({ prov, spec })
     }
@@ -632,17 +646,30 @@ function visionCandidates(input: AgentConfigInput): Array<{ prov: ProviderConfig
 }
 
 /**
- * Auto-select a vision bridge — only reachable with `agent.visionAutoBridge=true`.
+ * Auto-select a vision bridge. 两条调用路径：
+ * - 同 provider（`sameProviderOnly`，未配 visionModel 时的默认路径）——图片不出该
+ *   provider 边界，无需 opt-in；
+ * - 任意 provider——仅 `agent.visionAutoBridge=true` 可达（跨 provider 是成本与隐私决定）。
  * Picks the first vision-capable model that has usable credentials.
  * Returns undefined when nothing is available (图片照旧被丢弃，提示在别处补）。
  */
-function autoSelectVisionBridge(input: AgentConfigInput): VisionBridgeBuild | undefined {
-  for (const { prov, spec } of visionCandidates(input)) {
+function autoSelectVisionBridge(
+  input: AgentConfigInput,
+  opts?: { sameProviderOnly?: boolean },
+): VisionBridgeBuild | undefined {
+  for (const { prov, spec } of visionCandidates(input, opts)) {
     const built = tryBuildVisionClientFrom(input, prov, spec, 1024)
     if ('client' in built) {
       const ref = `${prov.name}/${spec.id}`
-      console.warn(`[vision] 自动选用识图桥：${ref}（agent.visionAutoBridge=true；图片将发送给该 provider）`)
-      return { client: built.client, prompt: undefined, maxTokens: built.maxTokens, source: 'auto', ref }
+      console.warn(
+        opts?.sameProviderOnly
+          ? `[vision] 自动选用识图桥：${ref}（与主模型同一 provider，图片不出该 provider 边界）`
+          : `[vision] 自动选用识图桥：${ref}（agent.visionAutoBridge=true；图片将发送给该 provider）`,
+      )
+      return {
+        client: built.client, prompt: undefined, maxTokens: built.maxTokens,
+        source: opts?.sameProviderOnly ? 'same-provider' : 'auto', ref,
+      }
     }
     // 有 key 问题的候选跳过，继续找下一个——自动路径不刷 warn（显式路径才点名）。
   }
@@ -659,7 +686,13 @@ function autoSelectVisionBridge(input: AgentConfigInput): VisionBridgeBuild | un
  */
 function buildVisionClient(input: AgentConfigInput): VisionBridgeBuild | undefined {
   const vm = input.visionModel
-  if (!vm) return input.visionAutoBridge ? autoSelectVisionBridge(input) : undefined
+  if (!vm) {
+    if (input.visionAutoBridge) return autoSelectVisionBridge(input)
+    // 同 provider 的视觉档默认可用：主模型每轮都在向该 provider 发送完整对话，图片
+    // 发给同一方不引入新的数据流向或计费主体——跨 provider 自动桥的隐私顾虑在这个
+    // 窄条件下不成立。跨 provider 仍严格 opt-in（默认关的理由见本函数 doc）。
+    return autoSelectVisionBridge(input, { sameProviderOnly: true })
+  }
   const ref = `${vm.provider}/${vm.model}`
   const prov = input.allProviders?.[vm.provider]
   if (!prov) return warnVisionBridge(`prov:${ref}`, `provider "${vm.provider}" 不在已配置的 provider 列表里`)

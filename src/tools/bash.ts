@@ -15,6 +15,8 @@ import { classifySandboxDenial, buildSandboxDenialHint, recordSandboxLearn } fro
 import type { SandboxDenial } from './sandbox-diagnose.js'
 import { grantPath } from './path-grants.js'
 import { rivetHome } from '../config/paths.js'
+import { isTypecheckCommand, runAdhocTypecheckShared, tryAcquireAdhocLock } from '../lsp/typecheck-cache.js'
+import { lowDiskWarning } from '../utils/disk-space.js'
 
 /**
  * ToolResult plus the sandbox attribution that the learn-mode retry inspects.
@@ -288,7 +290,7 @@ function rtkExec(): typeof execFileSync {
 
 function probeRtkHealth(): RtkVerdict {
   try {
-    rtkExec()('rtk', ['--version'], { timeout: 1000, encoding: 'utf-8' })
+    rtkExec()('rtk', ['--version'], { timeout: 1000, encoding: 'utf-8', windowsHide: true })
   } catch {
     return 'missing'
   }
@@ -296,7 +298,7 @@ function probeRtkHealth(): RtkVerdict {
   try {
     dir = mkdtempSync(join(tmpdir(), 'rivet-rtk-probe-'))
     writeFileSync(join(dir, 'rivet-rtk-marker'), 'x')
-    const out = rtkExec()('rtk', ['ls', dir], { timeout: 2000, encoding: 'utf-8' })
+    const out = rtkExec()('rtk', ['ls', dir], { timeout: 2000, encoding: 'utf-8', windowsHide: true })
     return out.includes('rivet-rtk-marker') ? 'ok' : 'broken'
   } catch {
     return 'broken'
@@ -339,7 +341,7 @@ function rtkRewrite(command: string, toolUseId?: string): string {
   let result: string
   try {
     result = rtkVerdict() === 'ok'
-      ? rtkExec()('rtk', ['rewrite', command], { timeout: 500, encoding: 'utf-8' }).trim()
+      ? rtkExec()('rtk', ['rewrite', command], { timeout: 500, encoding: 'utf-8', windowsHide: true }).trim()
       : command
   } catch {
     result = command
@@ -467,7 +469,20 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     const mirrorEnv = buildMirrorEnv(mirrorConfig)
     const earlyFailEnv = gitCloneEarlyFailEnv(rawCommand, mirrorConfig)
     const env = { ...sanitizeEnv(getResolvedEnv(params.cwd)), ...mirrorEnv, ...earlyFailEnv }
+    // 后台 tsc 的尽力串行（2026-09-12 收口②）：拿得到锁就持有到 job 退出
+    // （await 的 10min 是兜底——正常路径 job 退出即清 waiter 放锁，对齐陈旧锁
+    // 上限）；拿不到 fail-open 直接跑。job 生命周期脱离调用点，前台 run/finally
+    // 不适用，这是已知最严的挂钩点。
+    const tcLock = process.env.RIVET_TYPECHECK_SHARE !== '0' && isTypecheckCommand(rawCommand)
+      ? tryAcquireAdhocLock(params.cwd ?? process.cwd())
+      : undefined
     const snap = params.jobs.spawn({ command, rawCommand, cwd: params.cwd, env })
+    if (tcLock) {
+      void params.jobs.await(snap.id, { timeoutMs: 10 * 60_000 }).then(
+        () => tcLock.release(),
+        () => tcLock.release(),
+      )
+    }
     const auto = explicitBg !== true
     const sandboxNote = sandbox.sandboxed && sandbox.note ? `\n${sandbox.note}` : ''
     const content =
@@ -587,6 +602,10 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
             `建议：安装 Git for Windows（https://git-scm.com）或设置 RIVET_GIT_BASH_PATH 指向 bash.exe。\n`
         }
       }
+      // 磁盘水位可见性（2026-09-12 收口④）：低水位时命令会莫名失败（写缓存/
+      // 临时文件挂死），此前无任何信号——前缀一行警告，不阻断执行。
+      const diskNote = lowDiskWarning(params.cwd ?? process.cwd())
+      if (diskNote) shellFallbackNote += `${diskNote}\n`
       // 2026-09-07: 截断时用智能摘要（head + error anchors + tail）替换纯尾部——
       // 纯尾 24K 会丢失头部/中部错误（RED 复现：40KB 输出错误在 10KB 处被丢弃）。
       // P1-3（3a）：扫描源改为与 rawPath 同源的 rawSpool（混流保头 capped 副本）——
@@ -773,8 +792,9 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
 
       const rawPath = await persistRawSafe()
       const baseContent = buildModelOutput(modelBody, { ...meta, rawPath })
+      const prefix = shellFallbackNote + (rereadWarn ? rereadWarn + '\n' : '')
       return {
-        content: rereadWarn ? rereadWarn + '\n' + baseContent : baseContent,
+        content: prefix ? prefix + baseContent : baseContent,
         uiContent: buildUiOutput(filtered, meta),
         rawPath,
         isError,
@@ -904,6 +924,37 @@ export function shouldAutoGrantSandboxDenial(
   return sandboxEnv === 'learn' || approvalMode === 'dangerously-skip-permissions'
 }
 
+/**
+ * ad-hoc 全量类型检查（npx tsc --noEmit / npm run typecheck 等）经跨进程共享
+ * 闸门——worker/会话各自直跑 tsc 会绕过门禁的锁，N 路并发抢同一批核心是超
+ * 线性退化（2026-09-12 galaxy 波实测 17-19 个并发 tsc 互相饿死）。锁根
+ * git-toplevel 化（子目录会话共享 repo 锁）；同指纹同命令直接回放，零耗时。
+ * 含会话级 artifact 引用的结果不写缓存（跨会话回放会悬空）。
+ * RIVET_TYPECHECK_SHARE=0 退回各跑各的（与门禁同一开关）。
+ */
+async function executeBashMaybeSerialized(params: ToolCallParams): Promise<BashExecResult> {
+  const cmd = String(params.input.command ?? '')
+  if (process.env.RIVET_TYPECHECK_SHARE === '0' || !isTypecheckCommand(cmd)) return executeBashOnce(params)
+  const r = await runAdhocTypecheckShared({
+    cwd: params.cwd ?? process.cwd(),
+    command: cmd,
+    cacheable: (o) => !o.stdout.includes('[artifact:'),
+    run: async () => {
+      const live = await executeBashOnce(params)
+      return { live, outcome: { status: live.exitCode ?? null, stdout: live.content, stderr: '' } }
+    },
+  })
+  if (r.kind === 'live') return r.live
+  // 回放：从缓存重建最小结果，标注未重新执行（durationMs 等元信息属于原跑次）。
+  return {
+    content: `[typecheck 缓存回放：源码指纹（HEAD+脏文件内容）与同命令一致，未重新执行]\n${r.outcome.stdout}`,
+    isError: r.outcome.status !== 0,
+    ...(r.outcome.status !== 0 ? { errorClass: 'exec-failure' as const } : {}),
+    exitCode: r.outcome.status ?? undefined,
+    command: cmd,
+  }
+}
+
 export const BASH_TOOL: Tool = {
   definition: {
     name: 'bash',
@@ -922,7 +973,7 @@ export const BASH_TOOL: Tool = {
   },
 
   async execute(params: ToolCallParams) {
-    const first = await executeBashOnce(params)
+    const first = await executeBashMaybeSerialized(params)
 
     // learn mode / 全自动档：a boundary denial should teach, not block. Grant the
     // refused path for this session, retry ONCE, and log the observation so the
@@ -956,7 +1007,7 @@ export const BASH_TOOL: Tool = {
     // The retry re-enters executeBashOnce, which re-wraps the command —
     // defaultWritableRoots is recomputed per wrap, so the grants just recorded
     // are already in the new profile.
-    const second = await executeBashOnce(params)
+    const second = await executeBashMaybeSerialized(params)
     const tag = skipTier ? 'sandbox 首触即授' : 'sandbox learn'
     const banner =
       `[${tag}] 首次执行被写边界拒绝，已临时授权 ${denial.paths.join(', ')} 并重跑一次。` +

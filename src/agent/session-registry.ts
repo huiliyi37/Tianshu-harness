@@ -152,6 +152,21 @@ export class SessionRegistry {
     return new SessionRegistry(db)
   }
 
+  /**
+   * Create and immediately reap crashed sessions' rows/claims (pid-liveness
+   * sweep). A hard-killed process (kill -9 / power loss) leaves its exclusive
+   * claims behind in the shared db; without the sweep the R2 pre-write guard
+   * permanently rejects writes to those files, pointing at a dead session id.
+   * Single home for the TUI bootstrap and serve sidecar startup sweep — no
+   * auto-resume: crashed sessions stay recoverable via --continue / --resume.
+   */
+  static async createWithReap(stateDir: string, onReaped?: (crashed: SessionEntry[]) => void): Promise<SessionRegistry> {
+    const registry = await SessionRegistry.create(stateDir)
+    const crashed = registry.detectCrashedSessions()
+    if (crashed.length > 0) onReaped?.(crashed)
+    return registry
+  }
+
   private constructor(db: any) {
     this.db = db
   }

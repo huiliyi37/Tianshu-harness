@@ -241,6 +241,40 @@ describe('meridian db', () => {
     assert.deepEqual(db.getTestsFor('src/Foo.ts'), ['src/tests/lower.test.ts'])
   })
 
+  // ─── 2026-09-12: GLOB 前缀必须 JS 侧整体绑定——SQL 拼接（? || ':*'）会让
+  // SQLite 放弃 idx_edges_target 退化为全表扫描（实测 225K 边 ~1s/查询，
+  // analyzeImpact 三跳 BFS 累计成 [slow-sync-stage] 4s 警告）。此处钉查询计划。
+  it('edge prefix queries use the edges index, never a full scan (EXPLAIN)', () => {
+    db.upsertEdge('src/a.ts:call:1', 'src/b.ts:foo:1', 'imports', 1.0)
+    db.upsertEdge('src/t.test.ts:t:1', 'src/b.ts:foo:1', 'tested_by', 1.0)
+    const raw = (db as any).db
+    // 拦截 prepare 捕获方法的真 SQL 与实参——测试与方法实现零文本漂移。
+    const captured: Array<{ sql: string; args: unknown[] }> = []
+    const origPrepare = raw.prepare.bind(raw)
+    raw.prepare = (sql: string) => {
+      captured.push({ sql, args: [] as unknown[] })
+      const stmt = origPrepare(sql)
+      const origAll = stmt.all.bind(stmt)
+      stmt.all = (...args: unknown[]) => { captured[captured.length - 1]!.args = args; return origAll(...args) }
+      return stmt
+    }
+    try {
+      db.getReverseDependents('src/b.ts')
+      db.getForwardDependencies('src/b.ts')
+      db.getTestsFor('src/b.ts')
+    } finally {
+      raw.prepare = origPrepare
+    }
+    assert.equal(captured.length, 3)
+    const expectedIndex: Array<RegExp> = [/idx_edges_target/, /idx_edges_source/, /idx_edges_target/]
+    for (const [i, { sql, args }] of captured.entries()) {
+      const plan = (raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>)
+        .map((r) => r.detail).join(' | ')
+      assert.match(plan, new RegExp(`SEARCH e USING INDEX ${expectedIndex[i]!.source}`),
+        `查询 ${i} 应走索引而非全表扫描: ${plan}`)
+    }
+  })
+
   // ─── D6 task 2: schema version + legacy migration ──────────────────
   it('reports schema version 2 after open', () => {
     assert.equal(db.schemaVersion(), 2)

@@ -160,7 +160,7 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test-force-exit --test-timeout=120000 --test \"tests/*.test.ts\"",
+    "test": "node --test-timeout=120000 --test \"tests/*.test.ts\"",
     "package": "npx @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {

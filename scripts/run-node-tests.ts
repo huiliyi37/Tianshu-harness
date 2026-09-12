@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process'
 import { glob, mkdir } from 'node:fs/promises'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { constants, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { nodeTestFlags, resolveTestTimeoutMs } from './test-runner-flags.js'
+import { runGuardedChild } from './test-child-guard.js'
 
 const args = process.argv.slice(2)
 const includeTui = !args.includes('--exclude-tui')
@@ -106,52 +106,53 @@ function batchFiles(all: string[]): string[][] {
   return batches
 }
 
-let activeChild: ReturnType<typeof spawn> | null = null
 let shuttingDown = false
+/** 触发中断的信号，用于收尾退出码（128+signum）。 */
+let interruptSignal: NodeJS.Signals | null = null
 
 // 被中断时必须带走子进程。此前 runner 没装信号处理：Ctrl-C / 终端关闭 / 工具取消
 // 打断后，批次子进程会被 reparent 到 init 继续跑——实测捡到 4 个 PPID=1、跑满一天多
-// 的僵留进程，合计吃掉约 50% CPU。转发信号，不留孤儿。
+// 的僵留进程，合计吃掉约 50% CPU。
+// 2026-09-12：杀子进程的职责移交 runGuardedChild（它是唯一持有 child 引用的地方，且
+// 同时负责 idle/hard 看门狗收尾）；这里只立旗标，让批次循环在开下一批之前停下。
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(sig, () => {
     if (shuttingDown) return
     shuttingDown = true
-    const child = activeChild
-    if (child === null) process.exit(128 + (constants.signals[sig] ?? 15))
-    child.kill(sig)
-    // 子进程可能已卡死不响应优雅退出，给宽限后硬杀 —— 否则 runner 自己也挂在这儿，
-    // 又变成一个僵留进程。unref 让它不拦正常退出。
-    setTimeout(() => {
-      activeChild?.kill('SIGKILL')
-      process.exit(128 + (constants.signals[sig] ?? 15))
-    }, 5_000).unref()
+    interruptSignal = sig
   })
 }
 
-function runBatch(batch: string[]): Promise<number> {
-  return new Promise(resolve => {
-    const child = spawn(process.execPath, [...NODE_FLAGS, ...batch], {
-      stdio: 'inherit',
-      shell: false,
-      env: testEnv,
-    })
-    activeChild = child
-    child.on('exit', (code, signal) => {
-      activeChild = null
-      if (signal) {
-        // 用 128+signum 表达「被信号带走」。不要把信号重放到自己身上——装了处理器后
-        // 重放只会回到处理器，runner 反而卡住不退。
-        resolve(128 + (constants.signals[signal] ?? 15))
-        return
-      }
-      resolve(code ?? 1)
-    })
-    child.on('error', err => {
-      console.error(err)
-      activeChild = null
-      resolve(1)
-    })
-  })
+interface BatchOutcome {
+  code: number
+  tests: number
+  pass: number
+  fail: number
+  /** 是否见到 node 的汇总段。false = 跑了但什么都没验证。 */
+  complete: boolean
+}
+
+/**
+ * 跑一批，三个职责都交给 test-child-guard：plain 跑法（不强制提前退出，保住完整汇总）、
+ * idle/hard 看门狗（真挂起时有界收场）、汇总完整性 fail-closed（没有 `ℹ tests` 行即判失败）。
+ */
+async function runBatch(batch: string[]): Promise<BatchOutcome> {
+  const res = await runGuardedChild({ args: [...NODE_FLAGS, ...batch], env: testEnv })
+  if (res.killed === 'idle') {
+    console.error('⚠️  本批长时间无输出，看门狗已强制收场（子进程挂死或句柄未释放）。')
+  } else if (res.killed === 'hard') {
+    console.error('⚠️  本批超出总时长上限，看门狗已强制收场。')
+  }
+  if (!res.summarySeen) {
+    console.error('⚠️  本批未打印汇总段（ℹ tests）——按 fail-closed 判失败：没有汇总等于没有验证。')
+  }
+  return {
+    code: res.code,
+    tests: res.tests ?? 0,
+    pass: res.pass ?? 0,
+    fail: res.fail ?? 0,
+    complete: res.summarySeen,
+  }
 }
 
 const batches = batchFiles(files)
@@ -160,9 +161,19 @@ if (batches.length > 1) {
 }
 
 let worstExit = 0
+let totalTests = 0
+let totalPass = 0
+let totalFail = 0
 for (const batch of batches) {
   if (shuttingDown) break
-  const code = await runBatch(batch)
-  if (code !== 0) worstExit = code
+  const out = await runBatch(batch)
+  totalTests += out.tests
+  totalPass += out.pass
+  totalFail += out.fail
+  if (out.code !== 0) worstExit = out.code
 }
-process.exit(worstExit)
+if (batches.length > 1) {
+  // 分批时各批各自打印汇总，这里再给一行跨批合计——否则总数得靠人肉加。
+  console.error(`合计：${totalTests} 条（pass ${totalPass} / fail ${totalFail}）· ${batches.length} 批`)
+}
+process.exit(interruptSignal !== null ? 128 + (constants.signals[interruptSignal] ?? 15) : worstExit)

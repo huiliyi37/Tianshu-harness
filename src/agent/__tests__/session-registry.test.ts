@@ -100,6 +100,44 @@ describe('SessionRegistry', () => {
     })
   })
 
+  describe('createWithReap（收编公开仓 PR #110：sidecar 启动收割幽灵独占锁）', () => {
+    it('reaps crashed sessions on create and releases their exclusive claims', async () => {
+      // 播种：一个已死会话（pid 99999 几乎不可能存活）持有 src/index.ts 的独占 claim
+      registry.register('sess-dead', '/project')
+      registry.updatePid('sess-dead', 99999)
+      assert.equal(registry.acquireClaim('sess-dead', 'src/index.ts', 'exclusive'), true)
+
+      let reapedIds: string[] = []
+      const fresh = await SessionRegistry.createWithReap(dbDir, (crashed) => { reapedIds = crashed.map((c) => c.id) })
+      try {
+        assert.deepEqual(reapedIds, ['sess-dead'])
+        // 幽灵 claim 已清——新会话可认领同一文件（不收割时恒 false，R2 守卫永久拒写）
+        assert.equal(fresh.acquireClaim('sess-new', 'src/index.ts', 'exclusive'), true)
+        assert.equal(fresh.checkClaim('src/index.ts')?.sessionId, 'sess-new')
+        assert.equal(fresh.listActive().some((s) => s.id === 'sess-dead'), false)
+      } finally {
+        fresh.close()
+      }
+    })
+
+    it('keeps live sessions and their claims untouched', async () => {
+      // register 记录当前进程 pid——测试进程活着，即活会话
+      registry.register('sess-alive', '/project')
+      assert.equal(registry.acquireClaim('sess-alive', 'a.ts', 'exclusive'), true)
+
+      let reapedCalled = false
+      const fresh = await SessionRegistry.createWithReap(dbDir, () => { reapedCalled = true })
+      try {
+        assert.equal(reapedCalled, false)
+        assert.equal(fresh.acquireClaim('sess-other', 'a.ts', 'exclusive'), false)
+        assert.equal(fresh.checkClaim('a.ts')?.sessionId, 'sess-alive')
+        assert.equal(fresh.listActive().some((s) => s.id === 'sess-alive'), true)
+      } finally {
+        fresh.close()
+      }
+    })
+  })
+
   describe('claim acquire / release / check', () => {
     it('acquires an exclusive claim', () => {
       registry.register('sess-1', '/project')

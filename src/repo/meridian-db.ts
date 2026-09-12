@@ -166,6 +166,12 @@ const LOG_RETENTION_DAYS = 90
  * Escape GLOB wildcards so a literal file path can be used with SQLite GLOB.
  * LIKE treats underscore as a single-char wildcard, so path-prefix queries
  * must use GLOB with the literal path escaped (persistence #2; D6 task 1).
+ *
+ * ⚠ 前缀模式必须在 JS 侧拼好整体绑定（`${globEscape(p)}:*`），绝不要在
+ * SQL 里写 `GLOB ? || ':*'`——拼接形态让 SQLite 无法证明模式有固定前缀，
+ * 放弃 idx_edges_target 退化为全表扫描（2026-09-12 实测 225K 边全扫
+ * ~1s/查询，analyzeImpact 三跳 BFS 累计成 [slow-sync-stage] 4s 警告；
+ * 整体绑定后走索引 SEARCH，0.9–4.4ms，结果集逐字节一致）。
  */
 function globEscape(filePath: string): string {
   return filePath.replace(/[*?[]/g, '[$&]')
@@ -425,9 +431,9 @@ export class MeridianDb {
         e.kind,
         e.weight
       FROM edges e
-      WHERE e.target_id GLOB ? || ':*'
+      WHERE e.target_id GLOB ?
         AND substr(e.source_id, 1, instr(e.source_id, ':') - 1) != ?
-    `).all(globEscape(filePath), filePath) as Array<{ file: string; kind: string; weight: number }>
+    `).all(`${globEscape(filePath)}:*`, filePath) as Array<{ file: string; kind: string; weight: number }>
   }
 
   /** Get files this file depends on via imports edges (P2-2 出边 API，与入边对称）。
@@ -443,9 +449,9 @@ export class MeridianDb {
         e.weight
       FROM edges e
       WHERE e.kind = 'imports'
-        AND e.source_id GLOB ? || ':*'
+        AND e.source_id GLOB ?
         AND substr(e.target_id, 1, instr(e.target_id, ':') - 1) != ?
-    `).all(globEscape(filePath), filePath) as Array<{ file: string; kind: string; weight: number }>
+    `).all(`${globEscape(filePath)}:*`, filePath) as Array<{ file: string; kind: string; weight: number }>
   }
 
   /** Get test files associated with a source file via tested_by edges */
@@ -453,8 +459,8 @@ export class MeridianDb {
     const rows = this.db.prepare(`
       SELECT DISTINCT substr(e.source_id, 1, instr(e.source_id, ':') - 1) as file
       FROM edges e
-      WHERE e.target_id GLOB ? || ':*' AND e.kind = 'tested_by'
-    `).all(globEscape(filePath)) as Array<{ file: string }>
+      WHERE e.target_id GLOB ? AND e.kind = 'tested_by'
+    `).all(`${globEscape(filePath)}:*`) as Array<{ file: string }>
     return rows.map(r => r.file)
   }
 

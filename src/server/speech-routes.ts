@@ -183,6 +183,7 @@ export function buildSpeechRoutes(
           const child = spawn('node', [script, ...args], {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildWhisperFetchChildEnv(),
+            windowsHide: true,
           })
           let stderr = ''
           child.stderr.on('data', (d: Buffer) => {

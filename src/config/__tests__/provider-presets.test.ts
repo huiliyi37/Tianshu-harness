@@ -45,27 +45,27 @@ describe('provider presets', () => {
     assert.equal(codex.models[0]?.id, 'gpt-5.6-sol')
   })
 
-  it('deepseek cost defaults: pro=high effort, flash=medium effort', () => {
+  it('deepseek 已退役 v4pro（官方 2026-09-14 下线）+ flash 档 reasoningEffort', () => {
     const deepseek = cloneProviderPreset('deepseek')
-    const pro = deepseek.models.find(m => m.id === 'deepseek-v4-pro')
-    const flash = deepseek.models.find(m => m.id === 'deepseek-v4-flash')
-    assert.equal(pro?.reasoningEffort, 'high')
-    assert.equal(flash?.reasoningEffort, 'medium')
+    assert.equal(deepseek.models.some(m => m.id === 'deepseek-v4-pro'), false, 'V4-Pro 条目已移除')
+    assert.equal(deepseek.models.find(m => m.id === 'deepseek-v4-flash')?.reasoningEffort, 'medium')
   })
 
-  it('deepseek-v4-flash-vision-exp: 1M 上下文 + 视觉 + 定价与 flash 同档', () => {
+  it('deepseek 已退役 v4-flash-vision-exp（官方已下线，请求由最新 Flash 承接）', () => {
     const deepseek = cloneProviderPreset('deepseek')
-    const vision = deepseek.models.find(m => m.id === 'deepseek-v4-flash-vision-exp')
-    assert.ok(vision, 'vision-exp 必须在 deepseek 预设模型列表')
-    assert.equal(vision.contextWindow, 1_000_000)
-    assert.equal(vision.maxTokens, 384_000)
-    assert.equal(vision.supportsVision, true)
-    assert.deepEqual(vision.pricing, { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 })
-    assert.equal(vision.reasoningEffort, 'medium')
-    assert.equal(vision.tier, 'cheap')
+    assert.equal(
+      deepseek.models.some(m => m.id === 'deepseek-v4-flash-vision-exp'), false,
+      '视觉实验档条目已移除——它排在快照视觉档首位时会被同 provider 自动识图桥选中',
+    )
+    // 退役后 deepseek 下只剩一个视觉档，自动桥的落点是确定的
+    assert.deepEqual(
+      deepseek.models.filter(m => m.supportsVision).map(m => m.id),
+      ['deepseek-flash'],
+      'deepseek 预设里唯一的视觉档是 deepseek-flash',
+    )
   })
 
-  it('deepseek 三模型共存 + 默认档：新增 deepseek-flash，默认档指向 v4-flash', () => {
+  it('deepseek-flash 承接 strong 档 + 默认档指向 v4-flash', () => {
     const deepseek = cloneProviderPreset('deepseek')
     const next = deepseek.models.find(m => m.id === 'deepseek-flash')
     assert.ok(next, 'deepseek-flash 必须在 deepseek 预设模型列表')
@@ -74,11 +74,21 @@ describe('provider presets', () => {
     assert.equal(next.supportsVision, true, '原生多模态声明视觉')
     assert.deepEqual(next.pricing, { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 })
     assert.equal(next.reasoningEffort, 'medium')
-    assert.equal(next.tier, 'cheap')
-    assert.ok(deepseek.models.some(m => m.id === 'deepseek-v4-pro'), 'V4-Pro 保留（14 日下线前共存）')
-    // 2026-09-10：V4-Pro 延至 14 日下线——默认档切到 v4-flash（不指向将下线或全新的模型）。
+    // 2026-09-11：V4-Pro 退役后由本卡承接 strong 档。瑶光门席位（议事会天府 /
+    // 三柱护栏席）与 planning 路由都按 tier 解析——这里必须是 'strong'，否则
+    // strong 卡池为空 → selectModelForTask 静默回退全池，声明 strong 的席位
+    // 会在无留痕的情况下跑 cheap 卡。
+    assert.equal(next.tier, 'strong')
+    assert.equal(deepseek.models.some(m => m.id === 'deepseek-v4-pro'), false, 'V4-Pro 已退役')
     assert.equal(PROVIDER_PRESETS.deepseek.defaultModelId, 'deepseek-v4-flash', '默认档指向 v4-flash')
     assert.equal(deepseek.models[0]?.id, 'deepseek-v4-flash', '首模型（无 defaultModel 时的启动兜底）同为 v4-flash')
+  })
+
+  it('deepseek 预设始终留有 strong 卡（瑶光门落点不变量）', () => {
+    // 兜住「删卡把 strong 档删空」这类改动：卡池空掉时 selectModelForTask 的
+    // fallback 会静默降档，瑶光门声明的「不得低于 strong」失效且无任何留痕。
+    const strong = cloneProviderPreset('deepseek').models.filter(m => m.tier === 'strong')
+    assert.ok(strong.length > 0, 'DeepSeek 必须留有 strong 档落点')
   })
 
   it('glm-5.3 / glm-5.3-flash：文本旗舰 + 原生多模态（flash 带 supportsVision）', () => {

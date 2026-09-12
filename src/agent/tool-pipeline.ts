@@ -61,6 +61,7 @@ import { profileIsPlanModeSafe } from './profile-registry.js'
 import { buildSensitivePreflightMessage, shouldRequireSensitivePreflight } from './sensitive-preflight.js'
 import { toolTargetFromInput } from './tool-target.js'
 import { execFileGit } from '../tools/spawn-git.js'
+import { patchTargetPaths, preWriteClaimPaths } from './pre-write-claims.js'
 
 /** Headless prefix on denial messages — a stable marker so worker-session's
  *  detectApprovalDeadlock can distinguish "gated by approval" from "bad JSON". */
@@ -76,28 +77,10 @@ const HEADLESS_AUTO_APPROVE_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'edit_file', 'write_file', 'hash_edit', 'apply_patch', 'ast_edit',
 ])
 
-/** Extract target file paths from a unified diff's `+++ b/…` headers
- *  (deletions fall back to the preceding `--- a/…` line). Best-effort —
- *  feeds TaskLedger file_write attribution for apply_patch, which carries
- *  no file_path parameter of its own. */
-export function patchTargetPaths(diff: string): string[] {
-  const out = new Set<string>()
-  const lines = diff.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const plus = /^\+\+\+ (?:b\/)?(.+)$/.exec(lines[i] ?? '')
-    if (!plus) continue
-    const p = (plus[1] ?? '').split('\t')[0]!.trim()
-    if (p && p !== '/dev/null') {
-      out.add(p)
-      continue
-    }
-    // Deletion (`+++ /dev/null`): the removed file is the preceding --- header.
-    const minus = /^--- (?:a\/)?(.+)$/.exec(lines[i - 1] ?? '')
-    const mp = (minus?.[1] ?? '').split('\t')[0]!.trim()
-    if (mp && mp !== '/dev/null') out.add(mp)
-  }
-  return [...out]
-}
+/** Re-exported for the existing importers (tests + TaskLedger attribution).
+ *  实现与 preWriteClaimPaths 同住一个模块——写前守卫与写后归属共用同一套
+ *  路径键形，拆开会让两侧漂移。 */
+export { patchTargetPaths }
 
 /** Infer the workspace_mutation `kind` from a git destructive command.
  *  Used by B1 cross-session stash awareness to differentiate stash / reset / checkout / clean. */
@@ -1329,32 +1312,32 @@ async function executeToolUseInner(
 
     // R2 — concurrent write conflict block (desktop multi-session). When a live
     // SessionRegistry is wired and another active session holds an exclusive
-    // claim on the target file, fail-closed: refuse the write instead of
+    // claim on a target file, fail-closed: refuse the write instead of
     // clobbering a peer session's in-flight edit. acquireClaim is idempotent for
     // the same session, so an uncontended write also stakes our claim here.
-    // Only active when a registry is present — CLI / single-session / no-registry
-    // paths are completely unaffected.
-    if (
-      deps.sessionRegistry &&
-      deps.sessionId &&
-      (tu.name === 'write_file' || tu.name === 'edit_file') &&
-      typeof tu.input.file_path === 'string'
-    ) {
-      // Normalize to the same key form the post-write claim path uses (relative
-      // to cwd when inside the workspace) so claims compare consistently.
-      let claimPath = tu.input.file_path
-      if (claimPath.startsWith(deps.cwd + '/') || claimPath.startsWith(deps.cwd + '\\')) {
-        claimPath = claimPath.slice(deps.cwd.length + 1)
-      }
-      const acquired = deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')
-      if (!acquired) {
-        const owner = deps.sessionRegistry.checkClaim(claimPath)
-        const ownerTag = owner?.sessionId ? `（会话 ${owner.sessionId.slice(0, 8)}）` : ''
-        const blockMsg =
-          `文件「${claimPath}」正被另一个会话${ownerTag}独占编辑，已阻断本次写入以避免并发冲突。` +
-          `请等待对方完成，或改写其它文件。`
-        callbacks.onToolResult(tu.id, tu.name, blockMsg, true)
-        return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: blockMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+    // Covers every workspace-writing tool via preWriteClaimPaths — a guard
+    // keyed to write_file/edit_file alone left the other four write tools as
+    // an unguarded side door. Only active when a registry is present — CLI /
+    // single-session / no-registry paths are completely unaffected.
+    if (deps.sessionRegistry && deps.sessionId) {
+      const staked: string[] = []
+      for (const claimPath of preWriteClaimPaths(tu, deps.cwd)) {
+        const acquired = deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')
+        if (!acquired) {
+          // 多路径调用（apply_patch 补丁、ast_edit 多 paths）中途被拦时，把本次
+          // 已认领的路径放回去——否则补丁被拒却留下无主 exclusive claim（claims
+          // 表无 TTL，只随进程死亡回收），反把 peer 挡在门外。范式同 coordinator
+          // 重试认领的回滚。
+          for (const p of staked) deps.sessionRegistry.releaseClaim(deps.sessionId, p)
+          const owner = deps.sessionRegistry.checkClaim(claimPath)
+          const ownerTag = owner?.sessionId ? `（会话 ${owner.sessionId.slice(0, 8)}）` : ''
+          const blockMsg =
+            `文件「${claimPath}」正被另一个会话${ownerTag}独占编辑，已阻断本次写入以避免并发冲突。` +
+            `请等待对方完成，或改写其它文件。`
+          callbacks.onToolResult(tu.id, tu.name, blockMsg, true)
+          return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: blockMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+        }
+        staked.push(claimPath)
       }
     }
 
@@ -1753,34 +1736,21 @@ async function executeToolUseInner(
         // Commit nudge: warn when uncommitted files accumulate
         const nudge = buildCommitNudge({ ownedFiles: deps.taskLedger.getOwnedFiles() })
         if (nudge) finalContent += nudge
-     } else if (tu.name === 'apply_patch') {
-        // apply_patch 不带 file_path——从 diff 头解析变更文件补记 file_write。
-        // 漏记会让 claim-audit 的验证新鲜度对账失明：测完再 patch，旧验证仍
-        // 显示"新鲜"，"全绿"宣称假放行（审查 2026-07-07 #1）。
-        const applied = !harnessResult.isError && tu.input.check_only !== true
-        const diff = typeof tu.input.diff === 'string' ? tu.input.diff : ''
-        if (applied && diff) {
-          for (const p of patchTargetPaths(diff)) {
+     } else if (tu.name === 'apply_patch' || tu.name === 'ast_edit') {
+        // 路径与写前守卫同源（pre-write-claims 的 preWriteClaimPaths）：同一套
+        // cwd 相对键，绝对路径入参与 ast_edit 的单数 path 别名不再漂移；只读
+        // 变体（apply_patch check_only、ast_edit 缺省即预览）在那里早退为空。
+        // 目录 / '.' 原样记录（无法展开为具体文件，claim-audit 的代码判定会
+        // 自然忽略）。漏记会让 claim-audit 的验证新鲜度对账失明：测完再 patch，
+        // 旧验证仍显示"新鲜"，"全绿"宣称假放行（审查 2026-07-07 #1）。
+        const paths = harnessResult.isError ? [] : preWriteClaimPaths(tu, deps.cwd)
+        if (paths.length > 0) {
+          for (const p of paths) {
             deps.taskLedger.record({ type: 'file_write', path: p })
             deps.ownershipLedger?.registerOwned(p)
             if (deps.sessionRegistry && deps.sessionId) {
               deps.sessionRegistry.acquireClaim(deps.sessionId, p, 'exclusive')
-           }
-          }
-        } else {
-          deps.taskLedger.record({ type: 'tool_exec', tool: tu.name })
-        }
-     } else if (tu.name === 'ast_edit') {
-        // 同 apply_patch：非 dryRun 的成功执行按 paths 记 file_write（目录路径
-        // 无法展开为具体文件，原样记录——claim-audit 的代码判定会自然忽略）。
-        const wrote = !harnessResult.isError && tu.input.dryRun === false
-        const paths = Array.isArray(tu.input.paths)
-          ? tu.input.paths.filter((p): p is string => typeof p === 'string' && p.length > 0)
-          : []
-        if (wrote && paths.length > 0) {
-          for (const p of paths) {
-            deps.taskLedger.record({ type: 'file_write', path: p })
-            deps.ownershipLedger?.registerOwned(p)
+            }
           }
         } else {
           deps.taskLedger.record({ type: 'tool_exec', tool: tu.name })

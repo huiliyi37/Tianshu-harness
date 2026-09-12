@@ -276,7 +276,7 @@ export interface AgentConfig {
    *  active=桥可用；source 区分显式配置 / 自动选择 / 无；reason 记未启用/降级原因。 */
   visionBridge?: {
     active: boolean
-    source: 'configured' | 'auto' | 'none'
+    source: 'native' | 'configured' | 'auto' | 'same-provider' | 'none'
     /** 桥接生效或未生效的可读原因（configured/auto 时为选中的 provider/model；none 时为原因）。 */
     detail?: string
   }

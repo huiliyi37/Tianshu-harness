@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -14,6 +14,9 @@ import {
   tryAcquireLock,
   isLockHeld,
   runTypecheckShared,
+  isTypecheckCommand,
+  resolveTypecheckLockRoot,
+  runAdhocTypecheckShared,
   type TscRunOutcome,
   type TypecheckShareEvent,
 } from '../typecheck-cache.js'
@@ -96,12 +99,24 @@ describe('porcelain 解析', () => {
     assert.deepEqual(parsePorcelainPaths('?? src/a.ts\0 M src/b.ts\0'), ['src/a.ts', 'src/b.ts'])
   })
 
-  it('只有影响 tsc 的路径进指纹', () => {
+  it('只有影响 tsc 的路径进指纹（2026-09-12 起目录无关：desktop 等子项目同样计入）', () => {
     assert.equal(affectsTypecheck('src/a.ts'), true)
     assert.equal(affectsTypecheck('tsconfig.json'), true)
     assert.equal(affectsTypecheck('package-lock.json'), true)
     assert.equal(affectsTypecheck('docs/readme.md'), false)
-    assert.equal(affectsTypecheck('desktop/src/App.tsx'), false)
+    // cwd 感知化：子项目源码/清单同样影响类型检查（ad-hoc 回放正确性前提）
+    assert.equal(affectsTypecheck('desktop/src/App.tsx'), true)
+    assert.equal(affectsTypecheck('desktop/tsconfig.json'), true)
+    assert.equal(affectsTypecheck('desktop/src/locales/zh-CN/mobile.json'), true)
+    assert.equal(affectsTypecheck('desktop/package.json'), true)
+    assert.equal(affectsTypecheck('pnpm-lock.yaml'), true)
+    assert.equal(affectsTypecheck('src/locales/en.json.bak'), false)
+    // node_modules 永远不计入（依赖安装不改变 tsconfig 语义下的源码指纹）
+    assert.equal(affectsTypecheck('node_modules/foo/index.d.ts'), false)
+    assert.equal(affectsTypecheck('src/node_modules/foo.ts'), false)
+    // 非代码扩展不进指纹（命中率保护）
+    assert.equal(affectsTypecheck('docs/analysis/note.md'), false)
+    assert.equal(affectsTypecheck('assets/logo.png'), false)
   })
 })
 
@@ -369,5 +384,129 @@ describe('runTypecheckShared 编排', () => {
     }))
     assert.equal(isLockHeld(cacheDir), false)
     assert.equal(existsSync(join(cacheDir, 'run.lock')), false)
+  })
+})
+
+describe('isTypecheckCommand（ad-hoc tsc 形态识别）', () => {
+  it('命中：npx/直跑/vue-tsc 的 --noEmit 与包管理器 typecheck script', () => {
+    const hits = [
+      'npx tsc --noEmit',
+      'npx tsc --noEmit -p tsconfig.json',
+      'tsc --noEmit',
+      './node_modules/.bin/tsc --noEmit',
+      'pnpm exec tsc --noEmit',
+      'npx vue-tsc --noEmit',
+      'cd desktop && npm run typecheck',
+      'npm run typecheck',
+      'pnpm typecheck',
+      'yarn typecheck',
+      'npm run build && npm run typecheck',
+    ]
+    for (const cmd of hits) assert.ok(isTypecheckCommand(cmd), `应命中: ${cmd}`)
+  })
+
+  it('不命中：非验证形态与无关命令', () => {
+    const misses = [
+      'tsc',
+      'tsc --watch',
+      'tsc -p tsconfig.json', // 产物构建（emit），不是验证
+      'grep -rn tsc src/',
+      'echo "run tsc --noEmit later" | cat', // 管道内不出现在命令位
+      'npm run typecheck:watch',
+      'git status',
+    ]
+    for (const cmd of misses) assert.ok(!isTypecheckCommand(cmd), `不应命中: ${cmd}`)
+  })
+})
+
+describe('resolveTypecheckLockRoot（锁根 git-toplevel 化）', () => {
+  let repo: string
+  beforeEach(() => { repo = makeRepo() })
+  afterEach(() => rmSync(repo, { recursive: true, force: true }))
+
+  it('git 仓库内解析到顶层——子目录会话与根目录调用共享同一把锁', () => {
+    // macOS tmpdir 是 /var→/private/var 的 symlink，git 返回 realpath——比较前归一。
+    const real = realpathSync(repo)
+    assert.equal(resolveTypecheckLockRoot(repo), real)
+    const sub = join(repo, 'src')
+    assert.equal(resolveTypecheckLockRoot(sub), real, '子目录 cwd 应归一到仓库顶层')
+  })
+
+  it('非 git 目录回退 cwd 本身（fail-open，不失锁语义之外的任何行为）', () => {
+    const plain = mkdtempSync(join(tmpdir(), 'rivet-tc-nogit-'))
+    try {
+      assert.equal(resolveTypecheckLockRoot(plain), plain)
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('runAdhocTypecheckShared（ad-hoc 收口：串行 + 同命令回放）', () => {
+  let repo: string
+  beforeEach(() => { repo = makeRepo() })
+  afterEach(() => rmSync(repo, { recursive: true, force: true }))
+
+  it('真跑返回 live；同指纹同命令第二次直接回放（不再执行）', async () => {
+    let runs = 0
+    const run = async () => {
+      runs++
+      return { live: `result-${runs}`, outcome: { status: 0 as number | null, stdout: `out-${runs}`, stderr: '' } }
+    }
+    const first = await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit', run })
+    assert.deepEqual(first, { kind: 'live', live: 'result-1' })
+    const second = await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit', run })
+    assert.equal(second.kind, 'replay', '同指纹同命令应回放')
+    assert.equal(runs, 1, '回放不应再次执行')
+    if (second.kind === 'replay') assert.equal(second.outcome.stdout, 'out-1')
+  })
+
+  it('命令不同不回放（variant 含命令全文）', async () => {
+    let runs = 0
+    const run = async () => { runs++; return { live: runs, outcome: { status: 0 as number | null, stdout: `out-${runs}`, stderr: '' } } }
+    await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit', run })
+    const r = await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit -p tsconfig.json', run })
+    assert.equal(r.kind, 'live')
+    assert.equal(runs, 2)
+  })
+
+  it('源码变动后不回放（指纹失效即重跑）', async () => {
+    let runs = 0
+    const run = async () => { runs++; return { live: runs, outcome: { status: 0 as number | null, stdout: `out-${runs}`, stderr: '' } } }
+    await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit', run })
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a: string = 1\n')
+    const r = await runAdhocTypecheckShared({ cwd: repo, command: 'npx tsc --noEmit', run })
+    assert.equal(r.kind, 'live', '脏文件内容变化必须使缓存失效')
+    assert.equal(runs, 2)
+  })
+
+  it('cacheable 否决：含会话级 artifact 引用的内容不写缓存', async () => {
+    let runs = 0
+    const run = async () => {
+      runs++
+      return { live: runs, outcome: { status: 0 as number | null, stdout: `[artifact:a${runs}] big`, stderr: '' } }
+    }
+    const opts = { cwd: repo, command: 'npx tsc --noEmit', cacheable: (o: { stdout: string }) => !o.stdout.includes('[artifact:') }
+    await runAdhocTypecheckShared({ ...opts, run })
+    const r = await runAdhocTypecheckShared({ ...opts, run })
+    assert.equal(r.kind, 'live', '被否决的结果不得回放——跨会话引用会悬空')
+    assert.equal(runs, 2)
+  })
+
+  it('锁内串行：并发调用不重叠执行', async () => {
+    let active = 0
+    let maxActive = 0
+    const run = async () => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise((r) => setTimeout(r, 100))
+      active--
+      return { live: active, outcome: { status: null as number | null, stdout: '', stderr: '' } }
+    }
+    await Promise.all([
+      runAdhocTypecheckShared({ cwd: repo, command: 'tsc --noEmit', run }),
+      runAdhocTypecheckShared({ cwd: repo, command: 'tsc --noEmit', run }),
+    ])
+    assert.equal(maxActive, 1)
   })
 })

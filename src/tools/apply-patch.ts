@@ -199,8 +199,30 @@ export const APPLY_PATCH_TOOL: Tool = {
     })
 
     if (!result.ok) {
+      // `git apply --3way` 报冲突是 exit 1，但退出前状态已经被动过：冲突文件的
+      // 冲突标记与干净 hunk 已落盘、干净文件被整体套用并 staged 进索引、冲突
+      // 文件留下 UU（unmerged）索引条目。只报「失败」就返回会让模型按「失败=
+      // 没发生」重试同一补丁（撞 "does not exist in index" 死循环），UU 条目还
+      // 会让标准恢复命令 `git checkout -- <file>` 报 "path is unmerged"。
+      //
+      // 失败分支因此复用致命语法错误那条回滚路线，职责两分：工作树内容由
+      // rollbackTargets 从补丁前的备份恢复，索引条目由 unstagePatchTargets 收回
+      // HEAD（reset 不碰工作树，内容恢复不碰索引，顺序无关但职责不可混）。
+      // 文案只说「已回滚到补丁前状态」——那是对结果的保证，不声称「曾发生半套
+      // 用」：和索引不匹配一类失败路径上本就什么都没留下。verify 关闭时 targets
+      // 为空（无备份可恢复），保持 legacy 行为不变。
+      const rolledBack = targets.length > 0
+      if (rolledBack) {
+        await rollbackTargets(params.cwd, targets, params.sessionId)
+        await unstagePatchTargets(params.cwd, targets)
+      }
       for (const t of targets) incrementEditFailCount(t.abs)
-      return { content: `补丁应用失败：${result.error}`, isError: true }
+      return {
+        content: rolledBack
+          ? `补丁应用失败（已回滚到补丁前状态）：${result.error}`
+          : `补丁应用失败：${result.error}`,
+        isError: true,
+      }
     }
 
     // Post-apply structural verification: git apply --3way can leave conflict
@@ -263,7 +285,7 @@ async function applyPatchViaClient(
     }
     // Init a throwaway git repo so `git apply` has a valid cwd.
     const { spawnSync } = await import('node:child_process')
-    const init = spawnSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' })
+    const init = spawnSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore', windowsHide: true })
     if (init.status !== 0) return null
     const applied = await applyPatch(tmpRoot, { diff: normalizedDiff, checkOnly: false })
     if (!applied.ok) return null
@@ -333,6 +355,30 @@ async function rollbackTargets(cwd: string, targets: PatchTarget[], sessionId?: 
       try { await unlink(t.abs) } catch { /* already gone */ }
     }
   }
+}
+
+/** Best-effort index cleanup after a failed `git apply --3way`: the failed
+ *  apply can leave cleanly-merged targets staged and conflicted targets
+ *  unmerged (UU). `git reset -- <path>` takes index entries back to HEAD
+ *  (worktree untouched — content restore is rollbackTargets' job), un-poisoning
+ *  recovery commands like `git checkout -- <file>`. Ordering against
+ *  rollbackTargets does not matter (each touches only one of worktree/index),
+ *  but the two responsibilities must stay separated: a reset cannot restore file
+ *  content, and a content restore cannot clear an unmerged entry.
+ *  Trade-off: pre-patch staged changes on those same paths are unstaged too —
+ *  acceptable in the failure path, where the patch itself staged the entries.
+ *  No-ops outside a git workspace (non-zero exit) — the worktree rollback
+ *  already ran above. */
+async function unstagePatchTargets(cwd: string, targets: PatchTarget[]): Promise<void> {
+  if (targets.length === 0) return
+  await new Promise<void>((resolve) => {
+    const child = spawnGit(['reset', '-q', '--', ...targets.map((t) => t.rel)], {
+      cwd,
+      stdio: 'ignore',
+    })
+    child.on('close', () => resolve())
+    child.on('error', () => resolve())
+  })
 }
 
 const APPLY_PATCH_MAX_UI_LINES = 600

@@ -456,7 +456,7 @@ function baselinePrecheckBlock(cwd: string, files: string[]): string {
   if (files.length === 0) return ''
   const run = (args: string[]): string | null => {
     try {
-      return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString()
+      return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString()
     } catch {
       return null // 非 git 目录 / 超时
     }

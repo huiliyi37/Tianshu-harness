@@ -16,7 +16,7 @@ export function openInBrowser(url: string): void {
     process.platform === 'darwin' ? ['open', [url]] as const
     : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] as const
     : ['xdg-open', [url]] as const
-  const child = execFile(cmd, [...args], () => { /* 打开失败无害 */ })
+  const child = execFile(cmd, [...args], { windowsHide: true }, () => { /* 打开失败无害 */ })
   child.on('error', () => { /* 无 xdg-open 等环境 */ })
   child.unref()
 }

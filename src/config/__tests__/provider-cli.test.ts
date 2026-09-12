@@ -57,9 +57,9 @@ function startModelServer(modelIds: string[]): Promise<{ baseUrl: string; close:
 
 describe('toModelDescriptors', () => {
   it('backfills alias-table metadata on exact/normalized hits and keeps the raw id', () => {
-    const { models, notes } = toModelDescriptors(matchModelIds(['deepseek-v4-pro', 'GLM-5.2']))
+    const { models, notes } = toModelDescriptors(matchModelIds(['deepseek-v4-flash', 'GLM-5.2']))
     assert.equal(models.length, 2)
-    assert.equal(models[0]?.id, 'deepseek-v4-pro')
+    assert.equal(models[0]?.id, 'deepseek-v4-flash')
     assert.equal(models[0]?.contextWindow, 1_000_000)
     assert.equal(models[1]?.id, 'GLM-5.2', 'the endpoint raw id stays callable in config')
     assert.equal(models[1]?.contextWindow, 1_000_000)
@@ -91,7 +91,7 @@ describe('rivet provider CLI', () => {
   })
 
   it('add: probe-first flow registers models with alias-table backfill', async () => {
-    server = await startModelServer(['deepseek-v4-pro', 'mystery-model-x'])
+    server = await startModelServer(['deepseek-v4-flash', 'mystery-model-x'])
     const { io, stdout } = captureIO()
     await runProviderCLI([
       'add', 'my-relay', '--base-url', server.baseUrl, '--api-key', 'sk-local', '--default',
@@ -102,7 +102,7 @@ describe('rivet provider CLI', () => {
     assert.equal(cfg.provider.default, 'my-relay')
     assert.equal(provider.protocol, 'openai')
     assert.equal(provider.models.length, 2)
-    const known = provider.models.find(m => m.id === 'deepseek-v4-pro')!
+    const known = provider.models.find(m => m.id === 'deepseek-v4-flash')!
     assert.equal(known.contextWindow, 1_000_000, 'matched model backfills real metadata')
     const unknown = provider.models.find(m => m.id === 'mystery-model-x')!
     assert.equal(unknown.contextWindow, 131_072, 'unknown model gets the conservative schema default')

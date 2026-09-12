@@ -65,7 +65,7 @@ describe('provider onboarding end-to-end (mock OpenAI-compatible server)', () =>
       if (req.url === '/v1/models') {
         sawAuth = req.headers.authorization ?? ''
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-pro' }, { id: 'brand-new-model-x' }] }))
+        res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }, { id: 'brand-new-model-x' }] }))
         return
       }
       if (req.url === '/v1/chat/completions') {
@@ -89,7 +89,7 @@ describe('provider onboarding end-to-end (mock OpenAI-compatible server)', () =>
     assert.equal(provider.baseUrl, server.baseUrl)
     assert.equal(provider.models.length, 2)
     // Known model: alias-table metadata backfilled (1M window).
-    const known = provider.models.find(m => m.id === 'deepseek-v4-pro')!
+    const known = provider.models.find(m => m.id === 'deepseek-v4-flash')!
     assert.equal(known.contextWindow, 1_000_000)
     // Unknown model: schema default, not a silently wrong value.
     const unknown = provider.models.find(m => m.id === 'brand-new-model-x')!
@@ -100,7 +100,7 @@ describe('provider onboarding end-to-end (mock OpenAI-compatible server)', () =>
     await runProviderCLI(['models', 'mock-e2e'], io)
     const snippetLine = out.find(l => l.includes('"models"'))!
     const snippet = JSON.parse(snippetLine) as { models: Array<{ id: string }> }
-    assert.deepEqual(snippet.models.map(m => m.id), ['deepseek-v4-pro', 'brand-new-model-x'])
+    assert.deepEqual(snippet.models.map(m => m.id), ['deepseek-v4-flash', 'brand-new-model-x'])
 
     // 3. first completion through the real client against the onboarded endpoint.
     const client = new OpenAIClient({

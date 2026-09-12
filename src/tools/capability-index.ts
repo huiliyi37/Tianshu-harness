@@ -68,7 +68,7 @@ export interface Checkers {
 const require_ = createRequire(import.meta.url)
 
 function defaultBinaryChecker(name: string): boolean {
-  const res = spawnSync('which', [name], { stdio: 'ignore' })
+  const res = spawnSync('which', [name], { stdio: 'ignore', windowsHide: true })
   return res.status === 0
 }
 

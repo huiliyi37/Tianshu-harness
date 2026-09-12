@@ -257,16 +257,16 @@ describe('runConfigCLI model capability commands', () => {
 
   it('set-model-vision on/off toggles the flag', async () => {
     const { stdout, io } = makeIo()
-    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-pro', 'on'], io)
-    assert.equal(loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'deepseek-v4-pro')!.supportsVision, true)
-    assert.match(stdout.join('\n'), /Vision enabled for deepseek-v4-pro/)
-    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-pro', 'off'], io)
-    assert.equal(loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'deepseek-v4-pro')!.supportsVision, false)
+    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-flash', 'on'], io)
+    assert.equal(loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'deepseek-v4-flash')!.supportsVision, true)
+    assert.match(stdout.join('\n'), /Vision enabled for deepseek-v4-flash/)
+    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-flash', 'off'], io)
+    assert.equal(loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'deepseek-v4-flash')!.supportsVision, false)
   })
 
   it('set-model-vision rejects an invalid flag or missing args', async () => {
     const { stderr, exits, io } = makeIo()
-    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-pro', 'maybe'], io)
+    await runConfigCLI(['set-model-vision', 'deepseek', 'deepseek-v4-flash', 'maybe'], io)
     assert.deepEqual(exits, [1])
     assert.match(stderr.join('\n'), /Usage: rivet config set-model-vision/)
     await runConfigCLI(['set-model-vision', 'deepseek'], io)

@@ -29,7 +29,7 @@
  * Idempotent. Run after `npm run build` (tsup `clean` wipes dist) and after
  * pack-native.js.
  */
-import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -110,6 +110,11 @@ function readDeps(dir) {
 
 if (existsSync(destModules)) rmSync(destModules, { recursive: true, force: true })
 mkdirSync(destModules, { recursive: true })
+// dist/ 脱离仓库独立分发时（桌面端 Resources/rivet-runtime）没有上级 package.json，
+// Node 会按 CommonJS 解析 .js —— ESM bundle 启动即 SyntaxError: Cannot use import
+// statement outside a module（2026-09-11 Windows 现场）。随 dist 落一份最小
+// package.json 声明 ESM，与仓库根 package.json 的 "type":"module" 同语义。
+writeFileSync(join(repoRoot, 'dist', 'package.json'), JSON.stringify({ type: 'module' }, null, 2) + '\n')
 // Every exit path below except the final success leaves this marker behind, so
 // an interrupted run can never be mistaken for a complete one (2026-08-03: a
 // dead run left 65 dirs / 0 files and shipped silently for two days).

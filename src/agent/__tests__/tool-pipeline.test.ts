@@ -318,6 +318,116 @@ describe('executeToolUse', () => {
     assert.equal(loopController.signal.aborted, false, 'loop signal itself is not aborted by a single tool timeout')
   })
 
+  it('write-ledger: ast_edit absolute path normalizes to the same cwd-relative key the pre-write guard uses', async () => {
+    const events: any[] = []
+    const owned: string[] = []
+    const claimed: string[] = []
+    const deps = makeDeps({
+      cwd: '/tmp/ws',
+      sessionId: 'mine',
+      sessionRegistry: {
+        acquireClaim: (_sid: string, path: string) => { claimed.push(path); return true },
+        checkClaim: () => null,
+      } as any,
+      taskLedger: { record: (event: any) => { events.push(event) } } as any,
+      ownershipLedger: {
+        registerOwned: (file: string) => { owned.push(file) },
+        getOwnedFiles: () => owned,
+        getBaselineHead: () => '',
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-ast-abs', name: 'ast_edit', input: { paths: ['/tmp/ws/src/foo.ts'], ops: [{ replace: 'x' }], dryRun: false } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    const event = events.at(-1)
+    assert.equal(event.type, 'file_write')
+    assert.equal(event.path, 'src/foo.ts', 'absolute path must normalize to the cwd-relative claim key')
+    assert.deepEqual(owned, ['src/foo.ts'])
+    assert.deepEqual([...new Set(claimed)], ['src/foo.ts'], 'pre-write guard and post-write ledger must stake the same key')
+  })
+
+  it('write-ledger: ast_edit singular `path` alias is no longer dropped from the ledger', async () => {
+    const events: any[] = []
+    const owned: string[] = []
+    const deps = makeDeps({
+      cwd: '/tmp/ws',
+      taskLedger: { record: (event: any) => { events.push(event) } } as any,
+      ownershipLedger: {
+        registerOwned: (file: string) => { owned.push(file) },
+        getOwnedFiles: () => owned,
+        getBaselineHead: () => '',
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-ast-singular', name: 'ast_edit', input: { path: 'src/bar.ts', ops: [{ replace: 'x' }], dryRun: false } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    const event = events.at(-1)
+    assert.equal(event.type, 'file_write', 'singular `path` is a real write target (ast-edit.ts:100)')
+    assert.equal(event.path, 'src/bar.ts')
+    assert.deepEqual(owned, ['src/bar.ts'])
+  })
+
+  it('write-ledger: ast_edit preview (no dryRun) stays tool_exec — no ledger entry, no claim', async () => {
+    const events: any[] = []
+    const owned: string[] = []
+    const claimed: string[] = []
+    const deps = makeDeps({
+      cwd: '/tmp/ws',
+      sessionId: 'mine',
+      sessionRegistry: {
+        acquireClaim: (_sid: string, path: string) => { claimed.push(path); return true },
+        checkClaim: () => null,
+      } as any,
+      taskLedger: { record: (event: any) => { events.push(event) } } as any,
+      ownershipLedger: {
+        registerOwned: (file: string) => { owned.push(file) },
+        getOwnedFiles: () => owned,
+        getBaselineHead: () => '',
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-ast-prev', name: 'ast_edit', input: { paths: ['src/foo.ts'], ops: [{ replace: 'x' }] } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    const event = events.at(-1)
+    assert.equal(event.type, 'tool_exec', 'a preview writes nothing')
+    assert.deepEqual(owned, [])
+    assert.deepEqual(claimed, [], 'preview must not stake a claim')
+  })
+
+  it('write-ledger: apply_patch absolute diff header normalizes to the cwd-relative key', async () => {
+    const events: any[] = []
+    const owned: string[] = []
+    const deps = makeDeps({
+      cwd: '/tmp/ws',
+      taskLedger: { record: (event: any) => { events.push(event) } } as any,
+      ownershipLedger: {
+        registerOwned: (file: string) => { owned.push(file) },
+        getOwnedFiles: () => owned,
+        getBaselineHead: () => '',
+      } as any,
+    })
+
+    const diff = ['--- a//tmp/ws/src/a.ts', '+++ b//tmp/ws/src/a.ts', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n')
+    await executeToolUse(
+      { id: 'tu-patch-abs', name: 'apply_patch', input: { diff } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    const event = events.at(-1)
+    assert.equal(event.type, 'file_write')
+    assert.equal(event.path, 'src/a.ts', 'patch target must normalize like every other write tool')
+    assert.deepEqual(owned, ['src/a.ts'])
+  })
+
   it('records applied plan_close as file_write in task ledger', async () => {
     const events: any[] = []
     const owned: string[] = []
@@ -919,6 +1029,199 @@ describe('executeToolUse', () => {
 
     assert.equal(executed, true, 'uncontended write must reach the harness (not blocked)')
     assert.doesNotMatch((result.toolResult as any).content as string, /阻断/, 'must not be the R2 block message')
+  })
+
+  it('R2: blocks hash_edit when another session holds an exclusive claim (fail-closed)', async () => {
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, _path: string, _type: string) => false,
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const result = await executeToolUse(
+      { id: 'tu-hash', name: 'hash_edit', input: { file_path: 'foo.ts', anchors: [], new_string: 'x' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.equal((result.toolResult as any).is_error, true, 'hash_edit must hit the same R2 guard as write_file')
+    assert.equal(executed, false, 'harness must NOT execute the contested hash_edit')
+    assert.match((result.toolResult as any).content as string, /另一个会话/)
+  })
+
+  it('R2: blocks apply_patch when another session claims a patch target (path parsed from diff)', async () => {
+    const claimed: string[] = []
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => { claimed.push(path); return false },
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const diff = ['--- a/src/foo.ts', '+++ b/src/foo.ts', '@@ -1,1 +1,1 @@', '-a', '+b'].join('\n')
+    const result = await executeToolUse(
+      { id: 'tu-patch', name: 'apply_patch', input: { diff } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.deepEqual(claimed, ['src/foo.ts'], 'claim must target the path parsed from the diff header')
+    assert.equal((result.toolResult as any).is_error, true, 'contested patch target must be blocked pre-write')
+    assert.equal(executed, false, 'harness must NOT execute the contested apply_patch')
+  })
+
+  it('R2: apply_patch check_only is read-only — no claim, reaches the harness', async () => {
+    let claims = 0
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: () => { claims++; return true },
+      checkClaim: () => null,
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: r.isError ?? false, retried: false } },
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-patch-check', name: 'apply_patch', input: { diff: '--- a/x.ts\n+++ b/x.ts\n', check_only: true } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.equal(claims, 0, 'check_only never writes — must not claim')
+    assert.equal(executed, true)
+  })
+
+  it('R2: blocks contested ast_edit target; plan_close without apply never claims', async () => {
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => path !== 'src/renamed.ts',
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const blocked = await executeToolUse(
+      { id: 'tu-ast', name: 'ast_edit', input: { paths: ['src/renamed.ts'], ops: [{ replace: 'x' }], dryRun: false } },
+      deps, noopCallbacks as any, 1, false,
+    )
+    assert.equal((blocked.toolResult as any).is_error, true, 'contested ast_edit target must be blocked pre-write')
+    assert.equal(executed, false)
+
+    let claims = 0
+    const spyRegistry = {
+      acquireClaim: () => { claims++; return true },
+      checkClaim: () => null,
+    }
+    const deps2 = makeDeps({
+      sessionRegistry: spyRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+    await executeToolUse(
+      { id: 'tu-plan', name: 'plan_close', input: { file_path: 'docs/plans/p.md' } },
+      deps2, noopCallbacks as any, 1, false,
+    )
+    assert.equal(claims, 0, 'plan_close without apply must not pre-claim')
+  })
+
+  it('R2: ast_edit preview (no dryRun) never claims — default is read-only (ast-edit.ts:105)', async () => {
+    const claimed: string[] = []
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => { claimed.push(path); return true },
+      checkClaim: () => null,
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-ast-preview', name: 'ast_edit', input: { paths: ['src/foo.ts'], ops: [{ replace: 'x' }] } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.deepEqual(claimed, [], 'ast_edit without dryRun is a preview — must not stake an exclusive claim')
+    assert.equal(executed, true, 'a preview is not a write — the R2 guard must not intercept it')
+  })
+
+  it('R2: ast_edit singular `path` alias + dryRun:false claims the real write target', async () => {
+    const claimed: string[] = []
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => { claimed.push(path); return false },
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const result = await executeToolUse(
+      { id: 'tu-ast-single', name: 'ast_edit', input: { path: 'src/bar.ts', ops: [{ replace: 'x' }], dryRun: false } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.deepEqual(claimed, ['src/bar.ts'], 'ast-edit.ts accepts singular `path` as a write target — the guard must too')
+    assert.equal((result.toolResult as any).is_error, true)
+  })
+
+  it('R2: a refused multi-file patch releases the claims it already staked', async () => {
+    const acquired: string[] = []
+    const released: string[] = []
+    let executed = false
+    const fakeRegistry = {
+      acquireClaim: (_sid: string, path: string, _type: string) => { acquired.push(path); return path !== 'src/b.ts' },
+      releaseClaim: (_sid: string, path: string) => { released.push(path) },
+      checkClaim: (filePath: string) => ({ sessionId: 'peer-1234abcd', claimType: 'exclusive', filePath }),
+    }
+    const deps = makeDeps({
+      sessionRegistry: fakeRegistry as any,
+      sessionId: 'mine',
+      harness: {
+        executeTool: async ({ execute }: any) => { executed = true; const r = await execute(); return { content: r.content, isError: false, retried: false } },
+      } as any,
+    })
+
+    const diff = [
+      '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -1,1 +1,1 @@', '-a', '+b',
+      '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -1,1 +1,1 @@', '-a', '+b',
+    ].join('\n')
+    const result = await executeToolUse(
+      { id: 'tu-patch-multi', name: 'apply_patch', input: { diff } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    assert.deepEqual(acquired, ['src/a.ts', 'src/b.ts'], 'every target is checked before the write')
+    assert.deepEqual(released, ['src/a.ts'], 'the staked a.ts claim must go back when the patch is refused')
+    assert.equal(executed, false, 'harness must NOT execute the contested patch')
+    assert.equal((result.toolResult as any).is_error, true)
   })
 
   it('executes a tool and returns result', async () => {

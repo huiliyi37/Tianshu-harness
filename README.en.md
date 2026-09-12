@@ -1011,6 +1011,13 @@ Thank you to everyone who has contributed to Tianshu (ordered by first contribut
 | [@banxia](https://github.com/banxia) | Project creator · Core development |
 | [@qiaodier](https://github.com/qiaodier) | CC Switch provider preset (PR #8) |
 
+External PRs land via a "port" flow; authorship is credited with `Co-authored-by`
+trailers (auto-recorded by scripts/credit-contributors.sh) — live contributor wall:
+
+<a href="https://github.com/huiliyi37/Tianshu-harness/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=huiliyi37/Tianshu-harness" alt="Contributor avatars" />
+</a>
+
 > Contributions are welcome — see CONTRIBUTING.md.
 
 ## License

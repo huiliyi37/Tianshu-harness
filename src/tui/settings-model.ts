@@ -675,10 +675,10 @@ function visionCategory(env: SettingsEnv): SettingsCategory {
     }),
     boolField({
       id: 'vision.autoBridge',
-      label: '未配置时自动选桥',
+      label: '跨 Provider 自动选桥（同 Provider 已自动）',
       block: 'visionAuto',
       effect: 'next-session',
-      hint: '没指定识图模型时自动挑一个可用的视觉模型（含免费 glm-4v-flash）——图片会发给那个 provider，默认关',
+      hint: '只管跨 provider：同 provider 有视觉档时已默认自动启用，无需此开关。开启后未指定识图模型时会自动挑别家可用的视觉模型（含免费 glm-4v-flash）——图片会发给那个 provider，默认关',
       get: d => d.visionAutoBridge,
       set: (d, value) => ({ ...d, visionAutoBridge: value }),
     }),

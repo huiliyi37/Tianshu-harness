@@ -337,7 +337,7 @@ function defaultReadProcVersion(): string | null {
 
 function defaultWhich(bin: string): boolean {
   try {
-    execFileSync('which', [bin], { encoding: 'utf-8', timeout: 500 })
+    execFileSync('which', [bin], { encoding: 'utf-8', timeout: 500, windowsHide: true })
     return true
   } catch {
     return false

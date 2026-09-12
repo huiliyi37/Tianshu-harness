@@ -35,10 +35,11 @@ describe('write-tool-helpers', () => {
       const r = extractWriteContents('hash_edit', { file_path: 'src/a.ts', new_string: 'x' })
       assert.equal(r[0]!.content, 'x')
     })
-    it('extracts from ast_edit with paths and ops', () => {
+    it('extracts from ast_edit with paths and ops (dryRun:false = real write)', () => {
       const r = extractWriteContents('ast_edit', {
         paths: ['src/a.ts', 'src/b.ts'],
         ops: [{ find: 'var $X', replace: 'console.log("p1")' }, { find: 'var $Y', replace: 'debugger' }],
+        dryRun: false,
       })
       assert.equal(r.length, 4)
       assert.equal(r[0]!.filePath, 'src/a.ts')
@@ -46,9 +47,19 @@ describe('write-tool-helpers', () => {
       assert.equal(r[3]!.filePath, 'src/b.ts')
       assert.equal(r[3]!.content, 'debugger')
     })
-    it('returns empty for ast_edit dryRun', () => {
+    it('returns empty for ast_edit dryRun:true', () => {
       const r = extractWriteContents('ast_edit', { paths: ['src/a.ts'], ops: [{ find: 'x', replace: 'y' }], dryRun: true })
       assert.equal(r.length, 0)
+    })
+    it('returns empty for ast_edit with dryRun omitted — the default IS a preview (ast-edit.ts:105)', () => {
+      // 工具真值 `const dryRun = input.dryRun !== false`：缺省即预览、不落盘。
+      // 此前按 `=== true` 判定，缺省形态漏过——未落盘的内容被送进安全/探针扫描，
+      // 且假命中会占掉 tracker 的跨轮去重位，把随后真写入的提醒吞掉。
+      const r = extractWriteContents('ast_edit', {
+        paths: ['src/a.ts'],
+        ops: [{ find: 'x', replace: 'el.innerHTML = userInput' }],
+      })
+      assert.equal(r.length, 0, 'a preview writes nothing — there is nothing to scan')
     })
     it('returns empty for non-write tools', () => {
       assert.equal(extractWriteContents('read_file', { file_path: 'x' }).length, 0)

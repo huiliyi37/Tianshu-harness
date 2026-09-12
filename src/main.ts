@@ -460,9 +460,20 @@ async function main() {
     // 显式 --provider 换了服务商时不沿用 defaultModel 的 modelId（跨商无意义）。
     const defaultModelId = provName === defaultModelParts?.provider ? defaultModelParts.modelId : undefined
     const wantedModelId = requestedModel ?? defaultModelId
-    const model = wantedModelId
-      ? (prov.models.find(m => m.id === wantedModelId || m.alias === wantedModelId) ?? prov.models[0]!)
-      : prov.models[0]!
+    const matchedModel = wantedModelId
+      ? prov.models.find(m => m.id === wantedModelId || m.alias === wantedModelId)
+      : undefined
+    if (wantedModelId && !matchedModel) {
+      // 与 bootstrap.createAgentRuntime 同形：模型名失配时静默换档，会让「配了
+      // 多模态模型却看不到图片」完全无迹可循（兜底档常常是同名前缀的纯文本档）。
+      // headless 每次进程只解析一次，不需要去重告警。
+      process.stderr.write(
+        `[model] 配置的模型 "${wantedModelId}" 不在 provider "${provName}" 下，`
+        + `已回退到 "${prov.models[0]!.id}"（该档不支持视觉时图片将无法被识别）。`
+        + `可选：${prov.models.map(m => m.id).join(', ')}\n`,
+      )
+    }
+    const model = matchedModel ?? prov.models[0]!
     const sessionId = crypto.randomUUID()
 
     // --budget N (default 100) is the hard turn cap for goal mode; it doubles as
@@ -601,7 +612,7 @@ async function main() {
         const agentCfg = createAgentConfig(createMainAgentConfigInput({
           apiKey: key,
           meridianIndexer: headlessIndexer,
-          model: { id: model.id, maxTokens: model.maxTokens, contextWindow: model.contextWindow, reasoningEffort: model.reasoningEffort, capabilities: model.capabilities },
+          model: { id: model.id, maxTokens: model.maxTokens, contextWindow: model.contextWindow, reasoningEffort: model.reasoningEffort, capabilities: model.capabilities, supportsVision: model.supportsVision },
           cwd: process.cwd(),
           provider: prov,
           allProviders: cfg.provider.providers,
@@ -819,6 +830,7 @@ async function main() {
     gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
       cwd: process.cwd(),
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).toString().trim() || undefined
   } catch { /* 非 git 目录 */ }
 
@@ -2086,7 +2098,7 @@ async function main() {
     // --is-inside-work-tree` fails outside a repo even when git is installed.
     const gitAvailable = (() => {
       try {
-        execSync('git --version', { cwd: process.cwd(), stdio: 'pipe' })
+        execSync('git --version', { cwd: process.cwd(), stdio: 'pipe', windowsHide: true })
         return true
       } catch {
         return false

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolveAppPromptInput, handleSlashCommand, formatVerificationStatus, mcpStatusText, type SlashHandlerContext } from '../slash-commands.js'
+import { resolveAppPromptInput, handleSlashCommand, formatVerificationStatus, mcpStatusText, resolveBareSkillPrompt, type SlashHandlerContext } from '../slash-commands.js'
+import { skillRegistry } from '../../skills/skill-loader.js'
 import { handleYoloToggle } from '../yolo-toggle.js'
 import { loadConstellation } from '../../constellation/store.js'
 import { DEFAULT_CONFIG } from '../../config/default.js'
@@ -242,6 +243,48 @@ describe('/review off|on|status — 会话级审查门开关', () => {
     assert.match(resolveAppPromptInput('/review l3', '/cwd')!.prompt, /review_level="L3"/)
     // focus 描述不与档位关键词混淆
     assert.match(resolveAppPromptInput('/review l2 检查锚点漂移', '/cwd')!.prompt, /Focus specifically on: 检查锚点漂移/)
+  })
+})
+
+describe('裸技能名直调（issue #100 建议②：/name [task]，Claude Code 形态）', () => {
+  const PROBE = 'probe-bare-skill-xyz'
+  // 全局单例注册一次即可——名字带 xyz 后缀，不与任何真实技能/命令碰撞。
+  skillRegistry.register({ name: PROBE, description: 'bare probe', triggers: [], body: 'PROBE-BODY-0128' })
+
+  it('裸名命中技能注册表 → 展开 skill prompt', () => {
+    const resolved = resolveAppPromptInput(`/${PROBE}`, '/cwd')
+    assert.ok(resolved !== null)
+    assert.match(resolved!.prompt, /\[Skill loaded: probe-bare-skill-xyz\]/)
+    assert.match(resolved!.prompt, /PROBE-BODY-0128/)
+  })
+
+  it('参数透传为 User task（与 /skill 网关同形态）', () => {
+    const resolved = resolveAppPromptInput(`/${PROBE} 帮我检查内存`, '/cwd')
+    assert.match(resolved!.prompt, /User task: 帮我检查内存/)
+  })
+
+  it('大小写不敏感兜底', () => {
+    const resolved = resolveAppPromptInput(`/${PROBE.toUpperCase()}`, '/cwd')
+    assert.ok(resolved !== null)
+    assert.match(resolved!.prompt, /PROBE-BODY-0128/)
+  })
+
+  it('保留子命令名不被裸名捕获（/list 等仍归原语义）', () => {
+    assert.equal(resolveBareSkillPrompt('/list'), null)
+    assert.equal(resolveBareSkillPrompt('/install'), null)
+  })
+
+  it('多段路径不被裸名捕获；单段路径无同名技能仍走路径透传', () => {
+    assert.equal(resolveBareSkillPrompt('/tmp/foo'), null, '技能名不含 /，多段路径天然不匹配')
+    const pathLike = resolveAppPromptInput('/etc', '/cwd', () => false)
+    assert.deepEqual(pathLike, { prompt: '/etc' }, '无 etc 技能时 /etc 仍是路径透传')
+  })
+
+  it('未注册裸名 → 落回既有语义，裸名解析不劫持', () => {
+    // 未知名单段 → looksLikeFilePath 路径透传（与裸名解析接入前的行为一致）
+    assert.deepEqual(resolveAppPromptInput('/definitely-not-registered-xyz', '/cwd', () => false), { prompt: '/definitely-not-registered-xyz' })
+    // 已知调色板命令但无映射 → 仍 null（server 4xx / TUI rejectSubmit 路径不受影响）
+    assert.equal(resolveAppPromptInput('/known-palette-cmd-xyz', '/cwd', () => true), null)
   })
 })
 

@@ -101,6 +101,7 @@ export function tryFetchNativeBinary(moduleUrl: string): string | null {
       // 启动自愈只走下载链（分钟内）；源码编译兜底（数分钟）留给
       // postinstall / 手动重跑，不能让每次启动卡在编译上。
       env: { ...process.env, RIVET_FETCH_SKIP_COMPILE: '1' },
+      windowsHide: true,
     })
   } catch {
     // 脚本自身已落失败标记并打印指引；这里保持降级语义不崩

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatBrowserMissingBanner, probeChromium, type ChromiumProbe } from '../browser-readiness.js'
@@ -11,7 +12,13 @@ test('browser-missing banner points to the one-shot command + manual fallback', 
   assert.match(b, /rivet browser install/)
   assert.match(b, /chromium/)
   // manual fallback carries the mirror env for CN users
-  assert.match(b, /npx playwright install chromium/)
+  // 收编迭代（PR #109 审查①）：钉版硬断言替代可选正则——manual 命令必须钉在
+  // 内嵌 playwright-core 版本上，否则装出别的 revision、检测仍报未安装（#102）。
+  const embedded = createRequire(import.meta.url)('playwright-core/package.json') as { version: string }
+  assert.ok(
+    b.includes(`npx playwright@${embedded.version} install chromium`),
+    `banner 应含钉版手动命令 playwright@${embedded.version}：${b}`,
+  )
 })
 
 test('module-missing banner does NOT tell the user to install a browser', () => {

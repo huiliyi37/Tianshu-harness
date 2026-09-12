@@ -11,11 +11,24 @@
  * 用法: node scripts/assert-runtime-imports.js [distDir]
  */
 import { join, relative } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { scanDist } from './runtime-import-scan.js'
 import { verifyStagedRuntime } from './staged-runtime-verify.js'
 
 const repoRoot = join(import.meta.dirname, '..')
 const distDir = process.argv[2] ?? join(repoRoot, 'dist')
+
+// dist/ 独立分发后没有上级 package.json，缺失 "type":"module" 声明时 Node 按
+// CommonJS 解析 ESM bundle，sidecar 启动即 SyntaxError（2026-09-11 Windows 现场）。
+let distPkgType = null
+try {
+  distPkgType = JSON.parse(readFileSync(join(distDir, 'package.json'), 'utf8')).type
+} catch { /* 缺失/损坏按未声明处理 */ }
+if (distPkgType !== 'module') {
+  console.error('✗ assert-runtime-imports: dist/package.json 缺失或未声明 "type":"module"——打包后 sidecar 启动即崩')
+  console.error('  修复：node scripts/stage-runtime-deps.js（会在 dist/ 落最小 package.json）')
+  process.exit(1)
+}
 
 // Specifier allowlisting only proves an import *may* resolve; it says nothing
 // about whether staging actually put the package on disk. Check the payload

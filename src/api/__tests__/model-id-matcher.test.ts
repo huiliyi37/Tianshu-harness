@@ -7,7 +7,7 @@ import type { ModelAliasEntry } from '../model-aliases.js'
 describe('alias table seeding', () => {
   it('contains every preset model as an entry', () => {
     const ids = listAliasEntries().map(e => e.canonicalId)
-    assert.ok(ids.includes('deepseek-v4-pro'))
+    assert.ok(ids.includes('deepseek-flash'), 'deepseek 官方现存旗舰（v4.1 线）在表内')
     assert.ok(ids.includes('deepseek-v4-flash'))
     assert.ok(ids.includes('glm-5.2'))
     assert.ok(ids.includes('deepseek-ai/DeepSeek-V4-Pro'), 'siliconflow-prefixed ids are entries in their own right')
@@ -15,7 +15,9 @@ describe('alias table seeding', () => {
   })
 
   it('entries carry backfillable metadata', () => {
-    const entry = findAliasEntryExact('deepseek-v4-pro')
+    // 样本取 deepseek 官方现存的 strong 卡——v4pro 于 2026-09-11 退役后，
+    // 该档由 deepseek-flash（v4.1 线）承接（tier 同样是 strong/1M/384K）。
+    const entry = findAliasEntryExact('deepseek-flash')
     assert.ok(entry)
     assert.equal(entry!.metadata.contextWindow, 1_000_000)
     assert.equal(entry!.metadata.maxTokens, 384_000)
@@ -23,8 +25,8 @@ describe('alias table seeding', () => {
   })
 
   it('preset display aliases are searchable', () => {
-    assert.ok(findAliasEntryExact('v4-pro'))
-    assert.ok(findAliasEntryLower('V4-PRO'))
+    assert.ok(findAliasEntryExact('v4.1-flash'))
+    assert.ok(findAliasEntryLower('V4.1-FLASH'))
   })
 })
 

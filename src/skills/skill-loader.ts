@@ -21,7 +21,7 @@ import { join, relative, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { normalizeFrontmatterSource } from '../utils/frontmatter.js'
 
-export type SkillSource = 'rivet' | 'global-rivet' | 'project-claude' | 'global-claude' | 'builtin' | 'plugin'
+export type SkillSource = 'rivet' | 'global-rivet' | 'project-claude' | 'global-claude' | 'builtin' | 'plugin' | 'global-agents' | 'project-agents'
 
 export interface SkillDefinition {
   name: string
@@ -452,12 +452,16 @@ export const BUILTIN_SKILLS: SkillDefinition[] = [
       '用户让你"把 ~/.claude 的技能都装上"时，不要全量拷（常有 70+ 个）——',
       '只装当前任务确需的那一两个，其余靠原生能力。',
       '',
-      '## 运行时来源（三层优先级，后者覆盖前者同名）',
+      '## 运行时来源（五层优先级，后者覆盖前者同名）',
       '1. 内置技能（随天枢发布）',
-      '2. 用户级 `~/.rivet/skills/`（跨项目复用）',
-      '3. 项目级 `.rivet/skills/`（项目定制，优先级最高）',
+      '2. 用户级 `~/.agents/skills/`（agentskills.io 跨 agent 标准目录，自动扫描）',
+      '3. 用户级 `~/.rivet/skills/`（跨项目复用）',
+      '4. 项目级 `.agents/skills/`（标准目录项目级，自动扫描）',
+      '5. 项目级 `.rivet/skills/`（项目定制，优先级最高）',
       '`<name>.md`（扁平）与 `<name>/SKILL.md`（目录，含 references/scripts/assets）',
-      '两种形态都支持。**默认不扫描外部 `.claude` 目录**——外部技能须先复制进来。',
+      '两种形态都支持。`.agents/skills` 是自动扫描的零拷贝共享目录（与 Kimi Code 等',
+      '互通，同名可被 rivet 原生覆盖）；**外部 `.claude` 目录仍不扫描**——那里的',
+      '技能须先复制进来。',
       '',
       '## 创建/编辑/卸载（桌面端扩展面板）',
       '用户可在桌面端「扩展 → 技能」面板直接新建、编辑（Monaco）、卸载技能，',
@@ -465,7 +469,9 @@ export const BUILTIN_SKILLS: SkillDefinition[] = [
       '才生效**——会话内不热加载，以保护前缀缓存。CLI 侧也可直接编辑磁盘文件。',
       '',
       '## 用户要你"装载/导入某外部技能"时',
-      '外部技能必须先**复制进 `.rivet/skills/`** 才能装载——不与外部目录混用，',
+      '先看它是否在 `.agents/skills/`（用户级或项目级）——在那里则**已自动装载**，',
+      '新开会话即可用，无需任何复制。其余外部技能（如 `~/.claude/skills`）必须先',
+      '**复制进 `.rivet/skills/`** 才能装载——不与外部目录混用，',
       '只装用户指定的那几个（不要全量拷 `~/.claude/skills` 里的几十个）。',
       '',
       '1. 用 bash 复制（目录技能连整个文件夹一起拷）：',
@@ -982,14 +988,19 @@ export function retireRetiredBundledSkills(cwd: string): string[] {
  */
 export function loadProjectSkills(
   cwd: string,
-  options?: { importFromClaude?: string[] },
+  options?: { importFromClaude?: string[]; homeDir?: string },
 ): { loaded: string[]; errors: string[] } {
   const loaded: string[] = []
   const errors: string[] = []
   // Load order defines override precedence (later wins on name collision):
   //   1. built-ins (shipped, lowest)
-  //   2. global user-level ~/.rivet/skills (reusable across projects)
-  //   3. project .rivet/skills (highest — project customizations win)
+  //   2. global user-level ~/.agents/skills (agentskills.io 跨 agent 标准目录)
+  //   3. global user-level ~/.rivet/skills (reusable across projects)
+  //   4. project <cwd>/.agents/skills (项目级标准目录)
+  //   5. project .rivet/skills (highest — project customizations win)
+  // .agents/skills 自动扫描（2026-09-12，issue #100）——标准目录的意义是多
+  // agent 零拷贝共享同一份，复制导入会造成副本漂移；槽位低于同层 rivet
+  // 原生（生态技能可被原生覆盖）。loader 原生支持 name/SKILL.md 形态，零改造。
   // A project skill shadowing a same-named global one leaves the global file
   // on disk but invisible to the registry; that is the same trade-off the
   // builtin-override already makes.
@@ -1012,9 +1023,16 @@ export function loadProjectSkills(
   if (names && names.length > 0) {
     errors.push(...importSkillsIntoRivet(cwd, names).errors)
   }
-  const rg = skillRegistry.loadFromDirectory(join(homedir(), '.rivet', 'skills'), 'global-rivet')
+  const home = options?.homeDir ?? homedir()
+  const ag = skillRegistry.loadFromDirectory(join(home, '.agents', 'skills'), 'global-agents')
+  loaded.push(...ag.loaded)
+  errors.push(...ag.errors)
+  const rg = skillRegistry.loadFromDirectory(join(home, '.rivet', 'skills'), 'global-rivet')
   loaded.push(...rg.loaded)
   errors.push(...rg.errors)
+  const ap = skillRegistry.loadFromDirectory(join(cwd, '.agents', 'skills'), 'project-agents')
+  loaded.push(...ap.loaded)
+  errors.push(...ap.errors)
   const r = skillRegistry.loadFromDirectory(join(cwd, '.rivet', 'skills'), 'rivet')
   loaded.push(...r.loaded)
   errors.push(...r.errors)

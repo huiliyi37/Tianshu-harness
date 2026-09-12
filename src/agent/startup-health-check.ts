@@ -55,6 +55,7 @@ export function runStartupHealthCheck(options: StartupHealthCheckOptions): void 
     cwd,
     timeout: timeoutMs,
     maxBuffer: 1024 * 1024, // 1MB
+    windowsHide: true,
   }, (error, stdout, stderr) => {
     // tsc exits with code 2 when there are type errors (stdout contains them)
     const output = stdout || stderr || ''

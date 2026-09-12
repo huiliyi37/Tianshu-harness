@@ -24,7 +24,7 @@ export function readAndCleanup(path: string): string {
 export function openInEditor(initialContent: string): string | null {
   const path = createTempFile(initialContent)
   const editor = getEditorCommand()
-  const result = spawnSync(editor, [path], { stdio: 'inherit' })
+  const result = spawnSync(editor, [path], { stdio: 'inherit', windowsHide: true })
   if (result.status !== 0 && result.error) return null
   // status may be non-zero if editor was terminated but file was saved
   return readAndCleanup(path)

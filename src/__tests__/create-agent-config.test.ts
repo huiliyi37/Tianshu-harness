@@ -286,6 +286,46 @@ describe('createAgentConfig', () => {
     assert.match(cfg.visionBridge?.detail ?? '', /visionAutoBridge/, '必须告诉用户怎么启用')
   })
 
+  // 同 provider 自动挂载（2026-09-12）：用户的主模型每轮都在向该 provider 发送完整
+  // 对话，图片发给同一方不引入新的数据流向或计费主体——跨 provider 自动桥的隐私顾虑
+  // 在这个窄条件下不成立，故默认允许。跨 provider 仍严格 opt-in（上一条用例守这条界）。
+  it('auto-mounts a same-provider vision bridge without the opt-in', () => {
+    const sameProviderVision: ProviderConfig = {
+      ...testProvider,
+      apiKey: 'k',
+      models: [
+        { id: 'deepseek-r1', contextWindow: 128000, maxTokens: 8192 },
+        { id: 'deepseek-flash', contextWindow: 1_000_000, maxTokens: 384_000, supportsVision: true },
+      ],
+    }
+    const cfg = createAgentConfig({
+      ...baseInput,
+      allProviders: { deepseek: sameProviderVision },
+      // 关键：不配 visionModel，也不开 visionAutoBridge
+    })
+    assert.ok(cfg.visionClient, '同 provider 有视觉档时应自动建桥')
+    assert.equal(cfg.visionBridge?.active, true)
+    assert.equal(cfg.visionBridge?.source, 'same-provider', '必须与跨 provider 的 auto 可区分')
+    assert.match(cfg.visionBridge?.detail ?? '', /deepseek\/deepseek-flash/)
+  })
+
+  it('prefers a same-provider vision model over a third-party one', () => {
+    const sameProviderVision: ProviderConfig = {
+      ...testProvider,
+      apiKey: 'k',
+      models: [
+        { id: 'deepseek-r1', contextWindow: 128000, maxTokens: 8192 },
+        { id: 'deepseek-flash', contextWindow: 1_000_000, maxTokens: 384_000, supportsVision: true },
+      ],
+    }
+    const cfg = createAgentConfig({
+      ...baseInput,
+      allProviders: { deepseek: sameProviderVision, minimax: minimaxProvider },
+    })
+    assert.ok(cfg.visionClient, '同 provider 有候选时应建桥，而不是退而用第三方')
+    assert.match(cfg.visionBridge?.detail ?? '', /deepseek\/deepseek-flash/, '选中的必须是同 provider 档')
+  })
+
   it('auto-selects a vision bridge once visionAutoBridge is on', () => {
     const cfg = createAgentConfig({
       ...baseInput,
@@ -347,6 +387,9 @@ describe('createAgentConfig', () => {
     assert.equal(cfg.supportsVision, true)
     assert.equal(cfg.visionClient, undefined, '多模态主控不该白建桥 client')
     assert.equal(cfg.visionBridge?.active, true)
+    // source 是 UI 选文案的依据：前端只认 'native' 判「原生支持」，其余一律渲染
+    // 「识图桥已生效」。原生走 'none' 会让用户看到一句不实的状态（2026-09-12 核实）。
+    assert.equal(cfg.visionBridge?.source, 'native', '原生支持必须与桥接生效可区分')
     assert.match(cfg.visionBridge?.detail ?? '', /原生支持识图/)
   })
 })

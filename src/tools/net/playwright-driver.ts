@@ -12,6 +12,8 @@
  * 解析 playwright-core 的类型。
  */
 
+import { createRequire } from 'node:module'
+
 /** playwright-core 模块缺失时的安装引导——区分 CLI 安装用户 / 仓库内开发 / 桌面端。 */
 export const PLAYWRIGHT_CORE_INSTALL_HINT = [
   'CLI 安装用户：npm install -g tianshu-tui（重新安装以补齐依赖），',
@@ -21,9 +23,29 @@ export const PLAYWRIGHT_CORE_INSTALL_HINT = [
 ].join('\n')
 
 /** 手动安装命令（含国内镜像 env）——banner 的兜底行复用它，避免文案漂移。 */
+/**
+ * 内嵌 playwright-core 的版本。就绪检测按这个版本的 browsers.json 推 chromium
+ * revision，所以安装也必须钉在同一版本：不带版本的 `npx playwright install`
+ * 会拉 registry 最新的 playwright，装出另一个 revision，检测永远报未安装（#102）。
+ * 模块缺失时返回 undefined（此时提示的是装 playwright-core，不是装浏览器）。
+ */
+export function resolvePlaywrightCoreVersion(): string | undefined {
+  try {
+    const pkg = createRequire(import.meta.url)('playwright-core/package.json') as { version?: unknown }
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `npx` 的包 spec：能解析到内嵌版本就钉版本，否则（或显式传 null）退回裸包名。 */
+export function playwrightInstallSpec(version: string | null | undefined = resolvePlaywrightCoreVersion()): string {
+  return version ? `playwright@${version}` : 'playwright'
+}
+
 export const PLAYWRIGHT_MANUAL_INSTALL_HINT =
-  'npx playwright install chromium' +
-  '（国内网络：PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright npx playwright install chromium）'
+  `npx ${playwrightInstallSpec()} install chromium` +
+  `（国内网络：PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright npx ${playwrightInstallSpec()} install chromium）`
 
 // 两条入口都要给：只装了桌面端的用户没有 `rivet` 命令可敲，只报 CLI 命令等于把他
 // 们指向一条走不通的路。

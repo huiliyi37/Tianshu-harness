@@ -45,7 +45,7 @@ export function buildEnvRoute(apiToken?: string): Record<string, RouteHandler> {
       // One-click fix: git config --global core.autocrlf input
       // Prevents CRLF noise in diffs when the agent writes LF.
       try {
-        execSync('git config --global core.autocrlf input', { timeout: 5000 })
+        execSync('git config --global core.autocrlf input', { timeout: 5000, windowsHide: true })
         return { status: 200, body: { ok: true } }
       } catch (err) {
         return { status: 500, body: { error: (err as Error).message } }

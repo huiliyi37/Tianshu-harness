@@ -32,9 +32,16 @@ export function resolveTestTimeoutMs(raw: string | undefined): number {
  * 批次子进程的 node 参数。
  *
  * `--test-timeout` 是硬性要求：Node 不设它就是 Infinity，任一测试卡住（子进程未回收、
- * socket/watcher/定时器未关）整个批次就永久挂着，而 `--test-force-exit` 只在测试跑完
- * 后生效，救不了挂在中途的。曾因此攒下 4 个跑满一天多的僵留进程。
+ * socket/watcher/定时器未关）整个批次就永久挂着。曾因此攒下 4 个跑满一天多的僵留进程。
+ *
+ * **`--test-force-exit` 已于 2026-09-12 移除（实测翻转 2026-08-02 的结论）**：该 flag
+ * 会让 node 在部分子进程结果未到齐时提前判定完成并退出，丢掉的用例既不计入
+ * `ℹ tests` 也不进退出码。同一批 desktop 197 文件实测四次报 1523 / 1640 / 1661 /
+ * 无汇总（四次 exit 0、fail 0），而同批 plain 跑两次稳定报 1789 且进程正常退出；
+ * `--test-concurrency=1` 也救不了（1752）。它原本承担的「测试跑完但句柄未释放时收场」
+ * 职责，改由 `scripts/test-child-guard.ts` 的 idle / hard 看门狗 + 汇总完整性
+ * fail-closed 闸接管——护栏不减，但不再以"静默少跑"为代价。
  */
 export function nodeTestFlags(timeoutMs: number): string[] {
-  return ['--import', 'tsx', '--test-force-exit', `--test-timeout=${timeoutMs}`, '--test']
+  return ['--import', 'tsx', `--test-timeout=${timeoutMs}`, '--test']
 }

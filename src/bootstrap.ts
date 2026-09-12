@@ -820,6 +820,10 @@ function wireFrozenSnapshotPersist(persist: SessionPersist, engine: import('./pr
   })
 }
 
+/** 已报过的「配置的模型名不存在」告警——本函数每会话 + 每次 switchModel 重建都跑，
+ *  不去重会在长驻 sidecar 里反复刷屏。 */
+const warnedModelFallback = new Set<string>()
+
 export function createAgentRuntime(deps: {
   provider: ProviderConfig
   apiKey: string
@@ -861,9 +865,23 @@ export function createAgentRuntime(deps: {
     domainKnowledgeStore, modelId,
   } = deps
 
-  const currentModel = modelId
-    ? (provider.models.find(m => m.id === modelId || m.alias === modelId) ?? provider.models[0]!)
-    : provider.models[0]!
+  // 模型名匹配不上时不做静默兜底。用户配的可能是多模态档（deepseek-flash 等），
+  // 而兜底的 models[0] 常常是同名的纯文本档——症状是「配了视觉模型却完全看不到
+  // 图片」，界面上却毫无异常，是最难查的一类故障。别名失配尤其容易踩：preset 给
+  // 模型加的 alias 进不了存量 config 快照（数组整组替换 + alias 不在回填白名单）。
+  const matchedModel = modelId
+    ? provider.models.find(m => m.id === modelId || m.alias === modelId)
+    : undefined
+  if (modelId && !matchedModel && !warnedModelFallback.has(modelId)) {
+    warnedModelFallback.add(modelId)
+    // 与 warnVisionBridge 同惯例：console.warn 在终端可见（stderr，不进渲染回路）。
+    console.warn(
+      `[model] 配置的模型 "${modelId}" 不在 provider "${provider.name}" 下，已回退到 `
+      + `"${provider.models[0]!.id}"（该档不支持视觉时图片将无法被识别）。`
+      + `可选：${provider.models.map(m => m.id).join(', ')}`,
+    )
+  }
+  const currentModel = matchedModel ?? provider.models[0]!
 
   // wire 上下文会话固化（2026-08-07 spark T1）：meta 已有值 → 恒用之（resume/
   // 跨端字节稳定）；无值且 provider 注册了默认（spark 的 env 解析 N）→ 取默认
@@ -1231,17 +1249,14 @@ export async function createSessionInfrastructure(): Promise<{
 }> {
   const stateDirPath = stateDir()
   const { SessionRegistry } = await import('./agent/session-registry.js')
-  const registry = await SessionRegistry.create(stateDirPath)
-
   // Reap dead sessions' registry rows/claims so they don't block fresh claims.
   // Default startup is fresh — we do NOT auto-resume crashed sessions; this only
   // releases their locks. Recover a crashed session explicitly with
   // `rivet --continue` (most recent) or `rivet --resume <id>`.
-  const crashedSessions = registry.detectCrashedSessions()
-  if (crashedSessions.length > 0) {
+  const registry = await SessionRegistry.createWithReap(stateDirPath, (crashedSessions) => {
     // 一行短提示即可——恢复入口（--continue/--resume）在 /help 与历史会话提示里都有。
     console.error(`↺ 已清理 ${crashedSessions.length} 个异常退出会话的锁定`)
-  }
+  })
 
   const sessionId = getOrCreateSessionId()
   registry.register(sessionId, process.cwd())

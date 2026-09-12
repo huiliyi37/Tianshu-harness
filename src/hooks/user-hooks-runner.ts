@@ -118,6 +118,7 @@ export function runHooksForEvent(cwd: string, ctx: HookContext, pluginHooks?: Pl
         encoding: 'utf-8',
         timeout: timeoutMs,
         shell: true,
+        windowsHide: true,
       })
       const output = (result.stdout ?? '') + (result.stderr ?? '')
       results.push({ script: entry.script, ok: result.status === 0, output: output.trim() })

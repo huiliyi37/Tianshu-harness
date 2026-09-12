@@ -61,6 +61,7 @@ export async function sandboxExec(
       timeout: timeoutMs,
       maxBuffer: maxOutputChars * 2,
       cwd,
+      windowsHide: true,
       env: {
         PATH: process.env.PATH || '',
         HOME: process.env.HOME || '',

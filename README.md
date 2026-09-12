@@ -1193,6 +1193,13 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 | [@banxia](https://github.com/banxia) | 项目创建者 · 核心开发 |
 | [@qiaodier](https://github.com/qiaodier) | CC Switch provider 预设（PR #8） |
 
+外部 PR 经「收编」流程合入后，作者署名以 `Co-authored-by` 计入贡献者图谱
+（scripts/credit-contributors.sh 自动落账）——实时贡献者墙：
+
+<a href="https://github.com/huiliyi37/Tianshu-harness/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=huiliyi37/Tianshu-harness" alt="贡献者头像墙" />
+</a>
+
 > 欢迎通过 PR 贡献代码，详见 CONTRIBUTING.md。
 
 ## ☕ 赞助支持

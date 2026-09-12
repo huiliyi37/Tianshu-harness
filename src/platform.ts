@@ -161,7 +161,7 @@ export function resolveGitBashPath(deps: GitBashProbeDeps): string | null {
 /** Locate git.exe on PATH via `where` (Windows). Returns first hit or undefined. */
 function whichGitWindows(): string | undefined {
   try {
-    const result = spawnSync('where', ['git'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSync('where', ['git'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true })
     if (result.status === 0) {
       const first = result.stdout.toString().split('\n')[0]?.trim()
       return first && first.length > 0 ? first : undefined
@@ -173,7 +173,7 @@ function whichGitWindows(): string | undefined {
 /** Locate bash.exe on PATH via `where` (Windows)。Returns first hit or undefined. */
 function whichBashWindows(): string | undefined {
   try {
-    const result = spawnSync('where', ['bash'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSync('where', ['bash'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true })
     if (result.status === 0) {
       const first = result.stdout.toString().split('\n')[0]?.trim()
       return first && first.length > 0 ? first : undefined
@@ -258,7 +258,7 @@ export function resolveShellCommand(deps: ShellProbeDeps): ShellCommand {
 /** True if the named PowerShell executable resolves on PATH (Windows). */
 function hasPwshWindows(cmd: string): boolean {
   try {
-    const result = spawnSync('where', [cmd], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 })
+    const result = spawnSync('where', [cmd], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true })
     return result.status === 0 && result.stdout.toString().trim().length > 0
   } catch {
     return false
@@ -350,6 +350,7 @@ export function gracefulKill(child: KillableChild): void {
       spawnSync('taskkill', ['/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
+        windowsHide: true,
       })
     } else {
       child.kill('SIGTERM')
@@ -364,6 +365,7 @@ export function forceKill(child: KillableChild): void {
       spawnSync('taskkill', ['/F', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
+        windowsHide: true,
       })
     } else {
       child.kill('SIGKILL')
@@ -378,6 +380,7 @@ export function gracefulKillTree(child: KillableChild): void {
       spawnSync('taskkill', ['/T', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
+        windowsHide: true,
       })
     } else {
       process.kill(-child.pid, 'SIGTERM')
@@ -388,6 +391,7 @@ export function gracefulKillTree(child: KillableChild): void {
         spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
           stdio: ['ignore', 'ignore', 'ignore'],
           timeout: 5000,
+          windowsHide: true,
         })
       } else {
         child.kill('SIGTERM')
@@ -403,6 +407,7 @@ export function forceKillTree(child: KillableChild): void {
       spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
+        windowsHide: true,
       })
     } else {
       process.kill(-child.pid, 'SIGKILL')
@@ -413,6 +418,7 @@ export function forceKillTree(child: KillableChild): void {
         spawnSync('taskkill', ['/F', '/PID', String(child.pid)], {
           stdio: ['ignore', 'ignore', 'ignore'],
           timeout: 5000,
+          windowsHide: true,
         })
       } else {
         child.kill('SIGKILL')

@@ -30,6 +30,7 @@ export function killProcessTree(
       spawnSync('taskkill', args, {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
+        windowsHide: true,
       })
     } catch {
       // Best-effort

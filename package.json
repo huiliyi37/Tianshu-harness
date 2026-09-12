@@ -28,6 +28,7 @@
     "!dist/native",
     "!dist/node_modules/**",
     "dist/node_modules/better-sqlite3/",
+    "scripts/check-mobile-env.mjs",
     "scripts/fetch-native-sqlite.js",
     "scripts/prune-installed-wasms.js",
     "scripts/tree-sitter-wasm-keep.js",
@@ -39,7 +40,7 @@
     "rivet": "dist/main.js"
   },
   "scripts": {
-    "postinstall": "(node scripts/install-git-hooks.mjs || node -e 1) && (node scripts/fetch-native-sqlite.js || node -e 1) && (node scripts/prune-installed-wasms.js || node -e 1)",
+    "postinstall": "node scripts/check-mobile-env.mjs && (node scripts/install-git-hooks.mjs || node -e 1) && (node scripts/fetch-native-sqlite.js || node -e 1) && (node scripts/prune-installed-wasms.js || node -e 1)",
     "prepack": "npm run build && node scripts/stage-cli-sqlite-wrapper.js",
     "dev": "tsup --watch",
     "build": "tsup && node scripts/pack-native.js && node scripts/stage-runtime-deps.js",
@@ -55,7 +56,7 @@
     "test:unit": "tsx scripts/run-node-tests.ts --unit",
     "test:integration": "tsx scripts/run-node-tests.ts --integration",
     "test:fast": "tsx scripts/run-node-tests.ts --exclude-tui",
-    "test:desktop": "TSX_TSCONFIG_PATH=desktop/tsconfig.json node --import ./desktop/scripts/test-alias-register.mjs --import tsx --test-force-exit --test-timeout=120000 --test 'desktop/src/**/__tests__/*.test.ts' 'desktop/scripts/__tests__/*.test.ts'",
+    "test:desktop": "node --import tsx desktop/scripts/run-tests.ts 'src/**/__tests__/*.test.ts' 'scripts/__tests__/*.test.ts'",
     "test:incremental": "tsx scripts/test-incremental.ts",
     "structure:check": "tsx --test src/__tests__/architecture-guards.test.ts",
     "cache:audit": "tsx src/cache/cache-audit-cli.ts",
@@ -112,5 +113,15 @@
     "turndown": "^7.2.4",
     "undici": "^8.3.0",
     "zod": "^3.24.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@ast-grep/lang-json",
+      "@ast-grep/lang-python",
+      "@ast-grep/napi",
+      "better-sqlite3",
+      "esbuild",
+      "lzo"
+    ]
   }
 }

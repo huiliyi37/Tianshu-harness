@@ -95,6 +95,55 @@ describe('createSecurityPatternHook', () => {
     assert.equal(submitted.length, 0)
   })
 
+  it('ast_edit 预览（缺省 dryRun）不告警——内容没落盘，与 apply_patch check_only 同理', () => {
+    const submitted: AdvisoryEntry[] = []
+    const hook = createSecurityPatternHook({
+      advisoryBus: { submit: (e: AdvisoryEntry) => { submitted.push(e) } },
+    })
+    // ast-edit.ts:105 `const dryRun = input.dryRun !== false`——缺省即预览、不落盘。
+    hook.run(makeCtx(1), {
+      name: 'ast_edit', success: true,
+      input: { paths: ['a.js'], ops: [{ find: 'x', replace: 'el.innerHTML = userInput' }] },
+    } as unknown as RuntimeToolEvent)
+
+    assert.equal(submitted.length, 0, '预览不落盘——对不存在的代码告警是纯噪音')
+    assert.equal(hook.getSecurityTracker().hitsByFile.size, 0)
+  })
+
+  it('ast_edit 预览不得占用 tracker 去重位——随后真写入仍须被提醒', () => {
+    const submitted: AdvisoryEntry[] = []
+    const hook = createSecurityPatternHook({
+      advisoryBus: { submit: (e: AdvisoryEntry) => { submitted.push(e) } },
+    })
+    // 先预览（缺省 dryRun）：若这里误扫，会把 (a.js, innerHTML_xss) 写进
+    // session-scoped tracker，随后的真写入就因"已提醒过"被静默吞掉。
+    hook.run(makeCtx(1), {
+      name: 'ast_edit', success: true,
+      input: { paths: ['a.js'], ops: [{ find: 'x', replace: 'el.innerHTML = userInput' }] },
+    } as unknown as RuntimeToolEvent)
+    const afterPreview = submitted.length
+    hook.run(makeCtx(2), makeWriteTool('write_file', 'a.js', 'el.innerHTML = userInput\n'))
+
+    // 用增量断言：只看总数的话，「预览误报 1 + 真写被吞 0」与「预览 0 + 真写 1」
+    // 都是 1，测试会对着坏行为假绿。
+    assert.equal(afterPreview, 0, '预览本身不得产生任何 advisory')
+    assert.equal(submitted.length - afterPreview, 1, '真写入必须收到那条提醒（不能被预览占掉去重位）')
+    assert.ok(hook.getSecurityTracker().hitsByFile.get('a.js')!.has('innerHTML_xss'))
+  })
+
+  it('ast_edit 真写（dryRun:false）照常告警', () => {
+    const submitted: AdvisoryEntry[] = []
+    const hook = createSecurityPatternHook({
+      advisoryBus: { submit: (e: AdvisoryEntry) => { submitted.push(e) } },
+    })
+    hook.run(makeCtx(1), {
+      name: 'ast_edit', success: true,
+      input: { paths: ['a.js'], ops: [{ find: 'x', replace: 'el.innerHTML = userInput' }], dryRun: false },
+    } as unknown as RuntimeToolEvent)
+
+    assert.equal(submitted.length, 1)
+  })
+
   it('resetSecurityTracker 清空累积', () => {
     const hook = createSecurityPatternHook({ advisoryBus: { submit: () => {} } })
     hook.run(makeCtx(1), makeWriteTool('write_file', 'a.js', 'eval(x)\n'))

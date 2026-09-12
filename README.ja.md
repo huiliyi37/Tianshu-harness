@@ -625,6 +625,16 @@ TUI は CLI のデフォルトサーフェスです。デスクトップ版（Ta
 
 > デスクトップ版には他にも Cockpit コックピット、SideChat サイド質問（⌘;）、Rewind タイムトラベル、テーマ/Glass/壁紙、Mirror ミラー加速などの独自機能があります——詳細は [デスクトップユーザーガイド](docs/desktop-guide.md) を参照。
 
+### 📱 モバイルリモート（Mobile Remote）
+
+スマホ/タブレットを天枢の「第二の画面」に——セッションは PC 上で実行し、スマホで進捗確認・承認操作ができます：
+
+- **有効化**：デスクトップ **設定 → Network → Remote Access**（LAN URL・アクセストークン・スキャン接続 QR を表示）；または CLI 側で `RIVET_SERVE_HOST=0.0.0.0`（＋デスクトップのビルド成果物を指す `--mobile-dir`）を指定して `rivet serve` を起動すると、同一ポートで `/mobile` が提供されます
+- **接続**：同一 LAN 内のスマホブラウザで `http://<PCのLAN IP>:3100/mobile` を開く——QR スキャンでトークンが自動入力されます（直後に URL から除去され漏えい防止）；手動入力にも対応
+- **できること**：セッション一覧（承認待ちが上位にハイライト）→ 単一セッションの読み取り専用ライブタイムライン（デスクトップと同じ折りたたみ/自動再接続セマンティクス）→ 承認・プラン・質問カード＋中止ボタン。メッセージ送信は意図的に範囲外です
+- **セキュリティ境界**：信頼できる LAN またはトンネル（Tailscale/SSH）のみ。LAN モードではアクセストークンが唯一の資格情報——パスワードと同様に扱い、公開インターネットへのポート公開はしないでください
+- 完全な設定とセキュリティの取舍は [リモートアクセスガイド](docs/remote-access.md) を参照
+
 ### 🎙️ 音声入力（デスクトップ版）
 
 入力ボックスのマイクボタンで音声入力が可能で、**macOS と Windows 共通**。認識は**ローカルの whisper.cpp エンジン**が実行——オフライン、プライバシー保護（録音はどのサーバーにもアップロードされません）。中英混在シーンの精度はシステム標準認識より高くなっています。
@@ -1141,6 +1151,14 @@ rivet logs open desktop            # sidecar ログディレクトリを開く�
 |--------|----------|
 | [@banxia](https://github.com/banxia) | プロジェクト創設者 · コア開発 |
 | [@qiaodier](https://github.com/qiaodier) | CC Switch provider プリセット（PR #8） |
+
+外部 PR は「取り込み（收编）」フローでマージされ、著者署名は `Co-authored-by` で
+コントリビューターグラフに計上されます（scripts/credit-contributors.sh が自動記録）——
+リアルタイムのコントリビューターウォール：
+
+<a href="https://github.com/huiliyi37/Tianshu-harness/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=huiliyi37/Tianshu-harness" alt="コントリビューターアバター" />
+</a>
 
 > PR でのコントリビュート歓迎。詳細は CONTRIBUTING.md を参照。
 

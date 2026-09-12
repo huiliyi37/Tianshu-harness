@@ -251,7 +251,7 @@ async function handleGitHubImport(
 
   const execAsync = (cmd: string, args: string[], opts: { cwd?: string; timeout: number }) =>
     new Promise<void>((resolveExec, reject) => {
-      execFile(cmd, args, { ...opts }, (err) => err ? reject(err) : resolveExec())
+      execFile(cmd, args, { ...opts, windowsHide: true }, (err) => err ? reject(err) : resolveExec())
     })
 
   if (existsSync(join(targetPath, '.git'))) {

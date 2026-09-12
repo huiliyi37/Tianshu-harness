@@ -246,12 +246,13 @@ async function installFromLocal(sourcePath: string, origin?: PluginOrigin): Prom
         stdio: 'pipe',
         timeout: 600_000,
         env: { ...process.env, NODE_ENV: 'production', PATH: pathWithNode },
+        windowsHide: true,
       })
     } else {
       // Dev/test fallback: system npm via shell
       const npmCmd = resolveNpmCommand()
       const { command, options } = npmInstallArgs(npmCmd)
-      execSync(command, { ...options, cwd: installPath })
+      execSync(command, { ...options, cwd: installPath, windowsHide: true })
     }
   } catch (err) {
     // Clean up failed install

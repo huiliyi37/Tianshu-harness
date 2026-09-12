@@ -19,7 +19,7 @@ import { randomUUID } from 'crypto'
 /** execFile promisified — used for engine detection and conversion. */
 function execFileAsync(binary: string, args: string[], opts?: { timeout?: number }): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(binary, args, { timeout: opts?.timeout ?? 30_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(binary, args, { timeout: opts?.timeout ?? 30_000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) reject(err)
       else resolve({ stdout, stderr })
     })
@@ -212,7 +212,7 @@ async function writeWithTextutil(filePath: string, html: string): Promise<Office
       '-convert', 'docx',
       '-output', filePath,
       htmlPath,
-    ], { timeout: 30_000 }, async (err) => {
+    ], { timeout: 30_000, windowsHide: true }, async (err) => {
       await unlink(htmlPath).catch(() => {})
       if (err) reject(new Error(`textutil docx conversion failed: ${err.message}`))
       else {
@@ -235,7 +235,7 @@ async function writeWithSoffice(filePath: string, html: string): Promise<OfficeW
       '--convert-to', 'docx',
       '--outdir', tmpDir,
       htmlPath,
-    ], { timeout: 60_000 }, async (err) => {
+    ], { timeout: 60_000, windowsHide: true }, async (err) => {
       await unlink(htmlPath).catch(() => {})
       if (err) reject(new Error(`${cachedSofficeBinary} docx conversion failed: ${err.message}`))
       else {

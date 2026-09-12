@@ -409,6 +409,14 @@ export class TuiApp {
   private cprProbeTimer: ReturnType<typeof setInterval> | null = null
   /** TUI 存活期 stderr 护栏（游离 stderr 文本走 commit 通道，防污染 live region）。 */
   private outputGuard: OutputGuard | null = null
+  /**
+   * 输出冻结（Ctrl+S 切换，Ctrl+Q 解冻别名）——触摸终端（Termux 等）上滚动
+   * 回看读的是终端自身 scrollback，任何光标寻址输出（spinner tick、空闲 CPR
+   * 探针、流式帧）都会把视口拽回底部。冻结期间 stdout **零写入**：ticker 停、
+   * live 不重绘、主屏 commit 进 mainCommitQueue 排队、探针静默——数据照常
+   * 缓冲，解冻后 requestPump + flushNow 按序补放，零丢失。
+   */
+  private outputFrozen = false
 
   /**
    * 读屏档：停掉 120ms ticker 并丢弃 live region 的动态段。
@@ -625,7 +633,7 @@ export class TuiApp {
   private supportsVision = false
   /** 是否配置了独立的 vision bridge 模型（用于图片附件提示）。 */
   private visionBridgeEnabled = false
-  private visionBridgeSource?: 'configured' | 'auto' | 'none'
+  private visionBridgeSource?: 'native' | 'configured' | 'auto' | 'same-provider' | 'none'
   /** 当前会话审批模式（继承自 agent config），供 worker pills badge */
   private _approvalMode: string = 'auto-safe'
   /**
@@ -1329,6 +1337,16 @@ export class TuiApp {
         this.expandLastTruncatedTool()
         return
       }
+      // 输出冻结（Ctrl+S）/ 解冻（Ctrl+Q 别名）——触摸终端滚动回看的根治：
+      // 冻结期 stdout 零写入，终端视口停在用户翻到的位置，解冻后按序补放。
+      if (key.name === 'ctrl_s') {
+        this.setOutputFrozen(!this.outputFrozen)
+        return
+      }
+      if (key.name === 'ctrl_q') {
+        if (this.outputFrozen) this.setOutputFrozen(false)
+        return
+      }
       if (key.name === 'ctrl_t') {
         if (this.state.isThinking) {
           this.state.thinkingExpanded = !this.state.thinkingExpanded
@@ -1492,7 +1510,8 @@ export class TuiApp {
         // silent nudges then a hard熔断 that looked like it came from nowhere.
         // The desktop renders this ladder via the decision-shift card; this
         // static warning line is the CLI counterpart.
-        if (phase === 'convergence-warning') {
+        // image-stripped 同走此行：剥图后模型看不到图，静默处理会被读成「模型没理我的截图」。
+        if (phase === 'convergence-warning' || phase === 'image-stripped') {
           const label = phaseStatusLabel(phase, detail)
           if (label) this.commitStatic(color(label, this.theme.warning))
           return
@@ -1957,7 +1976,7 @@ export class TuiApp {
   }
 
   /** 设置当前主控模型的 vision 能力与桥接状态（用于图片附件提示）。 */
-  setVisionInfo(supportsVision: boolean, bridgeEnabled: boolean, bridgeSource?: 'configured' | 'auto' | 'none'): void {
+  setVisionInfo(supportsVision: boolean, bridgeEnabled: boolean, bridgeSource?: 'native' | 'configured' | 'auto' | 'same-provider' | 'none'): void {
     this.supportsVision = supportsVision
     this.visionBridgeEnabled = bridgeEnabled
     this.visionBridgeSource = bridgeSource
@@ -4496,6 +4515,30 @@ export class TuiApp {
   private mainCommitPumping = false
 
   /**
+   * 冻结/解冻输出。冻结瞬间先经 fast path 同步写一行 ⏸ 标记进 scrollback
+   * （此时 outputFrozen 仍为 false），随后置位——此后到解冻为止 stdout 零
+   * 写入；解冻时按序补放队列并重绘 live。
+   */
+  private setOutputFrozen(frozen: boolean): void {
+    if (this.outputFrozen === frozen) return
+    if (frozen) {
+      this.enqueueMainCommit(() => {
+        this.stdout.write(color('⏸ 输出已冻结（Ctrl+S 恢复）——期间的新内容会在解冻后补上\n', this.theme.warning))
+      })
+      this.outputFrozen = true
+      this.live.suppressProbe()
+      this.updateTicker()
+      return
+    }
+    this.outputFrozen = false
+    this.live.resumeProbe()
+    this.updateTicker()
+    this.requestPump()
+    this.writeBatcher.flushNow()
+    this.renderLive()
+  }
+
+  /**
    * 唯一有序 main commit 队列入口。位置在调用时一次性分配。
    *
    * 同步 fast path 契约：「队列空闲 + 无 pump 在跑 + overlay 未激活 + ready 是同步闭包」
@@ -4513,6 +4556,7 @@ export class TuiApp {
       && this.mainCommitPump === null
       && !this.mainCommitPumping
       && !this.overlay.isActive()
+      && !this.outputFrozen
     ) {
       try {
         this.atomicCommitNow(ready)
@@ -4583,7 +4627,8 @@ export class TuiApp {
         continue
       }
       // await 期间 overlay 可能（重）激活——主屏内容绝不可写进 alt screen。
-      if (this.overlay.isActive()) return
+      // 输出冻结期同理：主屏写入排队，解冻后由 requestPump 续排。
+      if (this.overlay.isActive() || this.outputFrozen) return
       this.mainCommitQueue.shift()
       let written = true
       try {
@@ -4679,7 +4724,7 @@ export class TuiApp {
       if (!this.supportsVision) {
         if (this.visionBridgeEnabled) {
           // 提示反映真实桥接来源，而非未经验证的话术。桥接=图先经视觉模型转文字描述再发。
-          const src = this.visionBridgeSource === 'auto' ? '（自动选用的视觉模型）' : ''
+          const src = this.visionBridgeSource === 'auto' ? '（自动选用的视觉模型）' : this.visionBridgeSource === 'same-provider' ? '（与主模型同一 provider）' : ''
           imageNote += `\n${color(`🖼 主模型不识图，将经识图桥${src}生成图片描述后发送`, this.theme.muted)}`
         } else {
           imageNote += `\n${color('⚠ 当前模型不支持识图，且无可用识图桥，图片未发送。请在 Settings → 识图模型 选一个视觉模型（或配置 agent.visionModel）。', this.theme.warning)}`
@@ -4705,7 +4750,8 @@ export class TuiApp {
   /** streaming/thinking/analyzing/waiting 时启动 120ms ticker，idle 停止 */
   private updateTicker(): void {
     // 读屏档没有动态段可刷，ticker 只会白白触发重绘判定。
-    const active = this.state.phase !== 'idle' && !this.screenReader
+    // 输出冻结期同理——spinner tick 是触摸终端「视口被拽回底部」的元凶之一。
+    const active = this.state.phase !== 'idle' && !this.screenReader && !this.outputFrozen
     if (active && !this.streamRenderController.ticker) {
       this.streamRenderController.ticker = setInterval(() => {
         this.streamRenderController.tick++
@@ -6196,7 +6242,12 @@ export class TuiApp {
     const welcomeIdle = this.state.phase === 'idle' && this.state.turnNumber === 0
     const slashOverlay = this.inputController.slashMenu.open || this.inputLine.value.startsWith('/')
     if (welcomeIdle && this.liveRowsHighWater === 0 && !slashOverlay) return 0
-    const cap = liveMaxRowsFor(this.rows || 24)
+    // 矮屏（<24 行，手机软键盘展开的典型形态）把高水位预留压到半屏——整屏
+    // 空白比输入框弹跳更伤；常规桌面高度维持原 cap（28 行封顶）不变。
+    const rows = this.rows || 24
+    const cap = rows < 24
+      ? Math.min(liveMaxRowsFor(rows), Math.ceil(rows / 2))
+      : liveMaxRowsFor(rows)
     const total = dynamicRows + chromeRows
     this.liveRowsHighWater = Math.min(cap, Math.max(this.liveRowsHighWater, total))
     return Math.max(0, this.liveRowsHighWater - chromeRows)
@@ -6281,6 +6332,9 @@ export class TuiApp {
       this.deferredCommitRender = true
       return
     }
+    // 输出冻结期：live region 任何重绘都是光标寻址写入，会把触摸终端的
+    // scrollback 视口拽回底部。数据照常缓冲，解冻后统一重绘。
+    if (this.outputFrozen) return
     // start() 之前所有 setter / 用户输入回调都不应触发真正的 stdout 输出。
     // 构造后到 main.ts 清屏写欢迎屏之间若渲染一版输入框，旧帧可能残留在
     // 欢迎屏上方形成重影；统一在 start() 置 started=true 后才开始绘制。
@@ -6928,6 +6982,10 @@ export class TuiApp {
       }
 
       // ── 辅助行（状态/metrics/提示）全部在输入框上方 ──────────────
+      // 矮屏降级（<14 行——手机软键盘展开的典型形态）：状态行与键位 footer
+      // 让位给输入框本体，保证帧高不超屏（applyRowBudget 的「宁可超行」在
+      // 矮屏上就是重影/错位）。信息可经命令随时找回，垂直空间优先。
+      const shortScreen = (this.rows || 24) < 14
       // 5a. 图片附件摘要（输入框上方、状态行上方）
       const imageCount = this.inputLine.images.length
       if (imageCount > 0) {
@@ -6937,12 +6995,15 @@ export class TuiApp {
 
       // 5b. 状态行：左 metrics（模型/effort/cache/ctx/耗时）+ 右权限模式（右对齐）——
       //     顶框不再承载指标，收敛到输入框上方这一行（权限行仍是单一事实来源）。
-      //     slash 提示打开时权限让位；整行放不下时权限独占下一行。
+      //     slash 提示打开时权限让位；整行放不下时权限独占下一行。矮屏整块让位。
       const permLine = formatPermissionModeLine({ approvalMode: this._approvalMode, planMode: planModeActive, askMode: askModeActive }, this.theme)
       const permTrim = permLine.trimStart()
       const metricsW = displayWidth(rightStr, { ambiguousAsWide: true })
       const permW = displayWidth(permTrim, { ambiguousAsWide: true })
-      if (!isSlash) {
+      if (shortScreen) {
+        // 矮屏：只保留权限提示的核心片段（审批/计划态），压成一行
+        if (planModeActive || askModeActive) lines.push({ text: this.clampLine(permTrim) })
+      } else if (!isSlash) {
         const pad = cols - 1 - 2 - metricsW - permW
         if (metricsW > 0 && pad >= 2) {
           lines.push({ text: `  ${rightStr}${' '.repeat(pad)}${permTrim}` })
@@ -7054,14 +7115,16 @@ export class TuiApp {
 
       // prompt footer：输入框下方键位提示行（对齐公开仓）——换行模式/打断/
       // 审批态提示。审批态的 JSON 编辑分支在 renderLive 更早处 return，不重叠。
-      const footerLines = formatPromptFooter({
-        width: cols,
-        newlineMode: this.inputLine.newlineMode,
-        agentBusy: this.agentBusy && !this.isAgentRunSettling(),
-        approvalPending: this.approvalIntentController.approvalPending != null,
-        shiftEnterAvailable: this.kittyKeyboard,
-      }, this.theme)
-      for (const line of footerLines) lines.push({ text: this.clampLine(line) })
+      if (!shortScreen) {
+        const footerLines = formatPromptFooter({
+          width: cols,
+          newlineMode: this.inputLine.newlineMode,
+          agentBusy: this.agentBusy && !this.isAgentRunSettling(),
+          approvalPending: this.approvalIntentController.approvalPending != null,
+          shiftEnterAvailable: this.kittyKeyboard,
+        }, this.theme)
+        for (const line of footerLines) lines.push({ text: this.clampLine(line) })
+      }
     }
 
     if (this.screenReader) {

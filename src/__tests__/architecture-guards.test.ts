@@ -15,6 +15,18 @@ import { MAX_LINES_BASELINE, MAX_LINES_REDLINE, countPhysicalLines } from '../ag
 
 const SRC_ROOT = join(process.cwd(), 'src')
 
+/**
+ * POSIX 形式路径——所有比较与展示都走它。
+ *
+ * Windows 上 join()/relative() 产出反斜杠，而 guard 的白名单与排除规则用的是
+ * POSIX 字面量（'/tui/engine/'、'/__tests__/'）：includes 判定会静默全落空，
+ * 导致白名单失效、测试文件不被排除、报告输出反斜杠路径——guard 在 Windows 上
+ * 形同虚设（Linux CI 正常，本机假红）。比较前一律归一化。
+ */
+function toPosix(p: string): string {
+  return sep === '/' ? p : p.split(sep).join('/')
+}
+
 /** Recursively collect .ts files under a directory. */
 function collectTsFiles(dir: string, results: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -61,10 +73,10 @@ function scanPattern(
 ): Violation[] {
   const violations: Violation[] = []
   for (const file of files) {
-    if (whitelist.some(w => file.includes(w))) continue
+    if (whitelist.some(w => toPosix(file).includes(w))) continue
     const lines = readFileSync(file, 'utf8').split('\n')
     for (const hit of scanLines(lines, pattern)) {
-      violations.push({ file: relative(SRC_ROOT, file), ...hit })
+      violations.push({ file: toPosix(relative(SRC_ROOT, file)), ...hit })
     }
   }
   return violations
@@ -95,7 +107,7 @@ describe('architecture guards', () => {
     // main.ts 是无 LiveEngine 竞争的进程入口面（banner/错误/非 TUI 子命令）。
     // TUI 运行态内的直写（如曾经的 slash-commands /clear）一律违规。
     const whitelist = ['/tui/engine/', '/__tests__/', '/cli/', 'src/headless.ts', 'src/main.ts', 'src/agent/worker-process/child.ts']
-    const scanned = allSrcFiles.filter(f => !whitelist.some(w => f.includes(w)))
+    const scanned = allSrcFiles.filter(f => !whitelist.some(w => toPosix(f).includes(w)))
     assert.ok(scanned.length > 0, 'guard corpus empty after whitelist — guard would scan nothing')
     const violations = scanPattern(
       allSrcFiles,
@@ -111,32 +123,65 @@ describe('architecture guards', () => {
   })
 
   test('spawn calls without windowsHide (threshold check)', () => {
-    // Best-effort scan: flag spawn/spawnSync that lack windowsHide:true
-    // in the 10-line window after the call. Allows detached+stdio:ignore.
-    const guardFiles = allSrcFiles.filter(f => !f.includes('/__tests__/'))
+    // Best-effort scan: flag spawn-family calls that lack windowsHide:true
+    // in the ±10-line window around the call. Allows detached+stdio:ignore.
+    //
+    // 口径覆盖整个 spawn 家族（spawn/spawnSync/exec/execSync/execFile/
+    // execFileSync）——它们共用同一套 windowsHide 选项，只扫 spawn/spawnSync
+    // 会漏掉一半（本 guard 曾因此把 baseline 低估为 25）。
+    //
+    // 四道去噪，每道都由一次实测误报驱动：
+    // ① 只扫引用过 child_process 的文件——同名局部变量与模式字符串不是调用；
+    // ② 标识符前的引号排除——`'execSync('` 这类字符串字面量曾被命中；
+    // ③ 多行方法定义排除——接口里的 `spawn(\n  command: string,\n)` 不是调用；
+    // ④ 窗口向前后各看 10 行——windowsHide 可能经变量传入（spawn-git 的 mergedOpts）。
+    const CALL_RE = /(?:^|[^\w."`])(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/
+    const METHOD_SIG_RE = /\(\s*\w+\s*:\s*[\w<{[]/
+    // 平台专用豁免：文件内全部 spawn 目标都是 Windows 上不存在的命令
+    // （osascript / pbcopy / screencapture），不可能产生控制台窗口。
+    // 登记标准严格——跨平台命令（node/git/npm/where/reg/taskkill/soffice）
+    // 一律不豁免，新增调用点自己带 windowsHide，而不是往这里加名字。
+    const PLATFORM_SPECIFIC = ['src/pro/computer-use/macos-driver.ts']
+    const guardFiles = allSrcFiles.filter(f => {
+      const p = toPosix(f)
+      if (p.includes('/__tests__/')) return false
+      return !PLATFORM_SPECIFIC.some(x => p.endsWith(x))
+    })
     assert.ok(guardFiles.length > 0, 'spawn guard corpus empty — guard would scan nothing')
     const violations: Violation[] = []
+    let scanned = 0
     for (const file of guardFiles) {
       const content = readFileSync(file, 'utf8')
+      // ① 只扫引用 child_process 的文件。guard 守的是 child_process 调用；
+      //    tui/engine/app.ts 的 `exec` 局部回调、agent/security-patterns.ts 的
+      //    模式字符串都只是重名，不构成闪窗风险。
+      if (!/['"](?:node:)?child_process['"]/.test(content)) continue
+      scanned++
       const lines = content.split('\n')
       lines.forEach((line, i) => {
         const trimmed = line.trim()
-        if (trimmed.startsWith('//') || trimmed.includes('import ')) return
-        if (!/(?:^|[^\w.])(?:spawn|spawnSync)\s*\(/.test(trimmed)) return
-        const window = lines.slice(i, Math.min(i + 10, lines.length)).join('\n')
+        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
+        if (trimmed.includes('import ')) return
+        if (!CALL_RE.test(trimmed)) return
+        // ③ 方法定义形如 `spawn(\n  command: string,\n): X` —— 不是调用
+        if (METHOD_SIG_RE.test(lines.slice(i, Math.min(i + 3, lines.length)).join(' '))) return
+        // ④ 前后各 10 行：windowsHide 可能在调用点之前定义（spawn-git 的 mergedOpts）
+        const window = lines.slice(Math.max(0, i - 10), Math.min(i + 10, lines.length)).join('\n')
         const hasHide = /windowsHide\s*:\s*true/.test(window)
         const isDetachedIgnore = /detached\s*:\s*true/.test(window) && /stdio.*ignore/.test(window)
         if (!hasHide && !isDetachedIgnore) {
-          violations.push({ file: relative(SRC_ROOT, file), line: i + 1, content: trimmed })
+          violations.push({ file: toPosix(relative(SRC_ROOT, file)), line: i + 1, content: trimmed })
         }
       })
     }
-    // Baseline: internal sync spawnSync calls (platform.ts, resolved-env.ts, etc.)
-    // Guard prevents NEW long-running spawn calls without windowsHide from being added.
-    assert.ok(
-      violations.length <= 25,
-      `Spawn guard: ${violations.length} violations (baseline 25, new additions must add windowsHide):\n` +
-        violations.map(v => `  ${v.file}:${v.line}`).join('\n'),
+    assert.ok(scanned > 20, `spawn guard: only ${scanned} file(s) reference child_process — corpus suspiciously small`)
+    // Baseline 0：全仓 spawn 家族调用点均已带 windowsHide（平台专用文件已豁免）。
+    // 新增调用点时补 windowsHide: true——不要把这里改回阈值。
+    assert.equal(
+      violations.length,
+      0,
+      `Spawn guard: ${violations.length} spawn-family call(s) without windowsHide (baseline 0):\n` +
+        violations.map(v => `  ${v.file}:${v.line}  ${v.content.slice(0, 80)}`).join('\n'),
     )
   })
 

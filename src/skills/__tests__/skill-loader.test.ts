@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { SkillRegistry, parseSkillMarkdown, listSkillFiles, importSkillsIntoRivet, listInstallableSkills, countInstalledSkills, seedBundledSkillsFrom, loadProjectSkills, writeSkill, readSkillContent, uninstallSkill, retireMatchingSkillCopies } from '../skill-loader.js'
+import { SkillRegistry, parseSkillMarkdown, listSkillFiles, importSkillsIntoRivet, listInstallableSkills, countInstalledSkills, seedBundledSkillsFrom, loadProjectSkills, writeSkill, readSkillContent, uninstallSkill, retireMatchingSkillCopies, skillRegistry } from '../skill-loader.js'
 import { readFileSync } from 'node:fs'
 import { validatePathSafe } from '../../tools/path-validate.js'
 
@@ -385,4 +385,57 @@ body v2`
     assert.equal(skill.description, 'PROJECT')
     assert.equal(skill.source, 'rivet')
   })
+
+  // ── .agents/skills 自动扫描（issue #100，2026-09-12） ──
+
+  const writeAgentSkill = (root: string, name: string, body: string) => {
+    const dir = join(root, name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${body}\n---\n\n${body}\n`, 'utf-8')
+  }
+
+  it('项目级 .agents/skills 自动装载（source=project-agents，目录形态保留 skillDir）', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-agents-proj-'))
+    writeAgentSkill(join(cwd, '.agents', 'skills'), 'agents-proj-probe', 'from project agents dir')
+
+    const { loaded } = loadProjectSkills(cwd)
+    assert.ok(loaded.includes('agents-proj-probe'), `loaded should include agents skill: ${JSON.stringify(loaded)}`)
+    const skill = skillRegistry.get('agents-proj-probe')!
+    assert.equal(skill.source, 'project-agents')
+    assert.equal(skill.skillDir, join(cwd, '.agents', 'skills', 'agents-proj-probe'), '目录形态保留子文件按需读取')
+  })
+
+  it('五层优先级链：global-agents < global-rivet < project-agents < project-rivet', () => {
+    const home = mkdtempSync(join(tmpdir(), 'rivet-agents-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-agents-cwd-'))
+    // 同名技能放满四层——最终赢家必须是项目 .rivet
+    writeAgentSkill(join(home, '.agents', 'skills'), 'chain-skill', 'global-agents')
+    writeAgentSkill(join(home, '.rivet', 'skills'), 'chain-skill', 'global-rivet')
+    writeAgentSkill(join(cwd, '.agents', 'skills'), 'chain-skill', 'project-agents')
+    writeAgentSkill(join(cwd, '.rivet', 'skills'), 'chain-skill', 'project-rivet')
+    // 只在两个 agents 槽位的技能——项目 .agents 赢用户 .agents
+    writeAgentSkill(join(home, '.agents', 'skills'), 'eco-skill', 'global-agents')
+    writeAgentSkill(join(cwd, '.agents', 'skills'), 'eco-skill', 'project-agents')
+    // 只在用户 .agents 的技能——装载且来源正确
+    writeAgentSkill(join(home, '.agents', 'skills'), 'home-only-skill', 'global-agents')
+
+    loadProjectSkills(cwd, { homeDir: home })
+    assert.equal(skillRegistry.get('chain-skill')!.bodyPath, join(cwd, '.rivet', 'skills', 'chain-skill', 'SKILL.md'))
+    assert.equal(skillRegistry.get('chain-skill')!.source, 'rivet')
+    assert.equal(skillRegistry.get('eco-skill')!.bodyPath, join(cwd, '.agents', 'skills', 'eco-skill', 'SKILL.md'))
+    assert.equal(skillRegistry.get('eco-skill')!.source, 'project-agents')
+    assert.equal(skillRegistry.get('home-only-skill')!.source, 'global-agents')
+  })
+
+  it('agents 技能进入 discovery 块且渲染确定（字节稳定=缓存安全）', () => {
+    const reg = new SkillRegistry()
+    reg.register({ name: 'agents-zeta', description: 'z', triggers: [], body: 'b', source: 'global-agents' })
+    reg.register({ name: 'agents-alpha', description: 'a', triggers: [], body: 'b', source: 'project-agents' })
+    const b1 = reg.renderDiscoveryBlock()
+    const b2 = reg.renderDiscoveryBlock()
+    assert.ok(b1 && b1.includes('agents-alpha') && b1.includes('agents-zeta'))
+    assert.equal(b1, b2, '同注册表两次渲染必须字节一致（冻结锚之外的 appendix 稳定性）')
+    assert.ok(b1!.indexOf('agents-alpha') < b1!.indexOf('agents-zeta'), '按 name 排序，与目录序无关')
+  })
+
 })

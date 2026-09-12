@@ -70,6 +70,7 @@ function readMacosSystemProxy(): string | undefined {
     const stdout = execSync('scutil --proxy', {
       encoding: 'utf8',
       timeout: 3000,
+      windowsHide: true,
     })
     return parseScutilProxy(stdout)
   } catch {

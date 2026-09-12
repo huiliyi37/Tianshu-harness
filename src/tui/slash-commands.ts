@@ -109,9 +109,9 @@ export interface SlashHandlerContext {
   persist: SessionPersist
   model: string
   maxTokens: number
-  availableModels: Array<{ id: string; alias: string }>
+  availableModels: Array<{ id: string; alias: string; supportsVision?: boolean }>
   onModelSwitch: (modelId: string) => { ok: boolean; error?: string }
-  allProviders: Record<string, { models: Array<{ id: string; alias: string }>; userSaved?: boolean }>
+  allProviders: Record<string, { models: Array<{ id: string; alias: string; supportsVision?: boolean }>; userSaved?: boolean }>
   currentProvider: string
   currentSessionId: string
   /**
@@ -420,6 +420,12 @@ export function resolveAppPromptInput(
   if (/^\/review/i.test(input)) {
     return { prompt: `User typed "${input}" which looks like a /review command but didn't match the expected format. Usage: /review [max] [focus description]. Run /review max to trigger L3 Review Squadron.` }
   }
+  // 裸技能名直调（issue #100 建议②）：/name [task]——内置/workflow/自定义/网关
+  // 均未命中后的兜底。必须放在 looksLikeFilePath 之前：单段 /name 在
+  // isKnownCommand 谓词下会被判成「路径」原样透传，技能解析永远轮不到
+  // （多段路径天然不匹配技能名，/etc 类单段路径无同名技能时仍落回路径分支）。
+  const bareSkill = resolveBareSkillPrompt(input)
+  if (bareSkill !== null) return { prompt: bareSkill }
   // Linux/WSL path like /etc, /mnt, /usr — not a recognized command, pass through
   // as plain text so the agent can handle it (e.g. "look at /etc/hosts").
   if (looksLikeFilePath(input, isKnownCommand)) return { prompt: input }
@@ -427,18 +433,10 @@ export function resolveAppPromptInput(
   return null
 }
 
-/**
- * Resolve `/skill <name> [user task...]` into the skill's full body prompt.
- * Reserved subcommands (list/install/etc.) and unknown skills return null so
- * they fall back to the slash handler's local behavior or error message.
- */
-function resolveSkillPrompt(input: string, cwd: string): string | null {
-  const match = input.trim().match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
-  if (!match) return null
-  const name = match[1]!
-  const userTask = match[2]?.trim() ?? ''
-  const reserved = new Set(['list', 'ls', 'install', 'import', 'review', 'drafts', 'approve', 'reject', 'off', 'complete'])
-  if (reserved.has(name.toLowerCase())) return null
+const SKILL_RESERVED_SUBCOMMANDS = new Set(['list', 'ls', 'install', 'import', 'review', 'drafts', 'approve', 'reject', 'off', 'complete'])
+
+/** 技能查找 + prompt 展开（/skill 网关与裸名直调共用）。未命中返回 null。 */
+function buildSkillPrompt(name: string, userTask: string): string | null {
   const skill = skillRegistry.get(name) ?? skillRegistry.list().find(s => s.name.toLowerCase() === name.toLowerCase())
   if (!skill) return null
   let prompt = `[Skill loaded: ${skill.name}]\n<skill name="${skill.name}">\n${skill.body}\n</skill>`
@@ -452,6 +450,34 @@ function resolveSkillPrompt(input: string, cwd: string): string | null {
     prompt += `\n\nUser task: ${userTask}`
   }
   return prompt
+}
+
+/**
+ * Resolve `/skill <name> [user task...]` into the skill's full body prompt.
+ * Reserved subcommands (list/install/etc.) and unknown skills return null so
+ * they fall back to the slash handler's local behavior or error message.
+ */
+function resolveSkillPrompt(input: string, cwd: string): string | null {
+  const match = input.trim().match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
+  if (!match) return null
+  const name = match[1]!
+  if (SKILL_RESERVED_SUBCOMMANDS.has(name.toLowerCase())) return null
+  return buildSkillPrompt(name, match[2]?.trim() ?? '')
+}
+
+/**
+ * 裸技能名直调（issue #100 建议②，Claude Code「技能即斜杠命令」形态）：
+ * `/name [task...]` 命中技能注册表则展开为 skill prompt。只在内置/workflow/
+ * 自定义/网关全部未命中后兜底——同名技能被内置遮蔽但仍可经 /skill <name>
+ * 显式唤起。多段路径天然不匹配（技能名不含 /）；单段路径（/etc）只有用户
+ * 真建了同名技能才会被接管——那正是用户意图。
+ */
+export function resolveBareSkillPrompt(input: string): string | null {
+  const match = input.trim().match(/^\/([^\s/]+)(?:\s+(.*))?$/s)
+  if (!match) return null
+  const name = match[1]!
+  if (SKILL_RESERVED_SUBCOMMANDS.has(name.toLowerCase())) return null
+  return buildSkillPrompt(name, match[2]?.trim() ?? '')
 }
 
 /**
@@ -938,7 +964,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           lines.push(`[${provName}]${marker}`)
           for (const m of prov.models) {
             const isCurrent = m.alias === ctx.model || m.id === ctx.model
-            lines.push(`  ${m.alias} (${m.id})${isCurrent ? ' ←' : ''}`)
+            // 视觉标记：v4-flash（纯文本）与 v4.1-flash（原生多模态）这类只差前缀/
+            // 一个点的档位并排时，没有标记用户根本分不出哪个能看图。
+            lines.push(`  ${m.alias} (${m.id})${m.supportsVision ? ' 👁 视觉' : ''}${isCurrent ? ' ←' : ''}`)
           }
         }
         if (lines.length === 0) lines.push('(尚无已保存的 provider——运行 /connect 接入后模型会出现在这里)')
@@ -3552,7 +3580,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
 
       if (!sub || sub === 'list' || sub === 'ls') {
         if (allSkills.length === 0) {
-          pushStatic(createLogEntry({ type: 'system', content: 'No skills found in .rivet/skills/.\nInstall one with:\n  /skill install <name>\nor copy manually:\n  cp -r ~/.claude/skills/<name> .rivet/skills/<name>\nor list it under skills.importFromClaude in config.' }))
+          pushStatic(createLogEntry({ type: 'system', content: 'No skills found (.agents/skills 与 .rivet/skills 均为空)。\n.agents/skills/<name>/SKILL.md 会自动装载（跨 agent 标准目录）；\n或安装：\n  /skill install <name>\n或复制：\n  cp -r ~/.claude/skills/<name> .rivet/skills/<name>\n或在配置里列 skills.importFromClaude。' }))
         } else {
           const lines = [...allSkills]
             .sort((a, b) => a.name.localeCompare(b.name))
@@ -3787,7 +3815,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
 
   const allProviders: Record<string, { models: Array<{ id: string; alias: string }>; userSaved?: boolean }> = {}
   for (const [name, prov] of Object.entries(ctx.config.provider.providers)) {
-    allProviders[name] = { models: prov.models.map(m => ({ id: m.id, alias: m.alias ?? m.id })), ...(prov.userSaved ? { userSaved: true } : {}) }
+    allProviders[name] = { models: prov.models.map(m => ({ id: m.id, alias: m.alias ?? m.id, supportsVision: m.supportsVision })), ...(prov.userSaved ? { userSaved: true } : {}) }
   }
 
   function buildHandlerContext(input: string): SlashHandlerContext {
@@ -3807,7 +3835,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       persist: ctx.persist,
       model: app.getModelInfo().modelName,
       maxTokens,
-      availableModels: ctx.provider.models.map(m => ({ id: m.id, alias: m.alias ?? m.id })),
+      availableModels: ctx.provider.models.map(m => ({ id: m.id, alias: m.alias ?? m.id, supportsVision: m.supportsVision })),
       onModelSwitch: (modelId: string) => {
         try { ctx.agent.abort() } catch {}
         const res = switchAgentRuntime(ctx, modelId)

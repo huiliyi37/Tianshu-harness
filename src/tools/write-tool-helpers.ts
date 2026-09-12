@@ -9,7 +9,7 @@
  * ast_edit 的输入与另外三个不同：
  *   - 不是单 file_path，而是 paths: string[]
  *   - 不是单 new_string/content，而是 ops: [{ find, replace }, ...]
- *   - dryRun: true 时不实际写盘，返回空数组
+ *   - dryRun 非 false 时不实际写盘（缺省即预览），返回空数组
  *
  * apply_patch 的 input 是 unified diff 文本本身（`{ diff, check_only }`），目标
  * 文件与新增内容都藏在 diff 里，需要先解析——见 extractPatchContents /
@@ -128,14 +128,15 @@ export function extractPatchTargetPathsFromDiff(diff: string): string[] {
 
 /**
  * 从 ast_edit 的 input 中提取 (filePath, content) 列表。
- * dryRun 时返回空数组（不实际写盘）。
+ * 非真写（dryRun 缺省或 true，即预览）返回空数组（不实际写盘）。
  */
 function extractAstEditContents(input: Record<string, unknown>): WriteFileContent[] {
+  // 工具真值（ast-edit.ts:105）：`const dryRun = input.dryRun !== false`——缺省即
+  // 预览、不落盘。用 `=== true` 判会让"缺省预览"漏过：未落盘的内容被喂进安全/
+  // 探针扫描，假命中还会占掉 tracker 的跨轮去重位，让随后真写入的提醒被吞。
+  if (input.dryRun !== false) return []
   const ops = input.ops
   const paths = input.paths
-  const dryRun = input.dryRun === true
-
-  if (dryRun) return []
   if (!Array.isArray(ops) || !Array.isArray(paths) || paths.length === 0 || ops.length === 0) {
     return []
   }

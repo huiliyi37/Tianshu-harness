@@ -271,7 +271,7 @@ export interface ManagedAgent {
   exitAskMode?(): void
   /** 识图桥真实状态（active/source/detail）。UI 据此显示准确提示，而非只看
    *  config 有没有 visionModel 键。Optional 以便轻量测试替身无需实现。 */
-  getVisionBridge?(): { active: boolean; source: 'configured' | 'auto' | 'none'; detail?: string } | undefined
+  getVisionBridge?(): { active: boolean; source: 'native' | 'configured' | 'auto' | 'same-provider' | 'none'; detail?: string } | undefined
   /**
    * Plan mode change notification — assigned by the session layer so agent-side
    * transitions (e.g. the model calling plan action=enter_mode) surface as

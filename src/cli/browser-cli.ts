@@ -12,6 +12,7 @@
  */
 import { spawn } from 'node:child_process'
 import { probeChromium, formatBrowserMissingBanner } from '../tools/net/browser-readiness.js'
+import { playwrightInstallSpec, resolvePlaywrightCoreVersion } from '../tools/net/playwright-driver.js'
 
 /** 国内镜像 host——与 net/playwright-driver 的 PLAYWRIGHT_INSTALL_HINT 文案同源。 */
 export const PLAYWRIGHT_MIRROR_HOST = 'https://registry.npmmirror.com/-/binary/playwright'
@@ -36,14 +37,20 @@ export interface BrowserInstallPlan {
  * 默认注入 npmmirror 镜像 host；--no-mirror 时不注入（走官方源）。
  * Windows 上 npx 是 .cmd shim，用 shell 执行以正确解析。
  */
-export function buildInstallPlan(args: readonly string[], platform: NodeJS.Platform = process.platform): BrowserInstallPlan {
+export function buildInstallPlan(
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  playwrightVersion: string | null = resolvePlaywrightCoreVersion() ?? null,
+): BrowserInstallPlan {
   const noMirror = args.includes('--no-mirror')
   const env: Record<string, string> = noMirror ? {} : { PLAYWRIGHT_DOWNLOAD_HOST: PLAYWRIGHT_MIRROR_HOST }
-  // npx playwright install chromium —— playwright-core 不含下载器，但 playwright
-  // （meta 包）的 install 子命令会下浏览器到 registry 缓存；npx 按需拉取 playwright。
+  // npx playwright@<内嵌版本> install chromium —— playwright-core 不含下载器，但
+  // playwright（meta 包）的 install 子命令会下浏览器到 registry 缓存。版本钉在
+  // 内嵌 playwright-core 上：就绪检测按它的 browsers.json 找 revision，不钉版本
+  // 时 npx 拉最新 playwright、装出别的 revision，装完仍报未安装（#102）。
   return {
     command: platform === 'win32' ? 'npx.cmd' : 'npx',
-    args: ['playwright', 'install', 'chromium'],
+    args: [playwrightInstallSpec(playwrightVersion), 'install', 'chromium'],
     env,
   }
 }

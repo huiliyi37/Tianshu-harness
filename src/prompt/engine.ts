@@ -1,4 +1,4 @@
-import type { OaiChatRequest, OaiMessage, OaiToolDefinition } from '../api/oai-types.js'
+import type { OaiChatRequest, OaiContentPart, OaiMessage, OaiToolDefinition } from '../api/oai-types.js'
 import { pruneOutdatedQueryResults } from '../compact/semantic-prune.js'
 import { collapseToolResult } from '../compact/context-collapse.js'
 import { detectStaleness } from '../compact/staleness-detect.js'
@@ -335,6 +335,32 @@ export class PromptEngine {
    * This ensures DeepSeek's exact-prefix cache hits on API calls 2-50 within
    * a single user message's execution, not just across user messages.
    */
+  /** volatile trailer 的文本前缀：frozen 的 volatileBlock + habituation 稳定的
+   *  consolidated 块 + 分隔线。文本消息直接与之拼接——字节布局与历史一致，
+   *  前缀缓存基线不动；多模态消息把这个前缀当作独立的 text part 使用。 */
+  private trailerTextPrefix(): string {
+    const consolidated = this.cachedConsolidated ? '\n' + this.cachedConsolidated : ''
+    return this.volatileBlock + consolidated + '\n---\n'
+  }
+
+  /**
+   * trailer 合并后的 user 消息内容。
+   *
+   * 文本消息拼成单串（既有字节布局，缓存基线不变）。多模态消息必须保留 parts：
+   * 拼字符串只能把图片丢掉或降级成一串 base64 文本——模型于是一律回答「看不到
+   * 图片」（2026-09-11 用户报障）。这类消息把 volatile 前缀作为首个 text part
+   * 前置、用户 parts 原样保留、附录追加为末尾 text part。
+   */
+  private buildTraileredUserContent(msg: OaiMessage, appendix?: string): string | OaiContentPart[] {
+    const prefix = this.trailerTextPrefix()
+    if (Array.isArray(msg.content)) {
+      const parts: OaiContentPart[] = [{ type: 'text', text: prefix }, ...msg.content]
+      if (appendix) parts.push({ type: 'text', text: appendix })
+      return parts
+    }
+    return prefix + msg.content + (appendix ? '\n\n' + appendix : '')
+  }
+
   /**
    * Retrieve the next frozen snapshot for a given user-message content.
    * Maintains a per-content fetch index so that duplicate messages ("继续", "ok")
@@ -530,9 +556,7 @@ export class PromptEngine {
           // summary prompt is one-shot; caching state for it poisons the next
           // main-turn build (its real last user message would look like a new
           // boundary → appendix rebuild + volatile swap → mid-round prefix break).
-          const fc = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-          const vb = this.cachedConsolidated ? this.volatileBlock + '\n' + this.cachedConsolidated : this.volatileBlock
-          result.push({ role: 'user', content: vb + '\n---\n' + fc })
+          result.push({ role: 'user', content: this.buildTraileredUserContent(msg) })
         } else if (i === lastUserIdx) {
           const userContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
 
@@ -628,19 +652,15 @@ export class PromptEngine {
           // Dynamic appendix (per-turn volatile) is appended AFTER userContent.
           // Frozen snapshot captures the full content (including appendix),
           // so historical retrieval returns byte-identical content → cache hit.
-          let merged = this.volatileBlock
-          if (this.cachedConsolidated) {
-            merged += '\n' + this.cachedConsolidated
-          }
-          merged += '\n---\n' + (typeof msg.content === 'string' ? msg.content : '')
-          if (this.cachedAppendix) {
-            merged += '\n\n' + this.cachedAppendix
-          }
-          const key = typeof msg.content === 'string' ? msg.content : ''
+          const trailered = this.buildTraileredUserContent(msg, this.cachedAppendix || undefined)
           // Track latest merged bytes for this last-user message; commit once at
           // the next real user boundary (not per tool turn / pseudo-boundary).
-          this.frozenPendingMerged.set(key, merged)
-          result.push({ role: 'user', content: merged })
+          // 多模态消息（parts 数组）不入 frozen 快照——快照只存字符串形态；parts 是
+          // 稳定输入，重建字节不变，前缀缓存照常命中。
+          if (typeof msg.content === 'string') {
+            this.frozenPendingMerged.set(msg.content, trailered as string)
+          }
+          result.push({ role: 'user', content: trailered })
         } else if (i === firstUserIdx) {
           // Use frozen merged content if available (preserves prefix from when this was lastUserIdx)
           const frozen = this.getNextFrozen(typeof msg.content === 'string' ? msg.content : '')
@@ -655,13 +675,14 @@ export class PromptEngine {
             // message changes from byte 0 → fatal 0% prefix break. Log it.
             this.frozenFallbackRebuilds++
             debugLog('prompt-engine', `FATAL-CACHE: frozen snapshots fully evicted for FIRST user message (len=${typeof msg.content === 'string' ? msg.content.length : 0}) — rebuilding with current volatileBlock`)
-            const fc = typeof msg.content === 'string' ? msg.content : ''
-            const vb = this.cachedConsolidated ? this.volatileBlock + '\n' + this.cachedConsolidated : this.volatileBlock
-            const rebuilt = vb + '\n---\n' + fc
+            const rebuilt = this.buildTraileredUserContent(msg)
             // Memoize (self-heal): without this, every subsequent request
             // re-runs the fallback with live volatile bytes — flip-flopping
             // message bytes and paying cacheCreate tax on each request.
-            if (!sidePath && fc !== '') this.frozenUserMerged.set(fc, [rebuilt])
+            // 多模态消息不入快照（快照只存字符串形态）——parts 稳定，重建字节一致。
+            if (!sidePath && typeof msg.content === 'string' && msg.content !== '') {
+              this.frozenUserMerged.set(msg.content, [rebuilt as string])
+            }
             result.push({ role: 'user', content: rebuilt })
           }
         } else {
@@ -676,11 +697,12 @@ export class PromptEngine {
             // doesn't cascade (message count unchanged).
             this.frozenFallbackRebuilds++
             debugLog('prompt-engine', `frozen snapshots fully evicted for historical user message (len=${typeof msg.content === 'string' ? msg.content.length : 0}) — rebuilding with current volatileBlock`)
-            const fc = typeof msg.content === 'string' ? msg.content : ''
-            const vb = this.cachedConsolidated ? this.volatileBlock + '\n' + this.cachedConsolidated : this.volatileBlock
-            const rebuilt = vb + '\n---\n' + fc
+            const rebuilt = this.buildTraileredUserContent(msg)
             // Memoize (self-heal) — same rationale as the first-user fallback.
-            if (!sidePath && fc !== '') this.frozenUserMerged.set(fc, [rebuilt])
+            // 多模态消息不入快照（快照只存字符串形态）——parts 稳定，重建字节一致。
+            if (!sidePath && typeof msg.content === 'string' && msg.content !== '') {
+              this.frozenUserMerged.set(msg.content, [rebuilt as string])
+            }
             result.push({ role: 'user', content: rebuilt })
           }
         }

@@ -52,7 +52,7 @@ export type CommandRunner = (binary: string, args: string[], opts: { timeoutMs: 
 
 const defaultRunner: CommandRunner = (binary, args, opts) =>
   new Promise((resolve, reject) => {
-    execFile(binary, args, { timeout: opts.timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+    execFile(binary, args, { timeout: opts.timeoutMs, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       if (err) reject(err)
       else resolve({ stdout })
     })

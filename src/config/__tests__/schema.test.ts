@@ -24,8 +24,12 @@ describe('model supportsVision', () => {
     const parsed = configSchema.parse(DEFAULT_CONFIG)
     const glm = parsed.provider.providers.glm?.models.find(m => m.id === 'glm-5.2')
     assert.equal(glm?.supportsVision, true)
-    const deepseek = parsed.provider.providers.deepseek?.models.find(m => m.id === 'deepseek-v4-pro')
-    assert.equal(deepseek?.supportsVision, undefined, 'text-only models stay undeclared')
+    // 样本必须是一个现存的无视觉模型：写已退役的 id 会让 find 返回 undefined，
+    // 而 `?.supportsVision` 依旧是 undefined——断言会退化成永不失败的空壳。
+    // 故先钉住样本存在（2026-09-11 v4pro 退役时踩到过这个坑）。
+    const deepseek = parsed.provider.providers.deepseek?.models.find(m => m.id === 'deepseek-v4-flash')
+    assert.ok(deepseek, 'deepseek-v4-flash 必须存在于预设，否则本断言失去意义')
+    assert.equal(deepseek.supportsVision, undefined, 'text-only models stay undeclared')
   })
 })
 

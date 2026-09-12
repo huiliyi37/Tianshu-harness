@@ -166,7 +166,7 @@ test('POST /sessions rejects invalid images payloads', async () => {
   const tooMany = await router('POST', '/sessions', { prompt: 'x', images: five }, AUTH)
   assert.equal(tooMany.status, 400)
 
-  const huge = 'data:image/png;base64,' + 'A'.repeat(2_200_000)
+  const huge = 'data:image/png;base64,' + 'A'.repeat(14_000_000)
   const oversized = await router('POST', '/sessions', { prompt: 'x', images: [huge] }, AUTH)
   assert.equal(oversized.status, 400)
 })
@@ -206,10 +206,20 @@ test('POST /prompt rejects more than 4 images', async () => {
 test('POST /prompt rejects an oversized image', async () => {
   const { router } = setup(new MemoryImagePersistence())
   const id = await createIdle(router)
-  // ~2MB of base64 → ~1.5MB decoded, above the per-image cap.
-  const huge = 'data:image/png;base64,' + 'A'.repeat(2_200_000)
+  // ~14MB of base64 → ~10.5MB decoded, above the 10MB per-image cap.
+  const huge = 'data:image/png;base64,' + 'A'.repeat(14_000_000)
   const res = await router('POST', `/sessions/${id}/prompt`, { prompt: 'x', images: [huge] }, AUTH)
   assert.equal(res.status, 400)
+})
+
+test('POST /prompt accepts an image above the old 1.5MB cap', async () => {
+  const { router } = setup(new MemoryImagePersistence())
+  const id = await createIdle(router)
+  // ~2.2MB of base64 → ~1.65MB decoded — 旧服务端上限会 400，10MB 对齐后放行
+  // （与 TUI image-attach、桌面压缩出口同口径）。
+  const img = 'data:image/png;base64,' + 'A'.repeat(2_200_000)
+  const res = await router('POST', `/sessions/${id}/prompt`, { prompt: 'x', images: [img] }, AUTH)
+  assert.equal(res.status, 200)
 })
 
 // ---- GET image route ----

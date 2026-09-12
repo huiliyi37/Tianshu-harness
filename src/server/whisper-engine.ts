@@ -40,7 +40,7 @@ export function createWhisperEngine(opts: WhisperEngineOptions): SpeechEngine {
           const prompt = LANG_PROMPTS[o.lang]
           if (prompt !== undefined) args.push('--prompt', prompt)
         }
-        const child = spawn(opts.binPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(opts.binPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
         let stderr = ''
         child.stderr.on('data', (d: Buffer) => {
           stderr += d.toString()

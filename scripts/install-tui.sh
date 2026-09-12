@@ -31,6 +31,17 @@ if [ "$NODE_MAJOR" -lt 24 ]; then
   die "Node.js 版本过低（当前 $(node -v)，需要 >= 24）。请升级后重跑：https://nodejs.org/"
 fi
 
+# 1.5 Android/Termux：裸 Termux（bionic）缺必需原生依赖（@ast-grep/napi / esbuild）
+# 的 android 平台二进制，npm 会静默跳过——装完运行必坏。官方支持路径是
+# proot-distro（glibc 发行版）。npm 包内的 postinstall 守卫也会拦，这里提前给结论。
+if uname -o 2>/dev/null | grep -q '^Android$'; then
+  die "检测到裸 Termux 环境：必需原生依赖没有 Android 平台二进制，无法安装。
+官方支持路径（proot-distro，glibc）：
+  pkg install proot-distro && proot-distro install ubuntu && proot-distro login ubuntu
+  （容器内）apt update && apt install -y curl ripgrep
+  安装 Node >= 24（nodesource 或 nvm），然后重跑本脚本或 npm i -g tianshu-tui"
+fi
+
 # 2. 全局安装（幂等：重复执行覆盖升级）
 say "安装天枢 CLI tianshu-tui（registry=${REGISTRY}）"
 if ! npm install -g tianshu-tui; then

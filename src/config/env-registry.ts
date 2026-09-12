@@ -3,8 +3,8 @@
  *
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
  * description 字段人工维护，重新生成时按 name 保留。
- * 最后生成：2026-09-11T10:54:58.293Z
- * 共 170 个变量。
+ * 最后生成：2026-09-12T06:23:38.653Z
+ * 共 173 个变量。
  *
  * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
  * 当源码中新增 RIVET_* 引用但注册表未同步时，
@@ -182,7 +182,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_CONFIG_PATH',
     defaultHint: '',
-    files: ['tui/__tests__/settings-persist.test.ts', 'tui/__tests__/slash-commands.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/vision-model-onboarding-routes.test.ts', 'plugins/__tests__/integration/git-source-mirror-fallback.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-load-error.test.ts', 'config/__tests__/config-schema-integration.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/manager-clear-api-key.test.ts', 'config/__tests__/manager-editor.test.ts', 'config/__tests__/manager-fetch-search.test.ts', 'config/__tests__/manager-permission-dirs.test.ts', 'config/__tests__/manager-provider.test.ts', 'config/__tests__/manager-routing.test.ts', 'config/__tests__/manager-shell.test.ts', 'config/__tests__/manager-ui.test.ts', 'config/__tests__/manager-vision-model.test.ts', 'config/__tests__/preset-model-backfill.test.ts', 'config/__tests__/provider-advanced.test.ts', 'config/__tests__/provider-cli.test.ts', 'config/__tests__/provider-onboarding-e2e.test.ts', 'config/__tests__/runtime-lean-aspect.test.ts', 'config/__tests__/runtime-lean.test.ts', 'config/__tests__/secrets-store.test.ts', '__tests__/bootstrap.test.ts'],
+    files: ['tui/__tests__/settings-persist.test.ts', 'tui/__tests__/slash-commands.test.ts', 'tools/__tests__/tool-preset.test.ts', 'server/__tests__/vision-model-onboarding-routes.test.ts', 'plugins/__tests__/integration/git-source-mirror-fallback.test.ts', 'config/paths.ts', 'config/__tests__/config-cli.test.ts', 'config/__tests__/config-load-error.test.ts', 'config/__tests__/config-schema-integration.test.ts', 'config/__tests__/config-watcher.test.ts', 'config/__tests__/layered-config.test.ts', 'config/__tests__/manager-clear-api-key.test.ts', 'config/__tests__/manager-deepseek-v4pro-retirement.test.ts', 'config/__tests__/manager-deepseek-vision-exp-retirement.test.ts', 'config/__tests__/manager-editor.test.ts', 'config/__tests__/manager-fetch-search.test.ts', 'config/__tests__/manager-permission-dirs.test.ts', 'config/__tests__/manager-provider.test.ts', 'config/__tests__/manager-routing.test.ts', 'config/__tests__/manager-shell.test.ts', 'config/__tests__/manager-ui.test.ts', 'config/__tests__/manager-vision-model.test.ts', 'config/__tests__/preset-model-backfill.test.ts', 'config/__tests__/provider-advanced.test.ts', 'config/__tests__/provider-cli.test.ts', 'config/__tests__/provider-onboarding-e2e.test.ts', 'config/__tests__/runtime-lean-aspect.test.ts', 'config/__tests__/runtime-lean.test.ts', 'config/__tests__/secrets-store.test.ts', '__tests__/bootstrap.test.ts'],
     description: '',
   },
   {
@@ -564,6 +564,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: 'Meridian 后台全量索引的文件数上限（默认 2000）',
   },
   {
+    name: 'RIVET_MOBILE_DIR',
+    defaultHint: '',
+    files: ['server/serve.ts'],
+    description: 'serve 的 /mobile 静态挂载目录（P2 Mobile Remote）；配置后 /mobile 前缀在 auth 门前免 Bearer 服务该目录前端资产，未配则一律 404。CLI --mobile-dir 优先于本 env。',
+  },
+  {
     name: 'RIVET_NEW_SESSION',
     defaultHint: '',
     files: ['bootstrap.ts', 'main.ts'],
@@ -790,6 +796,18 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     defaultHint: '',
     files: ['config/security-guidance-config.ts', 'agent/__tests__/create-runtime-hooks.test.ts'],
     description: '安全模式正则告警（层1）总开关，默认开；设 0/false/off/no 关闭（等价 config agent.securityGuidance=false）',
+  },
+  {
+    name: 'RIVET_SERVE_HOST',
+    defaultHint: '',
+    files: ['server/serve.ts'],
+    description: 'serve 监听地址（默认 127.0.0.1）；LAN IP/0.0.0.0 开启远程访问（P1 Mobile Remote）。CLI --host 优先于本 env。',
+  },
+  {
+    name: 'RIVET_SERVE_HOSTS_ALLOW',
+    defaultHint: '',
+    files: ['server/serve.ts'],
+    description: 'serve Host header allowlist（逗号分隔，不带端口）；配置后非回环 Host 仅白名单放行（DNS-rebinding 防护恢复）。全条目非法时告警并按未配置处理。',
   },
   {
     name: 'RIVET_SERVE_TIMING',

@@ -13,7 +13,7 @@ export function writeFileAtomicSync(filePath: string, data: string | Buffer): vo
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
   const suffix = randomUUID().slice(0, 8)
-  const tmpPath = filePath + '.' + suffix + '.tmp'
+  const tmpPath = filePath + '.rivet-atomic-' + suffix + '.tmp'
   try {
     // 0o600: files written here are user-private (config with API keys,
     // sessions) — align with token-store.ts; rename preserves the mode.
@@ -34,7 +34,7 @@ export async function writeFileAtomicAsync(filePath: string, data: string | Buff
   const dir = dirname(filePath)
   if (!existsSync(dir)) await mkdir(dir, { recursive: true })
   const suffix = randomUUID().slice(0, 8)
-  const tmpPath = filePath + '.' + suffix + '.tmp'
+  const tmpPath = filePath + '.rivet-atomic-' + suffix + '.tmp'
   try {
     await writeFile(tmpPath, data, data instanceof Buffer ? { mode: 0o600 } : { encoding: 'utf-8', mode: 0o600 })
     await rename(tmpPath, filePath)
@@ -48,8 +48,8 @@ const ORPHAN_TMP_TTL_MS = 3_600_000 // 1 hour
 
 /**
  * Scan directories for orphaned .tmp files left by crashed writeFileAtomicSync
- * calls. Files matching the pattern `*.XXXXXXXX.tmp` (8-char UUID suffix) that
- * are older than ORPHAN_TMP_TTL_MS are deleted.
+ * calls. Files matching the pattern `*.rivet-atomic-XXXXXXXX.tmp` (fixed marker +
+ * 8-char UUID suffix) that are older than ORPHAN_TMP_TTL_MS are deleted.
  *
  * Call once at startup to reclaim disk space from previous crashes.
  */

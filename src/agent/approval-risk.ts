@@ -206,7 +206,9 @@ export function hasOutOfWorkspaceWriteTarget(command: string): boolean {
       // awk 的 $1 位置参数（数字开头）不在此列，避免误伤常规文本处理
       if (/^\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)(?:[\\/].*)?$/.test(frag)) return true
       if (/%[^%\s]+%/.test(frag)) return true
-      if (frag === '..' || frag.startsWith('../') || frag.startsWith('..\\')) return true
+      // 检测任意路径段等于 '..'（含中段穿越，如 sub/../../etc/cron.d/x），
+      // 与 assessToolRisk 的正则口径一致；仅判开头会让 auto-safe 写闸门被绕过。
+      if (frag.split(/[\\/]/).includes('..')) return true
     }
   }
   return false

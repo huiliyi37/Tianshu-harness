@@ -6,6 +6,9 @@
 
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+import { isPrivateIP } from '../../tools/net/ssrf.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { generatePKCE, buildAuthorizeUrl } from '../../auth/oauth.js'
 import { TokenStore, type TokenData } from '../../auth/token-store.js'
@@ -198,7 +201,8 @@ function handleCallbackRequest(req: IncomingMessage, res: ServerResponse): void 
 
   if (!code) {
     res.writeHead(400, { 'Content-Type': 'text/html' })
-    res.end(`<h1>Authorization failed: ${url.searchParams.get('error') ?? 'unknown'}</h1>`)
+    const errMsg = escapeHtml(url.searchParams.get('error') ?? 'unknown')
+    res.end(`<h1>Authorization failed: ${errMsg}</h1>`)
     pending.reject(new Error(`OAuth error: ${url.searchParams.get('error') ?? 'unknown'}`))
     return
   }
@@ -243,10 +247,41 @@ export async function serveCallback(
   })
 }
 
+/** 转义 HTML 特殊字符，用于 OAuth 回调页等反射内容，避免 XSS。 */
+function escapeHtml(s: string): string {
+  const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  return s.replace(/[&<>"']/g, (c) => map[c] ?? c)
+}
+
+/** OAuth token 端点 SSRF 防护：拒绝解析到私有/保留地址的端点。
+ *  - 字面量 IP 直接校验（拦截 169.254.169.254 等云元数据攻击）。
+ *  - 域名做一次性解析校验；解析失败则 fail-open（不影响离线测试/内网代理场景），
+ *    但仍保留对私有 IP 的拦截。本地 loopback 端点（OAuth 回调同源）放行。 */
+async function assertPublicTokenEndpoint(endpoint: string): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(endpoint)
+  } catch {
+    throw new Error(`OAuth token 端点不是合法 URL：${endpoint}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`OAuth token 端点仅支持 http/https，拒绝协议：${parsed.protocol}`)
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').replace(/^::ffff:/, '')
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return
+  const hosts = isIP(host)
+    ? [host]
+    : await lookup(host, { all: true }).then(a => a.map(x => x.address)).catch(() => [])
+  if (hosts.some(a => isPrivateIP(a))) {
+    throw new Error(`OAuth token 端点解析到保留/私有地址，拒绝 SSRF：${host}`)
+  }
+}
+
 async function exchange(
   code: string, codeVerifier: string, redirectUri: string,
   provider: McpOAuthProvider, clientId: string,
 ): Promise<TokenData> {
+  await assertPublicTokenEndpoint(provider.tokenEndpoint)
   const resp = await fetch(provider.tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
@@ -291,6 +326,7 @@ async function refreshMcpToken(
 ): Promise<TokenData> {
   if (!token.refreshToken) throw new Error('No refresh token — re-authenticate')
 
+  await assertPublicTokenEndpoint(provider.tokenEndpoint)
   const resp = await fetch(provider.tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },

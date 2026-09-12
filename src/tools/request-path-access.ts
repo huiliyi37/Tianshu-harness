@@ -27,7 +27,7 @@ export const REQUEST_PATH_ACCESS_TOOL: Tool = {
       type: 'object',
       properties: {
         path: { type: 'string', description: '要授权访问的工作区外路径（文件或目录），绝对路径或 ~ 相对路径。' },
-        mode: { type: 'string', enum: ['read', 'write'], description: "访问级别。'write' 隐含读取权限。默认 'write'。" },
+        mode: { type: 'string', enum: ['read', 'write'], description: "访问级别。'write' 隐含读取权限。默认 'read'（最小权限；确需写请显式传 mode:'write'）。" },
         remember: { type: 'boolean', description: '为当前工作区跨会话持久化此授权。默认 false（仅本会话）。' },
       },
       required: ['path'],
@@ -39,7 +39,7 @@ export const REQUEST_PATH_ACCESS_TOOL: Tool = {
     if (typeof raw !== 'string' || raw.trim().length === 0) {
       return { content: '错误：path 必填', isError: true }
     }
-    const mode: GrantMode = params.input.mode === 'read' ? 'read' : 'write'
+    const mode: GrantMode = params.input.mode === 'write' ? 'write' : 'read'
     const remember = params.input.remember === true
 
     const target = resolve(expandHome(raw.trim()))

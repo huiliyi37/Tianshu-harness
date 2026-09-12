@@ -32,6 +32,9 @@ for (const [network, prefix] of [
   // 私有/链路本地地址（如 64:ff9b::a9fe:a9fe → 169.254.169.254）。
   ['64:ff9b::', 96],
   ['2002::', 16],
+  // IPv4-mapped IPv6：内嵌 IPv4 的表示形式（如 ::ffff:169.254.169.254 直连云元数据）。
+  // 若不登记，isIP() 返回 6 时 BlockList 查不到 → 被当作公网放行（SSRF 防护击穿）。
+  ['::ffff:0:0', 96],
 ] as const) {
   RESERVED_IPS.addSubnet(network, prefix, 'ipv6')
 }

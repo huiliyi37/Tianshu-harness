@@ -1,5 +1,5 @@
 import { stat, lstat, symlink, mkdir, cp, readFile, rm, readdir, writeFile } from 'node:fs/promises'
-import { basename, join, resolve, extname } from 'path'
+import { basename, join, resolve, extname, sep } from 'path'
 import { execFile } from 'child_process'
 import { existsSync } from 'fs'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
@@ -298,6 +298,18 @@ async function handleGitHubImport(
   }
 
   const effectivePath = gh.subpath ? join(targetPath, gh.subpath) : targetPath
+
+  // 路径穿越防护：GitHub URL 的 subpath 由模型/用户构造，可能含 `..` 越过
+  // targetPath（如 `blob/main/../../etc/passwd`）。必须与文件工具同款容器内约束，
+  // 拒绝任何逃出 targetPath 的解析结果，避免读工作区外任意文件。
+  if (gh.subpath) {
+    const resolvedTarget = resolve(targetPath)
+    const resolvedEff = resolve(effectivePath)
+    const within = resolvedEff === resolvedTarget || resolvedEff.startsWith(resolvedTarget + sep)
+    if (!within) {
+      return { content: `错误：子路径 '${gh.subpath}' 试图越出仓库目录，已拒绝。`, isError: true, uiContent: `非法子路径` }
+    }
+  }
 
   if (gh.subpath && !existsSync(effectivePath)) {
     return { content: `错误：在 ${gh.owner}/${gh.repo} 中未找到子路径 '${gh.subpath}'`, isError: true, uiContent: `未找到子路径：${gh.subpath}` }

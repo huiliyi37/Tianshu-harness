@@ -188,13 +188,37 @@ function comparePrerelease(a: string, b: string): number {
   return 0
 }
 
-/** Semver 比较。返回值 < 0 表示 a < b。 */
+/** 取版本 core 的全部数字段（major.minor.patch.[build...]），缺失段补齐为 0。
+ *  parseSemver 只保留前三段，这里用于比较多出的第 4+ 段（canary / 构建号）。 */
+function coreSegments(version: string): number[] {
+  const clean = version.replace(/^v/, '')
+  const plusIdx = clean.indexOf('+')
+  const base = plusIdx >= 0 ? clean.slice(0, plusIdx) : clean
+  const core = (base.split('-', 2)[0] ?? '0').split('.')
+  return core.map(x => {
+    const n = Number.parseInt(x, 10)
+    return Number.isFinite(n) ? n : 0
+  })
+}
+
+/** Semver 比较。返回值 < 0 表示 a < b。
+ *  先比对主版本三段，再比对第 4+ 段（缺失视为 0），最后比 prerelease。
+ *  修复：旧实现只比前三段，导致 1.2.3.4 与 1.2.3 被判相等。 */
 export function compareSemver(a: string, b: string): number {
   const pa = parseSemver(a)
   const pb = parseSemver(b)
   for (let i = 0; i < 3; i++) {
     const ai = pa[i] as number
     const bi = pb[i] as number
+    if (ai !== bi) return ai - bi
+  }
+  // 第 4+ 段（canary / 构建号）：1.2.3.4 应大于 1.2.3，缺失段视为 0。
+  const segA = coreSegments(a)
+  const segB = coreSegments(b)
+  const len = Math.max(segA.length, segB.length)
+  for (let i = 3; i < len; i++) {
+    const ai = segA[i] ?? 0
+    const bi = segB[i] ?? 0
     if (ai !== bi) return ai - bi
   }
   const preA = pa[3]
@@ -709,7 +733,7 @@ export function buildWindowsSelfUpdateScript(opts: {
     `try { Wait-Process -Id ${opts.pid} -Timeout 120 } catch { Write-Log "parent process ${opts.pid} already exited; proceeding" }`,
     `Start-Sleep -Milliseconds 800`,
     `Write-Log "running npm install -g ${opts.packageName}@${opts.channel}"`,
-    `$out = & ${npm} install -g ${opts.packageName}@${opts.channel} 2>&1`,
+    `$out = & ${npm} install -g ${q(`${opts.packageName}@${opts.channel}`)} 2>&1`,
     `$code = $LASTEXITCODE`,
     `if ($out) { Write-Log ($out | Out-String) }`,
     `Write-Log "npm exit code: $code"`,

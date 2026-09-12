@@ -4051,10 +4051,11 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       // （better_sqlite3.node）→ "另一个程序正在使用此文件"。改为分离式更新器：
       // 等本进程退出释放文件锁后再装、再拉起。
       if (process.platform === 'win32' && check.installType === 'global') {
-        const schedule = spawnWindowsSelfUpdate(root, 'latest', true, ctx.sessionId)
+        // 用 check.latest（与上方横幅一致）作为安装版本，而非写死的 dist-tag 'latest'。
+        const schedule = spawnWindowsSelfUpdate(root, check.latest.replace(/^v/, ''), true, ctx.sessionId)
         if (!schedule.ok) {
           app.commitStatic(`❌ 无法启动后台更新器：${schedule.error ?? 'unknown'}`)
-          app.commitStatic('   请手动执行：npm install -g tianshu-tui@latest')
+          app.commitStatic(`   请手动执行：npm install -g tianshu-tui@${check.latest.replace(/^v/, '')}`)
           return true
         }
         app.commitStatic('✅ 更新已安排：天枢将退出以释放文件占用，安装完成后会自动重新打开。')
@@ -4071,7 +4072,8 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
         return true
       }
 
-      const result = await runUpdate(root, 'latest', (line) => app.commitStatic(line))
+      // 用 check.latest（与上方横幅一致）作为安装版本，而非写死的 dist-tag 'latest'。
+      const result = await runUpdate(root, check.latest.replace(/^v/, ''), (line) => app.commitStatic(line))
       if (result.skipped) {
         app.commitStatic(`ℹ️  ${result.message}`)
         return true

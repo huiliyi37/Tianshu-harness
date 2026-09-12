@@ -19,6 +19,8 @@ import assert from 'node:assert/strict'
 import type { WriteStream } from 'node:tty'
 import { LiveEngine, type LiveRegionLine } from '../live-engine.js'
 import { displayWidth, truncateToDisplayWidth } from '../../width.js'
+import { formatThinking } from '../../format/thinking.js'
+import { getTheme } from '../../theme.js'
 import stringWidth from 'string-width'
 
 /**
@@ -650,6 +652,65 @@ test('spinner 行含 …· 经 clampLine 不折行（rowsForLine 一致）', () 
   assert.equal(displayWidth(clamped, { ambiguousAsWide: true }) <= cols, true, 'clampLine 后 wide 宽度 ≤ cols')
   assert.equal(Math.ceil(displayWidth(clamped, { ambiguousAsWide: true }) / cols), 1, 'wide 口径占 1 行')
   assert.equal(Math.ceil(displayWidth(clamped) / cols), 1, 'narrow 口径占 1 行（rowsForLine 不论口径都对）')
+})
+
+// ── 场景：thinking 长考流 — 推理正文在 wide 终端折行 → spinner 残影 ──────
+// 用户报告（macOS CJK 终端，未设 RIVET_AMBIGUOUS_WIDTH）：长考期间 spinner 状态行
+// 逐帧泄漏进 scrollback（`| thinking… 7s` `- 思索中… 9s` 连续残影，随后才是
+// 「… 上方省略 142 行」的推理区）。根因：formatThinking 的推理正文行含 ——……
+// 等 ambiguous 符号，CJK 终端按 2 列渲染 → 实际折成 2 显示行，而引擎窄计 1 行
+// → cursorUp 回顶欠 1 行 → 旧帧顶行（spinner）残留。spinner/chrome 早已
+// clampLine 钳宽（见上一条用例），thinking/流式 tail 这类多行模型文本是残留
+// 暴露面。修复：formatThinking 按 wide 上界把正文硬折成段（每段恒 ≤ cols-1 宽
+// → 任何终端恰占 1 显示行），rowsForLine 恒精确，回顶永不欠行。
+
+test('thinking 长考流：ambiguous 推理行在 wide 终端折行不留 spinner 残影', () => {
+  const prev = process.env.RIVET_AMBIGUOUS_WIDTH
+  // 钉死引擎窄计（macOS/xterm 默认），终端按 wide 渲染 —— 用户现场。
+  process.env.RIVET_AMBIGUOUS_WIDTH = 'narrow'
+  try {
+    const cols = 40
+    const term = new ScreenTerminal(cols, 30, { ambiguousWide: true })
+    const engine = new LiveEngine({ stdout: asStdout(term), reservedRows: 0, maxRows: 20 })
+    const theme = getTheme()
+    // clampLine 等价（与 app.ts 6505 同口径）：spinner 行自身永不折行。
+    const spinner = (glyph: string, label: string) =>
+      truncateToDisplayWidth(`${glyph} ${label}`, cols - 1, { ambiguousAsWide: true })
+
+    // 推理正文构造：12 CJK + 8 ASCII + ——……
+    //   窄计 = 24+8+2+2 = 36（含前缀 38 ≤ cols → 引擎 1 行）
+    //   宽计 = 24+8+4+4 = 40（含前缀 42 > cols → CJK 终端折 2 行）
+    const reasoning = '定位到冲突两侧各改同一行abcdefgh——……'
+    assert.ok(displayWidth(`│ ${reasoning}`) <= cols, '锚定：窄计一行')
+    assert.ok(displayWidth(`│ ${reasoning}`, { ambiguousAsWide: true }) > cols, '锚定：宽计折行')
+
+    const frame = (spin: string, text: string): LiveRegionLine[] => [
+      { text: spin },
+      ...formatThinking({ text, elapsedMs: 7000, header: false, expanded: true, maxRows: 4, columns: cols }, theme)
+        .map(text => ({ text })),
+    ]
+
+    // Frame A → Frame B：spinner tick 前进、思考文本未变（行级 diff 路径）。
+    engine.render(frame(spinner('|', 'thinking… 7s'), reasoning))
+    term.flush()
+    engine.render(frame(spinner('-', 'thinking… 7s'), reasoning))
+
+    let screen = term.getRowsFrom(0).join('\n')
+    assert.equal(screen.split('thinking… 7s').length - 1, 1, `spinner 残影：旧帧顶行未擦除\n${screen}`)
+    assert.ok(!screen.includes('| thinking… 7s'), '旧 spinner 帧不应残留')
+
+    // Frame C：思考文本继续增长（同一逻辑行变长 → 全量重写路径）。
+    engine.render(frame(spinner('/', '思索中… 8s'), `${reasoning}，再核对行号`))
+    screen = term.getRowsFrom(0).join('\n')
+    assert.equal(
+      screen.split(/thinking… 7s|思索中… 8s/).length - 1, 1,
+      `增长帧后 spinner 残影\n${screen}`,
+    )
+    assert.ok(screen.includes('思索中… 8s'), '当前 spinner 应在屏上')
+  } finally {
+    if (prev === undefined) delete process.env.RIVET_AMBIGUOUS_WIDTH
+    else process.env.RIVET_AMBIGUOUS_WIDTH = prev
+  }
 })
 
 

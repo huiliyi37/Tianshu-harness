@@ -35,6 +35,30 @@ describe('findMcpOAuthProvider', () => {
   })
 })
 
+// issue #123 — 回调页把 provider 提供的 error 查询参数裸插进 HTML：重定向到
+// http://localhost:<port>/auth/callback?error=<svg/onload=…> 即可在 loopback
+// 源上执行脚本（反射 XSS）。
+describe('serveCallback error reflection', () => {
+  it('escapes the error parameter in the callback page', async () => {
+    const port = pickPort()
+    const state = 'state-xss-1'
+    const pending = serveCallback(port, state, 'https://example.com/authorize', 5_000)
+    pending.catch(() => { /* error 分支会 reject，本用例只断言页面转义 */ })
+
+    await new Promise(r => setTimeout(r, 200))
+
+    const payload = '<svg/onload=alert(1)>'
+    const res = await fetch(`http://127.0.0.1:${port}/auth/callback?state=${state}&error=${encodeURIComponent(payload)}`)
+    const body = await res.text()
+
+    assert.equal(res.status, 400)
+    assert.ok(!body.includes('<svg/onload'), 'raw payload must not be reflected')
+    assert.ok(body.includes('&lt;svg/onload'), 'payload must be escaped')
+
+    await assert.rejects(pending)
+  })
+})
+
 describe('resolveOAuthEnv', () => {
   const token = { accessToken: 'gh_token_abc', refreshToken: undefined, expiresAt: Date.now() + 3600_000, provider: 'github', scopes: ['repo'] }
   

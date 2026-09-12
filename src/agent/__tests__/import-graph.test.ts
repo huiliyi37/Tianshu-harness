@@ -83,3 +83,33 @@ describe('ImportGraph', () => {
     assert.equal(reverse.size, 1)
   })
 })
+
+describe('buildImportGraphAsync（异步分片变体）', () => {
+  let testDir: string
+  beforeEach(() => { testDir = mkdtempSync(join(tmpdir(), 'rivet-ig-async-')) })
+  afterEach(() => rmSync(testDir, { recursive: true, force: true }))
+
+  it('与同步版产出同构的图（冷库回落后台化后语义不变）', async () => {
+    writeFileSync(join(testDir, 'a.ts'), `import { b } from './b'\nimport { c } from './sub/c'\n`)
+    writeFileSync(join(testDir, 'b.ts'), `import { c } from './sub/c'\nexport const b = 1\n`)
+    mkdirSync(join(testDir, 'sub'), { recursive: true })
+    writeFileSync(join(testDir, 'sub', 'c.ts'), `export const c = 1\n`)
+
+    const syncGraph = buildImportGraph(testDir)!
+    const { buildImportGraphAsync } = await import('../import-graph.js')
+    const asyncGraph = await buildImportGraphAsync(testDir)
+    assert.ok(asyncGraph)
+    const shape = (g: { forward: Map<string, Set<string>>; reverse: Map<string, Set<string>> }) => ({
+      forward: [...g.forward.entries()].map(([k, v]) => [k, [...v].sort()] as const).sort(),
+      reverse: [...g.reverse.entries()].map(([k, v]) => [k, [...v].sort()] as const).sort(),
+    })
+    assert.deepEqual(shape(asyncGraph!), shape(syncGraph))
+  })
+
+  it('不存在的目录返回空图而非抛错（best-effort 语义对齐同步版）', async () => {
+    const { buildImportGraphAsync } = await import('../import-graph.js')
+    const g = await buildImportGraphAsync('/nonexistent-async-dir-xyz')
+    assert.ok(g, '空目录应得空图（files=0 ≤ MAX_FILES）')
+    assert.equal(g!.forward.size, 0)
+  })
+})

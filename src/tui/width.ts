@@ -101,6 +101,41 @@ export function displayWidth(text: string, opts: DisplayWidthOptions = {}): numb
 }
 
 /**
+ * 按显示宽度硬折行（纯文本 → 若干段，每段 ≤ max 显示列）。
+ *
+ * 与 truncateToDisplayWidth 同源的逐 code point 度量（wide 上界可选），但不丢
+ * 内容：放不下的字符整体挪到下一段。输入必须是 ANSI-free 纯文本（thinking 正文、
+ * 流式 tail 均为纯文本，着色在分段之后施加）。
+ *
+ * 用途：live region 的多行内容在源头折好行，使每段在任何终端（narrow/wide
+ * ambiguous 渲染）都恰占 1 显示行——引擎 rowsForLine 因此恒与实际行数一致，
+ * cursorUp 回顶不再欠行（spinner 残影根修，见 live-engine-ghost-render 测试）。
+ * 零宽字符（组合符/VS16/ZWJ）计 0 宽，永远黏附所在段，不会落到段首。
+ */
+export function hardWrapToDisplayWidth(text: string, max: number, opts: DisplayWidthOptions = {}): string[] {
+  if (max <= 0) return [text]
+  if (displayWidth(text, opts) <= max) return [text]
+  const wide = !!opts.ambiguousAsWide
+  const segments: string[] = []
+  let current = ''
+  let w = 0
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!
+    let cw = stringWidth(ch)
+    if (wide) cw += ambiguousExtraForCp(cp)
+    if (cw > 0 && w + cw > max && current !== '') {
+      segments.push(current)
+      current = ''
+      w = 0
+    }
+    current += ch
+    w += cw
+  }
+  if (current !== '') segments.push(current)
+  return segments
+}
+
+/**
  * 按显示宽度截断（ANSI 安全：转义序列原样保留、不计宽；截断发生时补一个 RESET
  * 防止颜色泄漏到后续行）。已在预算内则原样返回。
  */

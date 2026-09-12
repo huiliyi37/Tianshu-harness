@@ -8,6 +8,7 @@ import {
   parseSemver,
   emitLines,
   buildWindowsSelfUpdateScript,
+  updateInstallSpec,
   withResumeArgs,
   checkForUpdate,
   fetchNpmLatestVersion,
@@ -46,6 +47,27 @@ describe('updater semver', () => {
     assert.equal(compareSemver('3.0.0-beta', '3.0.0-rc'), -1)
     assert.equal(compareSemver('3.0.0-beta.1', '3.0.0-beta.2'), -1)
   })
+
+  // issue #121 — canary/构建号落在第 4+ 段（如 1.2.3.4）；旧实现只比前 3 段，
+  // 把 1.2.3.4 与 1.2.3 判为相等，导致漏报/误报更新。
+  // 注意 compareSemver 返回的是段差值（非 -1/0/1 符号化），故按符号断言。
+  it('compares 4+ segment build versions', () => {
+    assert.ok(compareSemver('1.2.3.4', '1.2.3') > 0)
+    assert.ok(compareSemver('1.2.3', '1.2.3.4') < 0)
+    assert.equal(compareSemver('1.2.3.4', '1.2.3.4'), 0)
+    assert.ok(compareSemver('1.2.3.5', '1.2.3.4') > 0)
+    assert.equal(compareSemver('1.2.3.0', '1.2.3'), 0)
+  })
+})
+
+// issue #115 — /update 横幅告知「升级到 check.latest」，实际安装却写死 npm 'latest'
+// dist-tag：npm 尚未发布该版本时用户被装回旧版（或直接失败），横幅却已承诺新版。
+describe('updateInstallSpec', () => {
+  it('returns the version the banner promised, without the v prefix', () => {
+    assert.equal(updateInstallSpec('v3.18.2'), '3.18.2')
+    assert.equal(updateInstallSpec('3.18.2'), '3.18.2')
+    assert.equal(updateInstallSpec('v3.18.2-canary.1'), '3.18.2-canary.1')
+  })
 })
 
 describe('buildWindowsSelfUpdateScript', () => {
@@ -66,7 +88,14 @@ describe('buildWindowsSelfUpdateScript', () => {
     assert.match(script, /Wait-Process -Id 4242/)
     // install must come after the wait so the process has exited
     assert.ok(script.indexOf('Wait-Process') < script.indexOf('npm install -g'))
-    assert.match(script, /npm install -g tianshu-tui@latest/)
+    assert.match(script, /install -g 'tianshu-tui@latest'/)
+  })
+
+  // issue #124 — packageName@channel 裸插进命令行：含空格时 PowerShell 会把 spec
+  // 拆成两个参数导致安装失败；同脚本其它参数都经 q() 单引号包裹，此处必须一致。
+  it('quotes the package spec in the install line', () => {
+    const script = buildWindowsSelfUpdateScript({ ...base, packageName: 'my pkg' })
+    assert.match(script, /install -g 'my pkg@latest'/)
   })
 
   it('uses the provided absolute npm path instead of bare npm', () => {

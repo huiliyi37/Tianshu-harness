@@ -8,11 +8,12 @@
  *   POST   /plugins/enable          enable/disable a plugin by name
  *   DELETE /plugins/:name           remove an installed plugin
  */
-import type { RouteHandler } from './index.js'
+import { decodeRouteParam, type RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { loadConfig, saveConfig } from '../config/manager.js'
 import { PLUGIN_PRESETS } from '../plugins/plugin-presets.js'
 import { installPlugin, removePlugin, getInstalledPlugins, isPluginInstalled, type PluginSource } from '../plugins/plugin-installer.js'
+import { invalidatePluginToolsCache } from './plugin-session-cache.js'
 import { parseManifest } from '../plugins/manifest.js'
 import { cloneGitSource, GitCloneError } from '../plugins/git-source.js'
 import { readFileSync, existsSync } from 'node:fs'
@@ -267,6 +268,9 @@ export function buildPluginRoutes(apiToken?: string): Record<string, RouteHandle
       // re-clone by design (preflight's temp clone is already cleaned up).
       const result = await installPlugin(preflight.resolvedSource ?? source)
       if (result.ok) {
+        // 插件集合变了——暖场缓存失效重建，下一个新会话拿到新工具（2026-09-12
+        // sidecar 插件装配补齐；与路由承诺的 "Available on next session start" 对齐）。
+        invalidatePluginToolsCache(loadConfig().plugins, process.cwd())
         return {
           status: 200,
           body: {
@@ -297,6 +301,8 @@ export function buildPluginRoutes(apiToken?: string): Record<string, RouteHandle
       const cfg = loadConfig()
       cfg.plugins.enabled[input.name] = input.enabled
       saveConfig(cfg)
+      // 启停即失效重建暖场缓存——"Takes effect on next session" 从此在 sidecar 成立。
+      invalidatePluginToolsCache(cfg.plugins, process.cwd())
 
       return {
         status: 200,
@@ -311,13 +317,14 @@ export function buildPluginRoutes(apiToken?: string): Record<string, RouteHandle
 
     // DELETE /plugins/:name — remove an installed plugin.
     'DELETE /plugins/:name': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) {
         return { status: 400, body: { error: 'Missing plugin name in URL' } }
       }
 
       const result = removePlugin(name)
       if (result.ok) {
+        invalidatePluginToolsCache(loadConfig().plugins, process.cwd())
         return { status: 200, body: { ok: true, message: `Removed plugin "${name}".` } }
       }
       return { status: 404, body: { ok: false, error: result.error } }

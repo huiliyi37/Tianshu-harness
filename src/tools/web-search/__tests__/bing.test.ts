@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseBingResults } from '../bing.js'
+import { BingBackend, parseBingResults } from '../bing.js'
 
 /**
  * RED→GREEN: Bing parser against real cn.bing.com HTML.
@@ -75,5 +75,38 @@ describe('parseBingResults', () => {
   it('skips empty titles (e.g. only whitespace after stripping tags)', () => {
     const html = '<li class="b_algo"><h2><a href="https://example.com"> </a></h2></li>'
     assert.deepEqual(parseBingResults(html, 10), [])
+  })
+})
+
+/**
+ * RED→GREEN: 请求参数的语言标识回归锁。
+ *
+ * cn.bing.com 对携带任一英文语言标识的请求静默错位（2026-09 实测）。这两条断言
+ * 是唯一能拦住"顺手把参数改回 en-US"的防线——没有它们，参数变更只会在真实查询
+ * 上表现为"结果跑题"，测试全绿。
+ */
+describe('BingBackend request parameters', () => {
+  function captureSearch() {
+    const seen: { url: string; headers: Record<string, string> } = { url: '', headers: {} }
+    const backend = new BingBackend(async (url, init) => {
+      seen.url = url
+      seen.headers = (init?.headers ?? {}) as Record<string, string>
+      return new Response('<html><body></body></html>', { status: 200 })
+    })
+    return { backend, seen }
+  }
+
+  it('carries no setlang parameter', async () => {
+    const { backend, seen } = captureSearch()
+    await backend.search('杭州西湖 门票预约', 10, new AbortController().signal)
+    assert.ok(!seen.url.includes('setlang'), `URL 不得携带 setlang（实际：${seen.url}）`)
+    assert.match(seen.url, /^https:\/\/cn\.bing\.com\/search\?q=/)
+    assert.ok(seen.url.includes(encodeURIComponent('杭州西湖 门票预约')))
+  })
+
+  it('sends a Chinese primary Accept-Language', async () => {
+    const { backend, seen } = captureSearch()
+    await backend.search('杭州西湖 门票预约', 10, new AbortController().signal)
+    assert.equal(seen.headers['Accept-Language'], 'zh-CN,zh;q=0.9,en;q=0.5')
   })
 })

@@ -157,7 +157,15 @@ export class BingBackend implements SearchBackend {
   }
 
   async search(query: string, count: number, signal: AbortSignal): Promise<SearchResult[]> {
-    const url = `${BING_ENDPOINT}?q=${encodeURIComponent(query)}&setlang=en-US`
+    // No `setlang`, and a Chinese primary Accept-Language. cn.bing.com silently
+    // misroutes requests carrying ANY English language marker (`setlang=en-US`
+    // or `Accept-Language: en` — either alone suffices) on a subset of Chinese
+    // queries: HTTP 200, a structurally perfect SERP, contents unrelated to the
+    // query ("杭州西湖 门票预约" → 高校研究生院 / Nvidia 驱动问答). Verified 2026-09
+    // against live cn.bing.com: all-Chinese markers returned on-topic 3/3, either
+    // English marker returned off-topic. `relevance.ts` guards the chain as a
+    // second line of defence — do not reintroduce a language marker here.
+    const url = `${BING_ENDPOINT}?q=${encodeURIComponent(query)}`
     // `redirect:'manual'` mirrors the DDG backend: a 3xx to an unvalidated
     // host surfaces as a non-ok status and the chain falls through, rather
     // than silently following a redirect.
@@ -165,7 +173,7 @@ export class BingBackend implements SearchBackend {
       signal,
       headers: {
         'User-Agent': BING_UA,
-        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.5',
       },
       redirect: 'manual',
     })

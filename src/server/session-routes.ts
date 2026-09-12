@@ -31,7 +31,7 @@
  *   POST   /github/prs/:number/merge                   merge a PR (confirm-gated)
  *   POST   /github/prs/:number/push-fix                push auto-fix diff to PR head (confirm-gated)
  */
-import type { RouteHandler } from './index.js'
+import { decodeRouteParam, type RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { allowedCorsOrigin } from './cors.js'
 import { SseStream } from './sse-stream.js'
@@ -56,7 +56,7 @@ import { readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { extname, relative, join, isAbsolute } from 'node:path'
 import { tmpdir } from 'node:os'
-import { extractDocumentText, EXTRACTION_CAVEAT } from '../tools/doc-extract.js'
+import { extractDocumentText, EXTRACTION_CAVEAT, isExtractableDocument } from '../tools/doc-extract.js'
 import type { HookEntry, HookEvent, HooksConfig } from '../hooks/user-hooks-runner.js'
 import { loadHooksConfig, VALID_EVENTS } from '../hooks/user-hooks-runner.js'
 import { buildDistillPrompt } from '../prompt/rpa-distill.js'
@@ -132,6 +132,37 @@ function validateImagesPayload(value: unknown): { images?: string[]; error?: str
     }
   }
   return { images: value as string[] }
+}
+
+/** Validate a documents payload: array of { name, dataUrl } for office/pdf files.
+ *  Server extracts text via doc-extract (pdftotext/textutil/soffice/exceljs) and
+ *  prepends to prompt — same injection pattern as the vision bridge.
+ *  Shared by POST /sessions (create-with-documents，欢迎页附件) 与
+ *  POST /sessions/:id/prompt。 */
+function validateDocumentsPayload(value: unknown): { documents?: Array<{ name: string; dataUrl: string }>; error?: string } {
+  if (value === undefined) return {}
+  if (!Array.isArray(value) || value.length === 0) {
+    return { error: '"documents" must be a non-empty array' }
+  }
+  if (value.length > MAX_DOCUMENTS) {
+    return { error: `Max ${MAX_DOCUMENTS} documents allowed` }
+  }
+  for (const doc of value) {
+    if (typeof doc !== 'object' || doc === null || typeof (doc as { name?: unknown }).name !== 'string' || typeof (doc as { dataUrl?: unknown }).dataUrl !== 'string') {
+      return { error: 'Each document must be { name: string, dataUrl: string }' }
+    }
+    // 扩展名白名单（与图片路径的 ACCEPTED_IMAGE_DATA_URL 对称）：此前任意扩展名
+    // 都能过校验、落盘并交给抽取器；白名单取 doc-extract 的 EXTRACTABLE——
+    // 「能抽取才放行」，两侧语义单一来源。
+    if (!isExtractableDocument((doc as { name: string }).name)) {
+      return { error: 'Each document must be an extractable type (.pdf/.docx/.xlsx/…)' }
+    }
+    const dataUrl = (doc as { dataUrl: string }).dataUrl
+    if (decodedBase64Bytes(dataUrl) > MAX_DOCUMENT_BYTES) {
+      return { error: `Each document must be <= ${Math.round(MAX_DOCUMENT_BYTES / 1024 / 1024)}MB` }
+    }
+  }
+  return { documents: value as Array<{ name: string; dataUrl: string }> }
 }
 
 /** S — accepted autonomy levels for per-session approval-mode overrides. */
@@ -301,13 +332,13 @@ export function buildSessionRoutes(
   }
 
   const routes: Record<string, RouteHandler> = {
-    'POST /sessions': withAuth((body) => {
+    'POST /sessions': withAuth(async (body) => {
       // DEBUG instrumentation (RIVET_DEBUG_RENDER=1): logs createSession latency
       // so we can tell session-creation bottlenecks (loadConfig, worktree setup)
       // from SSE/stream issues. See docs/dev/render-debug-playbook.md.
       const __dbg = process.env.RIVET_DEBUG_RENDER === '1'
       const __t0 = __dbg ? Date.now() : 0
-      const data = (body ?? {}) as { cwd?: string; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; reasoningEffort?: unknown; planMode?: unknown; askMode?: unknown; planAutoApproveUi?: unknown; images?: unknown }
+      const data = (body ?? {}) as { cwd?: string; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; reasoningEffort?: unknown; planMode?: unknown; askMode?: unknown; planAutoApproveUi?: unknown; images?: unknown; documents?: unknown }
       if (data.approvalMode !== undefined && !isApprovalMode(data.approvalMode)) {
         return { status: 400, body: { error: 'Invalid "approvalMode"' } }
       }
@@ -328,10 +359,22 @@ export function buildSessionRoutes(
       if (imagesCheck.error) {
         return { status: 400, body: { error: imagesCheck.error } }
       }
+      // 新建即携带文档附件（欢迎页 pdf/office 按钮/拖拽/粘贴）——与 /prompt 同一
+      // 份校验与抽取管线：extractDocumentsToText 后前置进首轮 prompt。此前欢迎页
+      // 附件只能建会话后再发（POST /sessions 没有这条抽取管线）。
+      const docsCheck = validateDocumentsPayload(data.documents)
+      if (docsCheck.error) {
+        return { status: 400, body: { error: docsCheck.error } }
+      }
+      let prompt = data.prompt
+      if (docsCheck.documents && docsCheck.documents.length > 0) {
+        const docTexts = await extractDocumentsToText(docsCheck.documents)
+        if (docTexts) prompt = `${docTexts}\n\n${prompt ?? ''}`
+      }
       const rec = manager.createSession({
         cwd: data.cwd,
         title: data.title,
-        prompt: data.prompt,
+        prompt,
         images: imagesCheck.images,
         // P1 — 显式关联已有 Mission（桌面端「同任务再开一个会话」）。
         missionId: typeof data.missionId === 'string' && data.missionId.trim() ? data.missionId : undefined,
@@ -690,7 +733,7 @@ export function buildSessionRoutes(
     // built-in / plugin skills (no editable backing file) so the UI shows a
     // read-only notice instead of an empty editor.
     'GET /sessions/:id/skills/:name/content': withAuth((_body, params) => {
-      const content = manager.readSkillContent(params!.id!, params!.name!)
+      const content = manager.readSkillContent(params!.id!, decodeRouteParam(params!.name!)!)
       if (content === undefined) return { status: 404, body: { error: 'Session not found' } }
       return { status: 200, body: { content } }
     }, apiToken),
@@ -703,10 +746,11 @@ export function buildSessionRoutes(
         return { status: 400, body: { error: 'Missing "content" (non-empty SKILL.md text)' } }
       }
       const scope = data.scope === 'global' ? 'global' : 'project'
+      const skillName = decodeRouteParam(params!.name!)!
       try {
-        const result = manager.writeSkill(params!.id!, params!.name!, data.content, scope)
+        const result = manager.writeSkill(params!.id!, skillName, data.content, scope)
         if (!result) return { status: 404, body: { error: 'Session not found' } }
-        return { status: 200, body: { name: params!.name!, path: result.path, scope } }
+        return { status: 200, body: { name: skillName, path: result.path, scope } }
       } catch (e) {
         return { status: 400, body: { error: e instanceof Error ? e.message : String(e) } }
       }
@@ -715,10 +759,11 @@ export function buildSessionRoutes(
     // Uninstall a project-scoped skill (delete from .rivet/skills). 409 for
     // built-in / plugin / global skills the project panel can't remove.
     'DELETE /sessions/:id/skills/:name': withAuth((_body, params) => {
-      const result = manager.uninstallSkill(params!.id!, params!.name!)
+      const skillName = decodeRouteParam(params!.name!)!
+      const result = manager.uninstallSkill(params!.id!, skillName)
       if (result === undefined) return { status: 404, body: { error: 'Session not found' } }
       if (!result.removed) return { status: 409, body: { error: 'Cannot remove built-in/plugin/global skill from the project panel' } }
-      return { status: 200, body: { name: params!.name!, removed: true } }
+      return { status: 200, body: { name: skillName, removed: true } }
     }, apiToken),
 
     'GET /sessions': withAuth((_body, params) => {
@@ -850,25 +895,11 @@ export function buildSessionRoutes(
       // Validate documents: array of { name, dataUrl } for office/pdf files.
       // Server extracts text via doc-extract (pdftotext/textutil/soffice/exceljs)
       // and prepends to prompt — same injection pattern as the vision bridge.
-      let documents: Array<{ name: string; dataUrl: string }> | undefined
-      if (data.documents !== undefined) {
-        if (!Array.isArray(data.documents) || data.documents.length === 0) {
-          return { status: 400, body: { error: '"documents" must be a non-empty array' } }
-        }
-        if (data.documents.length > MAX_DOCUMENTS) {
-          return { status: 400, body: { error: `Max ${MAX_DOCUMENTS} documents allowed` } }
-        }
-        for (const doc of data.documents) {
-          if (typeof doc !== 'object' || doc === null || typeof (doc as { name?: unknown }).name !== 'string' || typeof (doc as { dataUrl?: unknown }).dataUrl !== 'string') {
-            return { status: 400, body: { error: 'Each document must be { name: string, dataUrl: string }' } }
-          }
-          const dataUrl = (doc as { dataUrl: string }).dataUrl
-          if (decodedBase64Bytes(dataUrl) > MAX_DOCUMENT_BYTES) {
-            return { status: 400, body: { error: `Each document must be <= ${Math.round(MAX_DOCUMENT_BYTES / 1024 / 1024)}MB` } }
-          }
-        }
-        documents = data.documents as Array<{ name: string; dataUrl: string }>
+      const docsCheck = validateDocumentsPayload(data.documents)
+      if (docsCheck.error) {
+        return { status: 400, body: { error: docsCheck.error } }
       }
+      const documents = docsCheck.documents
 
       // Slash 翻译层（对齐 TUI 端 resolveAppPromptInput 行为）。
       // 桌面 PlusMenu 命令是写死人话经 onSend 发送；自由文本输入若以 "/" 起头，

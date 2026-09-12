@@ -1,62 +1,21 @@
 #!/usr/bin/env bash
-# update-contributors.sh — 从 git 历史提取外部贡献者，更新 CONTRIBUTORS.md。
+# update-contributors.sh — 兼容入口。核心逻辑已迁到 scripts/contributors.ts。
 #
-# 规则：从 merge commit 提取被合并分支的全部作者，排除仓库拥有者（huiliyi37）。
-# 每个作者关联其涉及的 PR 和标题。
-
+# 为什么重写：旧实现扫 git log 里的 "Merge PR #N" 合并提交。但本仓为了让本体代码
+# 不被外部贡献改崩，绝大多数外部 PR 不 merge——先在 dev 仓按现状重写（收编）、验证，
+# 再经 sync 推到公开仓，PR 在 GitHub 上是 CLOSED 状态。于是旧实现一条都扫不到，
+# 重跑只会写出一个空表头、把整张名单清空（2026-09 实际踩过）。
+#
+# 新实现以 GitHub PR 列表（全部状态）为权威数据源，并保证只增不删：既有条目、
+# 人工撰写的「贡献」描述与相对顺序都不会被覆盖。详见 scripts/contributors.ts。
+#
+# 用法：
+#   bash scripts/update-contributors.sh          # 合并写回（默认，等同 --write）
+#   bash scripts/update-contributors.sh --check  # 只对账，报告差异（有差异退出码 1）
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT="$REPO_DIR/CONTRIBUTORS.md"
-OWNER="huiliyi37"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+[[ "$(basename "$REPO_DIR")" == "scripts" ]] && REPO_DIR="$(cd "$REPO_DIR/.." && pwd)"
 
-cd "$REPO_DIR"
-
-# 收集所有 merge commit（排除 sync:、Merge remote、Merge branch 等内部合并）
-declare -A AUTHOR_PRS
-
-while IFS=$'\t' read -r hash subject; do
-  # 只处理 "Merge PR #N" 格式的合并提交
-  pr_num=$(echo "$subject" | sed -n 's/.*Merge PR #\([0-9]*\).*/\1/p')
-  if [ -z "$pr_num" ]; then continue; fi
-
-  # 取该合并引入的所有 commit 的作者
-  while IFS= read -r author; do
-    [ -z "$author" ] && continue
-    email="${author#*<}"
-    email="${email%>}"
-    name="${author%% <*}"
-    if [ "$name" = "$OWNER" ]; then continue; fi
-    key="$name <$email>"
-    AUTHOR_PRS["$key"]="${AUTHOR_PRS[$key]:-} #$pr_num"
-  done < <(git log --format="%an <%ae>" "$hash"~1.."$hash" | sort -u)
-done < <(git log --oneline --format="%H %s" main | grep "^[a-f0-9]* Merge PR #")
-
-cat > "$OUTPUT" <<'HEADER'
-# Contributors ✨
-
-感谢以下贡献者（按首次贡献时间排序）：
-
-| GitHub | 贡献 | PR |
-|--------|------|-----|
-HEADER
-
-for author in "${!AUTHOR_PRS[@]}"; do
-  name="${author%% <*}"
-  prs="${AUTHOR_PRS[$author]}"
-  pr_links=""
-  for pr in $prs; do
-    pr_num="${pr#\#}"
-    pr_links="$pr_links [#$pr_num](https://github.com/huiliyi37/Tianshu-Tui/pull/$pr_num),"
-  done
-  pr_links="${pr_links%,}"
-  # 简单描述：取 PR 标题的前 40 字符
-  echo "| **$name** | $pr_links |"
-done >> "$OUTPUT"
-
-cat >> "$OUTPUT" <<'FOOTER'
-
-本文件由 `scripts/update-contributors.sh` 自动生成。运行 `bash scripts/update-contributors.sh` 更新。
-FOOTER
-
-echo "CONTRIBUTORS.md updated."
+[[ $# -eq 0 ]] && set -- --write
+exec npx --no-install tsx "$REPO_DIR/scripts/contributors.ts" "$@"

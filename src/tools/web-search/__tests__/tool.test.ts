@@ -42,6 +42,32 @@ describe('createWebSearchTool', () => {
     assert.match(out.content, /未找到与「nothing here」相关的搜索结果/)
   })
 
+  it('never answers from an all-off-topic result set', async () => {
+    // 2026-09 cn.bing.com 故障形态：结构完好的无关 SERP。用户可见结果必须是
+    // 「没搜到」，而不是把「西南交通大学研究生院」当成西湖门票的答案。
+    const tool = createWebSearchTool({
+      backends: [backend('bing', async () => [
+        { title: '西南交通大学研究生院（党委研究生工作部）', url: 'https://gsnews.swjtu.edu.cn/', snippet: '与查询无关。' },
+      ])],
+    })
+    const out = await tool.execute(params({ query: '杭州西湖 门票预约' }))
+    assert.equal(out.isError, undefined)
+    assert.match(out.content, /未找到与「杭州西湖 门票预约」相关的搜索结果/)
+    assert.ok(!out.content.includes('西南交通大学'), '跑题结果不得出现在输出中')
+  })
+
+  it('does not report a hard error when results were dropped as off-topic', async () => {
+    // 软失败语义：用户可见结局与"无结果"一致，不该显示「搜索失败」。
+    const tool = createWebSearchTool({
+      backends: [backend('bing', async () => [
+        { title: '湖南科技大学', url: 'https://www.hnust.edu.cn/', snippet: '无关。' },
+      ])],
+    })
+    const out = await tool.execute(params({ query: '杭州西湖 门票预约' }))
+    assert.equal(out.isError, undefined)
+    assert.ok(!out.content.includes('搜索失败'))
+  })
+
   it('surfaces an error when all backends fail hard', async () => {
     const tool = createWebSearchTool({
       backends: [backend('ddg', async () => { throw new Error('HTTP 503') })],
@@ -76,7 +102,9 @@ describe('createWebSearchTool', () => {
     const tool = createWebSearchTool({
       backends: [backend('brave', async (q) => {
         receivedQuery = q
-        return [{ title: 'T', url: 'https://x', snippet: 'S' }]
+        // 标题回带查询词：否则「123」与「T」零重叠会被 off-topic 守卫判为跑题并丢弃
+        // （守卫行为见 relevance.test.ts）。本用例只关心 query 的类型转换。
+        return [{ title: 'T123', url: 'https://x', snippet: 'S' }]
       })],
     })
     const out = await tool.execute(params({ query: 123 }))

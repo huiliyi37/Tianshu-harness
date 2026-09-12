@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { providerSchema } from '../schema.js'
+import { providerSchema, modelConfigSchema } from '../schema.js'
 import { PROVIDER_PRESETS, cloneProviderPreset, providerPresetKeys } from '../provider-presets.js'
 import { DEFAULT_CONFIG } from '../default.js'
 import { migratePresetModelBackfill } from '../preset-model-backfill.js'
@@ -36,6 +36,23 @@ describe('provider presets', () => {
       const parsed = providerSchema.safeParse(PROVIDER_PRESETS[key].provider)
       assert.equal(parsed.success, true, `${key} should parse`)
     }
+  })
+
+  // issue #105（收编自公开仓 PR #108，**仅采纳机制**）——模型弃用需要一个可声明的
+  // 标记，供议事会/路由在命中时显式告警，而不是无提示地继续调用。
+  //
+  // 未采纳 PR 对 provider-presets 的改动：它给 deepseek-v4-pro 打了「2026-09-14 下线」，
+  // 但官方 09-10 的下线公告已在 09-11 被撤销（「继续提供 API 调用，计费不变」），
+  // 本仓 provider-presets.ts 的注释记的正是后者。前提不成立，故不打该标。
+  it('模型配置接受 deprecated / deprecationNote 声明', () => {
+    const parsed = modelConfigSchema.safeParse({
+      id: 'some-model',
+      deprecated: true,
+      deprecationNote: '2026-xx-xx 下线；建议切到替代档',
+    })
+    assert.equal(parsed.success, true)
+    assert.equal(parsed.data?.deprecated, true)
+    assert.equal(parsed.data?.deprecationNote, '2026-xx-xx 下线；建议切到替代档')
   })
 
   it('codex preset uses OAuth and gpt-5.6-sol', () => {

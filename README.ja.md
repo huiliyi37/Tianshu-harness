@@ -1150,7 +1150,8 @@ rivet logs open desktop            # sidecar ログディレクトリを開く�
 | コントリビューター | 貢献内容 |
 |--------|----------|
 | [@banxia](https://github.com/banxia) | プロジェクト創設者 · コア開発 |
-| [@qiaodier](https://github.com/qiaodier) | CC Switch provider プリセット（PR #8） |
+
+完全なリスト（外部コントリビューター 16 名 / 76 PR）→ CONTRIBUTORS.md。
 
 外部 PR は「取り込み（收编）」フローでマージされ、著者署名は `Co-authored-by` で
 コントリビューターグラフに計上されます（scripts/credit-contributors.sh が自動記録）——

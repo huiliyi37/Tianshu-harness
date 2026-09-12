@@ -15,6 +15,7 @@ import { restoreGoalTracker } from '../agent/goal-persist.js'
 import { FileHistory } from '../agent/file-history.js'
 import { loadProjectRules } from '../context/rules-loader.js'
 import { createDefaultToolRegistry } from '../tools/default-registry.js'
+import { pluginToolsSnapshot, partitionPluginTools } from './plugin-session-cache.js'
 import { AgentLoop } from '../agent/loop.js'
 import type { ApprovalMode } from '../agent/loop-types.js'
 import { SessionContext } from '../agent/context.js'
@@ -381,6 +382,28 @@ function buildSessionStores(
     if (restored) refs.goalTrackerRef.current = restored
   } catch { /* non-fatal — start without a restored goal */ }
   const { registry: toolRegistry } = createInteractiveToolRegistry(refs, ctx.config, cwd)
+
+  // 插件工具合入（2026-09-12 补齐 sidecar 装配缺口——此前桌面会话不加载插件，
+  // 是 TUI 专属装配链）：启动暖场缓存（plugin-session-cache）同步快照注册，
+  // pluginHooks/pluginCommands 由空数组换真装配。暖场未完成的早期会话按无
+  // 插件装配（与此前行为一致）。per-call cwd 覆盖 load-time cwd（multi-session
+  // 安全，wrapPluginTool 既有设计）。
+  const pluginSnap = pluginToolsSnapshot()
+  if (pluginSnap) {
+    // 二次冲突过滤（2026-09-12 审查）：暖场期的冲突检测基座是
+    // createDefaultToolRegistry（21 个基础工具），而上面刚装配的
+    // createInteractiveToolRegistry 还额外注册了 galaxy / deliver_task / 域工具等
+    // ——那些名字不在基座里，插件取用即可绕过检测，随后经 register（Map.set）
+    // 静默覆盖真工具。此处以真实注册表兜底，冲突项跳过并点名。
+    const { accepted, blocked } = partitionPluginTools(pluginSnap.tools, new Set(toolRegistry.getAllNames()))
+    if (blocked.length > 0) {
+      console.warn(`[plugins] 以下插件工具与已装配工具同名，已跳过：${blocked.join(', ')}`)
+    }
+    for (const tool of accepted) toolRegistry.register(tool)
+    for (const name of pluginSnap.suppressTools) toolRegistry.remove(name)
+    refs.pluginHooks = pluginSnap.hooks
+    refs.pluginCommands = pluginSnap.commands
+  }
 
   // Spark provider: auto-populate review profiles with spark models so
   // review sub-agents (wiring inspector, verifier, squadron) run on spark-flash

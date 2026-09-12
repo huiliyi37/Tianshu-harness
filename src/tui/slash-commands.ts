@@ -20,6 +20,7 @@ import {
   restartProcess,
   runUpdate,
   spawnWindowsSelfUpdate,
+  updateInstallSpec,
 } from './updater.js'
 import { PhaseTracker } from './phase-tracker.js'
 import { createLogEntry, type LogEntry } from './log-state.js'
@@ -4051,10 +4052,13 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       // （better_sqlite3.node）→ "另一个程序正在使用此文件"。改为分离式更新器：
       // 等本进程退出释放文件锁后再装、再拉起。
       if (process.platform === 'win32' && check.installType === 'global') {
-        const schedule = spawnWindowsSelfUpdate(root, 'latest', true, ctx.sessionId)
+        // issue #115 — 安装 spec 必须与上方横幅承诺的 check.latest 一致；写死 npm
+        // dist-tag 'latest' 会在 npm 尚未发布该版本时装回旧版，而横幅已承诺新版。
+        const spec = updateInstallSpec(check.latest)
+        const schedule = spawnWindowsSelfUpdate(root, spec, true, ctx.sessionId)
         if (!schedule.ok) {
           app.commitStatic(`❌ 无法启动后台更新器：${schedule.error ?? 'unknown'}`)
-          app.commitStatic('   请手动执行：npm install -g tianshu-tui@latest')
+          app.commitStatic(`   请手动执行：npm install -g tianshu-tui@${spec}`)
           return true
         }
         app.commitStatic('✅ 更新已安排：天枢将退出以释放文件占用，安装完成后会自动重新打开。')
@@ -4071,7 +4075,8 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
         return true
       }
 
-      const result = await runUpdate(root, 'latest', (line) => app.commitStatic(line))
+      // issue #115 — 与 Windows 分支同口径：装横幅承诺的版本，而非 npm dist-tag。
+      const result = await runUpdate(root, updateInstallSpec(check.latest), (line) => app.commitStatic(line))
       if (result.skipped) {
         app.commitStatic(`ℹ️  ${result.message}`)
         return true

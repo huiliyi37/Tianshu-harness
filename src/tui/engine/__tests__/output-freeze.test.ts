@@ -88,6 +88,42 @@ describe('输出冻结（Ctrl+S）', () => {
     feed('\x11')
     assert.ok(withTicker.streamRenderController.ticker, '解冻后 ticker 恢复')
   })
+
+  /**
+   * 回归（2026-09 审查）：冻结期主屏 commit 入队曾把事件循环锁死。
+   *
+   * 根因是 requestPump 与 drainMainCommits 的守卫不对称——drain 在
+   * outputFrozen 时 return 且不 shift 队列（让内容等解冻后补排，语义正确），
+   * 而 settle 无条件续调 requestPump，requestPump 又只挡 overlay 不挡冻结，
+   * 于是「唤醒 → 空转 return → 再唤醒」在微任务队列里自旋，宏任务（stdin
+   * 按键、timer）永远排不到：Ctrl+S 之后 Ctrl+Q/Ctrl+C 全部失效，只能杀进程。
+   *
+   * 断言的是宏任务是否仍被调度（行为），不是守卫条件是否写了（实现）——
+   * 任何让「冻结期入队」重新变成自旋的回归都会在这里挂到超时。
+   */
+  test('冻结期入队不饿死事件循环：宏任务仍被调度，解冻后队列续排', async () => {
+    const { app, out, feed } = makeApp()
+    feed('\x13') // 冻结
+    assert.equal((app as unknown as AppInternals).outputFrozen, true, '前置条件：已冻结')
+
+    // 冻结期的本地 commit（slash 命令输出走 commitStatic → commitAbove → 入队）
+    app.commitStatic('冻结期排队内容')
+
+    let macroTaskRan = false
+    await new Promise<void>((resolve) => {
+      setTimeout(() => { macroTaskRan = true; resolve() }, 50)
+    })
+    assert.equal(macroTaskRan, true, '冻结期间事件循环不得被 requestPump 自旋饿死')
+
+    assert.ok(
+      !stripAnsi(out.chunks.join('')).includes('冻结期排队内容'),
+      '冻结期该内容不得写出（冻结契约：stdout 零写入）',
+    )
+
+    feed('\x11') // 解冻
+    await tick()
+    assert.match(stripAnsi(out.chunks.join('')), /冻结期排队内容/, '解冻后队列必须续排')
+  })
 })
 
 describe('矮屏降级 — 高水位半屏封顶', () => {

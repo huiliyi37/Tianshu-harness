@@ -99,6 +99,26 @@ describe('runRecoveryCli', () => {
     assert.ok(text.includes('[error] boom'))
   })
 
+  // issue #120 — 工具可能回传非字符串 result（对象/数字/undefined）；回调内直接
+  // .length/.slice/.replace 会抛 TypeError，打断 recovery 循环或污染输出。
+  it('renders non-string tool results without throwing', async () => {
+    const rl = createMockRl(['run tool', 'exit'])
+    const output = createMockOutput()
+    const ctx = createMockCtx(async (_prompt, callbacks) => {
+      callbacks.onToolResult('id1', 'bash', { stdout: 'hi' } as never, false)
+      callbacks.onToolResult('id2', 'bash', 42 as never, false)
+      callbacks.onToolResult('id3', 'bash', undefined as never, true)
+      callbacks.onTurnComplete({}, 1)
+    })
+
+    await runRecoveryCli(ctx, { rl: asRl(rl), output })
+
+    const text = getOutputText(output)
+    assert.ok(text.includes('stdout'), 'object result serialized')
+    assert.ok(text.includes('42'), 'numeric result printed')
+    assert.ok(text.includes('[tool error] bash'), 'undefined result still prints a line')
+  })
+
   it('asks for approval and passes the answer through', async () => {
     const rl = createMockRl(['approve me', 'y', 'exit'])
     const output = createMockOutput()

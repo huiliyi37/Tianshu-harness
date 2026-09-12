@@ -20,7 +20,7 @@ import { accessSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 
-export type ExtractEngine = 'pdftotext' | 'textutil' | 'soffice' | 'pandoc' | 'exceljs'
+export type ExtractEngine = 'pdftotext' | 'textutil' | 'soffice' | 'pandoc' | 'exceljs' | 'pdfjs'
 
 export interface DocExtractSuccess {
   ok: true
@@ -78,6 +78,40 @@ async function runPandoc(filePath: string, runner: CommandRunner): Promise<strin
   return stdout
 }
 
+/** 用 pdfjs-dist 读 .pdf → 逐页文本（纯 JS/ESM 原生，无系统依赖）——
+ *  pdftotext 缺失时的兜底引擎（poppler 质量优先故仍排在前）。不抽版面布局
+ *  （没有 -layout），按 textContent 条目逐页拼接；standardFontDataUrl 能解析
+ *  到就喂给标准字体解码（bundle/分发布局下找不到则省略——仅降级警告，不影响
+ *  常见字体抽取）。可选依赖的缺失降级：import 失败抛错让引擎链继续往下走。 */
+async function runPdfjs(filePath: string, _runner?: CommandRunner): Promise<string> {
+  let getDocument: typeof import('pdfjs-dist/legacy/build/pdf.mjs').getDocument
+  try {
+    ;({ getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs'))
+  } catch {
+    throw new Error('pdfjs-dist not installed — falling back')
+  }
+  let standardFontDataUrl: string | undefined
+  try {
+    const { createRequire } = await import('node:module')
+    const pkgPath = createRequire(import.meta.url).resolve('pdfjs-dist/package.json')
+    standardFontDataUrl = new URL(`file://${pkgPath.replace(/\/package\.json$/, '')}/standard_fonts/`).href
+  } catch { /* 找不到就省略——pdfjs 只发降级警告 */ }
+  const data = new Uint8Array(await readFile(filePath))
+  const doc = await getDocument({
+    data,
+    useWorkerFetch: false,
+    ...(standardFontDataUrl ? { standardFontDataUrl } : {}),
+  }).promise
+  const pages: string[] = []
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n)
+    const tc = await page.getTextContent()
+    const text = tc.items.map((item) => ('str' in item ? item.str : '')).join(' ').trim()
+    if (text) pages.push(text)
+  }
+  return pages.join('\n\n')
+}
+
 /** soffice writes the converted file into an outdir (no stdout mode). Some
  *  distros ship only `libreoffice` (no `soffice` symlink) — try both. */
 async function runSoffice(filePath: string, runner: CommandRunner): Promise<string> {
@@ -110,7 +144,14 @@ async function runExceljs(filePath: string, _runner?: CommandRunner): Promise<st
   } catch {
     throw new Error('exceljs not installed — falling back to soffice')
   }
-  const wb = new ExcelJS.Workbook()
+  // CJS↔ESM interop：Node ESM 动态 import 下命名空间是 { default: ExcelJS }
+  // （cjs-module-lexer 探测不到 Workbook 命名导出），bundle 里则直接可用——
+  // 两形态都兜住（2026-09-12 实测：tsx/Node ESM 下 ExcelJS.Workbook undefined
+  // 抛 "not a constructor"，xlsx 抽取静默全灭只剩 soffice 兜底）。
+  const Workbook = (ExcelJS as unknown as { Workbook?: typeof import('exceljs').Workbook }).Workbook
+    ?? (ExcelJS as unknown as { default?: { Workbook?: typeof import('exceljs').Workbook } }).default?.Workbook
+  if (!Workbook) throw new Error('exceljs Workbook unavailable (module interop)')
+  const wb = new Workbook()
   await wb.xlsx.readFile(filePath)
   const parts: string[] = []
   const MAX_ROWS = 200
@@ -151,10 +192,13 @@ export function buildEngineChain(ext: string, platform: string = process.platfor
   const soffice: EngineStep = { engine: 'soffice', run: runSoffice }
   const pandoc: EngineStep = { engine: 'pandoc', run: runPandoc }
   const pdftotext: EngineStep = { engine: 'pdftotext', run: runPdftotext }
+  // pdfjs 纯 JS 兜底：poppler 未装（多数用户的常态）时仍能抽出文本；
+  // 有 poppler 则 -layout 排版质量优先。
+  const pdfjs: EngineStep = { engine: 'pdfjs', run: runPdfjs }
 
   switch (ext) {
     case '.pdf':
-      return [pdftotext]
+      return [pdftotext, pdfjs]
     case '.docx':
     case '.odt':
     case '.rtf':

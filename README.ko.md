@@ -1152,7 +1152,8 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 | 기여자 | 기여 내용 |
 |--------|----------|
 | [@banxia](https://github.com/banxia) | 프로젝트 창시자 · 핵심 개발 |
-| [@qiaodier](https://github.com/qiaodier) | CC Switch provider 프리셋（PR #8） |
+
+전체 목록（외부 기여자 16명 / 76 PR）→ CONTRIBUTORS.md
 
 외부 PR은「이식(收编)」절차로 병합되며, 저자 서명은 `Co-authored-by`로 기여자 그래프에
 반영됩니다（scripts/credit-contributors.sh 가 자동 기록）——실시간 기여자 월:

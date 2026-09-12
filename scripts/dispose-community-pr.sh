@@ -2,8 +2,8 @@
 # dispose-community-pr.sh — 社区 PR 处置四步流程（sync-merge 形态）固化
 #
 # 社区活跃后，每个社区 PR 按同一四步处置（2026-08-03 PR #20 首例沉淀）：
-#   ① 收录 CONTRIBUTORS.md（手工维护；生成器 update-contributors.sh 已退役——
-#      它扫 merge commit，sync-merge 流程提取不到，且依赖 macOS 没有的 bash 4）
+#   ① 收录 CONTRIBUTORS.md（scripts/contributors.ts 自动收录：数据源=GitHub PR 列表含全部
+#      状态，只增不删。旧的 update-contributors.sh 扫 merge commit，在本流程下提取不到条目）
 #   ② 附注 + sync-merged 标记 + 关闭（公开仓不走 merge 按钮——dev 主仓是唯一事实源）
 #   ③ credit commit：Co-authored-by trailer 署名落账（GitHub 贡献者图谱按 trailer 计入）
 #   ④ --push 时推送公开仓（默认只做到本地，打印推送命令由人确认）
@@ -21,13 +21,14 @@
 # 幂等：已带 sync-merged 且已关闭的 PR 报告后退出；credit commit 按 PR 号查重不重复落账。
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # ③ 会 cd 到公开仓，故此处先绝对值化
 PR=""
 SYNC_COMMIT=""
 NOTE=""
 DO_PUSH=0
 DRY=0
 PUB_DIR="${PUB_DIR:-/Users/banxia/app/Tianshu}"
-GH_REPO="${GH_REPO:-huiliyi37/Tianshu-Tui}"
+GH_REPO="${GH_REPO:-huiliyi37/Tianshu-harness}"
 OWNER="${OWNER:-huiliyi37}"
 
 while [[ $# -gt 0 ]]; do
@@ -83,7 +84,7 @@ fi
 if [[ "$DRY" == "1" ]]; then
   echo ""
   echo "── DRY RUN ──────────────────────────"
-  echo "① fetch pull/${PR} → pr-${PR} 后跑 update-contributors.sh"
+  echo "① 收录 CONTRIBUTORS.md：npx --no-install tsx scripts/contributors.ts --write"
   echo "② 附注: ${NOTE}"
   echo "③ credit commit: Co-authored-by: ${author_line}"
   echo "④ push: $([[ "$DO_PUSH" == "1" ]] && echo '是' || echo '否（仅打印）')"
@@ -91,11 +92,14 @@ if [[ "$DRY" == "1" ]]; then
 fi
 
 # ── ① 收录 CONTRIBUTORS.md ──
-# 2026-08-08 起改为手工核对：update-contributors.sh 是 merge-commit 时代的生成器
-# （扫 "Merge PR #" 合并提交），sync-merge 流程的 PR 提取不到，且全量再生成会
-# 回退手工维护的三列内容；另有 bash 4 语法（declare -A）在 macOS 3.2 跑不了。
+# 2026-09 起由 scripts/contributors.ts 自动收录：数据源是 GitHub PR 列表（含 CLOSED——
+# 本仓收编的 PR 不会被 merge），只增不删，既有条目的 login/描述/顺序不受影响。
 echo "==> ① 更新 CONTRIBUTORS.md"
-echo "    ⚠ 手工核对 $PUB_DIR/CONTRIBUTORS.md 是否已收录 @${login}（PR #${PR}）——生成器已退役"
+if npx --no-install tsx "$SCRIPT_DIR/contributors.ts" --write; then
+  echo "    ✓ 已收录（新条目的「贡献」列是 PR 标题初稿，按需润色）"
+else
+  echo "    ⚠ 自动收录失败（gh 未认证 / 网络不可用）——请手工核对 $PUB_DIR/CONTRIBUTORS.md 是否收录 @${login}"
+fi
 
 # ── ② 附注 + 标记 + 关闭 ──
 echo "==> ② 附注 + sync-merged 标记 + 关闭"

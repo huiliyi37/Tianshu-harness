@@ -5,6 +5,35 @@ import { runCouncil, runCouncilDebate, buildSeatObjective, type CouncilDeps } fr
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
 import { summarizeCouncilPlan } from '../agent/council/council-render.js'
 import { encodeCouncilPanel, type CouncilPanelModel } from '../tui/council-panel-model.js'
+import { PROVIDER_PRESETS } from '../config/provider-presets.js'
+
+/**
+ * 弃用模型 → 告警说明。来源：内置 presets 里声明了 `deprecated` 的模型（用户配置里
+ * 的声明后续也应并入）。议事会/路由会**静默命中**弃用模型——官方模型切换走的是静默
+ * 路由（请求照样成功、模型已换、计费已变），故命中处必须显式提示。
+ */
+function collectDeprecatedModelNotes(): ReadonlyMap<string, string> {
+  const notes = new Map<string, string>()
+  for (const preset of Object.values(PROVIDER_PRESETS)) {
+    for (const model of preset.provider.models) {
+      if (model.deprecated) notes.set(model.id, model.deprecationNote ?? '该模型已标记弃用')
+    }
+  }
+  return notes
+}
+
+let deprecatedModelNotesOverride: ReadonlyMap<string, string> | undefined
+
+/** @internal exported for testing only */
+export function setDeprecatedModelNotesForTest(notes: ReadonlyMap<string, string> | undefined): void {
+  deprecatedModelNotesOverride = notes
+}
+
+/** 命中模型是否已弃用；是则返回告警说明（否则 undefined）。 */
+function modelDeprecation(modelId?: string): string | undefined {
+  if (!modelId) return undefined
+  return (deprecatedModelNotesOverride ?? collectDeprecatedModelNotes()).get(modelId)
+}
 import { DEFAULT_COUNCIL_SEATS, THREE_PILLAR_COUNCIL_SEATS, mergeSeatOverrides, type CouncilSeat, type CouncilRoutingShadowEvent } from '../agent/council/council-routing.js'
 import { isCouncilEnabled } from '../agent/council/council-gate.js'
 import { buildCouncilSessionEvent, type CouncilSessionEvent } from '../agent/council/council-telemetry.js'
@@ -344,7 +373,8 @@ export function createCouncilConveneTool(
             if (!seatId) continue
             const round = seatId.endsWith('-r2') ? 2 : 1
             const authority = seatId.replace(/(-(r2|retry|reconvene))+$/, '')
-            degradedSeats.push({ authority, status: r.status, round, modelUsed: modelMap.get(r.workOrderId) })
+            const seatModel = modelMap.get(r.workOrderId)
+            degradedSeats.push({ authority, status: r.status, round, modelUsed: seatModel, deprecated: modelDeprecation(seatModel) != null })
           }
         }
         const degradedPanel: CouncilPanelModel = {
@@ -531,7 +561,8 @@ export function createCouncilConveneTool(
           const authority = seatId.replace(/(-(r2|retry|reconvene))+$/, '')
           // merge: later batch results for same authority overwrite earlier
           const existing = councilPanelSeats.findIndex(s => s.authority === authority)
-          const seat = { authority, status: r.status, round, modelUsed: modelMap.get(r.workOrderId) }
+          const seatModel = modelMap.get(r.workOrderId)
+          const seat = { authority, status: r.status, round, modelUsed: seatModel, deprecated: modelDeprecation(seatModel) != null }
           if (existing >= 0) councilPanelSeats[existing] = seat
           else councilPanelSeats.push(seat)
         }
@@ -557,6 +588,17 @@ export function createCouncilConveneTool(
         failedSeats: plan.meta.failedSeats,
         qliphothCount: plan.meta.qliphoth?.length,
       }
+
+      // 透明化：把每个席位「实际命中的模型」摊开给用户看，避免「会话默认显示 v4.1f、
+      // 实际却静默走了别的档」的错觉（官方模型切换正是静默路由：请求成功、模型已换、
+      // 计费已变）。命中弃用模型额外标 ⚠ 与说明。
+      const modelLines: string[] = []
+      for (const s of councilPanelSeats) {
+        const note = modelDeprecation(s.modelUsed)
+        const flag = note ? ` ⚠ 弃用模型：${note}` : ''
+        modelLines.push(`- ${s.authority}: ${s.modelUsed ?? '未知'}${flag}`)
+      }
+      parts.push('', '## 席位实际调用模型（与会话默认模型可能不同）', ...modelLines)
 
       return {
         content: parts.join('\n') + proGateNote,

@@ -38,6 +38,20 @@ test('encode produces single-line JSON', () => {
   assert.equal(lines.length, 1)
 })
 
+// issue #105（收编自公开仓 PR #108）——席位实际命中的模型若已弃用，桌面端/终端
+// 必须能显式告警；标记随面板帧往返，不能在中途丢掉。
+test('席位 deprecated 标记随面板帧往返', () => {
+  const m = model({
+    seats: [
+      { authority: 'tianquan', status: 'passed', round: 1, modelUsed: 'deepseek-v4-pro', deprecated: true },
+      { authority: 'tianji', status: 'passed', round: 1, modelUsed: 'deepseek-v4.1f' },
+    ],
+  })
+  const decoded = decodeCouncilPanel(encodeCouncilPanel(m))
+  assert.equal(decoded?.seats[0]?.deprecated, true, '弃用标记必须在往返后保留')
+  assert.equal(decoded?.seats[1]?.deprecated, undefined, '未弃用的席位不得被误标')
+})
+
 test('decode returns null for empty string', () => {
   assert.equal(decodeCouncilPanel(''), null)
 })

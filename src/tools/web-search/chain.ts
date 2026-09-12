@@ -1,5 +1,6 @@
 import type { SearchBackend, SearchResult } from './types.js'
 import { fetchCauseDetail } from '../../api/error-classifier.js'
+import { OFF_TOPIC_ERROR, looksOffTopic } from './relevance.js'
 
 export interface BackendError {
   backend: string
@@ -15,10 +16,15 @@ export interface ChainResult {
 }
 
 /**
- * Try backends in order. The first available backend that returns a non-empty
- * result wins and short-circuits. Unavailable backends (missing key) are
- * skipped without an error; empty results and thrown errors are recorded and
- * the walk continues to the next backend.
+ * Try backends in order. The first available backend that returns a usable
+ * non-empty result wins and short-circuits. Unavailable backends (missing key)
+ * are skipped without an error; empty results, off-topic results and thrown
+ * errors are recorded and the walk continues to the next backend.
+ *
+ * "Off-topic" is the silently-wrong case: HTTP 200, a full block of parsed
+ * results, and none of them about the query (see `relevance.ts`). It must fall
+ * through like an empty result — otherwise the chain hands unrelated content to
+ * the model as if it were an answer.
  */
 export async function runBackendChain(
   backends: readonly SearchBackend[],
@@ -36,6 +42,10 @@ export async function runBackendChain(
     try {
       const results = await backend.search(query, count, controller.signal)
       if (results.length > 0) {
+        if (looksOffTopic(query, results)) {
+          errors.push({ backend: backend.name, message: OFF_TOPIC_ERROR })
+          continue
+        }
         return { backend: backend.name, results, errors }
       }
       errors.push({ backend: backend.name, message: 'no results' })

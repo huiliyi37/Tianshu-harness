@@ -420,6 +420,10 @@ describe('formatThinking', () => {
    * 窄窗口回归：推理文本多是长句，按逻辑行封顶时一行 wrap 成三四个显示行，
    * 8 行逻辑行能占二十个显示行——而 live 区高度峰值会被定高视口固化成输入框
    * 上方的常驻空白。maxRows 按 wrap 后的显示行收口。
+   *
+   * 2026-09-12 起正文按 wide 上界硬折行输出（CJK 终端 ambiguous 折行导致
+   * spinner 残影的根修）：每个输出逻辑行恰占 1 显示行，行数即显示行数；
+   * 而 maxLines 路径不折行，rowsOf 仍按 auto-wrap 估算（对照组）。
    */
   describe('maxRows（按显示行封顶，窄窗口）', () => {
     const longLine = (i: number): string => `推理片段 ${i} ` + '这是一段很长的推理文本用于触发折行'.repeat(4)
@@ -432,10 +436,16 @@ describe('formatThinking', () => {
       const body = formatThinking({
         text, elapsedMs: 5000, header: false, expanded: true, maxRows: 4, columns,
       }, theme)
-      const contentRows = body
-        .filter(l => !stripAnsi(l).includes('上方省略'))
-        .reduce((sum, l) => sum + rowsOf(l, columns), 0)
+      // 硬折行后每个输出逻辑行恒为 1 显示行（任何终端），行数即显示行数。
+      const contentRows = body.filter(l => !stripAnsi(l).includes('上方省略')).length
       assert.ok(contentRows <= 4, `正文显示行数应 ≤ 4，实得 ${contentRows}（${body.length} 个逻辑行）`)
+      // 硬折行不变量：每行 ≤ columns-1 wide → 任何终端恰占 1 显示行。
+      for (const l of body) {
+        assert.ok(
+          displayWidth(stripAnsi(l), { ambiguousAsWide: true }) <= columns - 1,
+          `输出行超 wide 上界：${stripAnsi(l)}`,
+        )
+      }
     })
 
     it('同样的文本按 maxLines 封顶会远超预算（对照）', () => {

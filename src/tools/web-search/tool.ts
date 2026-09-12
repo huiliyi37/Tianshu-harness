@@ -3,6 +3,7 @@ import type { ProxyResolverOptions } from '../net/proxy-resolver.js'
 import type { SearchBackend, SearchFetch } from './types.js'
 import { DuckDuckGoBackend } from './duckduckgo.js'
 import { runBackendChain } from './chain.js'
+import { OFF_TOPIC_ERROR } from './relevance.js'
 import { createProxyAwareFetch } from './proxy-fetch.js'
 import { lenientPositiveNumber, lenientString } from '../lenient.js'
 
@@ -87,8 +88,10 @@ export function createWebSearchTool(deps: WebSearchDeps = {}): Tool {
       const { backend, results, errors } = await runBackendChain(backends, query, count, timeoutMs)
 
       if (results.length === 0) {
-        // All backends failed → surface why. All backends empty → benign no-hit.
-        const hardErrors = errors.filter(e => e.message !== 'no results')
+        // All backends failed → surface why. All backends empty (or returned
+        // off-topic content that was dropped) → benign no-hit: reporting a
+        // hard error would be misleading, the user-visible outcome is the same.
+        const hardErrors = errors.filter(e => e.message !== 'no results' && e.message !== OFF_TOPIC_ERROR)
         if (hardErrors.length > 0) {
           const detail = hardErrors.map(e => `${e.backend}: ${e.message}`).join('; ')
           // detail 转发后端原文（可能含 HTTP 503 等）——中文前缀+变量，可不打标。

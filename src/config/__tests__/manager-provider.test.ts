@@ -274,16 +274,36 @@ describe('provider config mutations', () => {
     )
   })
 
-  it('removeProvider removes the user-layer entry of a built-in preset name (defaults re-fill on load)', () => {
-    // deepseek 在 DEFAULT_CONFIG 内置——loadConfig 的 4 层合并会在用户层删除后
-    // 回填出厂预设，因此列表仍显示出厂 deepseek。验证删除动作到达用户层（磁盘）：
-    // 用户配置中不应再有 deepseek 条目。
+  it('removeProvider tombstones a built-in preset name (no default re-fill on load)', () => {
+    // deepseek 在 DEFAULT_CONFIG 内置——只删用户层会被下次 loadConfig 的 deepMerge
+    // 从默认层回填（删除被静默撤销，桌面端「删不掉」根因）。墓碑语义：用户层
+    // providers[name]=null（deepMerge null=删键），合并视图不再出现；预设卡经
+    // allPresetKeys 过滤回到「可添加」列表，setupProvider 重新添加盖掉墓碑。
     setDefaultProvider('kimi')
     removeProvider('deepseek')
     const raw = JSON.parse(readFileSync(process.env.RIVET_CONFIG_PATH!, 'utf-8'))
-    assert.equal(raw.provider.providers['deepseek'], undefined)
-    // 出厂回填：合并视图里 deepseek 仍在（预设 clone）
-    assert.equal(loadConfig().provider.providers['deepseek']?.apiKeyEnv, 'DEEPSEEK_API_KEY')
+    assert.equal(raw.provider.providers['deepseek'], null, '用户层应写墓碑而非缺席')
+    assert.equal(loadConfig().provider.providers['deepseek'], undefined, '合并视图不再回填出厂预设')
+    // 重新添加：预设克隆落盘，墓碑被覆盖
+    setupProvider({ providerName: 'deepseek', apiKey: 'sk-back' })
+    assert.equal(loadConfig().provider.providers['deepseek']?.keyRef, 'deepseek')
+    const rawAfter = JSON.parse(readFileSync(process.env.RIVET_CONFIG_PATH!, 'utf-8'))
+    assert.notEqual(rawAfter.provider.providers['deepseek'], null, '重新添加后墓碑被盖掉')
+  })
+
+  it('preset tombstone survives later unrelated saveConfig writes', () => {
+    // saveConfig 整体重写用户层——不带回磁盘墓碑的话，任意其他写配置都会让被删
+    // 预设复活（更新 tunables 是桌面端最常见的后续写入）。
+    setDefaultProvider('kimi')
+    removeProvider('glm')
+    assert.equal(loadConfig().provider.providers['glm'], undefined)
+    updateProviderTunables('deepseek', { slowThinking: true })
+    const raw = JSON.parse(readFileSync(process.env.RIVET_CONFIG_PATH!, 'utf-8'))
+    assert.equal(raw.provider.providers['glm'], null, '整体重写后墓碑仍在')
+    assert.equal(loadConfig().provider.providers['glm'], undefined, '重写后不复活')
+    // 墓碑不妨碍同名重新添加
+    setupProvider({ providerName: 'glm', apiKey: 'sk-glm-back' })
+    assert.equal(loadConfig().provider.providers['glm']?.keyRef, 'glm')
   })
 
   it('removeProvider allows deleting a legacy custom provider whose name collides with a preset', () => {

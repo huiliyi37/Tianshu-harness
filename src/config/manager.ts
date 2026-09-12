@@ -462,7 +462,31 @@ export function saveConfig(config: Config): void {
       delete (provider as unknown as { protocol?: string }).protocol
     }
   }
-  writeFileAtomicSync(getUserConfigPath(), JSON.stringify(toWrite, null, 2) + '\n')
+  // 墓碑保全：用户层 providers[name]=null 是「删除内置预设」的标记
+  // （deepMerge null=删键，见 deepMerge）。saveConfig 整体重写用户层——不带回
+  // 磁盘上既有墓碑的话，下一次任意写配置都会让被删预设从 DEFAULT_CONFIG 复活。
+  const configPath = getUserConfigPath()
+  if (existsSync(configPath)) {
+    const prev = readConfigJson(configPath).provider as { providers?: Record<string, unknown> } | undefined
+    for (const [name, entry] of Object.entries(prev?.providers ?? {})) {
+      if (entry === null && !(name in toWrite.provider.providers)) {
+        ;(toWrite.provider.providers as Record<string, unknown>)[name] = null
+      }
+    }
+  }
+  writeFileAtomicSync(configPath, JSON.stringify(toWrite, null, 2) + '\n')
+}
+
+/** 把「删除内置预设」的墓碑（providers[name]=null）写进用户层 config.json。
+ *  deepMerge 遇 null 删键，合并视图从此不含该预设；预设卡经 allPresetKeys
+ *  过滤重新出现在「可添加」列表，setupProvider 重新添加时整体重写盖掉墓碑。 */
+function writeProviderTombstone(name: string): void {
+  const configPath = getUserConfigPath()
+  const raw = readConfigJson(configPath)
+  const provider = (raw.provider ??= {}) as Record<string, unknown>
+  const providers = (provider.providers ??= {}) as Record<string, unknown>
+  providers[name] = null
+  writeFileAtomicSync(configPath, JSON.stringify(raw, null, 2) + '\n')
 }
 
 // --- P2 hook 装配配置面（list-hooks / set-hook-disabled）---
@@ -551,6 +575,10 @@ export function removeProvider(name: string, options?: { keepSecret?: boolean })
   if (defaultModelCleared) delete cfg.agent.defaultModel
   delete cfg.provider.providers[name]
   saveConfig(cfg)
+  // 内置预设（DEFAULT_CONFIG 有出厂克隆）必须写墓碑——只删用户层的话下次
+  // loadConfig 会被 deepMerge 从默认层回填，删除被静默撤销。自定义 provider
+  // 无默认层，直接删即生效。
+  if (name in DEFAULT_CONFIG.provider.providers) writeProviderTombstone(name)
 
   // 一个 key 对应一个模型组：条目删除即整组删除，密钥随之清除（否则成孤儿）。
   // 仍被其他 provider 引用的 keyRef 保留——手改配置共享 keyRef 的场景合法存在。

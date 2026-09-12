@@ -6,7 +6,7 @@
 
 import { color } from '../engine/ansi.js'
 import { useAsciiGlyphs } from '../term-caps.js'
-import { displayWidth } from '../width.js'
+import { hardWrapToDisplayWidth } from '../width.js'
 import type { RivetTheme } from '../theme.js'
 import { starDomainRegistry } from '../../agent/star-domain-registry.js'
 
@@ -27,6 +27,10 @@ export interface FormatThinkingInput {
    * 推理文本多是长句，窄终端上一个逻辑行会 wrap 成三四个显示行——按逻辑行封顶
    * 时 8 行能占到二十个显示行，而 live 区的高度峰值会被定高视口固化成输入框
    * 上方的常驻空白。需要同时给 `columns` 才能度量。
+   *
+   * 正文按 wide 上界（ambiguous 按 2 列）硬折行成段输出：每段 ≤ columns-1 宽，
+   * 在 narrow/wide 任何终端都恰占 1 显示行——LiveEngine.rowsForLine 恒精确，
+   * 相对回顶不欠行（CJK 终端 ambiguous 折行导致 spinner 残影的根修）。
    */
   maxRows?: number
   /** 终端列数，`maxRows` 生效时用于度量 wrap。 */
@@ -86,15 +90,24 @@ export function formatThinking(input: FormatThinkingInput, theme: RivetTheme): s
   // ── Content lines (保留最新若干行的 tail，带淡色树脉前缀) ────────
   if (input.expanded && textLines.length > 0) {
     const prefix = color('│ ', theme.dim)
-    const kept = input.maxRows != null && input.columns
-      ? tailWithinRows(textLines, input.maxRows, input.columns)
-      : textLines.slice(-(input.maxLines ?? DEFAULT_MAX_LINES))
-    const omitted = textLines.length - kept.length
-    if (omitted > 0) {
-      lines.push(`${prefix}${color(`… 上方省略 ${omitted} 行`, theme.dim)}`)
-    }
-    for (const line of kept) {
-      lines.push(`${prefix}${color(line, theme.muted)}`)
+    if (input.maxRows != null && input.columns) {
+      // 硬折行路径：每段恰占 1 显示行（见 maxRows 注释），段数即显示行数。
+      const { kept, omitted } = tailSegmentsWithinRows(textLines, input.maxRows, input.columns)
+      if (omitted > 0) {
+        lines.push(`${prefix}${color(`… 上方省略 ${omitted} 行`, theme.dim)}`)
+      }
+      for (const seg of kept) {
+        lines.push(`${prefix}${color(seg, theme.muted)}`)
+      }
+    } else {
+      const kept = textLines.slice(-(input.maxLines ?? DEFAULT_MAX_LINES))
+      const omitted = textLines.length - kept.length
+      if (omitted > 0) {
+        lines.push(`${prefix}${color(`… 上方省略 ${omitted} 行`, theme.dim)}`)
+      }
+      for (const line of kept) {
+        lines.push(`${prefix}${color(line, theme.muted)}`)
+      }
     }
   }
 
@@ -102,24 +115,34 @@ export function formatThinking(input: FormatThinkingInput, theme: RivetTheme): s
 }
 
 /**
- * 自尾部向前收取逻辑行，使其 wrap 后的显示行数不超过 budget。
- * 至少保留 1 行——哪怕它自己就超预算，空的推理区比截没了更难理解。
+ * 自尾部向前按「整逻辑行」收取，使其硬折行后的显示行数不超过 budget。
+ * 至少保留 1 个逻辑行——哪怕它自己就超预算，空的推理区比截没了更难理解。
+ *
+ * 折段宽度 = columns - 3（'│ ' 前缀 2 列 + 1 列余量，与 clampLine 同口径），
+ * 按 wide 上界度量：ambiguous 符号（——……“”）在 CJK 终端按 2 列渲染时，
+ * 终端实际行数与 LiveEngine.rowsForLine（narrow 默认）会出现偏差 → 回顶欠擦 →
+ * 旧帧顶行（spinner）泄漏成残影。硬折行后每段 ≤ columns-1 wide，任何终端
+ * 每段恰占 1 显示行，引擎行数追踪恒精确。
  */
-function tailWithinRows(textLines: readonly string[], budget: number, columns: number): string[] {
+function tailSegmentsWithinRows(
+  textLines: readonly string[],
+  budget: number,
+  columns: number,
+): { kept: string[]; omitted: number } {
   const limit = Math.max(1, budget)
-  // 前缀 `│ ` 占 2 列，正文可用宽度相应减少。
-  const width = Math.max(10, columns - 2)
+  const segWidth = Math.max(1, columns - 3)
   const kept: string[] = []
   let rows = 0
+  let keptLines = 0
   for (let i = textLines.length - 1; i >= 0; i--) {
-    const line = textLines[i]!
-    const lineRows = Math.max(1, Math.ceil(displayWidth(line) / width))
-    if (kept.length > 0 && rows + lineRows > limit) break
-    kept.unshift(line)
-    rows += lineRows
+    const segs = hardWrapToDisplayWidth(textLines[i]!, segWidth, { ambiguousAsWide: true })
+    if (keptLines > 0 && rows + segs.length > limit) break
+    kept.unshift(...segs)
+    rows += segs.length
+    keptLines++
     if (rows >= limit) break
   }
-  return kept
+  return { kept, omitted: textLines.length - keptLines }
 }
 
 function getThinkingStatus(elapsedMs: number): string {

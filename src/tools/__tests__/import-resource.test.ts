@@ -1,9 +1,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readlinkSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { IMPORT_RESOURCE_TOOL, parseGitHubUrl, isSafeGitRef, setHttpFetchForTests } from '../import-resource.js'
+import { IMPORT_RESOURCE_TOOL, parseGitHubUrl, isSafeGitRef, setHttpFetchForTests, subpathEscapesContainer } from '../import-resource.js'
 import type { ToolCallParams } from '../types.js'
 
 function makeParams(input: Record<string, unknown>, cwd: string): ToolCallParams {
@@ -25,6 +25,33 @@ describe('import_resource', () => {
 
   afterEach(() => {
     rmSync(tmpCwd, { recursive: true, force: true })
+  })
+
+  // issue #119 — subpath 由模型/URL 构造，`blob/main/../../../../etc/passwd` 曾可
+  // 越过 .rivet/external 读工作区外任意文件；审批 UI 只显示原始 URL，难以察觉。
+  describe('subpath container guard', () => {
+    it('rejects lexical .. traversal', () => {
+      assert.equal(subpathEscapesContainer('/a/b/repo', '../../../../etc/passwd'), true)
+      assert.equal(subpathEscapesContainer('/a/b/repo', 'sub/../../../etc/passwd'), true)
+      assert.equal(subpathEscapesContainer('/a/b/repo', '..'), true)
+    })
+
+    it('allows in-tree subpaths, including harmless internal ..', () => {
+      assert.equal(subpathEscapesContainer('/a/b/repo', 'src/index.ts'), false)
+      assert.equal(subpathEscapesContainer('/a/b/repo', 'src/../README.md'), false)
+      assert.equal(subpathEscapesContainer('/a/b/repo', ''), false)
+    })
+
+    it('rejects a symlink inside the container that points outside', () => {
+      const root = mkdtempSync(join(tmpdir(), 'import-guard-'))
+      try {
+        mkdirSync(join(root, 'inner'), { recursive: true })
+        symlinkSync('/etc', join(root, 'inner', 'link'))
+        assert.equal(subpathEscapesContainer(root, 'inner/link/passwd'), true)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('parseGitHubUrl', () => {

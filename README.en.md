@@ -1009,7 +1009,8 @@ Thank you to everyone who has contributed to Tianshu (ordered by first contribut
 | Contributor | Contributions |
 |-------------|---------------|
 | [@banxia](https://github.com/banxia) | Project creator · Core development |
-| [@qiaodier](https://github.com/qiaodier) | CC Switch provider preset (PR #8) |
+
+Full list (16 external contributors / 76 PRs) → CONTRIBUTORS.md.
 
 External PRs land via a "port" flow; authorship is credited with `Co-authored-by`
 trailers (auto-recorded by scripts/credit-contributors.sh) — live contributor wall:

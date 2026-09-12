@@ -768,6 +768,19 @@ describe('hasOutOfWorkspaceWriteTarget — safe-write auto-approval scope (H6)',
     assert.equal(hasOutOfWorkspaceWriteTarget('cp a ../../outside.txt'), true)
     assert.equal(hasOutOfWorkspaceWriteTarget('cp a ..'), true)
   })
+  // issue #118 — 只判开头会放过中段穿越：token 按 [<>|;&] 切开后片段内仍有 `/`，
+  // 于是 `foo/../../etc/cron.d/x` 以 `foo` 开头 → 被判为工作区内写、auto-safe 零提示放行。
+  it('flags mid-token .. traversal (auto-safe write gate bypass)', () => {
+    assert.equal(hasOutOfWorkspaceWriteTarget('echo evil >> foo/../../etc/cron.d/x'), true)
+    assert.equal(hasOutOfWorkspaceWriteTarget('cp payload sub/../../outside.txt'), true)
+    assert.equal(hasOutOfWorkspaceWriteTarget('cp a sub/..\\..\\outside.txt'), true)
+    assert.equal(hasOutOfWorkspaceWriteTarget('echo x >> a/b/../../../../../../etc/passwd'), true)
+  })
+  it('does not flag non-traversal dotted tokens', () => {
+    assert.equal(hasOutOfWorkspaceWriteTarget('git log a..b'), false)
+    assert.equal(hasOutOfWorkspaceWriteTarget('echo hi > out..bak'), false)
+    assert.equal(hasOutOfWorkspaceWriteTarget('echo hi > ../out.txt.bak'), true)
+  })
   it('flags redirect targets glued without spaces', () => {
     assert.equal(hasOutOfWorkspaceWriteTarget('echo x>>~/ssh/authorized_keys'), true)
     assert.equal(hasOutOfWorkspaceWriteTarget('echo x >"D:\\x\\y"'), true)

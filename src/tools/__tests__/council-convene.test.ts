@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createCouncilConveneTool, DEFAULT_COUNCIL_SEATS, type CouncilConveneCoordinator } from '../council-convene.js'
+import { createCouncilConveneTool, DEFAULT_COUNCIL_SEATS, setDeprecatedModelNotesForTest, type CouncilConveneCoordinator } from '../council-convene.js'
 import type { CoordinatorRun, DelegationRequest } from '../../agent/coordinator.js'
 import { deriveStableWorkOrderId } from '../../agent/coordinator.js'
 import type { WorkerResult } from '../../agent/work-order.js'
@@ -79,6 +79,28 @@ describe('council_convene 工具', () => {
     const res = await tool.execute(paramsWith({}))
     assert.equal(res.isError, true)
     assert.equal(calls.requests.length, 0)
+  })
+
+  // issue #105（收编自公开仓 PR #108）——把每个席位「实际命中的模型」摊开给用户看，
+  // 避免「显示 v4.1f、实际静默走了别的档」的错觉（官方模型切换走的是静默路由：请求
+  // 照样成功、模型已换、计费已变）。命中带弃用声明的模型时额外标 ⚠ 与说明。
+  it('输出「席位实际调用模型」段；命中弃用模型时带 ⚠ 说明', async () => {
+    const { coordinator } = makeCoordinator()
+    const tool = createCouncilConveneTool(coordinator)
+    const res = await tool.execute(paramsWith({ objective: 'trace seat models' }))
+    assert.equal(res.isError, false)
+    assert.match(res.content, /## 席位实际调用模型/)
+    assert.match(res.content, /test-model/, '应列出每个席位实际命中的模型')
+
+    // 注入弃用表（真实来源是模型配置里的 deprecated 声明；当前内置 presets 无弃用项）
+    setDeprecatedModelNotesForTest(new Map([['test-model', '测试用弃用说明']]))
+    try {
+      const res2 = await tool.execute(paramsWith({ objective: 'trace seat models 2' }))
+      assert.match(res2.content, /⚠/)
+      assert.match(res2.content, /测试用弃用说明/)
+    } finally {
+      setDeprecatedModelNotesForTest(undefined)
+    }
   })
 
   it('缺省席位 → 扇出 tianquan/tianfu/tianxuan，全部 plan/council_expert', async () => {

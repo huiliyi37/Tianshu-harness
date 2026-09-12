@@ -38,6 +38,7 @@ import { CronScheduler, setActiveScheduler } from './cron-scheduler.js'
 import { CronWiring } from './cron-wiring.js'
 import { buildMcpRoutes } from './mcp-api.js'
 import { buildPluginRoutes } from './plugin-api.js'
+import { warmPluginToolsCache } from './plugin-session-cache.js'
 import { CronLock } from './cron-lock.js'
 import { TaskRegistry } from './task-registry.js'
 import { JsonTaskStore } from './task-store.js'
@@ -102,7 +103,7 @@ export interface ServeContext {
 }
 
 /**
- * Resolve provider/model/auth/apiKey once at server start. On first launch
+ * Resolve provider/model/auth/apiKey once at server start (refreshed in place by refreshServeContext when Settings routes persist provider/key changes). On first launch
  * the user may have no API key configured yet — instead of crashing (which
  * blocks the desktop settings UI from ever being reached), we return a
  * degraded context with apiKey='' and configured=false. The server starts,
@@ -154,6 +155,32 @@ export function resolveServeContext(loader: () => Config = loadConfig): ServeCon
     ?? { id: 'unknown', maxTokens: 4096, contextWindow: 128_000 }
 
   return { config, provider, model, apiKey, auth, configured }
+}
+
+/**
+ * Settings 变更后的启动快照原地刷新（「替换 key 不生效」与「env 压新 inline key」
+ * 的根治）：重新 resolveServeContext() 并**原地替换** ctx 各字段——createAgent /
+ * listModels / specReload / resolveModelSpecWithReload 等闭包持有的是同一个 ctx
+ * 引用，原地替换对全部读取方即刻可见（快照命中路径从此拿到新物化 key——
+ * loadConfig 把 keyRef 物化为 provider.apiKey，resolveModelSpec 最先检查它，
+ * inline 由此重新压过 env）。
+ *
+ * fail-open：变更已落盘，刷新失败（如默认 provider 半配置态）只记 warn——
+ * miss 路径的 reload（resolveModelSpecWithReload）与新会话 resolveInitialSpec
+ * 仍会读到新盘。已知边界：已烘焙 client 的存活 agent 不换 key（重建才拿新值）。
+ */
+export function refreshServeContext(ctx: ServeContext): void {
+  try {
+    const fresh = resolveServeContext()
+    ctx.config = fresh.config
+    ctx.provider = fresh.provider
+    ctx.model = fresh.model
+    ctx.apiKey = fresh.apiKey
+    ctx.auth = fresh.auth
+    ctx.configured = fresh.configured
+  } catch (err) {
+    serverLogger.warn(`[serve] refreshServeContext: keeping previous snapshot (miss-path reload still reads disk): ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 export interface ResolvedModelSpec {
@@ -527,6 +554,10 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   // the CURRENT on-disk key, not the startup snapshot's. Only wired when the
   // context came from disk — an injected context (tests) stays deterministic.
   const specReload = opts.context ? undefined : resolveServeContext
+  // 插件暖场（2026-09-12 sidecar 插件装配补齐）：启动期先跑一次
+  // initializePlugins 进暖场缓存——buildSessionStores 同步合入快照
+  // （serve-agent.ts），Node 模块缓存随后使命中，每会话零等待。
+  warmPluginToolsCache(ctx.config.plugins, process.cwd())
   const startedAt = Date.now()
 
   // R1 — one shared SessionRegistry for the whole sidecar. Created async (the
@@ -778,6 +809,11 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       } catch { /* 快照形态异常时跳过，广播兜底仍生效 */ }
       try { sessions.applyGlobalApprovalMode(approval as Parameters<typeof sessions.applyGlobalApprovalMode>[0]) } catch { /* non-fatal */ }
     },
+    // provider/密钥/默认模型写盘 → 启动快照原地刷新：「替换 key」与「env 压新
+    // inline key」对新解析（switchModel / 新会话 / reload 兜底）即刻生效。
+    // 已烘焙 client 的存活 agent 不换 key（已知边界）。注入式 ctx（测试）不接线，
+    // 与 specReload 同判定，保持注入上下文确定性。
+    onProviderConfigChanged: opts.context ? undefined : () => refreshServeContext(ctx),
   }))
 
   // Environment route: host toolchain availability (python, uv, git, node) for setup UI.

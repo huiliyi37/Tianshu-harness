@@ -3,8 +3,8 @@
   "redline": 800,
   "budgets": {
     "src/tui/engine/app.ts": {
-      "ceiling": 7754,
-      "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复） 7692→7754：Termux 手机端适配回流（alpha 42f550c8c：Ctrl+S/Ctrl+Q 接管 XOFF/XON 输出冻结 + 解冻按序补放；矮屏 rows<14 隐藏状态行 / rows<24 高水位半屏，+62，2026-09-12 Mobile Remote 回流）"
+      "ceiling": 7765,
+      "note": "7500→7520：换行模式对齐（footer 行 + shift 路由 +23 行，2026-08-25） 7520→7526：协同建议行接线（onChange 评估 + 渲染槽 + Tab 采纳 + Esc 关闭；检测/渲染主体在 engine/orchestration-hint.ts 新模块）。 7526→7553：错误时刻三件套（handleError 分类指引行 + 上一条回填输入框 + lastSubmittedText 生命周期，+27）。 7553→7558：onboarding 哨兵接线（向导纯取消后新会话不再自动弹 /connect，+5）。 7558→7637：choice-panel 输入子模式补光标编辑与粘贴（choicePanelInputCursor/按键光标语义全套/onPaste 路由分支/caret 接线 +73）+ 计划审批卡 separator 传参（+6）——输入子模式状态与 app.ts 现有 choicePanel* 字段族强耦合，拆分收益负；账本随债对齐。 7637→7675：/model 面板对标 CC：effort draft 状态 + </> 步进按键 + Enter/s 语义翻转 + 注册处 effort 数据组装（+38）。 7675→7682：routing nudge 接线（routingConfiguredProvider 字段/setter + onChange ctx + Tab 采纳 /config 特例，+7）。 7682→7692：kitty 键盘能力探测接线（\u001b[?u 查询写入 + onKittyFlags 注册 + kittyKeyboard 旗 + footer 透传 +10，CSI-u 全量解码的配套——baf58d3b2 P1 审查修复） 7692→7754：Termux 手机端适配回流（alpha 42f550c8c：Ctrl+S/Ctrl+Q 接管 XOFF/XON 输出冻结 + 解冻按序补放；矮屏 rows<14 隐藏状态行 / rows<24 高水位半屏，+62，2026-09-12 Mobile Remote 回流） 7754→7765：冻结期 commit 入队死锁修复（requestPump 守卫补 outputFrozen——settle 无条件续调本函数、而 drain 在冻结时 return 且不 shift 队列，两头不对称构成微任务自旋、事件循环被饿死：Ctrl+S 冻结后 Ctrl+Q/Ctrl+C 全失效只能杀进程；+11，2026-09-12 P0 修复，含回归用例与 pty 端到端验收）"
     },
     "src/server/session-manager.ts": {
       "ceiling": 5992,
@@ -41,8 +41,8 @@
       "note": "tool-pipeline 增长：出界首触即授（970b05196）+ approvalMode 注入（f8bc60ffe 回流 2026-09-07）——ceiling 2099→2115 2115→2168：楔死族加固（0e792e26e +38 / b76861adc 写后挂起事故族 +9 净）+ stall-observer 工具打点（38b246ba6 +10 净）+ meridian 队列让出（d1c06e5ac +5 净）——多笔落地未上账，2026-09-09 审查补记。 2168→2197：工具管线纵深修复第一波（pre/post 阶段打点 11 处 + [slow-sync-stage] 同步段计时，+29，2026-09-10） 2197→2180：R2 写前认领路径解析拆出 pre-write-claims.ts（2026-09-12 拆分落地收紧）"
     },
     "src/server/session-routes.ts": {
-      "ceiling": 2121,
-      "note": "1995→1997：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）。 1997→2019：账本对齐实际行数（HEAD 2005 已超 8，欠账）+ 自定义模型解析修复回流（main 74ac20588：409 附因分类接线 classifyModelSpecMiss，+14，2026-09-07） 2019→2040：A1 describeModelSwitchFailure 分流（272123ac0，+21，2026-09-07 审查修复） 2040→2054：B4 reloadConfig 附因刷新（682161674，+14，2026-09-07 审查修复） 2054→2121：issue #63 保存并重发（98888ab2b +8 净）+ IntelligenceMenu 透传（471807189 +24）+ git/branches 校验（cdb93489a +11）+ images 校验抽取（f512c450a +15 净）+ 楔死族（0e792e26e +9）——多笔落地未上账，2026-09-09 审查补记"
+      "ceiling": 2154,
+      "note": "1995→1997：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）。 1997→2019：账本对齐实际行数（HEAD 2005 已超 8，欠账）+ 自定义模型解析修复回流（main 74ac20588：409 附因分类接线 classifyModelSpecMiss，+14，2026-09-07） 2019→2040：A1 describeModelSwitchFailure 分流（272123ac0，+21，2026-09-07 审查修复） 2040→2054：B4 reloadConfig 附因刷新（682161674，+14，2026-09-07 审查修复） 2054→2121：issue #63 保存并重发（98888ab2b +8 净）+ IntelligenceMenu 透传（471807189 +24）+ git/branches 校验（cdb93489a +11）+ images 校验抽取（f512c450a +15 净）+ 楔死族（0e792e26e +9）——多笔落地未上账，2026-09-09 审查补记 2121→2146：HEAD 2123 欠账 2 行收口 + POST /sessions documents 支持（validateDocumentsPayload 抽取共用 + 创建路由抽取前置，2026-09-12 欢迎页附件，+23） 2146→2154：documents 扩展名白名单（对齐 doc-extract 的 EXTRACTABLE——此前任意扩展名可过校验落盘交抽取器，图片路径早有 MIME 正则，+8，2026-09-12 审查修复）"
     },
     "src/prompt/engine.ts": {
       "ceiling": 1679,
@@ -106,8 +106,8 @@
       "note": "1123→1124：重读纪律措辞（75f41db16 +1）"
     },
     "src/server/serve-agent.ts": {
-      "ceiling": 1161,
-      "note": "1125→1150：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）1150→1158：memory 工具补 deep_recall 侧路接线（deepRecallAgentRef 晚绑定盒）+ RIVET_MEMORY_BACKFILL 回填调度（对齐 dsh 记忆件，+8 净增）。1158→1161：技能加载双路径错误归集接线（import + recordSkillLoadErrors 调用 + forgetSessionStores 清理，各 1 行）——主体逻辑已沿接缝拆到新模块 src/server/skill-load-errors.ts，此处只剩接线。"
+      "ceiling": 1196,
+      "note": "1125→1150：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）1150→1158：memory 工具补 deep_recall 侧路接线（deepRecallAgentRef 晚绑定盒）+ RIVET_MEMORY_BACKFILL 回填调度（对齐 dsh 记忆件，+8 净增）。1158→1161：技能加载双路径错误归集接线（import + recordSkillLoadErrors 调用 + forgetSessionStores 清理，各 1 行）——主体逻辑已沿接缝拆到新模块 src/server/skill-load-errors.ts，此处只剩接线。 1161→1187：HEAD 1176 欠账收口（+15，issue #103 spawn windowsHide 统一等他会话已落未上账）+ sidecar 插件快照合入（pluginToolsSnapshot 装配 + import，2026-09-12，+11） 1187→1196：插件工具合入前二次冲突过滤（partitionPluginTools + 冲突点名警告——暖场基座不含 createInteractiveToolRegistry 装配的 galaxy/deliver_task/域工具，+9，2026-09-12 审查修复）"
     },
     "src/tools/browser-debug/tool.ts": {
       "ceiling": 1084
@@ -131,8 +131,8 @@
       "note": "995→1004：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）"
     },
     "src/server/serve.ts": {
-      "ceiling": 1184,
-      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记）。1116→1120：/project/trust 路由注册（import + 注册调用共 +3）——路由主体、参数校验与 6 条测试都在新模块 src/server/trust-api.ts，此处只剩接线。 1120→1184：Mobile Remote 服务端回流（alpha 9899d9dca/b1c5fa100：RunServeOptions host/allowedHosts/mobileDir + RIVET_SERVE_HOST/ALLOW/MOBILE_DIR 解析 + --host/--mobile-dir + /remote/info 装配 + parseHostsAllow fail-open 修复，+64，2026-09-12）"
+      "ceiling": 1220,
+      "note": "serve 增长：跨盘审批广播接线（93956f5e2 回流 2026-09-07）——ceiling 989→1010。 1010→1027：自定义模型解析修复回流（main 74ac20588：无 key provider 早退改 continue + classifyModelSpecMiss，2026-09-07） 1027→1036：B4 reloadConfig 注入 + B5 oauth isAuthenticated（682161674，+9，2026-09-07 审查修复） 1036→1116：楔死族 serve 侧（0e792e26e +44）+ 会话内模型列表 key 过滤（e3fdaa146 +30）+ 磁盘对账单源接线（c77427d21）——多笔落地未上账，2026-09-09 审查补记）。1116→1120：/project/trust 路由注册（import + 注册调用共 +3）——路由主体、参数校验与 6 条测试都在新模块 src/server/trust-api.ts，此处只剩接线。 1120→1184：Mobile Remote 服务端回流（alpha 9899d9dca/b1c5fa100：RunServeOptions host/allowedHosts/mobileDir + RIVET_SERVE_HOST/ALLOW/MOBILE_DIR 解析 + --host/--mobile-dir + /remote/info 装配 + parseHostsAllow fail-open 修复，+64，2026-09-12） 1184→1220：HEAD 1215 欠账收口（+31，provider 热重载等他会话已落未上账）+ sidecar 插件暖场接线（warmPluginToolsCache 调用 + import，2026-09-12，+5）"
     },
     "src/agent/starflow-orchestrator.ts": {
       "ceiling": 1075,
@@ -172,8 +172,8 @@
       "ceiling": 888
     },
     "src/config/schema.ts": {
-      "ceiling": 1025,
-      "note": "1004→1025：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；issue #75 的 retry 子 schema 拆至 src/config/retry-schema.ts 新模块（-37 行，实测 1022，ceiling 未动——余量留给并发的配置面变更）"
+      "ceiling": 1027,
+      "note": "1004→1025：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；issue #75 的 retry 子 schema 拆至 src/config/retry-schema.ts 新模块（-37 行，实测 1022，ceiling 未动——余量留给并发的配置面变更）。1025→1027：收编公开仓 PR #108 的机制部分——modelConfigSchema 增 deprecated/deprecationNote 两个可选字段（issue #105 席位模型透明化 + 弃用告警），实测 1027，ceiling 对齐实际（零缓冲）。"
     },
     "src/agent/session-persist.ts": {
       "ceiling": 876,

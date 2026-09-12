@@ -197,8 +197,11 @@ function handleCallbackRequest(req: IncomingMessage, res: ServerResponse): void 
   }
 
   if (!code) {
+    // issue #123 — error 由 provider 提供，裸插进 HTML 会让回调页反射执行脚本
+    // （loopback 源上的 XSS）；展示前必须转义。
+    const errMsg = escapeHtml(url.searchParams.get('error') ?? 'unknown')
     res.writeHead(400, { 'Content-Type': 'text/html' })
-    res.end(`<h1>Authorization failed: ${url.searchParams.get('error') ?? 'unknown'}</h1>`)
+    res.end(`<h1>Authorization failed: ${errMsg}</h1>`)
     pending.reject(new Error(`OAuth error: ${url.searchParams.get('error') ?? 'unknown'}`))
     return
   }
@@ -206,6 +209,13 @@ function handleCallbackRequest(req: IncomingMessage, res: ServerResponse): void 
   res.writeHead(200, { 'Content-Type': 'text/html' })
   res.end('<h1>MCP connected — you can close this tab</h1>')
   pending.resolve(code)
+}
+
+/** HTML 转义（issue #123）：回调页只应输出纯文本错误码，provider 提供的字符串
+ *  在插值进 HTML 前都必须过这里。 */
+function escapeHtml(s: string): string {
+  const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  return s.replace(/[&<>"']/g, c => map[c] ?? c)
 }
 
 /** Wait for an OAuth callback on the shared redirect server.

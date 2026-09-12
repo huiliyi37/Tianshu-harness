@@ -20,7 +20,7 @@ import { appendProjectMemory, compactProjectMemory } from '../context/project-me
 import { detectConflicts } from '../context/conflict-detect.js'
 import { createAntibodyProposal } from '../context/antibody.js'
 import { touchActivity } from './stall-observer.js'
-import { buildImportGraph, invalidateFile } from './import-graph.js'
+import { buildImportGraphAsync, invalidateFile } from './import-graph.js'
 import { generateImpactHint } from './impact-hint.js'
 import { analyzeImpact } from '../repo/meridian-impact.js'
 import { shouldRunDiagnostics, filterDiagnosticsForEdit } from '../lsp/client.js'
@@ -2034,23 +2034,28 @@ async function executeToolUseInner(
           deps.evidence.trackImpact(impact.direct, impact.tests)
         }
       } else {
-        if (!importGraph) {
-          try {
-            const graphT0 = Date.now()
-            importGraph = buildImportGraph(deps.cwd)
-            warnSlowSyncStage(tu.name, 'import-graph', Date.now() - graphT0)
-          } catch {
-            // Best-effort impact analysis — must never produce tool errors.
-            // collectTsFiles already catches per-dir errors; this is a belt
-            // for any remaining fs failure (e.g. root cwd itself unreadable).
-          }
-        }
-        if (importGraph) {
-          importGraph = invalidateFile(importGraph, deps.cwd, filePath)
-          const hint = generateImpactHint(importGraph, filePath, deps.cwd)
+        // 冷库回落后台化（2026-09-12，两轮审查修正）：impact hint 是建议性信号，
+        // 异步分片构建（不冻结事件循环，核心目标）；共享盒挂 deps.config
+        // （AgentLoop 会话级对象，buildDeps 逐调用引用转发）——初版把图与构建
+        // Promise 写在逐调用新建的 deps 包上，图永远到不了下一调用（冷库 hint
+        // 静默全灭）且每次写都重复点火全扫。构建未就绪的写入跳过提示即返回。
+        const box = (deps.config.impactGraphState ??= { graph: null, building: null })
+        if (box.graph) {
+          importGraph = invalidateFile(box.graph, deps.cwd, filePath)
+          const hint = generateImpactHint(box.graph, filePath, deps.cwd)
           if (hint) {
             deps.evidence.trackImpact(hint.impactedFiles, hint.relatedTests)
           }
+        } else if (!box.building) {
+          box.building = (async () => {
+            try {
+              box.graph = await buildImportGraphAsync(deps.cwd)
+            } catch {
+              // Best-effort impact analysis — must never produce tool errors.
+            } finally {
+              box.building = null
+            }
+          })()
         }
       }
    } else if (tu.name === 'run_tests' && rawToolResult) {

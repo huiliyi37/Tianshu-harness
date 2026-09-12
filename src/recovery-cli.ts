@@ -82,7 +82,10 @@ function buildRecoveryCallbacks(rl: ReadlineInterface, output: NodeJS.WritableSt
     },
     onToolResult: (_id, name, result, isError) => {
       const prefix = isError ? '[tool error]' : '[tool result]'
-      const snippet = result.length > 500 ? `${result.slice(0, 500)}...` : result
+      // issue #120 — result 不保证是字符串（工具可能回传对象/数字/undefined）：
+      // 直接调 .length/.slice/.replace 会在回调内抛 TypeError，打断 recovery 循环。
+      const text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+      const snippet = text.length > 500 ? `${text.slice(0, 500)}...` : text
       writeln(`${prefix} ${name}:\n  ${snippet.replace(/\n/g, '\n  ')}`)
     },
     onTurnComplete: (usage, turnNumber) => {

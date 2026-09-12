@@ -1,7 +1,7 @@
 import { stat, lstat, symlink, mkdir, cp, readFile, rm, readdir, writeFile } from 'node:fs/promises'
-import { basename, join, resolve, extname } from 'path'
+import { basename, join, resolve, extname, sep } from 'path'
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, realpathSync } from 'fs'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import type { ArtifactStore } from '../artifact/store.js'
 import { expandHome } from '../platform.js'
@@ -57,6 +57,29 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string; subp
   const [, owner, repo, , ref, subpath] = match
   if (!owner || !repo) return null
   return { owner, repo, ref: ref ?? undefined, subpath: subpath || undefined }
+}
+
+/** subpath 是否逃出仓库容器（issue #119）。
+ *  词法层拦 `..` 穿越（`blob/main/../../../../etc/passwd`）；真实层拦容器内的
+ *  符号链接指向外部——clone 下来的仓库可自带 symlink，纯字符串 resolve 拦不住，
+ *  必须 realpath 解析后比对。 */
+export function subpathEscapesContainer(container: string, subpath: string): boolean {
+  if (subpath.length === 0) return false
+  const root = resolve(container)
+  const lexical = resolve(root, subpath)
+  if (!isInsideContainer(root, lexical)) return true
+  try {
+    return !isInsideContainer(realpathSync(root), realpathSync(lexical))
+  } catch {
+    // 路径不存在（尚未 clone / 子路径缺失）：词法结论已足够，上层会报「未找到子路径」
+    return false
+  }
+}
+
+function isInsideContainer(root: string, child: string): boolean {
+  if (child === root) return true
+  const prefix = root.endsWith(sep) ? root : root + sep
+  return child.startsWith(prefix)
 }
 
 /** Validate a git ref (branch/tag/commit) supplied by the model/URL before it
@@ -298,6 +321,17 @@ async function handleGitHubImport(
   }
 
   const effectivePath = gh.subpath ? join(targetPath, gh.subpath) : targetPath
+
+  // issue #119 — subpath 由模型/URL 构造，拼接后必须仍在仓库容器内，否则
+  // `blob/main/../../../../etc/passwd` 会越过 .rivet/external 读工作区外任意文件
+  // （审批 UI 只显示原始 URL，越界难以察觉）。
+  if (gh.subpath && subpathEscapesContainer(targetPath, gh.subpath)) {
+    return {
+      content: `错误：子路径 '${gh.subpath}' 越出仓库目录，已拒绝。`,
+      isError: true,
+      uiContent: '非法子路径：越出仓库目录',
+    }
+  }
 
   if (gh.subpath && !existsSync(effectivePath)) {
     return { content: `错误：在 ${gh.owner}/${gh.repo} 中未找到子路径 '${gh.subpath}'`, isError: true, uiContent: `未找到子路径：${gh.subpath}` }

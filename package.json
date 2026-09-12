@@ -1,6 +1,6 @@
 {
   "name": "tianshu-tui",
-  "version": "3.18.1",
+  "version": "3.19.0",
   "description": "Terminal coding agent optimized for DeepSeek V4 prefix cache",
   "license": "Apache-2.0",
   "type": "module",
@@ -59,6 +59,7 @@
     "test:desktop": "node --import tsx desktop/scripts/run-tests.ts 'src/**/__tests__/*.test.ts' 'scripts/__tests__/*.test.ts'",
     "test:incremental": "tsx scripts/test-incremental.ts",
     "structure:check": "tsx --test src/__tests__/architecture-guards.test.ts",
+    "contributors:check": "tsx scripts/contributors.ts --check",
     "cache:audit": "tsx src/cache/cache-audit-cli.ts",
     "prefix:budget": "tsx scripts/prefix-budget.ts",
     "tokens:audit": "tsx scripts/analyze-output-tokens.ts",
@@ -76,6 +77,7 @@
     "@ast-grep/lang-python": "^0.0.6",
     "@ast-grep/napi": "^0.44.0",
     "esbuild": "^0.28.1",
+    "pdfjs-dist": "^6.3.289",
     "playwright-core": "1.62.0",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.7.0",

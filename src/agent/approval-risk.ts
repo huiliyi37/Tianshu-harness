@@ -206,7 +206,10 @@ export function hasOutOfWorkspaceWriteTarget(command: string): boolean {
       // awk 的 $1 位置参数（数字开头）不在此列，避免误伤常规文本处理
       if (/^\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)(?:[\\/].*)?$/.test(frag)) return true
       if (/%[^%\s]+%/.test(frag)) return true
-      if (frag === '..' || frag.startsWith('../') || frag.startsWith('..\\')) return true
+      // issue #118 — 按路径段判 `..`，不能只判开头：`foo/../../etc/cron.d/x` 以
+      // `foo` 开头，而内层 `/` 不在 [<>|;&] 切分集合里，于是整段不被切开 →
+      // 中段穿越被判成工作区内写，auto-safe（无沙箱）下越界写零提示放行。
+      if (frag.split(/[\\/]/).includes('..')) return true
     }
   }
   return false

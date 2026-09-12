@@ -45,7 +45,7 @@ describe('request_path_access tool', () => {
     }
   })
 
-  it('defaults to write mode; read mode does not grant write', async () => {
+  it('read mode does not grant write', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
     const ext = mkdtempSync(join(tmpdir(), 'rivet-ext-'))
     try {
@@ -55,6 +55,48 @@ describe('request_path_access tool', () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true })
       rmSync(ext, { recursive: true, force: true })
+    }
+  })
+
+  // issue #117 — 缺省 write 是权限放大 footgun：一次调用即可把写权限盖到全盘。
+  it('defaults to read when mode is omitted', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    const ext = mkdtempSync(join(tmpdir(), 'rivet-ext-'))
+    try {
+      const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: ext }, cwd) as never)
+      assert.ok(!res.isError)
+      assert.match(res.content, /已授予 read 访问/)
+      assert.equal(isReadGranted(join(ext, 'x')), true)
+      assert.equal(isWriteGranted(join(ext, 'x')), false)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(ext, { recursive: true, force: true })
+    }
+  })
+
+  // issue #117 — 授权根无上界：path='/' 获批后本会话可写全磁盘。
+  it('refuses filesystem roots and system directories', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    try {
+      for (const p of ['/', '/etc', '/usr', '/Users', '/etc/passwd', '/System']) {
+        const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: p, mode: 'write' }, cwd) as never)
+        assert.equal(res.isError, true, `should refuse ${p}`)
+      }
+      assert.equal(isWriteGranted('/etc/hosts'), false)
+      assert.equal(isWriteGranted('/usr/local/bin/x'), false)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  })
+
+  // issue #117 — 敏感文件不得通过本工具拿到批量授权（纵深防御：path-validate 亦拦）。
+  it('refuses sensitive files', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    try {
+      const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: '/srv/app/.env', mode: 'read' }, cwd) as never)
+      assert.equal(res.isError, true)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
     }
   })
 

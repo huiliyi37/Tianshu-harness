@@ -41,7 +41,7 @@ export function isConnectionPinningEnabled(): boolean {
   return v !== '0' && v !== 'false'
 }
 
-type PinnedLookup = (
+export type PinnedLookup = (
   hostname: string,
   options: unknown,
   callback: (
@@ -74,21 +74,48 @@ export function buildPinnedLookup(address: string, family: number | undefined): 
   }
 }
 
-/** Per-request undici dispatcher whose connections are pinned to `address`.
+/**
+ * Connect options for the per-request dispatcher.
  *
- * 当配置了 proxy 时，返回 ProxyAgent——连接目标变为代理服务器，DNS pin 降级
- * 为请求前的 resolveAndAssertPublic 校验（仍在拦截私网目标，但不做 socket 层
- * pin，因为 pin 源站 IP 对代理隧道无意义）。 */
-function createPinnedDispatcher(
+ * 直连：`connect.lookup` 钉死为 SSRF 预检过的地址，undici Agent 会把它透传给
+ * buildConnector，socket 只能连到该地址——DNS 重绑定窗口关闭。
+ *
+ * 代理（issue #122）：**不**传任何 connect。undici 8.7.0 的 ProxyAgent 根本不读
+ * `opts.connect`：连代理用 `proxyTls`（lib/dispatcher/proxy-agent.js:147）、隧道内
+ * TLS 用 `requestTls`（:149），隧道自身则由内部 `[kAgent].connect` 先经代理客户端
+ * CONNECT、再对返回的 socket 做 TLS（:199-255）——**目标主机名由代理解析**，客户端
+ * 拿不到隧道对端的 IP，因此不存在 post-CONNECT 校验点（ProxyAgent.Options 只有
+ * uri/token/headers/requestTls/proxyTls/clientFactory/proxyTunnel/connectTimeout；
+ * interceptor 只有 cache/decompress/deduplicate/dns/dump/redirect/response-error/
+ * retry）。既然钉不住，就不要传一个被忽略的 connect 让读者以为目标已被钉住。
+ *
+ * 结果：代理模式下目标**只有**请求前的一次性 `resolveAndAssertPublic` 预检——攻击者
+ * 让 DNS 在预检与代理实际解析之间翻转为私网地址即可穿透，代理模式的 SSRF 保证弱于
+ * 直连。这是能力边界而不是已修复项，不要在别处当作强保证使用。
+ */
+export function dispatcherConnectOptions(
   address: string,
   family: number | undefined,
   proxyUrl?: string,
-): Agent | ProxyAgent {
-  const connect = { lookup: buildPinnedLookup(address, family) as never }
-  if (proxyUrl) {
-    return new ProxyAgent({ uri: proxyUrl, connect })
-  }
-  return new Agent({ connect })
+): Agent.Options {
+  if (proxyUrl) return {}
+  return { connect: { lookup: buildPinnedLookup(address, family) } as never }
+}
+
+/** 每次请求的 undici dispatcher。pin 与代理是**两个独立维度**：
+ *  - 配了代理 → ProxyAgent（隧道目标由代理解析，pin 无意义，见 dispatcherConnectOptions）；
+ *  - 无代理且 pin 开 → Agent，连接钉死在预检过的地址上；
+ *  - 无代理且 pin 关 → undefined（交给 undici 默认解析）。
+ *  此前 `pin ? … : undefined` 把两者绑在一起：RIVET_FETCH_PIN=0 会静默丢掉用户配的代理。 */
+export function buildDispatcher(opts: {
+  pin: boolean
+  address: string
+  family: number | undefined
+  proxyUrl?: string
+}): Agent | ProxyAgent | undefined {
+  if (opts.proxyUrl) return new ProxyAgent({ uri: opts.proxyUrl })
+  if (!opts.pin) return undefined
+  return new Agent(dispatcherConnectOptions(opts.address, opts.family))
 }
 
 export async function httpFetchGuarded(
@@ -118,10 +145,10 @@ export async function httpFetchGuarded(
     throw new Error(`Unsupported protocol: ${parsed.protocol}. Only http and https are allowed.`)
   }
 
-  // Connection pinning only applies to the real (undici) network path. When a
-  // caller injects a custom fetch (tests, or a non-undici transport) the
-  // dispatcher is meaningless, so we skip it.
-  const pin = isConnectionPinningEnabled() && !deps.fetch
+  // pin 只管「直连时是否把连接钉在预检地址上」；dispatcher 是否存在另由 deps.fetch
+  // 决定（注入的自定义 fetch 不走 undici，dispatcher 对它无意义）。
+  const pin = isConnectionPinningEnabled()
+  const useDispatcher = !deps.fetch
 
   const headers: Record<string, string> = { 'User-Agent': userAgent }
   let currentUrl = parsed.href
@@ -142,8 +169,10 @@ export async function httpFetchGuarded(
         throw new Error(`Redirect to unsupported protocol: ${hopUrl.protocol}`)
       }
       const resolved = await resolveAndAssertPublic(hopUrl.hostname, lookup)
-      const proxyUrl = pin ? resolveProxyForUrl(currentUrl, opts.proxy) : undefined
-      const dispatcher = pin ? createPinnedDispatcher(resolved.address, resolved.family, proxyUrl) : undefined
+      const proxyUrl = useDispatcher ? resolveProxyForUrl(currentUrl, opts.proxy) : undefined
+      const dispatcher = useDispatcher
+        ? buildDispatcher({ pin, address: resolved.address, family: resolved.family, proxyUrl })
+        : undefined
 
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), timeoutMs)

@@ -19,6 +19,8 @@ import { execSync, spawn } from 'node:child_process'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { rivetHome, updateCheckPath } from '../config/paths.js'
 import { WinStreamDecoder } from '../platform.js'
+// 版本解析/比较拆到 ./semver.js 后仍需本地绑定（compareSemver 用于 hasUpdate 判定）。
+import { compareSemver, parseSemver, updateInstallSpec } from './semver.js'
 import { ProxyAgent } from 'undici'
 import type { Dispatcher } from 'undici'
 import { resolveProxyForUrl } from '../tools/net/proxy-resolver.js'
@@ -148,62 +150,9 @@ function findPowerShell(): string | null {
   return null
 }
 
-export function parseSemver(version: string): [number, number, number, prerelease?: string] {
-  const clean = version.replace(/^v/, '')
-  const plusIdx = clean.indexOf('+')
-  const base = plusIdx >= 0 ? clean.slice(0, plusIdx) : clean
-  const split = base.split('-', 2)
-  const core = split[0] ?? '0'
-  const pre = split[1]
-  const parts = core.split('.').map(x => {
-    const n = Number.parseInt(x, 10)
-    return Number.isFinite(n) ? n : 0
-  })
-  while (parts.length < 3) parts.push(0)
-  return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0, pre]
-}
-
-function comparePrerelease(a: string, b: string): number {
-  const pa = a.split('.')
-  const pb = b.split('.')
-  const len = Math.max(pa.length, pb.length)
-  for (let i = 0; i < len; i++) {
-    const xa = pa[i]
-    const xb = pb[i]
-    if (xa === undefined) return -1
-    if (xb === undefined) return 1
-    const na = Number.parseInt(xa, 10)
-    const nb = Number.parseInt(xb, 10)
-    const bothNumeric = Number.isFinite(na) && Number.isFinite(nb)
-    if (bothNumeric) {
-      if (na !== nb) return na - nb
-    } else {
-      const sa = bothNumeric ? undefined : xa
-      const sb = bothNumeric ? undefined : xb
-      if (sa !== undefined && sb !== undefined) {
-        if (sa !== sb) return sa < sb ? -1 : 1
-      }
-    }
-  }
-  return 0
-}
-
-/** Semver 比较。返回值 < 0 表示 a < b。 */
-export function compareSemver(a: string, b: string): number {
-  const pa = parseSemver(a)
-  const pb = parseSemver(b)
-  for (let i = 0; i < 3; i++) {
-    const ai = pa[i] as number
-    const bi = pb[i] as number
-    if (ai !== bi) return ai - bi
-  }
-  const preA = pa[3]
-  const preB = pb[3]
-  if (!preA && !preB) return 0
-  if (!preA) return 1
-  if (!preB) return -1
-  return comparePrerelease(preA, preB)
-}
+// 版本解析/比较已沿接缝拆到 ./semver.js（updater.ts 触到 800 行红线，
+// architecture-guards max-lines ratchet）；此处 re-export 保持既有 import 契约不变。
+export { compareSemver, parseSemver, updateInstallSpec }
 
 /** 根据当前进程入口定位安装根目录（package.json 所在目录）。 */
 export function detectInstallRoot(): string | null {
@@ -709,7 +658,9 @@ export function buildWindowsSelfUpdateScript(opts: {
     `try { Wait-Process -Id ${opts.pid} -Timeout 120 } catch { Write-Log "parent process ${opts.pid} already exited; proceeding" }`,
     `Start-Sleep -Milliseconds 800`,
     `Write-Log "running npm install -g ${opts.packageName}@${opts.channel}"`,
-    `$out = & ${npm} install -g ${opts.packageName}@${opts.channel} 2>&1`,
+    // issue #124 — spec 必须与同脚本其它参数一样经 q() 包裹：裸插时含空格的
+    // packageName/channel 会被 PowerShell 拆成两个参数，安装整行破裂。
+    `$out = & ${npm} install -g ${q(`${opts.packageName}@${opts.channel}`)} 2>&1`,
     `$code = $LASTEXITCODE`,
     `if ($out) { Write-Log ($out | Out-String) }`,
     `Write-Log "npm exit code: $code"`,

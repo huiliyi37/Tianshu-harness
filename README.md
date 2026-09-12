@@ -1191,7 +1191,8 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 | 贡献者 | 贡献内容 |
 |--------|----------|
 | [@banxia](https://github.com/banxia) | 项目创建者 · 核心开发 |
-| [@qiaodier](https://github.com/qiaodier) | CC Switch provider 预设（PR #8） |
+
+完整名单（16 位外部贡献者 / 76 个 PR）见 CONTRIBUTORS.md。
 
 外部 PR 经「收编」流程合入后，作者署名以 `Co-authored-by` 计入贡献者图谱
 （scripts/credit-contributors.sh 自动落账）——实时贡献者墙：

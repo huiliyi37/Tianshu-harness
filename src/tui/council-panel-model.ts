@@ -20,6 +20,8 @@ export interface CouncilPanelSeat {
   status: string        // running / passed / failed / escalated
   round: number         // 1 | 2（-r2 席）
   modelUsed?: string
+  /** 实际命中的模型已弃用（下线/被静默路由到新代）——桌面端/终端应显式告警。 */
+  deprecated?: boolean
 }
 
 export interface CouncilPanelModel {

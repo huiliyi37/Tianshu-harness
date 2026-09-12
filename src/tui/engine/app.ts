@@ -4591,9 +4591,20 @@ export class TuiApp {
     }
   }
 
-  /** 启动单实例 pump；pump 在跑 / 队列空 / overlay 激活时直接返回。 */
+  /**
+   * 启动单实例 pump；pump 在跑 / 队列空 / overlay 激活 / 输出冻结时直接返回。
+   * 冻结必须在此处也挡住：settle 无条件续调本函数，而 drain 在冻结时 return
+   * 且不 shift 队列（队列保留等解冻续排，语义是对的），两头不对称即微任务自旋
+   * ——唤醒 → 空转 return → 再唤醒，宏任务（stdin 按键、timer）永远排不到。
+   * overlay 与冻结同属「暂不写主屏」的挂起条件，必须在同一守卫里对称收敛。
+   */
   private requestPump(): void {
-    if (this.mainCommitPumping || this.mainCommitQueue.length === 0 || this.overlay.isActive()) return
+    if (
+      this.mainCommitPumping
+      || this.mainCommitQueue.length === 0
+      || this.overlay.isActive()
+      || this.outputFrozen
+    ) return
     this.mainCommitPumping = true
     const pump = this.drainMainCommits()
     this.mainCommitPump = pump

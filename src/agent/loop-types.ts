@@ -221,6 +221,11 @@ export interface AgentConfig {
   verificationSnapshotManager?: import('./verification-snapshot-manager.js').VerificationSnapshotManager
   /** Optional Meridian code graph indexer for structural context. */
   meridianIndexer?: import('../repo/meridian-indexer.js').MeridianIndexer | null
+  /** 冷库回落 import-graph 的会话级共享盒（2026-09-12）：meridian 索引为空时
+   *  写工具的 impact 分析图与后台构建 Promise 放这里——buildDeps 逐调用新建
+   *  deps 包，只有 config 是逐调用引用转发的会话级持有者（与 meridianIndexer
+   *  同构）。lazy init（??=），不要预初始化。 */
+  impactGraphState?: { graph: import('./import-graph.js').ImportGraph | null; building: Promise<void> | null }
   /** Plan Mode state — when 'planning', write tools are blocked in tool-pipeline. */
   planModeState?: PlanModeState
   /** Active plan draft file (relative to cwd) — only this path is writable in plan mode. */

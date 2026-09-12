@@ -27,6 +27,22 @@ export type RouteHandler = (
   res?: ServerResponse,
 ) => RouteResponse | Promise<RouteResponse>
 
+/**
+ * 路径参数 percent-decode（`/config/providers/:name`、skills `:name` 等）：
+ * 前端对自定义名一律 encodeURIComponent（中文供应商/技能名），下方路由匹配
+ * 原样捕获不还原（params[paramNames[i]] = match[i+1]），handler 统一经此还原。
+ * 单层 decode——调用方不得对已 decode 的值二次使用（:modelId 维持 handler 内
+ * 既有 decode，不走这里）。非法 % 序列 fail-open 回原值（保持旧行为，不 500）。
+ */
+export function decodeRouteParam(raw: string | undefined): string | undefined {
+  if (!raw || !raw.includes('%')) return raw
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 export function createRouter(routes: Record<string, RouteHandler>) {
   // Build exact match map + parameterized routes
   const exact = new Map<string, RouteHandler>()

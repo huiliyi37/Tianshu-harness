@@ -18,6 +18,7 @@
 
 import { formatMarkdown } from '../format/markdown.js'
 import { capLiveTailMarkdownSafe } from '../live-tail-cap.js'
+import { hardWrapToDisplayWidth } from '../width.js'
 import type { RivetTheme } from '../theme.js'
 import type { TuiPerfMonitor } from './perf-monitor.js'
 
@@ -140,8 +141,15 @@ export class StreamRenderer {
   getLiveTailLines(maxRows: number, extraTail = ''): string[] {
     const tail = this.pending + extraTail
     if (!tail) return []
-    const capped = capLiveTailMarkdownSafe(tail, this.options.getColumns(), maxRows)
-    return capped ? capped.split('\n') : []
+    const columns = this.options.getColumns()
+    const capped = capLiveTailMarkdownSafe(tail, columns, maxRows)
+    if (!capped) return []
+    // 硬折行兜底：cap 按显示行收口的是逻辑行，终端折行点仍可能因 ambiguous
+    // 宽度（CJK 终端把 ——……“” 按 2 列渲染）与引擎口径错位 → 实际行数 >
+    // rowsForLine 估算 → 回顶欠擦 → spinner 残影（与 thinking 区同根因）。
+    // 按 wide 上界折到 columns-1 内，任何终端每行恰占 1 显示行。
+    const segWidth = Math.max(1, columns - 1)
+    return capped.split('\n').flatMap(l => hardWrapToDisplayWidth(l, segWidth, { ambiguousAsWide: true }))
   }
 
   private commitText(text: string): boolean {

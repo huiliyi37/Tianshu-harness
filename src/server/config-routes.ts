@@ -25,7 +25,7 @@
  *   GET    /config/vision-auto-bridge       auto-pick a vision bridge when unconfigured (opt-in)
  *   PUT    /config/vision-auto-bridge       toggle the auto-bridge opt-in
  */
-import type { RouteHandler } from './index.js'
+import { decodeRouteParam, type RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import {
   loadConfig,
@@ -196,7 +196,19 @@ export interface ProviderListItem {
   retry?: ProviderRetryConfig
 }
 
-export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigChanged?: (approval: string) => void }): Record<string, RouteHandler> {
+export interface ConfigRouteHooks {
+  onApprovalConfigChanged?: (approval: string) => void
+  /** provider/模型/密钥写盘成功后的快照刷新通知（serve 侧据此原地重建启动快照，
+   *  「替换 key」「inline 压 env」对新解析即刻生效）。实现必须 fail-open。 */
+  onProviderConfigChanged?: () => void
+}
+
+export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): Record<string, RouteHandler> {
+  // 变更落盘成功后的通知；hook 异常绝不让已落盘的变更端点失败（双保险，
+  //  serve 侧 refreshServeContext 自身也 fail-open）。
+  const notifyProviderConfigChanged = (): void => {
+    try { hooks?.onProviderConfigChanged?.() } catch { /* best-effort */ }
+  }
   return {
     'GET /config/providers': withAuth(() => {
       const cfg = loadConfig()
@@ -296,6 +308,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
 
       try {
         setupProvider({ providerName, apiKey, apiKeyEnv, baseUrl, model: parsedModel, models: parsedModels, makeDefault, allowProFallback })
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, providerName } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -352,6 +365,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
           force,
           ...(slowThinking !== undefined ? { slowThinking } : {}),
         })
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, providerName } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -373,6 +387,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
       }
       try {
         const provider = updateProviderTunables(providerName, fields)
+        notifyProviderConfigChanged()
         return {
           status: 200,
           body: {
@@ -391,10 +406,11 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     }, apiToken),
 
     'DELETE /config/providers/:name': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       try {
         removeProvider(name)
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, removed: name } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -402,7 +418,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     }, apiToken),
 
     'DELETE /config/providers/:name/models/:modelId': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       // decodeURIComponent 配合客户端的 encodeURIComponent——modelId 可能含空格、
       // 斜杠等特殊字符，URL 路径中为 percent-encoded 形式，需解码后才能与配置中的
       // 原始 ID 匹配。
@@ -410,6 +426,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
       if (!name || !modelId) return { status: 400, body: { error: 'provider name and modelId are required' } }
       try {
         removeModel(name, modelId)
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, removed: modelId } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -417,13 +434,14 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     }, apiToken),
 
     'POST /config/providers/:name/key': withAuth((body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       const { apiKey, apiKeyEnv: envVar } = body as { apiKey?: string; apiKeyEnv?: string }
       try {
         if (apiKey) setApiKey(name, apiKey)
         else if (envVar) setApiKeyEnv(name, envVar)
         else return { status: 400, body: { error: 'apiKey or apiKeyEnv required' } }
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, keyStatus: getApiKeyStatus(name) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -433,10 +451,11 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     // 清除已保存的 key 但保留 provider（默认 provider 允许）——「首次安装删不掉
     // key」的修复点。env 注入的 key 清不掉时 keyStatus 如实报回 source:'env'。
     'DELETE /config/providers/:name/key': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       try {
         const result = clearApiKey(name)
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, keyStatus: result.keyStatus, secretDeleted: result.secretDeleted } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -512,10 +531,11 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     }, apiToken),
 
     'POST /config/providers/:name/default': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       try {
         setDefaultProvider(name)
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, default: name } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -523,7 +543,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
     }, apiToken),
 
     'PUT /config/providers/:name/allow-pro-fallback': withAuth((body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       const { allowProFallback } = (body ?? {}) as { allowProFallback?: unknown }
       if (typeof allowProFallback !== 'boolean') {
@@ -531,6 +551,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
       }
       try {
         setProviderAllowProFallback(name, allowProFallback)
+        notifyProviderConfigChanged()
         return { status: 200, body: { ok: true, allowProFallback } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -699,7 +720,9 @@ export function buildConfigRoutes(apiToken?: string, hooks?: { onApprovalConfigC
         return { status: 400, body: { error: 'defaultModel is required ("provider:modelId" format)' } }
       }
       try {
-        return { status: 200, body: { ok: true, ...setDefaultModelConfig({ defaultModel }) } }
+        const result = setDefaultModelConfig({ defaultModel })
+        notifyProviderConfigChanged()
+        return { status: 200, body: { ok: true, ...result } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
       }

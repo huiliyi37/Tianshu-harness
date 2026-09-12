@@ -11,18 +11,21 @@
  * 部署: wrangler deploy (见同目录 wrangler.toml)
  * 域名: 默认 <worker-name>.<account>.workers.dev, 也可绑自有域名。
  *
- * 安全: 只代理 huiliyi37/Tianshu-Tui 这个仓库的 release 资产, path 白名单校验,
+ * 安全: 只代理 huiliyi37/Tianshu-harness 这个仓库的 release 资产, path 白名单校验,
  * 不开放任意 GitHub URL 转发 (防被盗用当通用代理)。
  */
 
 const GITHUB_OWNER = 'huiliyi37'
-const GITHUB_REPO = 'Tianshu-Tui'
+// 2026-09 仓库改名 Tianshu-Tui → Tianshu-harness。manifest 资产 url 已用新名，
+// 改写探针不同步会整串不匹配 → 镜像只代理入口、资产仍直连 GitHub（3.19.0 实证）。
+const GITHUB_REPO = 'Tianshu-harness'
 const GITHUB_BASE = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`
 
 // 资产名前缀白名单——只允许天枢安装包 + 插件自包含运行时 + latest.json + sig,
 // 拒绝其他文件名。防止 Worker 被当通用 GitHub 代理盗用。
 // tianshu-runtime-*：VS Code 插件 E2 ②级自举包（.tar.gz + .sha256 校验文件）。
-const ASSET_NAME_PATTERN = /^(Tianshu_.+\.(exe|exe\.sig|msi|msi\.sig|app\.tar\.gz|app\.tar\.gz\.sig|dmg)|tianshu-runtime-.+\.tar\.gz(\.sha256)?)$/i
+// AppImage 自 3.16 起进入 Linux 线资产（2026-09-13 补入白名单）。
+const ASSET_NAME_PATTERN = /^(Tianshu_.+\.(exe|exe\.sig|msi|msi\.sig|app\.tar\.gz|app\.tar\.gz\.sig|dmg|appimage|appimage\.sig)|tianshu-runtime-.+\.tar\.gz(\.sha256)?)$/i
 
 // Cloudflare 边缘缓存时长。release 资产不可变 (每个 tag 的文件内容固定),
 // 可以放心长缓存; latest.json 走短缓存 (它随最新 release 切换而变)。

@@ -22,9 +22,14 @@
  *
  * 白名单（不拦截）：
  *   `.env.example` / `.env.template` / `.env.sample` → 模板文件，无真实凭证
- *   `*.test.ts` / `*.spec.ts` → 测试 fixture
- *   `scripts/` 下的凭证生成脚本
+ *   `*.test.ts` / `*.spec.ts` → 测试源码
+ *   文档（.md）——不含真实凭证形态的说明文字
  *   合法源码文件（如 auth/token-manager.ts）——按扩展名区分（.ts/.js 不拦截）
+ *
+ * 注意（2026-09 收紧）：原 `scripts/`、`fixtures/` 目录白名单已移除——目录白名单
+ * 会让 scripts/.env、fixtures/credentials.json 等真实凭证形态被整目录放行。
+ * fail-closed 优先：该类文件名无论位于哪个目录都拦；凭证生成脚本（gen-creds.ts）
+ * 本就不匹配敏感模式，无需目录白名单。
  */
 
 /** 敏感文件名模式 */
@@ -93,10 +98,6 @@ const WHITELIST_PATTERNS: RegExp[] = [
   /\.env\.(?:example|template|sample)$/,
   // 测试文件
   /\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/,
-  // fixtures 目录
-  /(?:^|\/)fixtures?\//,
-  // scripts 目录
-  /(?:^|\/)scripts\//,
   // 文档
   /\.md$/,
 ]
@@ -143,29 +144,44 @@ export function detectSensitiveFile(inputPath: string): SensitiveFileResult {
 }
 
 /**
+ * 聚合形态哨兵——`git add .` / `-A` / `--all` 时被暂存的文件无法从命令文本
+ * 静态枚举，检测器返回该标记项，由调用方决定处置（审批门 / 风险理由）。
+ * 与具体敏感文件名区分开，便于调用方分别措辞。
+ */
+export const AGGREGATE_ADD_MARKER = '__aggregate_add__'
+
+/**
  * 检测 bash 命令文本中是否包含 git add 敏感文件的操作。
  *
  * 正则来源：匹配 `git add .env` / `git add credentials.json` 等
  * 从命令文本中提取 git add 的参数，检查是否含敏感文件名。
  *
- * @returns 匹配到的敏感文件名数组（可能为空）
+ * 聚合形态（`.`、`./`、`-A`、`--all`）无法静态核验缓存的文件 → 返回
+ * [AGGREGATE_ADD_MARKER]。调用方应视为需要人工确认（fail-closed）。
+ *
+ * @returns 匹配到的敏感文件名数组 + 可能的聚合哨兵项（可能为空）
  */
 export function detectSensitiveGitAdd(command: string): string[] {
   // 匹配 `git add <file>` — 提取文件参数（PowerShell/cmd 命令名不区分大小写 → /gi）
   // 来源：prompt security 段 "发现此类文件出现在 git add 中时中止"
   const gitAddRe = /git\s+add\s+(.+)/gi
   const sensitiveFiles: string[] = []
+  let sawAggregate = false
 
   let match: RegExpExecArray | null
   while ((match = gitAddRe.exec(command)) !== null) {
     const args = match[1]!.trim()
     // 拆分空格分隔的参数（简化处理，不处理引号边界情况）
-    const files = args.split(/\s+/).filter(f => !f.startsWith('-'))
+    const files = args.split(/\s+/)
     for (const f of files) {
+      if (f === '.' || f === './') { sawAggregate = true; continue }
+      if (f === '-A' || f === '-a' || f === '--all') { sawAggregate = true; continue }
+      if (f.startsWith('-')) continue
       const result = detectSensitiveFile(f)
       if (result.sensitive) sensitiveFiles.push(f)
     }
   }
 
+  if (sawAggregate) sensitiveFiles.push(AGGREGATE_ADD_MARKER)
   return sensitiveFiles
 }

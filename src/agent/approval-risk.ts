@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path'
 import { evaluateMcpPolicy, type McpCapability } from '../mcp/policy.js'
 import type { ContextClaim } from '../context/claims.js'
 import type { Sensorium } from './sensorium.js'
-import { detectSensitiveGitAdd } from '../tools/sensitive-file-detector.js'
+import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from '../tools/sensitive-file-detector.js'
 
 export type RiskLevel = 'none' | 'low' | 'medium' | 'high'
 
@@ -351,10 +351,17 @@ export function assessToolRisk(
       level = 'high'
     }
     // git add 敏感文件硬门（detectSensitiveGitAdd 此前零生产调用点）：命令文本暂存
-    // 凭据/密钥文件 → high，auto-safe 也要走审批。检测器不抛——不可解析命令只是漏报，不会崩。
-    if (detectSensitiveGitAdd(cmd).length > 0) {
+    // 凭据/密钥文件 → high，auto-safe 也要走审批。聚合形态（. / -A / --all）静态
+    // 无法核验暂存文件 → 哨兵项，medium + 建议改用 git 工具（自带敏感文件筛查）。
+    // 检测器不抛——不可解析命令只是漏报，不会崩。
+    const gitAddHits = detectSensitiveGitAdd(cmd)
+    if (gitAddHits.some(h => h !== AGGREGATE_ADD_MARKER)) {
       reasons.push('git add stages credential/key files — prompt hard-gate')
       level = 'high'
+    }
+    if (gitAddHits.includes(AGGREGATE_ADD_MARKER) && level !== 'high') {
+      reasons.push('git add 聚合形态（. / -A / --all）无法静态核验暂存文件——建议改用 git 工具（自带敏感文件筛查）')
+      level = 'medium'
     }
     // Command injection detection
     for (const p of INJECTION_PATTERNS) {

@@ -7,6 +7,7 @@ import type { ArtifactStore } from '../artifact/store.js'
 import { expandHome } from '../platform.js'
 import { relativePosix } from '../path-format.js'
 import { httpFetchGuarded, type HttpFetchResult } from './net/http-fetch.js'
+import { detectSensitiveFile } from './sensitive-file-detector.js'
 
 type HttpFetchFn = (url: string, ...rest: unknown[]) => Promise<HttpFetchResult>
 let httpFetchForTests: HttpFetchFn | null = null
@@ -225,6 +226,18 @@ export const IMPORT_RESOURCE_TOOL: Tool = {
 async function handleLocalImport(cwd: string, importDir: string, source: string, artifactStore?: ArtifactStore): Promise<{ content: string; uiContent: string; isError?: boolean }> {
   const expanded = expandHome(source)
   const resolved = resolve(expanded)
+
+  // 敏感文件硬门（issue #135）：本地导入曾是不经敏感检测的读路径——LLM 诱导下
+  // 可把 ~/.ssh/id_rsa、.env、~/.aws/credentials 等 symlink/复制进 .rivet/external
+  // 并读入上下文。fail-closed：拒绝并给出原因。
+  const sensitive = detectSensitiveFile(resolved)
+  if (sensitive.sensitive) {
+    return {
+      content: `错误：拒绝导入敏感文件（${sensitive.patternName}）：${resolved}`,
+      isError: true,
+      uiContent: `已拦截敏感文件：${resolved}（${sensitive.patternName}）`,
+    }
+  }
 
   try {
     await lstat(resolved)

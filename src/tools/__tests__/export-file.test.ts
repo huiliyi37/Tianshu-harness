@@ -60,6 +60,19 @@ describe('export_file', () => {
     )
   })
 
+  it('rejects copying sensitive source files (issue #135)', async () => {
+    const dir = tempDir()
+    try {
+      const destination = join(dir, 'out.txt')
+      await assert.rejects(
+        () => exportFile({ destination_path: destination, source_path: '~/.ssh/id_rsa' }),
+        /拒绝导出敏感文件/,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('tool execute reports a useful success message', async () => {
     const dir = tempDir()
     try {

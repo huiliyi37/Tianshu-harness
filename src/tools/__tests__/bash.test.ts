@@ -439,4 +439,12 @@ describe('sanitizeEnv', () => {
     assert.equal(result.MAVEN_TOKEN, undefined)
     assert.equal(result.GRADLE_API_KEY, undefined)
   })
+
+  it('strips NODE_OPTIONS and JAVA_TOOL_OPTIONS (code injection surface, issue #137)', () => {
+    const env = { ...process.env, NODE_OPTIONS: '--require=/tmp/malware.js', JAVA_TOOL_OPTIONS: '-javaagent:/tmp/malware.jar', NODE_PATH: '/opt/lib' }
+    const result = sanitizeEnv(env)
+    assert.equal(result.NODE_OPTIONS, undefined)
+    assert.equal(result.JAVA_TOOL_OPTIONS, undefined)
+    assert.equal(result.NODE_PATH, '/opt/lib')
+  })
 })

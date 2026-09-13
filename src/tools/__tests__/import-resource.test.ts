@@ -27,6 +27,31 @@ describe('import_resource', () => {
     rmSync(tmpCwd, { recursive: true, force: true })
   })
 
+  // issue #135 — 本地导入曾是唯一不经敏感检测的读路径；敏感文件须在
+  // 任何文件系统操作前被拒绝（fail-closed，不依赖路径真实存在）。
+  it('rejects local import of sensitive files without touching the filesystem (issue #135)', async () => {
+    const result = await IMPORT_RESOURCE_TOOL.execute(makeParams({ source: '~/.ssh/id_rsa' }, tmpCwd))
+    assert.equal(result.isError, true)
+    assert.match(result.content as string, /拒绝导入敏感文件/)
+    assert.match(result.content as string, /id_rsa/)
+  })
+
+  it('rejects local import of .env variants (issue #135)', async () => {
+    for (const source of ['~/.aws/.env', 'credentials.json', '~/.npmrc']) {
+      const result = await IMPORT_RESOURCE_TOOL.execute(makeParams({ source }, tmpCwd))
+      assert.equal(result.isError, true, `expected rejection for ${source}`)
+      assert.match(result.content as string, /拒绝导入敏感文件/)
+    }
+  })
+
+  it('still imports non-sensitive local files (issue #135 regression guard)', async () => {
+    const srcFile = join(tmpCwd, 'notes.txt')
+    writeFileSync(srcFile, 'hello importer')
+    const result = await IMPORT_RESOURCE_TOOL.execute(makeParams({ source: srcFile }, tmpCwd))
+    assert.equal(result.isError, undefined)
+    assert.ok((result.content as string).includes('notes.txt'))
+  })
+
   // issue #119 — subpath 由模型/URL 构造，`blob/main/../../../../etc/passwd` 曾可
   // 越过 .rivet/external 读工作区外任意文件；审批 UI 只显示原始 URL，难以察觉。
   describe('subpath container guard', () => {

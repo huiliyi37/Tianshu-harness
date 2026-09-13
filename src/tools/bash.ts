@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DANGEROUS_BASH_PATTERNS } from '../agent/approval-risk.js'
-import { detectSensitiveGitAdd } from './sensitive-file-detector.js'
+import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
 import { killProcessTree } from './process-kill.js'
@@ -108,14 +108,17 @@ const SAFE_ENV_PREFIXES = [
   // managers rely on these; stripping them broke `mvn`/`java` when launched from
   // a GUI with a minimal env. None contain sensitive keywords, so the KEY/TOKEN/
   // SECRET filter below still removes anything genuinely secret.
-  'JAVA_HOME', 'JDK_HOME', 'JRE_HOME', 'CLASSPATH', 'JAVA_TOOL_OPTIONS',
+  'JAVA_HOME', 'JDK_HOME', 'JRE_HOME', 'CLASSPATH',
   'MAVEN_', 'M2_', 'M2', 'GRADLE_', 'ANT_HOME',
   'GOPATH', 'GOROOT', 'GOBIN', 'GO111MODULE', 'GOFLAGS', 'GOPROXY',
   'CARGO_HOME', 'RUSTUP_HOME',
   'ANDROID_', 'NVM_DIR', 'PYENV', 'SDKMAN_DIR',
   'DOTNET_', 'PYTHONPATH', 'VIRTUAL_ENV', 'CONDA_',
   'PNPM_HOME', 'VOLTA_HOME', 'FNM_DIR', 'MISE_', 'ASDF_', 'RBENV_ROOT', 'GEM_',
-  'NODE_PATH', 'NODE_OPTIONS', 'KUBECONFIG', 'DOCKER_HOST',
+  // 注意：NODE_OPTIONS / JAVA_TOOL_OPTIONS 刻意排除（issue #137）——
+  // 它们可在子进程启动时注入 --require/-javaagent 任意代码，构成环境污染
+  // 攻击面；不含 KEY/TOKEN/SECRET 关键词，敏感过滤兜不住，必须显式剥离。
+  'NODE_PATH', 'KUBECONFIG', 'DOCKER_HOST',
 ] as const
 
 /** Keywords that indicate a sensitive env var — vars containing these substrings are stripped. */
@@ -1026,10 +1029,12 @@ export const BASH_TOOL: Tool = {
     )) {
       return true
     }
-    // git add 敏感文件硬门（prompt 安全纪律的运行时落地）：命令文本暂存凭据/密钥
-    // 文件 → 需审批。检测器 fail-closed 且不抛——不可解析的命令最多漏报，不会崩。
-    return detectSensitiveGitAdd(rawCommand).length > 0
-      || detectSensitiveGitAdd(rewrittenCommand).length > 0
+    // git add 敏感文件硬门（prompt 安全纪律的运行时落地）：命令文本暂存具体
+    // 凭据/密钥文件 → 需审批。聚合形态（. / -A / --all）只返回哨兵项，不在此
+    // 收审批（`git add -A && git commit` 属常规流）；哨兵由 assessToolRisk 消费
+    // 为 medium 风险理由。检测器 fail-closed 且不抛——不可解析的命令最多漏报。
+    return detectSensitiveGitAdd(rawCommand).some(h => h !== AGGREGATE_ADD_MARKER)
+      || detectSensitiveGitAdd(rewrittenCommand).some(h => h !== AGGREGATE_ADD_MARKER)
   },
 
   isConcurrencySafe: () => false,

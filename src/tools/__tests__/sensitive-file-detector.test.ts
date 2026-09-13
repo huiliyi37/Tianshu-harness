@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   detectSensitiveFile,
   detectSensitiveGitAdd,
+  AGGREGATE_ADD_MARKER,
 } from '../sensitive-file-detector.js'
 
 describe('sensitive-file-detector', () => {
@@ -65,16 +66,31 @@ describe('sensitive-file-detector', () => {
       assert.equal(detectSensitiveFile('src/env.test.ts').sensitive, false)
     })
 
-    it('does NOT detect fixtures', () => {
-      assert.equal(detectSensitiveFile('fixtures/.env').sensitive, false)
-    })
-
     it('does NOT detect regular source files', () => {
       assert.equal(detectSensitiveFile('src/agent/loop.ts').sensitive, false)
     })
 
     it('does NOT detect markdown docs', () => {
       assert.equal(detectSensitiveFile('docs/secrets.md').sensitive, false)
+    })
+  })
+
+  // issue #136 — 目录白名单收窄：scripts/、fixtures/ 不再整目录放行，真实凭证
+  // 形态（.env、credentials.json）无论在哪个目录都拦；源码/生成脚本不受影响。
+  describe('detectSensitiveFile — directory whitelist removed (issue #136)', () => {
+    it('detects .env inside scripts/', () => {
+      assert.equal(detectSensitiveFile('scripts/.env').sensitive, true)
+    })
+
+    it('detects credentials.json inside fixtures/', () => {
+      assert.equal(detectSensitiveFile('fixtures/credentials.json').sensitive, true)
+      assert.equal(detectSensitiveFile('FIXTURES/.env').sensitive, true)
+    })
+
+    it('still allows credential generation scripts and templates', () => {
+      assert.equal(detectSensitiveFile('Scripts/gen-creds.ts').sensitive, false)
+      assert.equal(detectSensitiveFile('scripts/gen-tokens.sh').sensitive, false)
+      assert.equal(detectSensitiveFile('docs/.ENV.EXAMPLE').sensitive, false)
     })
   })
 
@@ -100,7 +116,6 @@ describe('sensitive-file-detector', () => {
     })
 
     it('whitelists still apply case-insensitively', () => {
-      assert.equal(detectSensitiveFile('FIXTURES/.env').sensitive, false)
       assert.equal(detectSensitiveFile('Scripts/gen-creds.ts').sensitive, false)
       assert.equal(detectSensitiveFile('docs/.ENV.EXAMPLE').sensitive, false)
     })
@@ -166,7 +181,26 @@ describe('sensitive-file-detector', () => {
 
     it('handles git add with flags', () => {
       const files = detectSensitiveGitAdd('git add -A')
-      assert.equal(files.length, 0) // -A is a flag, not a file
+      assert.deepEqual(files, [AGGREGATE_ADD_MARKER]) // 聚合形态 → 哨兵（issue #136）
+    })
+
+    it('flags aggregate staging forms with the aggregate marker (issue #136)', () => {
+      assert.deepEqual(detectSensitiveGitAdd('git add .'), [AGGREGATE_ADD_MARKER])
+      assert.deepEqual(detectSensitiveGitAdd('git add ./'), [AGGREGATE_ADD_MARKER])
+      assert.deepEqual(detectSensitiveGitAdd('git add --all'), [AGGREGATE_ADD_MARKER])
+      assert.deepEqual(detectSensitiveGitAdd('GIT ADD -A'), [AGGREGATE_ADD_MARKER])
+    })
+
+    it('collects concrete hits alongside the aggregate marker', () => {
+      const files = detectSensitiveGitAdd('git add . .env')
+      assert.ok(files.includes(AGGREGATE_ADD_MARKER))
+      assert.ok(files.includes('.env'))
+    })
+
+    it('flags -A/--all mixed with explicit sensitive paths', () => {
+      const files = detectSensitiveGitAdd('git add -A credentials.json')
+      assert.ok(files.includes(AGGREGATE_ADD_MARKER))
+      assert.ok(files.includes('credentials.json'))
     })
 
     it('matches case-insensitively (PowerShell/cmd command casing)', () => {

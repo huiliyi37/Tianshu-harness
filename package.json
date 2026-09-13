@@ -66,11 +66,7 @@
     "diagnose:orphans": "tsx scripts/diagnose-tool-orphans.ts",
     "benchmark": "tsx scripts/run-benchmark.ts",
     "docs:index": "tsx scripts/docs-index.ts",
-    "docs:check": "tsx scripts/docs-index.ts --check",
-    "probe:thresholds": "tsx scripts/telemetry-probes/threshold-coverage.ts",
-    "probe:control-health": "tsx scripts/telemetry-probes/control-health.ts",
-    "probe:test": "tsx scripts/run-node-tests.ts scripts/telemetry-probes",
-    "probe:typecheck": "tsc --noEmit -p scripts/telemetry-probes/tsconfig.json"
+    "docs:check": "tsx scripts/docs-index.ts --check"
   },
   "dependencies": {
     "@ast-grep/lang-json": "^0.0.7",
@@ -104,7 +100,6 @@
     "get-east-asian-width": "^1.6.0",
     "oxlint": "^1.80.0",
     "parquet-wasm": "^0.7.2",
-    "parquetjs": "^0.11.2",
     "patch-package": "^8.0.0",
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",

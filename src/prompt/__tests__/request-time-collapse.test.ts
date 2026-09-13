@@ -268,4 +268,45 @@ describe('requestTimeCollapse', () => {
     // non-dedup tool result NOT collapsed in lightOnly mode
     assert.equal(messages[2]!.content, 'x'.repeat(500))
   })
+
+  it('dedups parallel tool calls from a single assistant message via the prebuilt index (issue #138)', () => {
+    const messages: OaiMessage[] = [
+      makeUser('turn 1'),
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'foo' }) } },
+          { id: 'c2', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'foo' }) } },
+        ],
+      },
+      makeToolResult('c1', Array.from({ length: 20 }, (_, i) => `src/f${i}.ts:1: foo`).join('\n')),
+      makeToolResult('c2', Array.from({ length: 20 }, (_, i) => `src/f${i}.ts:1: foo updated`).join('\n')),
+      makeUser('turn 2'),
+      makeUser('turn 3'),
+      makeUser('turn 4'),
+      makeUser('turn 5'),
+      makeUser('turn 6'),
+    ]
+    requestTimeCollapse(messages, 5, 1_000_000)
+    assert.match(messages[2]!.content as string, /superseded/)
+    assert.doesNotMatch(messages[4]!.content as string, /superseded/)
+  })
+
+  it('treats tool results without matching assistant calls as unknown (index miss → no dedup)', () => {
+    const messages: OaiMessage[] = [
+      makeUser('turn 1'),
+      makeToolResult('ghost-call', 'x'.repeat(500)),
+      makeUser('turn 2'),
+      makeUser('turn 3'),
+      makeUser('turn 4'),
+      makeUser('turn 5'),
+      makeUser('turn 6'),
+    ]
+    requestTimeCollapse(messages, 3, 1_000_000)
+    // 未找到 assistant tool_call → name unknown：不参与 dedup，但语义折叠照旧
+    // （与旧直线回溯一致：inferToolName 同样返回 unknown）。
+    assert.doesNotMatch(messages[1]!.content as string, /superseded/)
+    assert.match(messages[1]!.content as string, /^\[collapsed unknown:/)
+  })
 })

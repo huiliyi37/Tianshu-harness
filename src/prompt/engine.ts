@@ -1564,17 +1564,22 @@ export function requestTimeCollapse(messages: OaiMessage[], boundaryIndex: numbe
     if (m.role === 'user') currentTurn++
   }
 
+  const end = Math.min(boundaryIndex, messages.length)
+  // 单遍预建 tool_call_id → { name, target } 索引（issue #138）：此前每条 tool
+  // 消息要做 2~4 次反向线性回溯找其 assistant tool_call，最坏 O(n²)；索引化后
+  // 全程 O(1) 查找，整体 O(n)。
+  const toolCallIndex = buildToolCallIndex(messages, end)
+
   // Build dedup index: for each tool+target pair, track all occurrences
   // below the boundary so older duplicates can be folded.
   const toolOccurrences = new Map<string, number[]>()
-  const end = Math.min(boundaryIndex, messages.length)
   for (let i = 0; i < end; i++) {
     const msg = messages[i]!
     if (msg.role !== 'tool' || msg.content.length < 200) continue
     if (msg.content.startsWith('[collapsed ') || msg.content.startsWith('[storm-collapsed') || msg.content.startsWith('[tiered-')) continue
-    const toolName = inferToolName(messages, i)
+    const toolName = toolNameFromIndex(msg, toolCallIndex)
     if (toolName === 'grep' || toolName === 'search' || toolName === 'read_file') {
-      const target = inferToolTarget(messages, i, toolName)
+      const target = targetFromIndex(msg, toolCallIndex)
       if (target) {
         const key = `${toolName}:${target}`
         const indices = toolOccurrences.get(key)
@@ -1609,12 +1614,12 @@ export function requestTimeCollapse(messages: OaiMessage[], boundaryIndex: numbe
     if (msg.content.length < 200) continue
     if (msg.content.startsWith('[collapsed ') || msg.content.startsWith('[storm-collapsed') || msg.content.startsWith('[tiered-')) continue
 
-    const toolName = inferToolName(messages, i)
+    const toolName = toolNameFromIndex(msg, toolCallIndex)
 
     // Dedup fold: if a newer call to the same tool+target exists below boundary,
     // collapse this older result regardless of lightOnly mode.
     if (superseded.has(i)) {
-      const target = inferToolTarget(messages, i, toolName)
+      const target = targetFromIndex(msg, toolCallIndex)
       messages[i] = { ...msg, content: `[collapsed ${toolName}: superseded by later ${toolName} on ${target ?? 'same target'}]` }
       continue
     }
@@ -1630,50 +1635,50 @@ export function requestTimeCollapse(messages: OaiMessage[], boundaryIndex: numbe
   }
 }
 
-/**
- * Extract tool target from the assistant's tool_call arguments.
- * For grep/search: the pattern or path argument.
- * For read_file: the file path argument.
- */
-function inferToolTarget(messages: OaiMessage[], toolMsgIndex: number, toolName: string): string | null {
-  const toolMsg = messages[toolMsgIndex]!
-  if (toolMsg.role !== 'tool' || !('tool_call_id' in toolMsg)) return null
-  const toolCallId = (toolMsg as { tool_call_id?: string }).tool_call_id
-  if (!toolCallId) return null
+type ToolCallInfo = {
+  name: string
+  /** grep/search 的 pattern/query，read_file 的 path/file；其余工具或解析失败为 null。 */
+  target: string | null
+}
 
-  for (let j = toolMsgIndex - 1; j >= 0; j--) {
-    const prev = messages[j]!
-    if (prev.role !== 'assistant') continue
-    const calls = (prev as { tool_calls?: Array<{ id: string; function: { arguments: string } }> }).tool_calls
-    if (!calls) continue
-    const call = calls.find(c => c.id === toolCallId)
-    if (!call) continue
-    try {
-      const args = JSON.parse(call.function.arguments) as Record<string, unknown>
-      if (toolName === 'grep' || toolName === 'search') {
-        return (args['pattern'] as string | undefined) ?? (args['query'] as string | undefined) ?? null
+/** 单遍扫描 [0, end) 的 assistant 消息，预建 tool_call_id → { name, target }。 */
+function buildToolCallIndex(messages: OaiMessage[], end: number): Map<string, ToolCallInfo> {
+  const index = new Map<string, ToolCallInfo>()
+  for (let i = 0; i < end; i++) {
+    const msg = messages[i] as { role?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> }
+    if (msg.role !== 'assistant' || !msg.tool_calls?.length) continue
+    for (const call of msg.tool_calls) {
+      let target: string | null = null
+      if (call.function.name === 'grep' || call.function.name === 'search') {
+        target = parseCallTarget(call.function.arguments, ['pattern', 'query'])
+      } else if (call.function.name === 'read_file') {
+        target = parseCallTarget(call.function.arguments, ['path', 'file'])
       }
-      if (toolName === 'read_file') {
-        return (args['path'] as string | undefined) ?? (args['file'] as string | undefined) ?? null
-      }
-    } catch { return null }
+      index.set(call.id, { name: call.function.name, target })
+    }
   }
+  return index
+}
+
+function parseCallTarget(argumentsJson: string, keys: string[]): string | null {
+  try {
+    const args = JSON.parse(argumentsJson) as Record<string, unknown>
+    for (const key of keys) {
+      const value = args[key]
+      if (typeof value === 'string') return value
+    }
+  } catch { /* unparseable args → no target */ }
   return null
 }
 
-function inferToolName(messages: OaiMessage[], toolMsgIndex: number): string {
-  const toolMsg = messages[toolMsgIndex]!
-  if (toolMsg.role !== 'tool' || !('tool_call_id' in toolMsg)) return 'unknown'
-  const toolCallId = (toolMsg as { tool_call_id?: string }).tool_call_id
+function toolNameFromIndex(msg: OaiMessage, index: Map<string, ToolCallInfo>): string {
+  const toolCallId = (msg as { tool_call_id?: string }).tool_call_id
   if (!toolCallId) return 'unknown'
+  return index.get(toolCallId)?.name ?? 'unknown'
+}
 
-  for (let j = toolMsgIndex - 1; j >= 0; j--) {
-    const prev = messages[j]!
-    if (prev.role !== 'assistant') continue
-    const tc = (prev as { tool_calls?: Array<{ id: string; function?: { name: string } }> }).tool_calls
-    if (!tc) continue
-    const match = tc.find(c => c.id === toolCallId)
-    if (match?.function?.name) return match.function.name
-  }
-  return 'unknown'
+function targetFromIndex(msg: OaiMessage, index: Map<string, ToolCallInfo>): string | null {
+  const toolCallId = (msg as { tool_call_id?: string }).tool_call_id
+  if (!toolCallId) return null
+  return index.get(toolCallId)?.target ?? null
 }

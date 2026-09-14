@@ -427,7 +427,7 @@ export function listAllModels(ctx: ServeContext): {
         for (const m of key.models) {
           out.push({
             id: m.id,
-            alias: m.alias ?? m.id,
+            alias: m.id,
             provider: provName,
             providerLabel,
             contextWindow: m.contextWindow,
@@ -440,7 +440,7 @@ export function listAllModels(ctx: ServeContext): {
       continue
     }
     for (const m of contractModels(prov)) {
-      out.push({ id: m.id, alias: m.alias ?? m.id, provider: provName, providerLabel, contextWindow: m.contextWindow, description: m.description })
+      out.push({ id: m.id, alias: m.id, provider: provName, providerLabel, contextWindow: m.contextWindow, description: m.description })
     }
   }
   return out

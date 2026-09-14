@@ -79,7 +79,7 @@ export function buildWorkerRuntime(
   if (_order.modelOverride) {
     const ovProvider = config.provider.providers[_order.modelOverride.provider]
     const ovModel = _order.modelOverride.model
-    const ovModelOk = ovProvider?.models.some(m => m.id === ovModel || m.alias === ovModel)
+    const ovModelOk = ovProvider?.models.some(m => m.id === ovModel)
     if (ovProvider && ovModelOk) {
       let ovApiKey = ''
       let ovAuth: ReturnType<typeof createAuthProvider> | undefined
@@ -96,7 +96,7 @@ export function buildWorkerRuntime(
         ovReady = false
       }
       if (ovReady) {
-        const ovSpec = ovProvider.models.find(m => m.id === ovModel || m.alias === ovModel)
+        const ovSpec = ovProvider.models.find(m => m.id === ovModel)
         const ovContextWindow = ovSpec?.contextWindow ?? card.contextWindow
         const ovMaxTokens = isWrite
           ? Math.min(16384, ovSpec?.maxTokens ?? ovContextWindow)
@@ -163,7 +163,7 @@ export function buildWorkerRuntime(
       debugLog(`[review-override] skip ${_order.profile}: no cached API key (credential failure at bootstrap)`)
     } else {
       const overrideSpec = overrideResolved.providerConfig.models.find(
-        m => m.id === overrideResolved.modelId || m.alias === overrideResolved.modelId,
+        m => m.id === overrideResolved.modelId,
       )
       const overrideContextWindow = overrideSpec?.contextWindow ?? card.contextWindow
       const overrideMaxTokens = isWrite
@@ -233,7 +233,7 @@ export function buildWorkerRuntime(
       // workers fell back to the primary model, competing with the primary
       // session's cache entries. Now we allow a distinct model and set it on
       // workerModel so the worker actually runs on the routed model.
-      if (resolved && resolved.models.some(m => m.id === routeProfile.model || m.alias === routeProfile.model)) {
+      if (resolved && resolved.models.some(m => m.id === routeProfile.model)) {
         try {
           if (resolved.auth?.type === 'oauth') {
             const routedAuth = resolved.name === provider.name
@@ -260,10 +260,10 @@ export function buildWorkerRuntime(
     }
   }
 
-  if (!workerProvider.models.some(m => m.id === workerModel || m.alias === workerModel)) {
+  if (!workerProvider.models.some(m => m.id === workerModel)) {
     workerModel = currentModelId
   }
-  const workerModelSpec = workerProvider.models.find(m => m.id === workerModel || m.alias === workerModel)
+  const workerModelSpec = workerProvider.models.find(m => m.id === workerModel)
   const workerContextWindow = workerModelSpec?.contextWindow ?? card.contextWindow
   const workerMaxTokens = isWrite
     ? Math.min(16384, workerModelSpec?.maxTokens ?? workerContextWindow)

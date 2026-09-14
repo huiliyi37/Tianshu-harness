@@ -57,7 +57,6 @@ describe('runConfigCLI provider commands', () => {
     assert.equal(provider.apiKeyEnv, 'MY_MINIMAX_KEY')
     assert.equal(provider.baseUrl, 'https://proxy.example.com/v1')
     assert.equal(provider.models[0]?.id, 'MiniMax-M2.8')
-    assert.equal(provider.models[0]?.alias, 'm28')
   })
 
   it('set-url and set-model update existing provider', async () => {
@@ -67,7 +66,6 @@ describe('runConfigCLI provider commands', () => {
     const provider = loadConfig().provider.providers.deepseek!
     assert.equal(provider.baseUrl, 'https://deepseek-proxy.example.com/v1')
     assert.equal(provider.models[0]?.id, 'deepseek-custom')
-    assert.equal(provider.models[0]?.alias, 'custom')
   })
 
   it('set-approval updates global approval mode', async () => {

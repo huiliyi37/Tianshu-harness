@@ -383,10 +383,12 @@ describe('migrateDeepseekMaxTokens — one-shot bump 64000 → 384000', () => {
             // 行为；本测试钉的是「无需迁移时零写入」，故快照必须已同步：既不能缺条目，
             // 也不能留着已退役的 deepseek-v4-flash-vision-exp。2026-09-13 起 v4-pro
             // 恢复（官方改口径继续服务），快照须含它，否则回流迁移会补写它。
+            // 2026-09 起 alias 弃用——快照还须无 alias 字段，否则 migrateStripModelAlias
+            // 会剥除并回写，同样打破零写入断言。
             models: [
-              { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
-              { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
-              { id: 'deepseek-flash', alias: 'v4.1-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
+              { id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
+              { id: 'deepseek-v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
+              { id: 'deepseek-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
             ],
           },
         },

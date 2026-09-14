@@ -235,7 +235,7 @@ function modelContextWindow(provider: ProviderConfig, modelId: string): number {
   // 不回写，直接读它可能取到已删除模型的窗口值或漏掉 key 里新加的模型。
   const pool = contractModels(provider)
   return (
-    pool.find(model => model.id === modelId || model.alias === modelId)?.contextWindow
+    pool.find(model => model.id === modelId)?.contextWindow
     ?? pool[0]?.contextWindow
     ?? 128_000
   )

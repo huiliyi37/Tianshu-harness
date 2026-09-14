@@ -120,7 +120,7 @@ export function loadSettingsEnv(): SettingsEnv {
   const models: SettingsEnv['models'] = []
   for (const [provider, p] of Object.entries(cfg.provider.providers)) {
     for (const m of contractModels(p)) {
-      models.push({ provider, id: m.id, alias: m.alias, supportsVision: m.supportsVision === true })
+      models.push({ provider, id: m.id, supportsVision: m.supportsVision === true })
     }
   }
   const domains = buildDomainPickerEntries(undefined).map(d => ({ key: d.key, name: d.name }))
@@ -197,7 +197,7 @@ export function saveSettings(
             const parts = splitModelRef(ref)
             if (!parts) continue
             const provider = cfg.provider.providers[parts.provider]
-            const model = provider ? contractModels(provider).find(m => m.id === parts.model || m.alias === parts.model) : undefined
+            const model = provider ? contractModels(provider).find(m => m.id === parts.model) : undefined
             // 只在覆盖值与磁盘现状不同时写入
             if (model && (model.supportsVision === true) !== value) {
               setModelSupportsVision(parts.provider, model.id, value)

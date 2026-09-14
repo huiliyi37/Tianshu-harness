@@ -110,23 +110,22 @@ describe('provider config mutations', () => {
   })
 
   it('upserts a model and makes it preferred', () => {
-    upsertProviderModel('deepseek', { id: 'deepseek-custom', alias: 'custom', contextWindow: 200000, maxTokens: 32000 }, { preferred: true })
+    upsertProviderModel('deepseek', { id: 'deepseek-custom', contextWindow: 200000, maxTokens: 32000 }, { preferred: true })
     const provider = loadConfig().provider.providers.deepseek!
     assert.equal(provider.models[0]?.id, 'deepseek-custom')
-    upsertProviderModel('deepseek', { id: 'deepseek-custom', alias: 'custom2', contextWindow: 300000, maxTokens: 64000 }, { preferred: true })
+    upsertProviderModel('deepseek', { id: 'deepseek-custom', contextWindow: 300000, maxTokens: 64000 }, { preferred: true })
     assert.equal(loadConfig().provider.providers.deepseek!.models.filter(m => m.id === 'deepseek-custom').length, 1)
-    assert.equal(loadConfig().provider.providers.deepseek!.models[0]?.alias, 'custom2')
   })
 
   it('clamps maxTokens to the context window on upsert (mis-config backstop)', () => {
-    upsertProviderModel('deepseek', { id: 'over-cfg', alias: 'over', contextWindow: 128000, maxTokens: 1000000 })
+    upsertProviderModel('deepseek', { id: 'over-cfg', contextWindow: 128000, maxTokens: 1000000 })
     const model = loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'over-cfg')!
     assert.equal(model.contextWindow, 128000)
     assert.equal(model.maxTokens, 128000)
   })
 
   it('clamps maxTokens via setupProvider model option too', () => {
-    setupProvider({ providerName: 'deepseek', model: { id: 'over-setup', alias: 'over2', contextWindow: 64000, maxTokens: 500000 } })
+    setupProvider({ providerName: 'deepseek', model: { id: 'over-setup', contextWindow: 64000, maxTokens: 500000 } })
     const model = loadConfig().provider.providers.deepseek!.models.find(m => m.id === 'over-setup')!
     assert.equal(model.maxTokens, 64000)
   })
@@ -154,7 +153,7 @@ describe('provider config mutations', () => {
       providerName: 'custom-my-model',
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'sk-custom',
-      models: [{ id: 'my-model', alias: 'mine', contextWindow: 1_000_000, maxTokens: 2_000_000 }],
+      models: [{ id: 'my-model', contextWindow: 1_000_000, maxTokens: 2_000_000 }],
       makeDefault: true,
     })
     const config = loadConfig()

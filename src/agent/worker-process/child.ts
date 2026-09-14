@@ -216,7 +216,7 @@ async function bootAndRun(
 
     // 4) client/promptEngine 按 runtimeDecision 忠实重建（不重跑路由）。
     const providerForDecision = config.provider.providers[decision.providerName] ?? provider
-    const modelSpec = providerForDecision.models.find(m => m.id === decision.model || m.alias === decision.model)
+    const modelSpec = providerForDecision.models.find(m => m.id === decision.model)
     const capabilities = resolveCapabilities(decision.providerName, providerForDecision.capabilities, modelSpec?.capabilities)
     const blocks = subagentPromptBlocks()
     const client = createProviderClient(providerForDecision, capabilities, {

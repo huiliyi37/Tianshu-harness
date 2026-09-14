@@ -78,7 +78,9 @@ export function inferModelContextWindow(modelId: string): number | undefined {
 
 export const modelConfigSchema = z.object({
   id: z.string(),
-  alias: z.string().optional(),
+  /** 惯用短名（glm-53 / k27-code 等）2026-09 起废弃——模型一律按原 ID 保存
+   *  与展示。schema 不再声明该字段：旧配置/旧客户端传入的 alias 由 zod 默认
+   *  strip 掉，解析后不存在、永不落盘（存量剥除见 migrateStripModelAlias）。 */
   /** 擅长场景 — 展示在模型选择器（ModelPicker），预设定义处填充。 */
   description: z.string().optional(),
   /** Optional: absent → inferred from the model id ('-128k'/'-1m' suffix),

@@ -471,11 +471,11 @@ async function main() {
       ? (pinnedKeyId ? findModelInKey(prov, pinnedKeyId, wantedModelId) : findModelOwner(prov, wantedModelId))
       : undefined
     const model = owner?.model
-      ?? (wantedModelId ? providerPool.find(m => m.id === wantedModelId || m.alias === wantedModelId) : undefined)
+      ?? (wantedModelId ? providerPool.find(m => m.id === wantedModelId) : undefined)
       ?? providerPool[0]!
     // 模型名失配告警（合 origin/main）：静默换档会让「配了多模态模型却看不到图片」
     // 完全无迹可循（兜底档常是同名前缀的纯文本档）。headless 每进程只解析一次，无需去重。
-    if (wantedModelId && !owner && !providerPool.some(m => m.id === wantedModelId || m.alias === wantedModelId)) {
+    if (wantedModelId && !owner && !providerPool.some(m => m.id === wantedModelId)) {
       process.stderr.write(
         `[model] 配置的模型 "${wantedModelId}" 不在 provider "${provName}" 下，`
         + `已回退到 "${model.id}"（该档不支持视觉时图片将无法被识别）。`
@@ -1180,7 +1180,7 @@ async function main() {
       return buildCockpitSnapshot({
         agent: ctx.agent,
         session: ctx.session,
-        model: contractModels(ctx.provider)[0]?.alias ?? contractModels(ctx.provider)[0]?.id ?? 'unknown',
+        model: contractModels(ctx.provider)[0]?.id ?? 'unknown',
         cacheHitRate: ctx.session.getRecentTurnHitRate(3) ?? ctx.session.getCacheHitRate(),
         cost: metrics?.cost ?? 0,
         mcpManager: ctx.refs.mcpManager,
@@ -1256,14 +1256,13 @@ async function main() {
     modelPickerData: () => {
       const activeModelId = ctx?.agent.config.promptEngine.getModel()
       const activeProvider = ctx?.provider.name
-      const entries: { id: string; alias: string; provider: string; current: boolean; contextWindow: number; effortSupported: boolean }[] = []
+      const entries: { id: string; provider: string; current: boolean; contextWindow: number; effortSupported: boolean }[] = []
       // 只显示用户已保存的 provider（userSaved）——内置预设舰队不进切换器。
       for (const [provName, prov] of Object.entries(ctx?.config.provider.providers ?? {})) {
         if (!prov.userSaved) continue
         for (const m of contractModels(prov)) {
           entries.push({
             id: m.id,
-            alias: m.alias ?? m.id,
             provider: provName,
             current: isCurrentModelSelection(provName, m.id, activeProvider, activeModelId),
             contextWindow: m.contextWindow,
@@ -1690,7 +1689,7 @@ async function main() {
             // 当前会话正用被删的模型组——迁移到默认 provider 首个模型。
             // switchAgentRuntime 会先验证模型和凭证；失败时不应提前 abort 当前 agent。
             const prov = fresh.provider.providers[fresh.provider.default]
-            const modelAlias = prov && (contractModels(prov)[0]?.alias ?? contractModels(prov)[0]?.id)
+            const modelAlias = prov && (contractModels(prov)[0]?.id)
             if (!modelAlias) {
               runtime = { needed: true, switched: false, error: '默认 provider 没有可用模型' }
             } else {
@@ -1814,7 +1813,7 @@ async function main() {
       if (ctx) {
         ctx.config.provider = fresh.provider
         const prov = fresh.provider.providers[fresh.provider.default]
-        const modelAlias = prov && (contractModels(prov)[0]?.alias ?? contractModels(prov)[0]?.id)
+        const modelAlias = prov && (contractModels(prov)[0]?.id)
         if (modelAlias) {
           try { ctx.agent.abort() } catch { /* idle */ }
           const res = switchAgentRuntime(ctx, modelAlias)

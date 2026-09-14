@@ -21,7 +21,6 @@ export interface KeyStatus {
 /** 契约层下发的模型视图（与 ProviderListItem.models 同形）。 */
 export interface KeyModelView {
   id: string
-  alias?: string
   description?: string
   contextWindow?: number
   maxTokens?: number
@@ -61,7 +60,6 @@ export function getProviderKeyStatus(
 function toKeyModelView(model: ModelConfig): KeyModelView {
   return {
     id: model.id,
-    ...(model.alias ? { alias: model.alias } : {}),
     ...(model.description ? { description: model.description } : {}),
     ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
     ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),

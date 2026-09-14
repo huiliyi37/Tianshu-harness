@@ -23,7 +23,7 @@ const fakeSpark: ProPresetEntry = {
     capabilities: { cacheControl: false, stripParams: [], toolJsonBug: true, prefixCache: 'deepseek-native', prefixCompletion: true },
     thinking: 'enabled',
     maxTokens: 384_000,
-    models: [{ id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'cheap', reasoningEffort: 'medium', pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 } }],
+    models: [{ id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'cheap', reasoningEffort: 'medium', pricing: { input: 1, output: 2, cacheRead: 0.02, cacheWrite: 1 } }],
     unsupported: [],
   },
 }

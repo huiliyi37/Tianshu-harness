@@ -33,16 +33,12 @@ function buildAliasTable(): ModelAliasEntry[] {
   const byCanonical = new Map<string, ModelAliasEntry>()
   for (const key of providerPresetKeys) {
     for (const model of PROVIDER_PRESETS[key].provider.models) {
-      const { id, alias, ...metadata } = model
+      const { id, ...metadata } = model
       const existing = byCanonical.get(id)
       if (existing) {
-        if (alias && alias !== id && !existing.aliases.includes(alias)) {
-          existing.aliases.push(alias)
-        }
         continue
       }
-      const aliases = alias && alias !== id ? [alias] : []
-      byCanonical.set(id, { canonicalId: id, aliases, metadata })
+      byCanonical.set(id, { canonicalId: id, aliases: [], metadata })
     }
   }
   return [...byCanonical.values()]

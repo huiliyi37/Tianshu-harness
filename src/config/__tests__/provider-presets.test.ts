@@ -67,7 +67,6 @@ describe('provider presets', () => {
     const v4pro = deepseek.models.find(m => m.id === 'deepseek-v4-pro')
     assert.ok(v4pro, 'V4-Pro 条目在（官方改口径，撤销 ea8d9c92c 退役）')
     assert.equal(v4pro.tier, 'strong')
-    assert.equal(v4pro.alias, 'v4-pro')
     assert.equal(deepseek.models.find(m => m.id === 'deepseek-v4-flash')?.reasoningEffort, 'medium')
   })
 

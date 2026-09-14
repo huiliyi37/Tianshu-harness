@@ -43,7 +43,7 @@ function provider(overrides: Record<string, unknown>): ProviderConfig {
   } as unknown as ProviderConfig
 }
 
-const model = (id: string, alias?: string) => ({ id, alias }) as ProviderConfig['models'][number]
+const model = (id: string) => ({ id }) as unknown as ProviderConfig['models'][number]
 
 /** keys[0] 的非空取用——测试里省掉每个下标都写 `!`（noUncheckedIndexedAccess）。 */
 function key0(prov: ProviderConfig): ProviderKeyConfig {
@@ -197,16 +197,16 @@ describe('key pool views', () => {
     assert.equal(defaultKeyOf(noDefault)?.id, 'kx')
   })
 
-  it('resolves a model to its owning key by id or alias, first key wins on collision', () => {
+  it('resolves a model to its owning key by id（alias 已废弃）, first key wins on collision', () => {
     const prov = provider({
       keys: [
-        { id: 'k1', models: [model('dup', 'dup-alias')] },
+        { id: 'k1', models: [model('dup')] },
         { id: 'k2', models: [model('dup'), model('solo')] },
       ],
     })
     assert.equal(findModelOwner(prov, 'solo')!.owner?.id, 'k2')
     assert.equal(findModelOwner(prov, 'dup')!.owner?.id, 'k1')
-    assert.equal(findModelOwner(prov, 'dup-alias')!.owner?.id, 'k1')
+    assert.equal(findModelOwner(prov, 'dup-alias'), undefined)
     assert.equal(findModelOwner(prov, 'nope'), undefined)
     assert.equal(findModelOwner(prov, ''), undefined)
 

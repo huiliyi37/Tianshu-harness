@@ -135,7 +135,11 @@ describe('architecture guards', () => {
     // ② 标识符前的引号排除——`'execSync('` 这类字符串字面量曾被命中；
     // ③ 多行方法定义排除——接口里的 `spawn(\n  command: string,\n)` 不是调用；
     // ④ 窗口向前后各看 10 行——windowsHide 可能经变量传入（spawn-git 的 mergedOpts）。
-    const CALL_RE = /(?:^|[^\w."`])(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/
+    // 别名同样必须覆盖：`const execFileP = promisify(execFile)` 得到的 `execFileP(...)`
+    // 不匹配下面的原生名单，曾让 13 处 git 调用（volatile-git / checkpoint /
+    // workspace-guard / worktree-reality）整体绕过本守卫——Windows 上每次刷新
+    // git 上下文都会闪一个控制台窗口（issue #103）。新增别名请一并登记。
+    const CALL_RE = /(?:^|[^\w."`])(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|spawnP|execP|execFileP|spawnAsync|execAsync|execFileAsync)\s*\(/
     const METHOD_SIG_RE = /\(\s*\w+\s*:\s*[\w<{[]/
     // 平台专用豁免：文件内全部 spawn 目标都是 Windows 上不存在的命令
     // （osascript / pbcopy / screencapture），不可能产生控制台窗口。

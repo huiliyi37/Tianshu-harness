@@ -139,13 +139,13 @@ async function detectEngine(): Promise<'textutil' | 'soffice' | null> {
   }
   // Cross-platform: try soffice via PATH (works on Linux, Windows with LibreOffice)
   try {
-    await execFileAsync('soffice', ['--version'], { timeout: 5000 })
+    await execFileAsync('soffice', ['--version'], { windowsHide: true, timeout: 5000 })
     cachedSofficeBinary = 'soffice'
     return 'soffice'
   } catch {}
   // Some Linux distros use libreoffice as binary name
   try {
-    await execFileAsync('libreoffice', ['--version'], { timeout: 5000 })
+    await execFileAsync('libreoffice', ['--version'], { windowsHide: true, timeout: 5000 })
     cachedSofficeBinary = 'libreoffice'
     return 'soffice'
   } catch {}

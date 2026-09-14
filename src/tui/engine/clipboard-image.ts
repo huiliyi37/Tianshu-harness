@@ -89,21 +89,21 @@ export async function readTextFromClipboard(): Promise<string | null> {
   const pf = process.platform
   try {
     if (pf === 'darwin') {
-      const r = await execFileAsync('pbpaste', [], { timeout: 5_000, maxBuffer: 1024 * 1024 })
+      const r = await execFileAsync('pbpaste', [], { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
       return r.stdout
     }
     if (pf === 'linux') {
       // Try wl-paste first (Wayland), then xclip (X11)
       try {
-        const r = await execFileAsync('wl-paste', [], { timeout: 5_000, maxBuffer: 1024 * 1024 })
+        const r = await execFileAsync('wl-paste', [], { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
         return r.stdout
       } catch {
-        const r = await execFileAsync('xclip', ['-selection', 'clipboard', '-o'], { timeout: 5_000, maxBuffer: 1024 * 1024 })
+        const r = await execFileAsync('xclip', ['-selection', 'clipboard', '-o'], { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
         return r.stdout
       }
     }
     if (pf === 'win32') {
-      const r = await execFileAsync('powershell', ['-NoProfile', '-Command', 'Get-Clipboard'], { timeout: 5_000, maxBuffer: 1024 * 1024 })
+      const r = await execFileAsync('powershell', ['-NoProfile', '-Command', 'Get-Clipboard'], { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
       return r.stdout
     }
   } catch {
@@ -132,7 +132,7 @@ async function tryNativeClipboard(): Promise<ClipboardImage | null> {
 
 export async function tryShellClipboard(opts?: ShellClipboardOpts): Promise<ClipboardImage | null> {
   const ef = opts?.execFile ?? (async (bin, args) => {
-    const r = await execFileAsync(bin, args, { timeout: 15_000, maxBuffer: 50 * 1024 * 1024 })
+    const r = await execFileAsync(bin, args, { windowsHide: true, timeout: 15_000, maxBuffer: 50 * 1024 * 1024 })
     return { stdout: r.stdout, stderr: r.stderr }
   })
   const pf = opts?.platform ?? process.platform

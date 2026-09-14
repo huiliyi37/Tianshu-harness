@@ -17,9 +17,9 @@ export function formatGitStatus(branch: string, status: string): string | undefi
 async function loadGitStatus(cwd: string): Promise<string | undefined> {
   try {
     const [branchResult, statusResult, logResult] = await Promise.all([
-      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
-      execFileP('git', ['status', '--short'], { cwd, timeout: 5000 }),
-      execFileP('git', ['log', '--oneline', '-5'], { cwd, timeout: 5000 }).catch(() => ({ stdout: '' })),
+      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
+      execFileP('git', ['status', '--short'], { cwd, timeout: 5000, windowsHide: true }),
+      execFileP('git', ['log', '--oneline', '-5'], { cwd, timeout: 5000, windowsHide: true }).catch(() => ({ stdout: '' })),
     ])
     const base = formatGitStatus(branchResult.stdout.trim(), statusResult.stdout.trim())
     const log = logResult.stdout.trim()
@@ -105,8 +105,8 @@ export interface GitInjectedContext {
 export async function getGitInjectedContext(cwd: string): Promise<GitInjectedContext | undefined> {
   try {
     const [branchResult, headResult] = await Promise.all([
-      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000 }),
-      execFileP('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000 }),
+      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
+      execFileP('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, windowsHide: true }),
     ])
     const branch = branchResult.stdout.trim() || undefined
     const head = headResult.stdout.trim() || undefined

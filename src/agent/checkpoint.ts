@@ -157,7 +157,7 @@ export function removeFromCheckpointIndex(cwd: string, sessionId: string): void 
 }
 
 async function gitLines(cwd: string, args: string[]): Promise<string[]> {
-  const { stdout } = await execFileP('git', ['-c', 'core.quotePath=false', ...args], { cwd, timeout: 5000, encoding: 'utf-8' })
+  const { stdout } = await execFileP('git', ['-c', 'core.quotePath=false', ...args], { cwd, timeout: 5000, encoding: 'utf-8', windowsHide: true })
   return stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
 }
 
@@ -240,7 +240,7 @@ export async function createCheckpoint(cwd: string, label?: string, sessionId?: 
       pruneOrphanCheckpoints()
     }
     const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], {
-      cwd, timeout: 5000, encoding: 'utf-8',
+      cwd, timeout: 5000, encoding: 'utf-8', windowsHide: true,
     })
     const hash = stdout.trim()
     const snapshot = await getDirtySnapshot(cwd)
@@ -311,7 +311,7 @@ async function getChangedPaths(cwd: string): Promise<string[]> {
   const { stdout } = await execFileP(
     'git',
     ['-c', 'core.quotePath=false', 'status', '--porcelain=v1', '-uall'],
-    { cwd, timeout: 5000, encoding: 'utf-8' },
+    { cwd, timeout: 5000, encoding: 'utf-8', windowsHide: true },
   )
   const paths = new Set<string>()
   for (const line of stdout.split('\n')) {
@@ -467,11 +467,11 @@ export async function rollbackToCheckpoint(
 
   try {
     for (const file of files) {
-      const trackedAtHead = await execFileP('git', ['cat-file', '-e', `${data.hash}:${file}`], { cwd })
+      const trackedAtHead = await execFileP('git', ['cat-file', '-e', `${data.hash}:${file}`], { cwd, windowsHide: true })
         .then(() => true)
         .catch(() => false)
       if (trackedAtHead) {
-        await execFileP('git', ['checkout', data.hash, '--', file], { cwd, timeout: 10000 })
+        await execFileP('git', ['checkout', data.hash, '--', file], { cwd, timeout: 10000, windowsHide: true })
       } else {
         const fullPath = join(cwd, file)
         if (existsSync(fullPath)) rmSync(fullPath, { recursive: true, force: true })

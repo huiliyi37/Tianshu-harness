@@ -376,7 +376,7 @@ export function isTypecheckCommand(command: string): boolean {
  */
 export function resolveTypecheckLockRoot(cwd: string): string {
   try {
-    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: true,
       cwd,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],

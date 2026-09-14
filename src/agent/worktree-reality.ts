@@ -29,6 +29,7 @@ async function gitExec(args: string[], cwd: string, timeoutMs = 5000): Promise<s
     const { stdout } = await execFileP('git', args, {
       cwd,
       timeout: timeoutMs,
+      windowsHide: true,
     })
     return stdout.trim()
   } catch {

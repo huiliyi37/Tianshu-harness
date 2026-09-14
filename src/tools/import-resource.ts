@@ -291,7 +291,7 @@ async function handleGitHubImport(
           const args = ['clone', '--depth', '1']
           if (ref) args.push('--branch', ref)
           args.push('--', url, targetPath)
-          await execAsync('git', args, { timeout: timeoutMs })
+          await execAsync('git', args, { windowsHide: true, timeout: timeoutMs })
         },
         fallbackTimeoutMs: mirrorConfig.fallbackTimeoutSec * 1000,
         fallbackMemoryMinutes: mirrorConfig.fallbackMemoryMinutes,
@@ -317,7 +317,7 @@ async function handleGitHubImport(
   if (ref && existsSync(join(targetPath, '.git'))) {
     // ref is validated (no leading `-`); trailing `--` disambiguates it from any
     // pathspec so git treats it strictly as a revision.
-    try { await execAsync('git', ['checkout', ref, '--'], { cwd: targetPath, timeout: 10_000 }) } catch { /* shallow */ }
+    try { await execAsync('git', ['checkout', ref, '--'], { windowsHide: true, cwd: targetPath, timeout: 10_000 }) } catch { /* shallow */ }
   }
 
   const effectivePath = gh.subpath ? join(targetPath, gh.subpath) : targetPath

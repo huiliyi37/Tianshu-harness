@@ -167,7 +167,7 @@ export async function runImageTool(
   for (const { bin, args } of candidates) {
     try {
       await rm(outputPath, { force: true })
-      await execFileAsync(bin, args, { timeout: timeoutMs })
+      await execFileAsync(bin, args, { windowsHide: true, timeout: timeoutMs })
       const out = await readFile(outputPath)
       if (isCompletePng(out)) return out
       // exit 0 但输出缺失/为空/非完整 PNG——尝试下一个候选

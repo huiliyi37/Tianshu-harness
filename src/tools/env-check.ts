@@ -66,7 +66,7 @@ function platformName(platform: NodeJS.Platform): string {
 export async function which(command: string, env?: NodeJS.ProcessEnv): Promise<string | undefined> {
   try {
     const shell = process.platform === 'win32' ? 'where' : 'which'
-    const { stdout } = await execFileAsync(shell, [command], { timeout: 5000, env: env ?? process.env })
+    const { stdout } = await execFileAsync(shell, [command], { windowsHide: true, timeout: 5000, env: env ?? process.env })
     const first = stdout.split('\n')[0]?.trim()
     return first && first.length > 0 ? first : undefined
   } catch {
@@ -77,7 +77,7 @@ export async function which(command: string, env?: NodeJS.ProcessEnv): Promise<s
 async function getVersion(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | undefined> {
   try {
     // `java -version` / some tools print the version to stderr — fall back to it.
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5000, env: env ?? process.env })
+    const { stdout, stderr } = await execFileAsync(command, args, { windowsHide: true, timeout: 5000, env: env ?? process.env })
     const source = (stdout && stdout.trim().length > 0) ? stdout : stderr
     const line = source.split('\n')[0]?.trim()
     return line && line.length > 0 ? line : undefined
@@ -131,7 +131,7 @@ export async function resolveGitExePath(deps: GitExeProbeDeps): Promise<string |
   // 3. cmd /c where git — cmd.exe inherits the full system PATH, unlike Electron
   //    which may miss entries only in Machine-level PATH (e.g. D:\App\Git\cmd).
   try {
-    const { stdout } = await execFileAsync('cmd', ['/c', 'where', 'git'], { timeout: 5000 })
+    const { stdout } = await execFileAsync('cmd', ['/c', 'where', 'git'], { windowsHide: true, timeout: 5000 })
     const first = stdout.split('\n')[0]?.trim()
     if (first && deps.exists(first)) return first
   } catch { /* fall through */ }
@@ -153,7 +153,7 @@ export async function resolveGitExePath(deps: GitExeProbeDeps): Promise<string |
   try {
     const { stdout } = await execFileAsync('cmd', ['/c', 'reg', 'query',
       'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
-      '/v', 'Path'], { timeout: 5000 })
+      '/v', 'Path'], { windowsHide: true, timeout: 5000 })
     const match = stdout.match(/REG_(?:EXPAND_)?SZ\s+(.+)/i)
     if (match?.[1]) {
       const sysPath = match[1].trim()
@@ -227,7 +227,7 @@ async function detectGitAutocrlf(
   env?: NodeJS.ProcessEnv,
 ): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync(gitCmd, ['config', '--get', 'core.autocrlf'], {
+    const { stdout } = await execFileAsync(gitCmd, ['config', '--get', 'core.autocrlf'], { windowsHide: true,
       timeout: 5000,
       env: env ?? process.env,
       ...(cwd ? { cwd } : {}),

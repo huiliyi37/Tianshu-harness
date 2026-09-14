@@ -108,7 +108,7 @@ const PROMOTED_RIVET_FILES = new Set(['.rivet/playbook.jsonl'])
  * Empty output (git succeeds but no results) returns [].
  */
 async function gitLines(args: string[], cwd: string): Promise<string[]> {
-  const { stdout } = await execFileP('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf-8', timeout: 10_000 })
+  const { stdout } = await execFileP('git', ['-c', 'core.quotePath=false', ...args], { cwd, encoding: 'utf-8', timeout: 10_000, windowsHide: true })
   return stdout.trim().split('\n').filter(Boolean)
 }
 
@@ -117,7 +117,7 @@ async function gitLines(args: string[], cwd: string): Promise<string[]> {
  * Throws on git failure — callers decide whether to degrade or report.
  */
 async function gitString(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileP('git', args, { cwd, encoding: 'utf-8', timeout: 10_000 })
+  const { stdout } = await execFileP('git', args, { cwd, encoding: 'utf-8', timeout: 10_000, windowsHide: true })
   return stdout
 }
 

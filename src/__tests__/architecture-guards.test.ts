@@ -135,11 +135,14 @@ describe('architecture guards', () => {
     // ② 标识符前的引号排除——`'execSync('` 这类字符串字面量曾被命中；
     // ③ 多行方法定义排除——接口里的 `spawn(\n  command: string,\n)` 不是调用；
     // ④ 窗口向前后各看 10 行——windowsHide 可能经变量传入（spawn-git 的 mergedOpts）。
-    // 别名同样必须覆盖：`const execFileP = promisify(execFile)` 得到的 `execFileP(...)`
-    // 不匹配下面的原生名单，曾让 13 处 git 调用（volatile-git / checkpoint /
-    // workspace-guard / worktree-reality）整体绕过本守卫——Windows 上每次刷新
-    // git 上下文都会闪一个控制台窗口（issue #103）。新增别名请一并登记。
-    const CALL_RE = /(?:^|[^\w."`])(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|spawnP|execP|execFileP|spawnAsync|execAsync|execFileAsync)\s*\(/
+    // 别名必须覆盖：`const execFileP = promisify(execFile)` 得到的标识符不匹配下面的
+    // 原生名单（`execFileP(` 后面是 `P` 不是 `(`），曾让 33 处调用点整体绕过本守卫——
+    // Windows 上每次刷新 git 上下文都创建一个可见控制台窗口（issue #103）。
+    // 只认「promisify 别名」而不泛化到 `*Async` 名字：手写包装器（如 office-reader 的
+    // execFileAsync）内部已硬编码 windowsHide，泛化会误报并逼出无法通过类型检查的冗余参数。
+    const SPAWN_FAMILY = 'spawn|spawnSync|exec|execSync|execFile|execFileSync'
+    const PROMISIFY_ALIAS_RE = /const\s+(\w+)\s*=\s*promisify\(\s*(?:execFile|exec|spawn)\s*\)/g
+    const CALL_RE = /(?:^|[^\w."`])(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/
     const METHOD_SIG_RE = /\(\s*\w+\s*:\s*[\w<{[]/
     // 平台专用豁免：文件内全部 spawn 目标都是 Windows 上不存在的命令
     // （osascript / pbcopy / screencapture），不可能产生控制台窗口。
@@ -162,11 +165,16 @@ describe('architecture guards', () => {
       if (!/['"](?:node:)?child_process['"]/.test(content)) continue
       scanned++
       const lines = content.split('\n')
+      // 逐文件收集 promisify 别名，并入该文件的调用正则（见上方说明）。
+      const aliases = [...content.matchAll(PROMISIFY_ALIAS_RE)].map(m => m[1]!)
+      const callRe = aliases.length > 0
+        ? new RegExp(`(?:^|[^\\w."\`])(?:${SPAWN_FAMILY}|${aliases.join('|')})\\s*\\(`)
+        : CALL_RE
       lines.forEach((line, i) => {
         const trimmed = line.trim()
         if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
         if (trimmed.includes('import ')) return
-        if (!CALL_RE.test(trimmed)) return
+        if (!callRe.test(trimmed)) return
         // ③ 方法定义形如 `spawn(\n  command: string,\n): X` —— 不是调用
         if (METHOD_SIG_RE.test(lines.slice(i, Math.min(i + 3, lines.length)).join(' '))) return
         // ④ 前后各 10 行：windowsHide 可能在调用点之前定义（spawn-git 的 mergedOpts）

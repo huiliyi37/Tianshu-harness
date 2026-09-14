@@ -53,13 +53,13 @@ async function detectEngine(): Promise<'textutil' | 'soffice' | 'mammoth' | null
   }
   // Cross-platform: try soffice via PATH
   try {
-    await execFileAsync('soffice', ['--version'], { windowsHide: true, timeout: 5000 })
+    await execFileAsync('soffice', ['--version'], { timeout: 5000 })
     cachedSofficeBinary = 'soffice'
     return 'soffice'
   } catch {}
   // Some Linux distros use libreoffice as binary name
   try {
-    await execFileAsync('libreoffice', ['--version'], { windowsHide: true, timeout: 5000 })
+    await execFileAsync('libreoffice', ['--version'], { timeout: 5000 })
     cachedSofficeBinary = 'libreoffice'
     return 'soffice'
   } catch {}
@@ -113,12 +113,12 @@ export async function checkOfficeEngines(): Promise<OfficeEngineStatus> {
     try { await access('/usr/bin/textutil'); readEngine = 'textutil'; writeEngine = 'textutil' } catch {}
   }
   try {
-    await execFileAsync('soffice', ['--version'], { windowsHide: true, timeout: 5000 })
+    await execFileAsync('soffice', ['--version'], { timeout: 5000 })
     readEngine = readEngine || 'soffice'
     writeEngine = writeEngine || 'soffice'
   } catch {}
   try {
-    await execFileAsync('libreoffice', ['--version'], { windowsHide: true, timeout: 5000 })
+    await execFileAsync('libreoffice', ['--version'], { timeout: 5000 })
     readEngine = readEngine || 'soffice'
     writeEngine = writeEngine || 'soffice'
   } catch {}

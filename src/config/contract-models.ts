@@ -29,7 +29,7 @@ export function contractModels(provider: ProviderConfig): ModelConfig[] {
   return out
 }
 
-const match = (m: ModelConfig, id: string) => m.id === id || m.alias === id
+const match = (m: ModelConfig, id: string) => m.id === id
 
 /** 校验 defaultModel 引用：两段式走契约并集；三段式必须命中指定 key 上的模型。 */
 export function assertDefaultModelRef(

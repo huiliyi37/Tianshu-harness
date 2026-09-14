@@ -17,7 +17,7 @@ describe('backfillModelFromPreset', () => {
   it('refills a capability field the stored snapshot is missing', () => {
     // The shape observed in production: a MiniMax-M3 entry carrying exactly the
     // four fields the desktop edit form submits, with supportsVision gone.
-    const stale: ModelConfig = { id: 'MiniMax-M3', alias: 'minimax', contextWindow: 1_000_000, maxTokens: 131072 }
+    const stale: ModelConfig = { id: 'MiniMax-M3', contextWindow: 1_000_000, maxTokens: 131072 }
     const fixed = backfillModelFromPreset('minimax', stale)
     assert.equal(fixed.supportsVision, true)
     assert.equal(fixed.tier, 'strong')
@@ -27,7 +27,7 @@ describe('backfillModelFromPreset', () => {
   it('refills description on snapshots that predate the field (61224f45 存量断链)', () => {
     // description 数据链路落地前的存量快照没有该字段；不回填的话存量用户的
     // ModelPicker 永远看不到「擅长场景」（审查 61224f45 逮出的 HIGH）。
-    const stale: ModelConfig = { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 }
+    const stale: ModelConfig = { id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 }
     const fixed = backfillModelFromPreset('deepseek', stale)
     assert.equal(fixed.description, '快速档：能力对标旗舰，成本更低')
   })
@@ -57,24 +57,28 @@ describe('backfillModelFromPreset', () => {
 
   it('never rewrites naming or request-tuning fields', () => {
     const preset = findPresetModel('minimax', 'MiniMax-M3')!
-    const stored: ModelConfig = { id: 'MiniMax-M3', alias: 'my-own-name', contextWindow: 1_000, maxTokens: 500 }
+    const stored: ModelConfig = { id: 'MiniMax-M3', contextWindow: 1_000, maxTokens: 500 }
     const out = backfillModelFromPreset('minimax', stored)
-    assert.equal(out.alias, 'my-own-name', 'a user alias must survive')
+    assert.equal((out as Record<string, unknown>).alias, undefined, 'alias 已废弃——backfill 输出不再携带')
     assert.equal(out.contextWindow, 1_000, 'tuned windows are not reset to the preset')
     assert.equal(out.maxTokens, 500)
     assert.notEqual(preset.contextWindow, 1_000, 'guard: the preset really does differ here')
     assert.equal(out.reasoningEffort, undefined, 'not in the allowlist')
   })
 
-  it('matches the alias stored as an id', () => {
-    const byAlias = backfillModelFromPreset('minimax', { id: 'minimax-m3', contextWindow: 1_000_000, maxTokens: 64000 })
-    assert.equal(byAlias.supportsVision, true)
+  it('no longer matches a legacy alias stored as an id (alias 体系废弃)', () => {
+    // 旧语义：配置把短名（minimax-m3）当 id 存，backfill 也会按预设 alias 兜底匹配。
+    // 2026-09 alias 废弃后 findPresetModel 只按 id 匹配——短名存量应视为未知模型，
+    // 不回填也不 graft 预设元数据（存量自愈由 migrateStripModelAlias 负责，但那
+    // 只剥字段、不改名）。本用例钉住「不做 alias 兜底」。
+    const byLegacyAliasId = backfillModelFromPreset('minimax', { id: 'minimax-m3', contextWindow: 1_000_000, maxTokens: 64000 })
+    assert.equal(byLegacyAliasId.supportsVision, undefined)
   })
 
   it('does not let a colliding user alias pull in another model metadata', () => {
     // Stored id is unknown to the preset; only the alias looks like a real
     // model. Matching on that alias would graft the wrong model's fields on.
-    const stored: ModelConfig = { id: 'house-model', alias: 'minimax-m3', contextWindow: 8_000, maxTokens: 1_000 }
+    const stored: ModelConfig = { id: 'house-model', contextWindow: 8_000, maxTokens: 1_000 }
     assert.equal(backfillModelFromPreset('minimax', stored), stored)
   })
 
@@ -162,7 +166,7 @@ describe('loadConfig integration', () => {
           minimax: {
             ...cloneProviderPreset('minimax'),
             apiKey: 'sk-test',
-            models: [{ id: 'MiniMax-M3', alias: 'minimax', contextWindow: 1_000_000, maxTokens: 131072 }],
+            models: [{ id: 'MiniMax-M3', contextWindow: 1_000_000, maxTokens: 131072 }],
           },
         },
       },
@@ -170,7 +174,6 @@ describe('loadConfig integration', () => {
     const model = loadConfig().provider.providers.minimax!.models.find(m => m.id === 'MiniMax-M3')!
     assert.equal(model.supportsVision, true)
     assert.equal(model.maxTokens, 131072, 'the user tuned value is preserved')
-    assert.equal(model.alias, 'minimax', 'so is the user alias')
   })
 
   it('heals the file itself on the next write', () => {
@@ -202,8 +205,8 @@ describe('loadConfig integration', () => {
             apiKey: 'sk-test',
             // 模拟存量快照：v4-flash 还是旧的 'high'
             models: [
-              { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000, reasoningEffort: 'max' },
-              { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, reasoningEffort: 'high' },
+              { id: 'deepseek-v4-pro', contextWindow: 1_000_000, maxTokens: 384_000, reasoningEffort: 'max' },
+              { id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, reasoningEffort: 'high' },
             ],
           },
         },

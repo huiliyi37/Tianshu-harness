@@ -23,8 +23,8 @@ export const BACKFILLED_MODEL_FIELDS = ['supportsVision', 'tier', 'pricing', 're
 /**
  * Refill absent capability fields on one stored model from its preset entry.
  *
- * Matching is by `id` only (against the preset's id *or* alias, since configs
- * sometimes store the alias as the id). The stored `alias` deliberately does
+ * Matching is by `id` only（2026-09 alias 体系废弃后不按短名兜底——存量把
+ * 短名存成 id 的条目视为未知模型，不回填）。The stored `alias` deliberately does
  * not participate: a user-chosen alias that happens to collide with another
  * preset model's name would otherwise pull in the wrong model's metadata.
  *
@@ -118,7 +118,6 @@ export function migratePresetModelBackfill(raw: Record<string, unknown>): boolea
       if (known.has(pm.id)) continue
       models.push({
         id: pm.id,
-        ...(pm.alias ? { alias: pm.alias } : {}),
         contextWindow: pm.contextWindow,
         maxTokens: pm.maxTokens,
         ...(pm.supportsVision ? { supportsVision: true } : {}),

@@ -57,7 +57,7 @@ export function createHeadlessCoordinator(input: HeadlessCoordinatorInput): Dele
     const isWrite = profileRegistry.listWriteProfiles().includes(order.profile)
     const blocks = subagentPromptBlocks()
     const modelSpec = input.provider.models.find(
-      m => m.id === card.model || m.alias === card.model,
+      m => m.id === card.model,
     )
     const ctxWindow = modelSpec?.contextWindow ?? card.contextWindow
     const maxTokens = isWrite

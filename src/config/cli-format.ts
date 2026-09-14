@@ -176,7 +176,7 @@ export function formatProviderCard(
   lines.push(`${indent}${key('apiKey')}: ${keyLine}`)
 
   // ── 模型 ──
-  const models = contractModels(provider).map(m => m.alias ?? m.id).join(', ')
+  const models = contractModels(provider).map(m => m.id).join(', ')
   lines.push(`${indent}${key('models')}: ${c(models, MODEL_COLOR, opts)}`)
 
   if (provider.thinking) {

@@ -20,7 +20,7 @@ const baseProviders = {
 }
 
 function fakeResolve(modelId: string): ResolvedModelTarget | { error: string } | null {
-  const found = baseProviders.deepseek.models.find(m => m.id === modelId || m.alias === modelId)
+  const found = baseProviders.deepseek.models.find(m => m.id === modelId)
   if (!found) return null
   return {
     provider: baseProviders.deepseek as unknown as ResolvedModelTarget['provider'],
@@ -28,7 +28,6 @@ function fakeResolve(modelId: string): ResolvedModelTarget | { error: string } |
     apiKey: 'key-ds',
     auth: undefined,
     modelId: found.id,
-    alias: found.alias,
   }
 }
 
@@ -38,8 +37,8 @@ test('非 resume / 显式 flag → 不干预（target=null）', () => {
   assert.equal(decideStartupResumeModel({ resumed: true, explicitProvider: 'glm', originalModel: 'ds-v4', resolve: fakeResolve }).target, null)
 })
 
-test('原模型命中 → 用原模型（含 alias 解析）', () => {
-  const d = decideStartupResumeModel({ resumed: true, originalModel: 'v4', resolve: fakeResolve })
+test('原模型命中 → 用原模型（id 直取，alias 已废弃）', () => {
+  const d = decideStartupResumeModel({ resumed: true, originalModel: 'ds-v4', resolve: fakeResolve })
   assert.ok(d.target)
   assert.equal(d.target.modelId, 'ds-v4')
   assert.equal(d.fallbackUsed, false)

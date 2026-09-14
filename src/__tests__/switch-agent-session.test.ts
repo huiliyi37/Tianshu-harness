@@ -48,7 +48,7 @@ test('跨 cwd 的会话被拒绝载入', () => {
 const baseProviders = {
   deepseek: {
     name: 'deepseek',
-    models: [{ id: 'ds-v4', alias: 'v4', contextWindow: 1000000 }],
+    models: [{ id: 'ds-v4', contextWindow: 1000000 }],
     apiKey: 'key-ds',
   },
   glm: {
@@ -92,13 +92,12 @@ test('原模型不可用 + 兜底模型也不可用 → 同样 fail-closed', () 
 
 // ── resolveProviderForModel：跨 provider 模型 + 凭证解析 ──
 
-test('resolveProviderForModel：同 provider 命中（alias → 规范 id，凭证不动）', () => {
+test('resolveProviderForModel：同 provider 命中（id 直取，凭证不动）', () => {
   const ctx = mkCtx()
-  const r = resolveProviderForModel(ctx, 'v4')
+  const r = resolveProviderForModel(ctx, 'ds-v4')
   assert.ok(r && !('error' in r))
   if (!r || 'error' in r) return
   assert.equal(r.modelId, 'ds-v4')
-  assert.equal(r.alias, 'v4')
   assert.equal(r.providerName, 'deepseek')
   assert.equal(r.apiKey, 'key-ds')
   assert.equal(r.provider, baseProviders.deepseek)
@@ -107,7 +106,7 @@ test('resolveProviderForModel：同 provider 命中（alias → 规范 id，凭�
 
 test('resolveProviderForModel：解析 provider:modelId 前缀（2026-09-08 假阴性回归）', () => {
   const ctx = mkCtx()
-  const r = resolveProviderForModel(ctx, 'deepseek:v4')
+  const r = resolveProviderForModel(ctx, 'deepseek:ds-v4')
   assert.ok(r && !('error' in r))
   if (!r || 'error' in r) return
   assert.equal(r.modelId, 'ds-v4')

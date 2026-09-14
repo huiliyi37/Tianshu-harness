@@ -1243,7 +1243,7 @@ export class DelegationCoordinator {
           .find(h => h.providerId === routeProfile.provider && h.tier === 'cold')
         if (!skipCold) {
           const provider = this.config.routing.providers?.[routeProfile.provider]
-          const routeModelExists = !provider || provider.models.some(m => m.id === routeProfile.model || m.alias === routeProfile.model)
+          const routeModelExists = !provider || provider.models.some(m => m.id === routeProfile.model)
           const routeHasCredentials = !provider || provider.auth?.type === 'oauth' || Boolean(provider.apiKey || (provider.apiKeyEnv && process.env[provider.apiKeyEnv]))
           if (routeModelExists && routeHasCredentials) {
             const routed = cards.find(c => c.model === routeProfile.model)
@@ -1356,7 +1356,7 @@ export class DelegationCoordinator {
     const providers = this.config.routing?.providers
     if (!providers) return undefined
     for (const [id, prov] of Object.entries(providers)) {
-      if (prov.models.some(m => m.id === modelId || m.alias === modelId)) return id
+      if (prov.models.some(m => m.id === modelId)) return id
     }
     return undefined
   }

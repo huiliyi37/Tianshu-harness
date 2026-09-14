@@ -111,7 +111,7 @@ export interface SlashHandlerContext {
   persist: SessionPersist
   model: string
   maxTokens: number
-  availableModels: Array<{ id: string; alias: string; supportsVision?: boolean }>
+  availableModels: Array<{ id: string; supportsVision?: boolean }>
   onModelSwitch: (modelId: string) => { ok: boolean; error?: string }
   allProviders: Record<string, ProviderConfig>
   currentProvider: string
@@ -983,10 +983,10 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           const marker = provName === ctx.currentProvider ? ' ← current' : ''
           lines.push(`[${provName}]${marker}`)
           for (const m of contractModels(prov)) {
-            const isCurrent = m.alias === ctx.model || m.id === ctx.model
+            const isCurrent = m.id === ctx.model
             // 视觉标记：v4-flash（纯文本）与 v4.1-flash（原生多模态）这类只差前缀/
             // 一个点的档位并排时，没有标记用户根本分不出哪个能看图。
-            lines.push(`  ${m.alias} (${m.id})${m.supportsVision ? ' 👁 视觉' : ''}${isCurrent ? ' ←' : ''}`)
+            lines.push(`  ${m.id}${m.supportsVision ? ' 👁 视觉' : ''}${isCurrent ? ' ←' : ''}`)
           }
         }
         if (lines.length === 0) lines.push('(尚无已保存的 provider——运行 /connect 接入后模型会出现在这里)')
@@ -3858,7 +3858,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       persist: ctx.persist,
       model: app.getModelInfo().modelName,
       maxTokens,
-      availableModels: contractModels(ctx.provider).map(m => ({ id: m.id, alias: m.alias ?? m.id })),
+      availableModels: contractModels(ctx.provider).map(m => ({ id: m.id })),
       onModelSwitch: (modelId: string) => {
         try { ctx.agent.abort() } catch {}
         const res = switchAgentRuntime(ctx, modelId)

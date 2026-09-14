@@ -46,7 +46,7 @@ export function resolveReviewOverride(
   if (!providerConfig) return undefined
 
   const modelExists = providerConfig.models.some(
-    m => m.id === override.model || m.alias === override.model,
+    m => m.id === override.model,
   )
   if (!modelExists) return undefined
 
@@ -75,7 +75,7 @@ export function buildReviewOverrideCard(
   providerConfig: ProviderConfig,
 ): ModelCapabilityCard {
   const model = providerConfig.models.find(
-    m => m.id === modelId || m.alias === modelId,
+    m => m.id === modelId,
   )
   const contextWindow = model?.contextWindow ?? 128_000
 
@@ -84,8 +84,8 @@ export function buildReviewOverrideCard(
   // and the runtime bootstrap. See JSDoc above — if this heuristic changes,
   // update both places (and verify `inferModelTierFromCard` in
   // model-tier-policy.ts still agrees).
-  const isPro = modelId.includes('pro') || model?.alias?.includes('pro')
-  const isFlash = modelId.includes('flash') || model?.alias?.includes('flash')
+  const isPro = modelId.includes('pro')
+  const isFlash = modelId.includes('flash')
   const treatAsStrong = isPro || (!isFlash && !isPro)
 
 return {

@@ -319,6 +319,57 @@ function migrateAnthropicProtocol(raw: Record<string, unknown>): boolean {
 }
 
 /**
+ * 模型 alias 废弃迁移（2026-09）：剥掉 provider.models[] 与 keys[].models[] 里的
+ * alias 字段，并对同一 provider 内同 id 的模型去重（保留首次出现）。alias 短名
+ * 体系（glm-53/k27-code/kimi）已整体废弃——模型一律按原 ID 保存与展示；历史
+ * 配置里的 alias 是旧预设快照/旧保存路径混入的残留。id 去重针对的实际症状：
+ * kimi 顶层 models 落出 [kimi-for-coding, k3, kimi-k2.7-code, k3, k3-256k]，
+ * 重复 k3 由旧 setupProvider 的 merge 键（id OR alias）在 alias 不一致时失效
+ * 造成。schema parse 层也会 strip alias，但去重必须在 raw 层先做——parse 后
+ * 无法区分「本来就重复」与「合并而来」。幂等；Mutates `raw`, returns changed。
+ */
+function migrateStripModelAlias(raw: Record<string, unknown>): boolean {
+  const provider = raw.provider as Record<string, unknown> | undefined
+  const providers = provider?.providers as Record<string, unknown> | undefined
+  if (!providers) return false
+  let changed = false
+  const dedupeModels = (models: unknown): unknown => {
+    if (!Array.isArray(models)) return models
+    const seen = new Set<string>()
+    const out: unknown[] = []
+    for (const item of models) {
+      if (!item || typeof item !== 'object') { out.push(item); continue }
+      const m = item as Record<string, unknown>
+      if ('alias' in m) {
+        delete m.alias
+        changed = true
+      }
+      const id = m.id
+      if (typeof id === 'string') {
+        if (seen.has(id)) { changed = true; continue }
+        seen.add(id)
+      }
+      out.push(m)
+    }
+    if (out.length !== models.length) return out
+    return models
+  }
+  for (const entry of Object.values(providers)) {
+    if (!entry || typeof entry !== 'object') continue
+    const prov = entry as Record<string, unknown>
+    prov.models = dedupeModels(prov.models)
+    const keys = prov.keys
+    if (Array.isArray(keys)) {
+      for (const key of keys) {
+        if (!key || typeof key !== 'object') continue
+        ;(key as Record<string, unknown>).models = dedupeModels((key as Record<string, unknown>).models)
+      }
+    }
+  }
+  return changed
+}
+
+/**
  * Load config with 3-layer resolution: user → project → session overlay.
  *
  * Priority (highest wins):
@@ -354,9 +405,10 @@ export function loadConfig(options?: {
     const capsChanged = migrateLegacyCapabilities(cpMigrated)
     const protoChanged = migrateAnthropicProtocol(cpMigrated)
     const backfillChanged = migratePresetModelBackfill(cpMigrated)
+    const aliasStripped = migrateStripModelAlias(cpMigrated)
     // Write back if any migration modified the raw config so the fix
     // persists across restarts (one-shot, idempotent).
-    if (cpMigrated !== raw || dsChanged || flashChanged || visionExpRetired || keysMoved || capsChanged || protoChanged || backfillChanged) {
+    if (cpMigrated !== raw || dsChanged || flashChanged || visionExpRetired || keysMoved || capsChanged || protoChanged || backfillChanged || aliasStripped) {
       try {
         writeFileAtomicSync(configPath, JSON.stringify(cpMigrated, null, 2) + '\n')
       } catch {
@@ -376,6 +428,7 @@ export function loadConfig(options?: {
     migrateV4FlashEffort(cpMigrated)
     migrateLegacyCapabilities(cpMigrated)
     migrateAnthropicProtocol(cpMigrated)
+    migrateStripModelAlias(cpMigrated)
     // 信任门：项目配置可能来自不可信仓库。未授信时剥离安全敏感键再合并
     // （SECURITY.md 信任边界——仓库内容不能自我授权审批豁免/进程拉起/出口改向）。
     const projectDir = dirname(projectPath)
@@ -1312,7 +1365,7 @@ export function setModelSupportsVision(providerName: string, modelId: string, va
   const cfg = loadConfig()
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
-  const model = provider.models.find(m => m.id === modelId || m.alias === modelId)
+  const model = provider.models.find(m => m.id === modelId)
   if (!model) throw new Error(`Model "${modelId}" not found in provider "${providerName}"`)
   // 直接比较而非 `=== true`：从未设置（undefined）→ false 也是真实表态，必须写盘。
   if (model.supportsVision === value) return // no-op, avoid unnecessary disk write
@@ -1540,7 +1593,7 @@ function assertProviderModelExists(cfg: Config, providerName: string, modelId: s
   if (!provider) {
     throw new Error(`${label}：provider "${providerName}" 不在已配置的 provider 列表里（先用 rivet config setup ${providerName} 添加）`)
   }
-  if (!provider.models.some(m => m.id === modelId || m.alias === modelId)) {
+  if (!provider.models.some(m => m.id === modelId)) {
     throw new Error(`${label}：provider "${providerName}" 下没有模型 "${modelId}"（检查拼写或用 rivet config add-model 添加）`)
   }
 }
@@ -1861,7 +1914,7 @@ export function upsertProviderModel(providerName: string, model: ModelConfig, op
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
   model = clampModelTokens(model)
-  const existingIndex = provider.models.findIndex(item => item.id === model.id || (model.alias !== undefined && item.alias === model.alias))
+  const existingIndex = provider.models.findIndex(item => item.id === model.id)
   const existing = existingIndex >= 0 ? provider.models[existingIndex] : undefined
   if (existing) provider.models[existingIndex] = mergeModelUpdate(existing, model)
   else provider.models.push(model)
@@ -1941,7 +1994,7 @@ export function setupProvider(options: SetupProviderOptions): void {
   }
   if (options.model) {
     const model = clampModelTokens(options.model)
-    const existingIndex = next.models.findIndex(item => item.id === model.id || (model.alias !== undefined && item.alias === model.alias))
+    const existingIndex = next.models.findIndex(item => item.id === model.id)
     const existing = existingIndex >= 0 ? next.models[existingIndex] : undefined
     // Merge, never replace — see mergeModelUpdate. This is the path the desktop
     // Settings form takes, and it only ever sends four fields.
@@ -1949,13 +2002,22 @@ export function setupProvider(options: SetupProviderOptions): void {
     else next.models.unshift(model)
   }
   if (options.models) {
+    // models 是用户在探测列表的勾选快照——整组替换，不与预设模板/旧配置 merge。
+    // 此前逐条 merge（键 id OR alias）有两个实际缺陷：① 只勾一个模型也会把预设
+    // 全量模板带进配置（kimi 落 5 条）；② alias 键在历史数据不一致时去重失效，
+    // 同 id 落两行（k3 ×2）。alias 已废弃，merge 键只剩 id；替换语义下无需 merge。
+    const merged: ModelConfig[] = []
+    const seen = new Set<string>()
     for (const raw of options.models) {
       const model = clampModelTokens(modelConfigSchema.parse(raw))
-      const existingIndex = next.models.findIndex(item => item.id === model.id || (model.alias !== undefined && item.alias === model.alias))
-      const existing = existingIndex >= 0 ? next.models[existingIndex] : undefined
-      if (existing) next.models[existingIndex] = mergeModelUpdate(existing, model)
-      else next.models.push(model)
+      if (seen.has(model.id)) continue
+      seen.add(model.id)
+      // 同 id 且上层（preset/current）已有条目：保留用户本轮传入的值，但缺省
+      // 字段由既有条目补齐（探测回填骨架不带 pricing/tier 等，直接用会丢元数据）。
+      const existing = next.models.find(item => item.id === model.id)
+      merged.push(existing ? mergeModelUpdate(existing, model) : model)
     }
+    next.models = merged
   }
   cfg.provider.providers[options.providerName] = next
   next.userSaved = true

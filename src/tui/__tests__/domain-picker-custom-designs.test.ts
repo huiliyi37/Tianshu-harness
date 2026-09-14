@@ -19,7 +19,7 @@ describe('renderTabBar UI Integration', () => {
       selectedIndex: 0,
     }
     const mData: ModelPickerData = {
-      entries: [{ id: 'gpt-5.5', alias: 'gpt-5.5', provider: 'openai', current: true }],
+      entries: [{ id: 'gpt-5.5', provider: 'openai', current: true }],
       selectedIndex: 0,
     }
     const tData: ThemePickerData = {

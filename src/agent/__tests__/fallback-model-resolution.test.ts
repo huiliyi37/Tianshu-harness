@@ -82,13 +82,13 @@ describe('resolveFallbackModel', () => {
     assert.equal(resolveFallbackModel(fp).id, 'custom-mini')
   })
 
-  it('resolves by alias', () => {
+  it('短名引用不再命中（alias 废弃）——按 fallback 档解析', () => {
     const fp = makeProvider({
       fallbackModel: 'v4-pro',
       allowProFallback: false,
       models: [
-        { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'strong' },
-        { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'cheap' },
+        { id: 'deepseek-v4-pro', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'strong' },
+        { id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000, tier: 'cheap' },
       ],
     })
     assert.equal(resolveFallbackModel(fp).id, 'deepseek-v4-flash')

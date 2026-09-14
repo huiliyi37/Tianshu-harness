@@ -690,7 +690,7 @@ function visionCategory(env: SettingsEnv): SettingsCategory {
     const ref = modelRef(m.provider, m.id)
     fields.push(boolField({
       id: `modelVision.${ref}`,
-      label: `视觉：${m.provider} · ${m.alias ?? m.id}`,
+      label: `视觉：${m.provider} · ${m.id}`,
       block: 'modelVision',
       effect: 'next-session',
       hint: `勾选后该模型可作识图桥（${m.provider}/${m.id}）。/connect 建模型时没选「支持视觉」的可在此补标`,

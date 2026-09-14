@@ -567,7 +567,6 @@ function fitDisplay(text: string, width: number): string {
 
 export interface ModelPickerEntry {
   id: string
-  alias: string
   provider: string
   current: boolean
   contextWindow?: number
@@ -945,13 +944,14 @@ export function renderModelPicker(data: ModelPickerData, width: number, height: 
     const selected = i === sel
     const cursor = selected ? color(CURSOR, theme.primary, { bold: true }) : ' '
     const mark = e.current ? color(CURRENT_MARK, theme.primary) : ' '
-    const aliasColor = selected ? color(e.alias, theme.primary, { bold: true }) : color(e.alias, theme.secondary)
+    // 模型一律按原 ID 展示（alias 短名体系 2026-09 废弃——glm-53/k27-code 这类
+    // 短名与真实 id 的错位曾让用户认不出自己保存的模型）。
+    const idColor = selected ? color(e.id, theme.primary, { bold: true }) : color(e.id, theme.secondary)
     const providerColor = selected ? color(`[${e.provider}] `, theme.dim) : color(`[${e.provider}] `, theme.dim)
-    const idText = ` [${e.id}]`
     const tokensText = e.contextWindow ? `  ${(e.contextWindow / 1000).toFixed(0)}k ctx` : ''
-    const head = `${cursor} ${mark} ${providerColor}${aliasColor}${color(idText, theme.dim)}`
+    const head = `${cursor} ${mark} ${providerColor}${idColor}`
 
-    const plainHead = `  ${e.current ? '●' : ' '} [${e.provider}] ${e.alias}${idText}`
+    const plainHead = `  ${e.current ? '●' : ' '} [${e.provider}] ${e.id}`
     const metaRoom = Math.max(0, innerWidth - stringWidth(plainHead) - 2)
     const metaText = tokensText && metaRoom > 6 ? tokensText.slice(0, metaRoom) : ''
     lines.push(padLine(`${head}${color(metaText, theme.dim)}`, width, theme))
@@ -971,7 +971,7 @@ export function renderModelPicker(data: ModelPickerData, width: number, height: 
     const ctxText = current.contextWindow 
       ? `上下文配额: ${current.contextWindow.toLocaleString()} tokens` 
       : '上下文配额: 128k tokens'
-    const features = `标识: ${current.id}  ·  别名: ${current.alias}`
+    const features = `标识: ${current.id}`
     const wrappedDesc = wrapToWidth(modelDesc, innerWidth - 1, previewRows - 2)
     previewLines.push(color(`  ${ctxText}`, theme.primary))
     previewLines.push(color(`  ${features}`, theme.dim))

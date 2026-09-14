@@ -37,7 +37,7 @@ function assertProviderModelExists(cfg: Config, providerName: string, modelId: s
   if (!provider) {
     throw new Error(`${label}：provider "${providerName}" 不在已配置的 provider 列表里（先用 rivet config setup ${providerName} 添加）`)
   }
-  if (!provider.models.some(m => m.id === modelId || m.alias === modelId)) {
+  if (!provider.models.some(m => m.id === modelId)) {
     throw new Error(`${label}：provider "${providerName}" 下没有模型 "${modelId}"（检查拼写或用 rivet config add-model 添加）`)
   }
 }

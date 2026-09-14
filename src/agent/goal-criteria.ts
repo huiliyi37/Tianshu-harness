@@ -153,7 +153,7 @@ export function buildCheapClient(
     return null
   }
   if (!apiKey) return null
-  const modelSpec = prov.models.find(m => m.id === profile.model || m.alias === profile.model)
+  const modelSpec = prov.models.find(m => m.id === profile.model)
   const model = modelSpec?.id ?? profile.model
   const maxTokens = Math.min(1024, modelSpec?.maxTokens ?? 4096)
   const client = createProviderClient(

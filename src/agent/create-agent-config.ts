@@ -231,7 +231,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
   const primarySupportsVision = model.supportsVision ?? false
   const visionBridge = primarySupportsVision ? undefined : buildVisionClient(input)
 
-  const modelPricing = contractModels(provider).find(m => m.id === model.id || m.alias === model.id)?.pricing
+  const modelPricing = contractModels(provider).find(m => m.id === model.id)?.pricing
 
   // 复盘修复（2026-07-25）：每次创建 agent 前丢弃进程级 memo——长驻 sidecar
   // 同进程多会话时，改完配置开新会话必须吃到新档位（文档承诺）。活会话不受
@@ -395,7 +395,7 @@ export function resolveFallbackModel(fp: ProviderConfig): ModelConfig {
   const pool = contractModels(fp)
 
   const preferred = fp.fallbackModel
-    ? pool.find(m => m.id === fp.fallbackModel || m.alias === fp.fallbackModel)
+    ? pool.find(m => m.id === fp.fallbackModel)
     : undefined
 
   const allowProFallback = fp.allowProFallback ?? false
@@ -487,7 +487,7 @@ export function resolveCompactProviderName(input: {
   const model = input.compact.model
   if (!model) return undefined
   const hasModel = (prov: ProviderConfig) =>
-    contractModels(prov).some(m => m.id === model || m.alias === model)
+    contractModels(prov).some(m => m.id === model)
   if (hasModel(input.provider)) return input.provider.name
   for (const [name, prov] of Object.entries(input.allProviders ?? {})) {
     if (hasModel(prov)) return name
@@ -514,7 +514,7 @@ function buildCompactClient(
     input.provider.name === compactProvider ? input.provider : undefined
   )
   if (!prov) return undefined
-  const spec = contractModels(prov).find(m => m.id === compactModel || m.alias === compactModel)
+  const spec = contractModels(prov).find(m => m.id === compactModel)
   if (!spec) return undefined
 
   let apiKey = ''
@@ -704,7 +704,7 @@ function buildVisionClient(input: AgentConfigInput): VisionBridgeBuild | undefin
   const ref = `${vm.provider}/${vm.model}`
   const prov = input.allProviders?.[vm.provider]
   if (!prov) return warnVisionBridge(`prov:${ref}`, `provider "${vm.provider}" 不在已配置的 provider 列表里`)
-  const spec = contractModels(prov).find(m => m.id === vm.model || m.alias === vm.model)
+  const spec = contractModels(prov).find(m => m.id === vm.model)
   if (!spec) return warnVisionBridge(`model:${ref}`, `provider "${vm.provider}" 下没有模型 "${vm.model}"`)
   // 不拦：手改配置可以指一个非视觉模型，那时桥能连上但描述必然是瞎猜。
   if (!spec.supportsVision) {
@@ -722,7 +722,7 @@ function buildVisionClient(input: AgentConfigInput): VisionBridgeBuild | undefin
   if (fb) {
     const fbRef = `${fb.provider}/${fb.model}`
     const fbProv = input.allProviders?.[fb.provider]
-    const fbSpec = fbProv ? contractModels(fbProv).find(m => m.id === fb.model || m.alias === fb.model) : undefined
+    const fbSpec = fbProv ? contractModels(fbProv).find(m => m.id === fb.model) : undefined
     if (!fbProv || !fbSpec) {
       warnVisionBridge(`fbmodel:${fbRef}`, `备用识图模型 ${fbRef} 不存在，降级为单桥`)
     } else {

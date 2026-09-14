@@ -33,8 +33,8 @@ function deepseekProvider(apiKey: string | undefined): ProviderConfig {
     protocol: 'openai',
     capabilities: { cacheControl: false, stripParams: [], toolJsonBug: false, prefixCache: 'none', prefixCompletion: false },
     models: [
-      { id: 'deepseek-pro', alias: 'pro', contextWindow: 128_000, maxTokens: 8192 },
-      { id: 'deepseek-flash', alias: 'flash', contextWindow: 128_000, maxTokens: 8192 },
+      { id: 'deepseek-pro', contextWindow: 128_000, maxTokens: 8192 },
+      { id: 'deepseek-flash', contextWindow: 128_000, maxTokens: 8192 },
     ],
     thinking: 'enabled',
     maxTokens: 64_000,
@@ -72,13 +72,13 @@ test('B5: 未认证 oauth provider 不截胡裸别名——continue 扫到带 ke
             name: 'oauthp',
             auth: { type: 'oauth', provider: 'codex' },
             baseUrl: 'https://api.example.com',
-            models: [{ id: 'shared', alias: 'shared', contextWindow: 128_000, maxTokens: 8192 }],
+            models: [{ id: 'shared', contextWindow: 128_000, maxTokens: 8192 }],
           } as unknown as ProviderConfig,
           keyedp: {
             name: 'keyedp',
             apiKey: 'real-key',
             baseUrl: 'https://api.example.com',
-            models: [{ id: 'shared', alias: 'shared', contextWindow: 128_000, maxTokens: 8192 }],
+            models: [{ id: 'shared', contextWindow: 128_000, maxTokens: 8192 }],
           } as unknown as ProviderConfig,
         },
       },
@@ -104,7 +104,7 @@ test('resolveModelSpecWithReload: keyless startup snapshot falls back to fresh c
     return makeCtx('sk-configured', 'sk-configured')
   }
 
-  const spec = resolveModelSpecWithReload(snapshot, 'flash', reload)
+  const spec = resolveModelSpecWithReload(snapshot, 'deepseek-flash', reload)
   assert.ok(spec, 'expected the target model to resolve via the fresh reload')
   assert.equal(spec!.model.id, 'deepseek-flash')
   assert.equal(spec!.apiKey, 'sk-configured', 'must carry the freshly configured key, not the empty snapshot key')
@@ -116,7 +116,7 @@ test('resolveModelSpecWithReload: configured snapshot resolves without reloading
   let reloadCalls = 0
   const reload = (): ServeContext => { reloadCalls++; return snapshot }
 
-  const spec = resolveModelSpecWithReload(snapshot, 'flash', reload)
+  const spec = resolveModelSpecWithReload(snapshot, 'deepseek-flash', reload)
   assert.ok(spec)
   assert.equal(spec!.model.id, 'deepseek-flash')
   assert.equal(reloadCalls, 0, 'no fresh read when the startup snapshot already resolves')
@@ -143,7 +143,7 @@ function extraProvider(name: string, modelId: string): ProviderConfig {
     baseUrl: 'https://api.example.com',
     protocol: 'openai',
     capabilities: { cacheControl: false, stripParams: [], toolJsonBug: false, prefixCache: 'none', prefixCompletion: false },
-    models: [{ id: modelId, alias: modelId, contextWindow: 128_000, maxTokens: 8192 }],
+    models: [{ id: modelId, contextWindow: 128_000, maxTokens: 8192 }],
     thinking: 'enabled',
     maxTokens: 64_000,
     unsupported: [],
@@ -185,26 +185,26 @@ test('listAllModelsWithReload: falls back to the snapshot when the fresh read th
 function twinProviders(): Record<string, ProviderConfig> {
   // deepseek + deepseek-spark 共享同一 wire model id（API 型号名不能改）
   const models = [
-    { id: 'deepseek-v4-flash', alias: 'v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
-    { id: 'deepseek-v4-pro', alias: 'v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
+    { id: 'deepseek-v4-flash', contextWindow: 1_000_000, maxTokens: 384_000 },
+    { id: 'deepseek-v4-pro', contextWindow: 1_000_000, maxTokens: 384_000 },
   ]
-  const mk = (name: string, aliasFlash: string, aliasPro: string): ProviderConfig => ({
+  const mk = (name: string): ProviderConfig => ({
     name,
     apiKey: `sk-${name}`,
     baseUrl: 'https://api.deepseek.com/v1',
     protocol: 'openai',
     capabilities: { cacheControl: false, stripParams: [], toolJsonBug: true, prefixCache: 'deepseek-native', prefixCompletion: true },
     models: [
-      { ...models[0]!, alias: aliasFlash },
-      { ...models[1]!, alias: aliasPro },
+      models[0]!,
+      models[1]!,
     ],
     thinking: 'enabled',
     maxTokens: 384_000,
     unsupported: [],
   } as ProviderConfig)
   return {
-    deepseek: mk('deepseek', 'v4-flash', 'v4-pro'),
-    'deepseek-spark': mk('deepseek-spark', 'spark-flash', 'spark-pro'),
+    deepseek: mk('deepseek'),
+    'deepseek-spark': mk('deepseek-spark'),
   }
 }
 
@@ -221,10 +221,10 @@ test('resolveModelSpec: provider:modelId 消歧到 spark，不撞官方 deepseek
   assert.equal(spark!.model.id, 'deepseek-v4-flash', 'wire model id 不变')
   assert.equal(spark!.apiKey, 'sk-deepseek-spark')
 
-  const byAlias = resolveModelSpecWithReload(ctx, 'deepseek-spark:spark-flash', stay)
-  assert.ok(byAlias)
-  assert.equal(byAlias!.provider.name, 'deepseek-spark')
-  assert.equal(byAlias!.model.id, 'deepseek-v4-flash')
+  // alias 短名已废弃（2026-09）：旧的 spark-flash 短名不再兜底解析——
+  // 存量短名引用应 fail-closed 返回 null，而不是悄悄映射到别的模型。
+  const byLegacyAlias = resolveModelSpecWithReload(ctx, 'deepseek-spark:spark-flash', stay)
+  assert.equal(byLegacyAlias, null, '废弃短名不得再解析（id-only）')
 })
 
 test('resolveModelSpec: 未知 provider 前缀或该节点无此模型 → null', () => {
@@ -240,14 +240,15 @@ test('listAllModels: 同 wire id 在两节点各出一条（欢迎页/选择器�
   const flash = models.filter((m) => m.id === 'deepseek-v4-flash')
   assert.equal(flash.length, 2, '两节点同 id 必须都列出')
   assert.deepEqual(flash.map((m) => m.provider).sort(), ['deepseek', 'deepseek-spark'])
-  assert.ok(models.some((m) => m.provider === 'deepseek-spark' && m.alias === 'spark-flash'))
+  assert.ok(models.some((m) => m.provider === 'deepseek-spark' && m.id === 'deepseek-v4-flash'))
 })
 
 // ── 2026-09-06 修复：无 key provider 早退 + 失败分类 ────────────────────
 
-test('resolveModelSpec: 裸别名撞上排在前面的无 key provider 时继续扫描（早退修复）', () => {
-  // nokey 排在前面且持有同别名模型但无 key；keyed 排在后面且带 key——
+test('resolveModelSpec: 裸 id 撞上排在前面的无 key provider 时继续扫描（早退修复）', () => {
+  // nokey 排在前面且持有同 id 模型但无 key；keyed 排在后面且带 key——
   // 修复前整个扫描在 nokey 处 return null，永远到不了 keyed。
+  // （原用例靠 keyed 侧 alias 落地穿透；alias 废弃后改用同 id 穿透，场景语义不变。）
   const nokey: ProviderConfig = {
     name: 'nokey', apiKeyEnv: 'NOKEY_UNSET_ENV_X', baseUrl: 'https://a.example.com', protocol: 'openai',
     capabilities: {}, models: [{ id: 'shared-model', contextWindow: 128_000, maxTokens: 4096 }],
@@ -255,7 +256,7 @@ test('resolveModelSpec: 裸别名撞上排在前面的无 key provider 时继续
   } as ProviderConfig
   const keyed: ProviderConfig = {
     name: 'keyed', apiKey: 'sk-keyed', baseUrl: 'https://b.example.com', protocol: 'openai',
-    capabilities: {}, models: [{ id: 'my-model', alias: 'shared-model', contextWindow: 128_000, maxTokens: 4096 }],
+    capabilities: {}, models: [{ id: 'shared-model', contextWindow: 128_000, maxTokens: 4096 }],
     thinking: 'enabled', maxTokens: 64_000, unsupported: [],
   } as ProviderConfig
   const ctx = {
@@ -263,9 +264,9 @@ test('resolveModelSpec: 裸别名撞上排在前面的无 key provider 时继续
     provider: keyed, model: keyed.models[0]!, apiKey: 'sk-ctx', configured: true,
   } as unknown as ServeContext
   const spec = resolveModelSpecWithReload(ctx, 'shared-model')
-  assert.ok(spec, '裸别名应穿透无 key 的 nokey 落到 keyed')
+  assert.ok(spec, '裸 id 应穿透无 key 的 nokey 落到 keyed')
   assert.equal(spec!.provider.name, 'keyed')
-  assert.equal(spec!.model.id, 'my-model')
+  assert.equal(spec!.model.id, 'shared-model')
 })
 
 test('resolveModelSpec: 带 provider: 前缀查无 key 的目标仍 fail-closed', () => {
@@ -285,12 +286,13 @@ test('classifyModelSpecMiss: 模型存在但 key 缺失 → key-missing；不存
   const { classifyModelSpecMiss } = await import('../serve.js')
   const prov: ProviderConfig = {
     name: 'p', apiKeyEnv: 'UNSET_ENV_Z', baseUrl: 'https://a.example.com', protocol: 'openai',
-    capabilities: {}, models: [{ id: 'exists-model', alias: 'em', contextWindow: 128_000, maxTokens: 4096 }],
+    capabilities: {}, models: [{ id: 'exists-model', contextWindow: 128_000, maxTokens: 4096 }],
     thinking: 'enabled', maxTokens: 64_000, unsupported: [],
   } as ProviderConfig
   const config = { provider: { default: 'p', providers: { p: prov } } } as never
   assert.equal(classifyModelSpecMiss(config, 'exists-model'), 'key-missing')
-  assert.equal(classifyModelSpecMiss(config, 'p:em'), 'key-missing')
+  // alias 废弃：旧的 'em' 短名引用不再算「模型存在」，归 unknown-model
+  assert.equal(classifyModelSpecMiss(config, 'p:em'), 'unknown-model')
   assert.equal(classifyModelSpecMiss(config, 'no-such-model'), 'unknown-model')
   assert.equal(classifyModelSpecMiss(config, 'ghost:whatever'), 'unknown-model')
 })
@@ -302,7 +304,7 @@ test('classifyModelSpecMiss: 模型存在但 key 缺失 → key-missing；不存
 function noKeyProvider(name = 'nokey'): ProviderConfig {
   return {
     name, apiKeyEnv: 'NOKEY_UNSET_ENV_X', baseUrl: 'https://a.example.com', protocol: 'openai',
-    capabilities: {}, models: [{ id: 'm-nokey', alias: 'nk', contextWindow: 128_000, maxTokens: 4096 }],
+    capabilities: {}, models: [{ id: 'm-nokey', contextWindow: 128_000, maxTokens: 4096 }],
     thinking: 'enabled', maxTokens: 64_000, unsupported: [],
   } as ProviderConfig
 }
@@ -310,7 +312,7 @@ function noKeyProvider(name = 'nokey'): ProviderConfig {
 function keylessLoopbackProvider(name = 'ollama'): ProviderConfig {
   return {
     name, baseUrl: 'http://127.0.0.1:11434', protocol: 'openai',
-    capabilities: {}, models: [{ id: 'm-local', alias: 'local', contextWindow: 128_000, maxTokens: 4096 }],
+    capabilities: {}, models: [{ id: 'm-local', contextWindow: 128_000, maxTokens: 4096 }],
     thinking: 'enabled', maxTokens: 64_000, unsupported: [],
   } as ProviderConfig
 }
@@ -333,7 +335,7 @@ test('listAllModels: env key 注入后 provider 出现', () => {
   try {
     const prov = {
       name: 'envkey', apiKeyEnv: 'RIVET_TEST_ENV_KEY_PROV', baseUrl: 'https://b.example.com', protocol: 'openai',
-      capabilities: {}, models: [{ id: 'm-env', alias: 'ev', contextWindow: 128_000, maxTokens: 4096 }],
+      capabilities: {}, models: [{ id: 'm-env', contextWindow: 128_000, maxTokens: 4096 }],
       thinking: 'enabled', maxTokens: 64_000, unsupported: [],
     } as ProviderConfig
     const ctx = ctxWith({ envkey: prov })
@@ -353,7 +355,7 @@ test('listAllModels: 未认证 oauth provider 过滤（与 B5 同 isAuthenticate
   try {
     const oauthProv = {
       name: 'oauthp', auth: { type: 'oauth', provider: 'codex' }, baseUrl: 'https://api.example.com',
-      models: [{ id: 'm-oauth', alias: 'oa', contextWindow: 128_000, maxTokens: 4096 }],
+      models: [{ id: 'm-oauth', contextWindow: 128_000, maxTokens: 4096 }],
     } as unknown as ProviderConfig
     const ctx = ctxWith({ oauthp: oauthProv })
     const models = listAllModelsWithReload(ctx, () => ctx)

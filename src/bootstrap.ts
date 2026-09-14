@@ -876,7 +876,7 @@ export function createAgentRuntime(deps: {
   // 图片」，界面上却毫无异常，是最难查的一类故障。别名失配尤其容易踩：preset 给
   // 模型加的 alias 进不了存量 config 快照（数组整组替换 + alias 不在回填白名单）。
   const matchedModel = modelId
-    ? provider.models.find(m => m.id === modelId || m.alias === modelId)
+    ? provider.models.find(m => m.id === modelId)
     : undefined
   if (modelId && !matchedModel && !warnedModelFallback.has(modelId)) {
     warnedModelFallback.add(modelId)
@@ -1388,7 +1388,6 @@ export interface ResolvedModelTarget {
   apiKey: string
   auth: AuthProvider | undefined
   modelId: string
-  alias?: string
   contextWindow?: number
 }
 export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | 'provider' | 'apiKey' | 'auth'>, modelId: string, targetProvider?: string): ResolvedModelTarget | { error: string } | null {
@@ -1404,7 +1403,7 @@ export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | '
 
   for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
     if (providerFilter && provName !== providerFilter) continue
-    const found = prov.models.find(m => m.id === modelRef || m.alias === modelRef)
+    const found = prov.models.find(m => m.id === modelRef)
     if (!found) continue
     let provider = ctx.provider
     let apiKey = ctx.apiKey
@@ -1428,7 +1427,7 @@ export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | '
         auth = undefined
       }
     }
-    return { provider, providerName: provName, apiKey, auth, modelId: found.id, alias: found.alias, contextWindow: found.contextWindow }
+    return { provider, providerName: provName, apiKey, auth, modelId: found.id, contextWindow: found.contextWindow }
   }
   return null
 }
@@ -1510,7 +1509,7 @@ export function switchAgentRuntime(ctx: BootstrapContext, modelId: string, targe
       ctx.persist.appendModelSwitch({ from: fromModel, to: resolved.modelId, provider: provName })
     } catch { /* persistence is best-effort — never block a model switch */ }
 
-    return { ok: true, modelName: resolved.alias ?? resolved.modelId, contextWindow: resolved.contextWindow }
+    return { ok: true, modelName: resolved.modelId, contextWindow: resolved.contextWindow }
 }
 
 export interface SwitchSessionResult {

@@ -30,28 +30,24 @@ export const DEFAULT_CONFIG: Config = {
           {
             id: 'claude-opus-4-8',
             // alias 用实际后端名，消除迷惑。id 不可改（代理按 id 路由）。
-            alias: 'qwen37-max',
             contextWindow: 1_000_000,
             maxTokens: 128000,
             reasoningEffort: 'max',
           },
           {
             id: 'claude-opus-4-7',
-            alias: 'opus-4-7',
             contextWindow: 1_000_000,
             maxTokens: 128000,
             reasoningEffort: 'max',
           },
           {
             id: 'claude-opus-4-6',
-            alias: 'opus-4-6',
             contextWindow: 1_000_000,
             maxTokens: 128000,
             reasoningEffort: 'max',
           },
           {
             id: 'claude-sonnet-4-5',
-            alias: 'sonnet-4-5',
             contextWindow: 1_000_000,
             maxTokens: 128000,
             reasoningEffort: 'max',

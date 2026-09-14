@@ -303,7 +303,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
           // keyStatus 恒 none 的 keyless 端点靠本标记与「该配没配」区分。
           keyless: isKeylessProviderEntry(name, p),
           // 无 keys 才回退顶层快照——见 contractModels 的注释。
-          models: contractModels(p).map(m => ({ id: m.id, alias: m.alias, description: m.description, contextWindow: m.contextWindow, maxTokens: m.maxTokens, supportsVision: m.supportsVision, supportsImageGen: m.supportsImageGen })),
+          models: contractModels(p).map(m => ({ id: m.id, description: m.description, contextWindow: m.contextWindow, maxTokens: m.maxTokens, supportsVision: m.supportsVision, supportsImageGen: m.supportsImageGen })),
           keys: listProviderKeys(name, p),
           isPreset: preset !== undefined,
           // 预设模型全集——UI 标注「预设含 N 个模型」（配置快照经

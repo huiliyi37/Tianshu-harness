@@ -86,7 +86,7 @@ export interface ModelOwner {
 export function findModelOwner(provider: ProviderConfig, modelRef: string): ModelOwner | undefined {
   if (!modelRef) return undefined
   for (const pool of providerKeyPools(provider)) {
-    const model = pool.models.find(m => m.id === modelRef || m.alias === modelRef)
+    const model = pool.models.find(m => m.id === modelRef)
     if (model) return { owner: pool.owner, model }
   }
   return undefined
@@ -101,7 +101,7 @@ export function findModelInKey(
   if (!modelRef) return undefined
   for (const pool of providerKeyPools(provider)) {
     if ((pool.owner?.id ?? DEFAULT_KEY_ID) !== keyId) continue
-    const model = pool.models.find(m => m.id === modelRef || m.alias === modelRef)
+    const model = pool.models.find(m => m.id === modelRef)
     if (model) return { owner: pool.owner, model }
   }
   return undefined

@@ -84,5 +84,5 @@ export function findModelPricing(
   if (!providerName || !modelId) return undefined
   const provider = providers[providerName]
   if (!provider) return undefined
-  return provider.models.find(m => m.id === modelId || m.alias === modelId)?.pricing
+  return provider.models.find(m => m.id === modelId)?.pricing
 }

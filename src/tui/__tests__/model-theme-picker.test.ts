@@ -14,39 +14,40 @@ describe('renderModelPicker', () => {
   it('renders border and model list', () => {
     const data: ModelPickerData = {
       entries: [
-        { id: 'deepseek-chat', alias: 'deepseek-v4-pro', provider: 'deepseek', current: true, contextWindow: 64000 },
-        { id: 'gpt-5.5', alias: 'gpt-5.5', provider: 'openai', current: false, contextWindow: 128000 },
+        { id: 'deepseek-chat', provider: 'deepseek', current: true, contextWindow: 64000 },
+        { id: 'gpt-5.5', provider: 'openai', current: false, contextWindow: 128000 },
       ],
       selectedIndex: 0,
     }
     const lines = renderModelPicker(data, 80, 20, theme)
     assert.ok(lines.length > 0)
     assert.ok(stripAnsi(lines[0]!).includes('│'))
-    assert.ok(lines.some(l => stripAnsi(l).includes('deepseek-v4-pro')))
+    // alias 废弃后模型一律按原 ID 展示——不再有 alias (id) 双段
+    assert.ok(lines.some(l => stripAnsi(l).includes('deepseek-chat')))
     assert.ok(lines.some(l => stripAnsi(l).includes('gpt-5.5')))
   })
 
   it('shows selected indicator and current mark', () => {
     const data: ModelPickerData = {
       entries: [
-        { id: 'model-a', alias: 'Model A', provider: 'provider-a', current: false },
-        { id: 'model-b', alias: 'Model B', provider: 'provider-b', current: true },
+        { id: 'model-a', provider: 'provider-a', current: false },
+        { id: 'model-b', provider: 'provider-b', current: true },
       ],
       selectedIndex: 0,
     }
     const lines = renderModelPicker(data, 80, 20, theme)
-    // SelectedIndex = 0 (Model A) -> should have > cursor
-    const modelALine = lines.find(l => stripAnsi(l).includes('Model A'))
-    const modelBLine = lines.find(l => stripAnsi(l).includes('Model B'))
+    // SelectedIndex = 0 (model-a) -> should have > cursor（id-only 展示，按 id 找行）
+    const modelALine = lines.find(l => stripAnsi(l).includes('model-a'))
+    const modelBLine = lines.find(l => stripAnsi(l).includes('model-b'))
     assert.ok(modelALine && stripAnsi(modelALine).includes('>'))
-    // Current = true (Model B) -> should have ● current mark
+    // Current = true (model-b) -> should have ● current mark
     assert.ok(modelBLine && stripAnsi(modelBLine).includes('●'))
   })
 
   it('shows model specs in bottom preview region', () => {
     const data: ModelPickerData = {
       entries: [
-        { id: 'deepseek-chat', alias: 'deepseek-v4-pro', provider: 'deepseek', current: true, contextWindow: 64000 },
+        { id: 'deepseek-chat', provider: 'deepseek', current: true, contextWindow: 64000 },
       ],
       selectedIndex: 0,
     }
@@ -94,7 +95,7 @@ describe('renderThemePicker', () => {
 
 describe('renderModelPicker effort row', () => {
   const baseEntries = [
-    { id: 'deepseek-v4-pro', alias: 'v4-pro', provider: 'deepseek', current: true, contextWindow: 64000, effortSupported: true },
+    { id: 'deepseek-v4-pro', provider: 'deepseek', current: true, contextWindow: 64000, effortSupported: true },
   ]
 
   it('renders effort row with level and adjust hint when supported', () => {

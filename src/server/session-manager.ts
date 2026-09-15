@@ -35,11 +35,7 @@ import { isAssistantWithTools, oaiMessageText, type OaiToolCall } from '../api/o
 import { buildUserAnchors, stripInjectedSuffix } from './rewind-anchors.js'
 import { toolArgSummary } from '../tui/tool-label.js'
 import { listPersistedResultRounds, loadPersistedResult, type PersistedResultRound } from '../agent/coordinator.js'
-import { clearWaveResults } from '../agent/wave-results-store.js'
-import { clearWaveGate } from '../agent/wave-gate.js'
-import { clearPlan } from '../agent/plan-store.js'
-import { clearPendingReview } from '../agent/post-commit-review-pending.js'
-import { clearSkillGate } from '../agent/skill-gate.js'
+import { reapSessionModuleStores } from '../agent/session-module-store-reaper.js'
 import { loadWorkerSession } from '../agent/worker-session-persist.js'
 import type { SessionRegistry } from '../agent/session-registry.js'
 import type { DecisionShift } from '../agent/loop-types.js'
@@ -1281,24 +1277,9 @@ export class RuntimeSessionManager {
 
   private forgetStores(sessionId: string): void {
     try { this.storesForgetter?.(sessionId) } catch { /* best-effort */ }
-    this.forgetSessionModuleStores(sessionId)
-  }
-
-  /**
-   * 会话键控的 agent 层 module store 收割。releaseAgent（空闲回收/归档）与
-   * hardDelete 都经 forgetStores 走到这里。这些表此前只注册不清理——跑过
-   * 团队计划/defer 审查的会话把 wave 结果桥、门禁记录、计划 JSON、待审集
-   * 永久钉在进程内（cron 每任务新 sessionId，长驻 sidecar 日积月累可达
-   * 百 MB 级）。各 clear 均按 sessionId 精确删除，不触碰他会在用条目与
-   * '__default__' 兜底键；运行中的会话不会走到 releaseAgent，故不存在
-   * 清掉在飞运行数据的窗口。
-   */
-  private forgetSessionModuleStores(sessionId: string): void {
-    try { clearWaveResults(sessionId) } catch { /* best-effort */ }
-    try { clearWaveGate(sessionId) } catch { /* best-effort */ }
-    try { clearPlan(sessionId) } catch { /* best-effort */ }
-    try { clearPendingReview(sessionId) } catch { /* best-effort */ }
-    try { clearSkillGate(sessionId) } catch { /* best-effort */ }
+    // agent 层五张会话键控 module store（wave 结果桥/门禁/plan/待审集/skill-gate）
+    // 的收割汇点外移在新模块——releaseAgent 与 hardDelete 双链都经此处全覆盖。
+    reapSessionModuleStores(sessionId)
   }
 
   /** Shut down and drop a session's built agent (timers, coordinator, in-flight

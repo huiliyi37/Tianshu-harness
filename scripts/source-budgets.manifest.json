@@ -178,8 +178,8 @@
       "note": "1004→1025：账本对齐实际行数（多会话功能增长欠账收口，2026-08-25）；issue #75 的 retry 子 schema 拆至 src/config/retry-schema.ts 新模块（-37 行，实测 1022，ceiling 未动——余量留给并发的配置面变更）。1025→1027：收编公开仓 PR #108 的机制部分——modelConfigSchema 增 deprecated/deprecationNote 两个可选字段（issue #105 席位模型透明化 + 弃用告警），实测 1027，ceiling 对齐实际（零缓冲）。1027→1041：生图模型配置槽挂载（issue #8）——槽定义主体拆在 src/config/image-gen-schema.ts 新模块（同 retry-schema 先例），本文件仅 +1 行 import 与 +5 行挂载（注释 + 字段）。 1041→1044：打断留痕开关（任务 4/7，2026-09-13）——agent.interruptMarker z.boolean().default(true)（注释 2 行 + 字段 1 行）；开关解析语义在 src/config/interrupt-marker-config.ts 新模块。 1044→1077：zen 回流 Wave 1（2026-09-13）——tools 段新增 zen 子 schema（enabled / face / faceMode / timeoutSteps / triage / appendixLean）。strict() 让未知键与类型错误在加载期抛错，否则 resolveZenConfig 的未知键检查是死代码；未配置时 tools.zen 为 undefined，零行为面（默认关）。+33 行。 1077→1099：PR #9-#12 合入（provider 多 key 全栈，2026-09-13）——providerKeySchema + provider.keys[] 字段（顶层三槽保留为 keys[0] 兼容镜像）（+22）"
     },
     "src/agent/session-persist.ts": {
-      "ceiling": 876,
-      "note": "870→876：2026-09-08 楔死族后续修复（0e792e26e，+8/-2：工具总闸/续跑降级/磁盘对账/loop-lag 归因中的持久化侧改动）落地时未上账，2026-09-09 审查补记，ceiling 对齐实际。"
+      "ceiling": 907,
+      "note": "870→876：2026-09-08 楔死族后续修复（0e792e26e，+8/-2：工具总闸/续跑降级/磁盘对账/loop-lag 归因中的持久化侧改动）落地时未上账，2026-09-09 审查补记，ceiling 对齐实际。 876→907：会话列表缓存改增量 upsert（PR #155，2026-09-15）——此前 writeMetadata/updateMetadata 每次 append 都 invalidateListCache，而 loadPrevHandoff 每个 LLM 轮读列表，活跃会话缓存命中恒 0（实测 50 轮工具流 71ms→1.86ms，38×）。新增 refreshListCacheEntry（实例方法，读私有 metaStore）+ buildListEntry（全量/增量两路统一条目形状，防漂移）+ upsertListCacheEntry（原位并入不换数组不刷 ts，恒等契约与 TTL 语义不变）。缓存 Map 是 private static 且与 TTL/恒等契约强耦合，拆出需连带搬移读路径，本批从简随债对齐；后续可整体外移 session-list-cache 独立模块届时删条目。"
     },
     "src/repo/meridian-db.ts": {
       "ceiling": 952,

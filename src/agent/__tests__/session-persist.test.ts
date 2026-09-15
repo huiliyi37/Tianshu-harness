@@ -940,3 +940,82 @@ describe('SessionPersist — loadPreviousDurableClaims（跨会话继承）', ()
     assert.deepEqual(persist.loadPreviousDurableClaims(), [])
   })
 })
+
+describe('SessionPersist list cache incremental update', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'rivet-test-'))
+    process.env.RIVET_SESSION_DIR = tempDir
+    SessionPersist.invalidateListCache()
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+    delete process.env.RIVET_SESSION_DIR
+    SessionPersist.invalidateListCache()
+  })
+
+  function seedMeta(id: string, updatedAt: number): void {
+    // listSessions 只枚举会话目录里的 <id>.jsonl——先建空日志再写 metadata
+    writeFileSync(join(getSessionDir(tempDir), `${id}.jsonl`), '')
+    new SessionPersist(id, tempDir).writeMetadata({
+      sessionId: id,
+      createdAt: updatedAt,
+      updatedAt,
+      compactEvents: [],
+    })
+  }
+
+  it('updateMetadata 保持缓存温热：同一数组引用 + 新值即时可见（不整表失效）', () => {
+    seedMeta('sess-cache-a', 1_000)
+    seedMeta('sess-cache-b', 2_000)
+    const first = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(first.length, 2)
+
+    new SessionPersist('sess-cache-a', tempDir).updateMetadata({
+      tokenUsage: { prompt: 5, completion: 1, total: 6 },
+    })
+
+    const second = SessionPersist.listSessionsWithMetadata(tempDir)
+    // 机制签名：缓存命中路径返回同一引用——整表失效+重建会产出新数组
+    assert.equal(second, first)
+    const entryA = second.find((e) => e.id === 'sess-cache-a')
+    assert.ok(entryA)
+    assert.equal(entryA!.tokenUsage?.total, 6, 'updateMetadata 的合并结果必须即时反映进缓存')
+    assert.ok(entryA!.updatedAt > 1_000, 'updateMetadata 推进的 updatedAt 必须即时反映进缓存')
+  })
+
+  it('writeMetadata（新会话）即时出现在已建缓存里并按 updatedAt 重排', () => {
+    seedMeta('sess-cache-a', 1_000)
+    seedMeta('sess-cache-b', 2_000)
+    const first = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(first.length, 2)
+
+    seedMeta('sess-cache-new', 3_000)
+    const after = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(after, first, '写路径不得打掉缓存')
+    assert.equal(after.length, 3, '新会话必须立即可见（原来靠整表失效兜住的新建可见性保持不变）')
+    assert.equal(after[0]!.id, 'sess-cache-new', '最近更新的会话排最前')
+  })
+
+  it('updateMetadata 推进 updatedAt 后排序即时重排（旧会话变最新）', () => {
+    seedMeta('sess-cache-old', 1_000)
+    seedMeta('sess-cache-new', 2_000)
+    const before = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(before[0]!.id, 'sess-cache-new')
+
+    new SessionPersist('sess-cache-old', tempDir).updateMetadata({})
+    const after = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(after[0]!.id, 'sess-cache-old', 'updateMetadata 触碰的会话应升到最前——与全量重建语义一致')
+  })
+
+  it('缓存未建时 updateMetadata 不建缓存（下次 list 全量构建自然包含）', () => {
+    seedMeta('sess-cache-a', 1_000)
+    new SessionPersist('sess-cache-a', tempDir).updateMetadata({})
+    // 未先 list → 无缓存可 upsert；此处只验证不抛错，正确性由下次全量构建兜住
+    const list = SessionPersist.listSessionsWithMetadata(tempDir)
+    assert.equal(list.length, 1)
+    assert.ok(list[0]!.updatedAt >= 1_000)
+  })
+})

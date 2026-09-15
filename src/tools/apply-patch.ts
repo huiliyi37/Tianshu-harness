@@ -196,7 +196,7 @@ export const APPLY_PATCH_TOOL: Tool = {
     const result = await applyPatch(params.cwd, {
       diff: normalizedDiff,
       checkOnly,
-    })
+    }, params.abortSignal)
 
     if (!result.ok) {
       // `git apply --3way` 报冲突是 exit 1，但退出前状态已经被动过：冲突文件的
@@ -214,7 +214,7 @@ export const APPLY_PATCH_TOOL: Tool = {
       const rolledBack = targets.length > 0
       if (rolledBack) {
         await rollbackTargets(params.cwd, targets, params.sessionId)
-        await unstagePatchTargets(params.cwd, targets)
+        await unstagePatchTargets(params.cwd, targets, params.abortSignal)
       }
       for (const t of targets) incrementEditFailCount(t.abs)
       return {
@@ -287,7 +287,7 @@ async function applyPatchViaClient(
     const { spawnSync } = await import('node:child_process')
     const init = spawnSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore', windowsHide: true })
     if (init.status !== 0) return null
-    const applied = await applyPatch(tmpRoot, { diff: normalizedDiff, checkOnly: false })
+    const applied = await applyPatch(tmpRoot, { diff: normalizedDiff, checkOnly: false }, params.abortSignal)
     if (!applied.ok) return null
 
     for (const t of targets) {
@@ -369,7 +369,7 @@ async function rollbackTargets(cwd: string, targets: PatchTarget[], sessionId?: 
  *  acceptable in the failure path, where the patch itself staged the entries.
  *  No-ops outside a git workspace (non-zero exit) — the worktree rollback
  *  already ran above. */
-async function unstagePatchTargets(cwd: string, targets: PatchTarget[]): Promise<void> {
+async function unstagePatchTargets(cwd: string, targets: PatchTarget[], abortSignal?: AbortSignal): Promise<void> {
   if (targets.length === 0) return
   await new Promise<void>((resolve) => {
     const child = spawnGit(['reset', '-q', '--', ...targets.map((t) => t.rel)], {
@@ -378,6 +378,17 @@ async function unstagePatchTargets(cwd: string, targets: PatchTarget[]): Promise
     })
     child.on('close', () => resolve())
     child.on('error', () => resolve())
+    // 协作式取消（与 applyPatch 同款接线）：abort 级联 SIGTERM 到 git reset，
+    // 否则中断/超时后失败收尾的 reset 成孤儿，execute 仍悬空不落地。
+    if (abortSignal) {
+      const onAbort = () => { child.kill('SIGTERM') }
+      if (abortSignal.aborted) {
+        child.kill('SIGTERM')
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true })
+        child.on('close', () => abortSignal.removeEventListener('abort', onAbort))
+      }
+    }
   })
 }
 

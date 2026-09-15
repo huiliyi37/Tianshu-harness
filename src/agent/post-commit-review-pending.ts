@@ -67,6 +67,15 @@ export function consumePendingReview(sessionId: string | undefined): PendingRevi
   return scope
 }
 
+/** 会话收尾清理（同 wave-gate 的 clear* 语义）：空闲回收/删除会话时，死会话
+ *  的待审集不能再钉在进程内。用 clear 而非 consume——清理不该携带"已消费"
+ *  的审查语义。已知权衡：defer 任务被中断、会话被空闲回收后 resume 再手动
+ *  /review，将找不到旧待审集（今日行为是无限期保留=泄漏；终审契约本就以
+ *  同一运行期为前提）。 */
+export function clearPendingReview(sessionId: string | undefined): void {
+  pendingBySession.delete(keyOf(sessionId))
+}
+
 /** Test-only: clear all sessions so state does not leak across cases. */
 export function __resetPostCommitReviewPending(): void {
   pendingBySession.clear()

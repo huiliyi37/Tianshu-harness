@@ -96,3 +96,43 @@ post_kill ticks=8,8 members=0 -> STOPPED (job object reaped the MSYS tree)
 - **C 组的失败是"MSYS fork 的行为"**：这里只归因到"成员资格必须在进程运行前就位"，没有深入到 `msys-2.0.dll` 的 fork 实现去取证。
 - **B 组是机制验证，不是 addon 实现**：`suspended-job.c` 是独立 exe，不是 Node 可加载的 addon；把它包成 N-API 模块并接进 `process-kill` 的 Windows 分支，是另外的工程工作（也是这个 PR 不包含的部分）。
 - **未验证 `CREATE_SUSPENDED` 之外的其他属性组合**（如 `PROC_THREAD_ATTRIBUTE_JOB_LIST`）：后者在 Win10+ 可以让进程带作业出生，可能省掉 assign 这一步——但同样需要原生 `CreateProcess`，对结论（要原生）没有影响。
+
+---
+
+## 五、补测：stdio 管道能不能穿过"挂起创建"（`suspended-pipe.c`）
+
+B 组用的是继承控制台，**没有覆盖 stdio 管道**——而真实 spawn 路径（`src/tools/bash.ts:537`）是
+`stdio: ['ignore','pipe','pipe']` + Windows 上 `detached: false`。而"最小原生面"这个设计成立的前提，
+正是**挂起创建之后管道照常工作**：能流式读、进程消亡时读端收到 EOF（否则 Node 侧 stream 不 end、
+child 不 close、工具 Promise 不 settle）。所以补了这一测。
+
+复跑：
+
+```bash
+cd plan-probes && cmd //c build-pipe.bat
+./suspended-pipe.exe <marker> 1200
+```
+
+实机输出：
+
+```
+created_suspended pid=56652 (with pipes wired as std handles)
+assign_suspended ok=1
+resume ok=1
+while_running: stdout=13 bytes stderr=13 bytes | job_members=5 | ticks=3
+terminate_job ok=1
+after_kill: stdout_eof=1 stderr_eof=1 | pipe closure=OBSERVED (broken pipe)
+post_kill ticks=7,7 members=0 | pre_kill growth 3->7
+verdict: pipes_survived=YES tree_reaped=YES
+```
+
+**结论：管道保真 ✅** —— 挂起创建 + assign + resume 之后 stdout/stderr 正常流式、终止后两个读端都收到
+broken pipe、整棵树回收、残留 0。
+
+**一个实现时必须记住的坑**：`CreateProcess` 成功后**必须立刻关掉父进程手里那份写端句柄**。
+第一版探针没关，结果 `terminate_job` 明明成功、树也收干净了，但读端**永远等不到 EOF**（最后一个写入者
+一直存在）。libuv 在 spawn 之后做的正是这件事；漏掉它就会表现成"杀成功了但流一直不关"。
+
+**仍未覆盖的**（要集成层才能验）：libuv 的非阻塞管道（本测用的是同步 `CreatePipe` + 线程 pump，
+语义等价但不是同一条实现）、`params.jobs.spawn` 那条后台任务路径、以及中止路径
+（现在是 `SIGTERM` → 3s → `SIGKILL`，作业方案下应换成一次 `TerminateJobObject`）。

@@ -6,6 +6,9 @@
 > `docs/known-issues/2026-09-15-windows-git-bash-orphan-descendants.md`。
 > 仓内副本位于 `docs/known-issues/win-orphan-descendants-repro/`；外链 gist 是同一份内容。
 > 命名不带日期前缀，是为了**避免与那份 `.md` 档案同名冲突**（见 `docs/known-issues/README.md` 的命名约定）。
+>
+> 同目录另有 [`WINDOWS-VERIFICATION-2026-09-16.md`](WINDOWS-VERIFICATION-2026-09-16.md)：
+> 本机实机验证记录（#159 的修前/修后对照、全量套件基线、可复用的验证协议）。
 
 这套脚本只做三件事：**复现现象**、**量化代价**、**验证候选方案**。它不含修复补丁。
 

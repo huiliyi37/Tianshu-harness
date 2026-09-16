@@ -7,8 +7,10 @@
 > 仓内副本位于 `docs/known-issues/win-orphan-descendants-repro/`；外链 gist 是同一份内容。
 > 命名不带日期前缀，是为了**避免与那份 `.md` 档案同名冲突**（见 `docs/known-issues/README.md` 的命名约定）。
 >
-> 同目录另有 [`WINDOWS-VERIFICATION-2026-09-16.md`](WINDOWS-VERIFICATION-2026-09-16.md)：
-> 本机实机验证记录（#159 的修前/修后对照、全量套件基线、可复用的验证协议）。
+> 同目录另有两份记录：
+> [`WINDOWS-VERIFICATION-2026-09-16.md`](WINDOWS-VERIFICATION-2026-09-16.md)（实机验证：修前/修后对照 + 全量基线 + 可复用协议）与
+> [`PLAN-MECHANISM-2026-09-16.md`](PLAN-MECHANISM-2026-09-16.md)（四种修复形态的机制层实测判定，含 `plan-probes/` 下的可复跑探针）。
+> 外链 gist 是同一份内容的**扁平副本**（没有目录结构）；以仓内这份为准。
 
 这套脚本只做三件事：**复现现象**、**量化代价**、**验证候选方案**。它不含修复补丁。
 

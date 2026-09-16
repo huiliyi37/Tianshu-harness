@@ -1,5 +1,8 @@
 import type { ChildProcess } from 'child_process'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 type KillFn = (pid: number, signal: NodeJS.Signals) => void
 
@@ -72,4 +75,71 @@ export function killProcessTree(
   } catch {
     try { child.kill(signal) } catch { }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 作业持有者（job-launch.exe）接线 —— issue #144 的本体修复
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 解析 Windows 作业持有者（`job-launch.exe`）。解析不到返回 `null`，调用方走现状（fail-open）。
+ *
+ * 为什么需要它：Git Bash/MSYS 的 `nohup node &` 会逃过 `taskkill /T`（Win32 父链在 `nohup` 处断开，
+ * 已实测）。更关键的是**「先把壳 spawn 出来、再 assign 进作业」实测无效**——MSYS 只认"出生就在作业里"：
+ * 事后 assign 的壳自己在作业里（`ours=True`），但它之后 fork 的 node `ours=False anyjob=False`，
+ * 终止收不到（见 PR #163 的 `PLAN-MECHANISM-2026-09-16.md`）。
+ *
+ * 所以必须由一个**已经属于作业**的进程去创建壳：helper 自建作业 → 自己先入作业 → 再 spawn 真正的
+ * shell。bash 直接继承 Node 给的 stdio 句柄，因此**零中转**：管道、退出码、退出事件语义都不变。
+ * 终止时只要杀掉 helper，它持有的作业句柄随之关闭，`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 把整棵树
+ * （shell + nohup 出来的 node + 它自己的 fork 链）一起带走——不需要枚举进程表，也不需要归属校验。
+ *
+ * 顺序：`RIVET_JOB_LAUNCHER` 覆盖 → `<repo>/native/` → `<repo>/dist/native/`。
+ */
+export function resolveJobLauncher(): string | null {
+  if (process.platform !== 'win32') return null
+  const candidates = [
+    process.env.RIVET_JOB_LAUNCHER,
+    join(HERE, '..', '..', 'native', 'job-launch.exe'),
+    join(HERE, '..', '..', 'dist', 'native', 'job-launch.exe'),
+  ]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // 探测失败就当这个候选不存在，继续下一个
+    }
+  }
+  return null
+}
+
+/** helper 的 argv 契约：`job-launch.exe [--cwd <dir>] [--parent-pid <pid>] <exe> [args...]` */
+export function jobLaunchArgv(
+  shell: { cmd: string; args: string[] },
+  command: string,
+  cwd: string,
+  parentPid: number = process.pid,
+): string[] {
+  return ['--cwd', cwd, '--parent-pid', String(parentPid), shell.cmd, ...shell.args, command]
+}
+
+/**
+ * 统一的 shell 启动出口：Windows 且 helper 可用时由 helper 持有作业；否则原样 `spawn`（行为不变）。
+ *
+ * `launcher` / `spawnFn` 是测试接缝（与 `killProcessTree` 的 `platform` / `runTaskkill` 同风格），
+ * 让"走没走 helper、argv 拼得对不对"能在任意 CI 主机上断言。
+ */
+export function spawnShell(
+  shell: { cmd: string; args: string[] },
+  command: string,
+  options: SpawnOptions,
+  launcher: string | null = resolveJobLauncher(),
+  spawnFn: typeof spawn = spawn,
+): ChildProcess {
+  if (!launcher) return spawnFn(shell.cmd, [...shell.args, command], options)
+  const cwd = typeof options.cwd === 'string' ? options.cwd : process.cwd()
+  return spawnFn(launcher, jobLaunchArgv(shell, command, cwd), options)
 }

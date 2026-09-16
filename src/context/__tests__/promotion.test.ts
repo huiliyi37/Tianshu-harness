@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { evaluatePromotion, claimHasFileEvidence, countClaimsByStatus, canRecallClaim } from '../promotion.js'
 import type { ContextClaim } from '../claims.js'
 
@@ -177,7 +179,9 @@ describe('canRecallClaim', () => {
   })
 
   it('returns true when at least one evidence file still exists', () => {
-    const testDir = new URL('.', import.meta.url).pathname.replace(/\/$/, '')
+    // 同 #144 的路径反模式：`new URL(...).pathname` 在 Windows 上带前导斜杠（`/D:/...`），
+    // 与本地路径拼接会变成 `D:\D:\...`。改用 fileURLToPath，跨平台一致。
+    const testDir = dirname(fileURLToPath(import.meta.url))
     const testFile = 'promotion.test.ts'
     const c = claim({
       evidence: [

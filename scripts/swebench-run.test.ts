@@ -3,9 +3,13 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 // Use project-local temp dir to avoid sandbox EPERM on /var/folders/...
-const LOCAL_TMP = join(dirname(new URL(import.meta.url).pathname), '..', '.rivet', 'test-tmp')
+// 注意：这里必须走 fileURLToPath，不能取 `new URL(...).pathname` —— 后者在 Windows 上带前导
+// 斜杠（`/D:/repo/...`），join 之后被拼成 `D:\D:\repo\...`，mkdir 直接 ENOENT
+// （issue #144 排查过程中在 Windows 实机上实测到 4 条红）。
+const LOCAL_TMP = join(dirname(fileURLToPath(import.meta.url)), '..', '.rivet', 'test-tmp')
 function localTmp(name: string): string {
   if (!existsSync(LOCAL_TMP)) mkdirSync(LOCAL_TMP, { recursive: true })
   return join(LOCAL_TMP, name)

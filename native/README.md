@@ -34,6 +34,10 @@ cd native && build-windows.bat
 - `src/tools/process-kill.ts` 里的 `resolveJobLauncher()` 按顺序找：
   `RIVET_JOB_LAUNCHER` 环境变量 → 从本模块所在目录**逐级上溯**（≤5 跳），每级先看
   `<dir>/native/job-launch.exe`、再看 `<dir>/dist/native/job-launch.exe`（同级 `native/` 优先）；
+- 位置探测是**进程级缓存**的：逐级上溯最多 12 次 `existsSync`，而这个函数**每次 spawn 都被
+  求值**（`spawnShell` 的默认参数）。实测本机单次 ~1.4ms、一次 spawn ~29ms，属纯常数开销，
+  故缓存后有 ~2000× 的下降。代价是一处语义：**运行中才把 helper 编译出来**时要二选一——
+  设 `RIVET_JOB_LAUNCHER` 指向它（这条路永远实时读），或调 `invalidateJobLauncherCache()`；
 - **解析不到就返回 `null`，`spawnShell` 原样 `spawn`**（fail-open，行为与今天完全一致）；
 - 发布时建议按平台预编译（`win32-x64` / `win32-arm64`）随包分发，`.exe` 不进 git。
 

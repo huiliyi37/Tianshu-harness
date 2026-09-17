@@ -140,8 +140,24 @@ export function findJobLauncher(
   return null
 }
 
-export function resolveJobLauncher(): string | null {
-  if (process.platform !== 'win32') return null
+/** `resolveJobLauncher` 的可注入依赖（测试用；与 `killProcessTree` 的 `platform` 同风格）。 */
+export interface JobLauncherDeps {
+  /** 上溯起点，缺省为本模块所在目录。 */
+  here?: string
+  /** 文件探测，缺省 `existsSync`。 */
+  exists?: (candidate: string) => boolean
+  /** 平台，缺省 `process.platform`——显式传入才能让 win32 分支在任意 CI 主机上被测到。 */
+  platform?: NodeJS.Platform
+}
+
+/** 位置探测的进程级缓存：上溯起点 → 结果。生产只有一个 `HERE`，键用起点是因为它可注入。 */
+const launcherMemo = new Map<string, string | null>()
+
+export function resolveJobLauncher(deps: JobLauncherDeps = {}): string | null {
+  if ((deps.platform ?? process.platform) !== 'win32') return null
+
+  // 覆盖变量**永远实时读**：一次属性访问 + 至多一次 existsSync，成本可忽略；而且
+  // 「刚把 helper 编译出来」的正解就是设它——不该被位置缓存挡住。
   const override = process.env.RIVET_JOB_LAUNCHER
   if (override) {
     try {
@@ -150,7 +166,26 @@ export function resolveJobLauncher(): string | null {
       // 覆盖路径探测失败 → 落到常规查找
     }
   }
-  return findJobLauncher(HERE)
+
+  const here = deps.here ?? HERE
+  // 为什么缓存：逐级上溯最多 12 次 existsSync，而本函数**每次 spawn 都被求值**
+  // （`spawnShell` 的默认参数）。实测本机单次 ~1.4ms、一次 spawn ~29ms——纯常数开销；
+  // 缓存后同一个 here 的重复求值降到亚微秒级。
+  if (launcherMemo.has(here)) return launcherMemo.get(here) ?? null
+  const path = findJobLauncher(here, deps.exists ?? existsSync)
+  launcherMemo.set(here, path)
+  return path
+}
+
+/**
+ * 丢弃位置探测的进程级缓存。
+ *
+ * 两个用途：测试隔离；以及**运行中才把 helper 编译出来**的场景——那时需要调它
+ * （或直接设 `RIVET_JOB_LAUNCHER`，那条路永远实时）。缓存带来的语义变化就这一处：
+ * 位置探测是进程级的，热装不 invalidate 时要等下一个进程才生效。
+ */
+export function invalidateJobLauncherCache(): void {
+  launcherMemo.clear()
 }
 
 /** helper 的 argv 契约：`job-launch.exe [--cwd <dir>] [--parent-pid <pid>] <exe> [args...]` */

@@ -13,6 +13,7 @@
  * 会看到已删除的模型、漏掉只在 key 池里的模型——消费方一律走 contractModels。
  */
 import type { ModelConfig, ProviderConfig, ProviderKeyConfig } from './schema.js'
+import { canonicalizeModelId } from '../api/model-aliases.js'
 
 export { contractModels } from './contract-models.js'
 
@@ -85,8 +86,13 @@ export interface ModelOwner {
 /** 模型归属：按 modelRef（模型 id 或 alias）找所属 key。撞名取第一个命中的 key。 */
 export function findModelOwner(provider: ProviderConfig, modelRef: string): ModelOwner | undefined {
   if (!modelRef) return undefined
+  // 按上面那句注释承诺的「id 或 alias」办：先经别名表归一到 canonical id 再比。此前
+  // 只做精确比，配置里写 preset 短名（v4-flash / glm-53 等）会静默落空 → 调用方回退到
+  // models[0]，可能落到另一个档（上游不认的 id → 400，套餐绑定的卡 → 429）。
+  // 表里没有的名字原样比，行为与改动前一致。
+  const wanted = canonicalizeModelId(modelRef)
   for (const pool of providerKeyPools(provider)) {
-    const model = pool.models.find(m => m.id === modelRef)
+    const model = pool.models.find(m => m.id === wanted)
     if (model) return { owner: pool.owner, model }
   }
   return undefined
@@ -99,9 +105,11 @@ export function findModelInKey(
   modelRef: string,
 ): ModelOwner | undefined {
   if (!modelRef) return undefined
+  // 与 findModelOwner 同口径：三段式 `provider:keyId:modelId` 的末段同样允许多写短名。
+  const wanted = canonicalizeModelId(modelRef)
   for (const pool of providerKeyPools(provider)) {
     if ((pool.owner?.id ?? DEFAULT_KEY_ID) !== keyId) continue
-    const model = pool.models.find(m => m.id === modelRef)
+    const model = pool.models.find(m => m.id === wanted)
     if (model) return { owner: pool.owner, model }
   }
   return undefined

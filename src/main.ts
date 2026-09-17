@@ -120,6 +120,7 @@ import { runTuiShutdownSequence } from './tui/engine/shutdown-sequence.js'
 import { contractModels } from './config/contract-models.js'
 import { disambiguateKeyPrefix, parseModelRef, findModelOwner, findModelInKey } from './config/provider-keys.js'
 import { tryResolveCredentialKey } from './api/factory.js'
+import { canonicalizeModelId } from './api/model-aliases.js'
 
 // ── CLI args ───────────────────────────────────────────────────
 
@@ -374,16 +375,22 @@ async function main() {
       : (provName === defaultModelParts?.provider ? defaultModelParts.keyId : undefined)
     const defaultModelId = provName === defaultModelParts?.provider ? defaultModelParts.modelRef : undefined
     const wantedModelId = requestedParts ? requestedParts.modelRef : defaultModelId
+    // 经别名表归一再解析（与 src/bootstrap.ts、src/config/provider-keys.ts 同口径）：
+    // 存量 config 与 --model 里可能是 preset 短名 / 旧名，不归一就会在归属查找与池内精确
+    // 比双双落空，最后位置性回退到 providerPool[0]——那是另一个档，甚至可能是上游不认的
+    // id。表里没有的名字原样保留。
+    const resolvedModelId = wantedModelId ? canonicalizeModelId(wantedModelId) : undefined
     const providerPool = contractModels(prov)
-    const owner = wantedModelId
-      ? (pinnedKeyId ? findModelInKey(prov, pinnedKeyId, wantedModelId) : findModelOwner(prov, wantedModelId))
+    const owner = resolvedModelId
+      ? (pinnedKeyId ? findModelInKey(prov, pinnedKeyId, resolvedModelId) : findModelOwner(prov, resolvedModelId))
       : undefined
     const model = owner?.model
-      ?? (wantedModelId ? providerPool.find(m => m.id === wantedModelId) : undefined)
+      ?? (resolvedModelId ? providerPool.find(m => m.id === resolvedModelId) : undefined)
       ?? providerPool[0]!
     // 模型名失配告警（合 origin/main）：静默换档会让「配了多模态模型却看不到图片」
     // 完全无迹可循（兜底档常是同名前缀的纯文本档）。headless 每进程只解析一次，无需去重。
-    if (wantedModelId && !owner && !providerPool.some(m => m.id === wantedModelId)) {
+    // 用归一后的 id 判失配，否则配置里写短名会被误报成「不在 provider 下」。
+    if (wantedModelId && !owner && !providerPool.some(m => m.id === resolvedModelId)) {
       process.stderr.write(
         `[model] 配置的模型 "${wantedModelId}" 不在 provider "${provName}" 下，`
         + `已回退到 "${model.id}"（该档不支持视觉时图片将无法被识别）。`

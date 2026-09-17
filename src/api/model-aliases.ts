@@ -138,3 +138,15 @@ export function findAliasEntryLower(rawId: string): ModelAliasEntry | undefined 
 export function listAliasEntries(): readonly ModelAliasEntry[] {
   return MODEL_ALIAS_TABLE
 }
+
+/**
+ * 把配置 / 命令行 / 会话记录里手写的模型引用归一到 canonical id（preset 短名、
+ * 聚合前缀名、别名字段废弃前落盘的旧名）。
+ *
+ * 表里没有的名字**原样返回**——调用方据此 fail-closed：不做模糊匹配，不悄悄把请求
+ * 路由到另一个模型。与 src/agent/review-model-override.ts 的 modelMatchesRef 同口径；
+ * 同义表的单一来源就是上面那张 MODEL_ALIAS_TABLE。
+ */
+export function canonicalizeModelId(rawId: string): string {
+  return findAliasEntryExact(rawId)?.canonicalId ?? rawId
+}

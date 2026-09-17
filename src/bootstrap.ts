@@ -91,6 +91,7 @@ import { createModeAwareRunner, workerIsolationEnabled, workerIsolationMode } fr
 import type { ResolvedReviewOverride } from './agent/review-model-override.js'
 import { createAuthProvider } from './auth/registry.js'
 import { resolveCapabilities } from './api/provider.js'
+import { canonicalizeModelId } from './api/model-aliases.js'
 import { DelegationCoordinator } from './agent/coordinator.js'
 import { ProviderHealthTracker } from './agent/provider-health.js'
 import { effectiveBanditMode, resolveBanditPromotion } from './agent/bandit-promotion.js'
@@ -875,14 +876,23 @@ export function createAgentRuntime(deps: {
   // 而兜底的 models[0] 常常是同名的纯文本档——症状是「配了视觉模型却完全看不到
   // 图片」，界面上却毫无异常，是最难查的一类故障。别名失配尤其容易踩：preset 给
   // 模型加的 alias 进不了存量 config 快照（数组整组替换 + alias 不在回填白名单）。
-  const matchedModel = modelId
-    ? provider.models.find(m => m.id === modelId)
+  //
+  // 归一后再比：上面那段说的存量字符串（preset 短名 / 旧名）本该按 canonical id 比。
+  // 不归一的话失配 → models[0] 位置性回退 → 请求打到另一个档（上游不认的 id → 400，
+  // 套餐绑定的卡 → 429）。表里没有的名字原样保留（L4：不猜），行为与改动前一致。
+  const resolvedModelId = modelId ? canonicalizeModelId(modelId) : undefined
+  const matchedModel = resolvedModelId
+    ? provider.models.find(m => m.id === resolvedModelId)
     : undefined
   if (modelId && !matchedModel && !warnedModelFallback.has(modelId)) {
     warnedModelFallback.add(modelId)
     // 与 warnVisionBridge 同惯例：console.warn 在终端可见（stderr，不进渲染回路）。
+    // 归一过就在告警里点名，否则「配置里写短名」会被读成「配错了模型」。
+    const normalizedHint = resolvedModelId && resolvedModelId !== modelId
+      ? `（已按别名表归一为 "${resolvedModelId}"）`
+      : ''
     console.warn(
-      `[model] 配置的模型 "${modelId}" 不在 provider "${provider.name}" 下，已回退到 `
+      `[model] 配置的模型 "${modelId}"${normalizedHint} 不在 provider "${provider.name}" 下，已回退到 `
       + `"${provider.models[0]!.id}"（该档不支持视觉时图片将无法被识别）。`
       + `可选：${provider.models.map(m => m.id).join(', ')}`,
     )
@@ -1403,7 +1413,12 @@ export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | '
 
   for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
     if (providerFilter && provName !== providerFilter) continue
-    const found = prov.models.find(m => m.id === modelRef)
+    // 上面注释承诺的这个 form 是「provider:modelId / provider:alias」——所以末段也经别名表
+    // 归一再比（与 provider-keys.findModelOwner、main.ts 的解析同一口径）。此前只做精确比，
+    // `/model deepseek:v4-flash` 这类短名一律落空，表现为 "not found in any provider" 的
+    // 硬报错，而不是静默回退。
+    const wanted = canonicalizeModelId(modelRef)
+    const found = prov.models.find(m => m.id === wanted)
     if (!found) continue
     let provider = ctx.provider
     let apiKey = ctx.apiKey

@@ -6,11 +6,12 @@
  */
 import { loadConfig, registerProvider, removeProvider, getApiKeyStatus } from './manager.js'
 import { tryResolveCredentialKey } from '../api/factory.js'
+import { resolveCapabilities } from '../api/provider.js'
 import { probeProvider, aliasTableWithProbeInfos, type ProbeReport } from '../api/provider-probe.js'
 import { normalizeBaseUrl } from '../api/endpoint-map.js'
 import { matchModelIds, type ModelMatchResult } from '../api/model-id-matcher.js'
 import type { ModelAliasMetadata } from '../api/model-aliases.js'
-import type { ModelConfig } from './schema.js'
+import type { ModelConfig, ProviderCapabilitiesConfig } from './schema.js'
 import { contractModels } from './contract-models.js'
 
 export interface ProviderCliIO {
@@ -101,6 +102,37 @@ export function toModelDescriptors(results: ModelMatchResult[]): {
   return { models, notes }
 }
 
+/**
+ * 探测到的模型里，哪些虽然带 `reasoningEffort`、但该 provider 解析出的能力**没有承载它的
+ * 通道**（issue #153）——这些档位会在请求体里被静默丢弃：界面可选中、线上没有该字段。
+ *
+ * 必须带 provider **名**才判得准：`resolveCapabilities` 先命中 `WELL_KNOWN_DEFAULTS`
+ * （deepseek / openai / kimi / glm / relay / ccswitch… 都带 `effortFormat`），只有名字不在
+ * 表里的自建 / 中转 provider 才落回 `DEFAULT_CAPABILITIES` 的 `'none'`。放在
+ * `toModelDescriptors` 里判不了——那个函数看不到名字，会对所有推理模型一律告警。
+ */
+export function effortChannelNotes(
+  providerName: string,
+  models: Array<Partial<ModelConfig> & { id: string }>,
+  providerOverrides?: ProviderCapabilitiesConfig,
+): string[] {
+  const notes: string[] = []
+  for (const model of models) {
+    if (!model.reasoningEffort) continue
+    // provider 级与 model 级 capabilities 各算一层 override（dashscope 的 qwen3.x-max
+    // 就是在 model 级写的）。--force 覆盖已有 provider 时要把已有的声明带进来，
+    // 否则会对已经声明过通道的 provider 误报。
+    const caps = resolveCapabilities(providerName, providerOverrides, model.capabilities)
+    if (caps.effortFormat !== 'none' || caps.thinkingBudgetField === 'budget_tokens') continue
+    notes.push(
+      `[档位不生效] ${model.id}：模型带 reasoningEffort(${model.reasoningEffort})，但 provider "${providerName}" 解析出的推理通道是 `
+      + `none——档位会在请求体里被静默丢弃。补 capabilities: { effortFormat: 'reasoning_effort' }（provider 级）`
+      + `或写在该 model 的 capabilities 上即可生效。`,
+    )
+  }
+  return notes
+}
+
 function formatProbeSummary(report: ProbeReport): string[] {
   const lines: string[] = []
   lines.push(`Models list: ${report.modelsOk ? `${report.models.length} model(s)` : 'unavailable'}`)
@@ -141,6 +173,10 @@ async function cmdAdd(args: string[], io: ProviderCliIO): Promise<void> {
       const { models: descriptors, notes } = toModelDescriptors(matchModelIds(report.models, aliasTableWithProbeInfos(report.modelInfos)))
       models = descriptors
       for (const note of notes) err(io, note)
+      // issue #153 —— 档位能不能发出去取决于 provider **名**解析出的能力，注册前先说清楚。
+      // --force 覆盖已有 provider 时把它的声明带上，免得对已声明通道的 provider 误报。
+      const existing = loadConfig().provider.providers[name]
+      for (const note of effortChannelNotes(name, models, existing?.capabilities)) err(io, note)
     }
   }
 
@@ -184,6 +220,8 @@ async function cmdModels(args: string[], io: ProviderCliIO): Promise<void> {
   }
   const { models, notes } = toModelDescriptors(matchModelIds(report.models, aliasTableWithProbeInfos(report.modelInfos)))
   for (const note of notes) err(io, note)
+  // issue #153 —— 这里多半是「把 snippet 贴回配置」之前，正好提醒档位通道缺失。
+  for (const note of effortChannelNotes(name, models, provider.capabilities)) err(io, note)
   out(io, JSON.stringify({ models }, null, 2))
 }
 

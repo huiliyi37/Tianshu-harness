@@ -7,7 +7,7 @@ import http from 'node:http'
 import { loadConfig } from '../manager.js'
 import { readSecret } from '../secrets-store.js'
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../schema.js'
-import { runProviderCLI, toModelDescriptors } from '../provider-cli.js'
+import { runProviderCLI, toModelDescriptors, effortChannelNotes } from '../provider-cli.js'
 import { matchModelIds } from '../../api/model-id-matcher.js'
 
 class ExitCalled extends Error {
@@ -72,6 +72,35 @@ describe('toModelDescriptors', () => {
     assert.deepEqual(models, [{ id: 'brand-new-model-9000' }])
     assert.equal(notes.length, 1)
     assert.match(notes[0]!, /TODO/)
+  })
+
+  // issue #153 — 自建/中转 provider 的名字不在 WELL_KNOWN_DEFAULTS 里，解析出的
+  // effortFormat 就是 'none'；而别名表会给 gpt-5.6-sol 这类模型 backfill
+  // `reasoningEffort`。合起来的结果是：界面上档位可选中、请求体里永远没有该字段。
+  // onboarding 时必须当场说清楚，别让它静默。
+  it('flags a model whose reasoningEffort has no channel to travel on (issue #153)', () => {
+    const notes = effortChannelNotes('my-relay', [{ id: 'gpt-5.6-sol', reasoningEffort: 'max' }])
+    assert.equal(notes.length, 1)
+    assert.match(notes[0]!, /effortFormat/)
+    assert.match(notes[0]!, /reasoning_effort/, '提示要给可直接抄的键值')
+  })
+
+  it('stays quiet when the provider name itself resolves to an effort channel', () => {
+    assert.deepEqual(effortChannelNotes('openai', [{ id: 'gpt-5.6-sol', reasoningEffort: 'max' }]), [])
+    assert.deepEqual(effortChannelNotes('relay', [{ id: 'gpt-5.6-sol', reasoningEffort: 'max' }]), [])
+  })
+
+  it('stays quiet when the model-level capabilities already declare the channel', () => {
+    assert.deepEqual(
+      effortChannelNotes('my-relay', [
+        { id: 'qwen3.8-max', reasoningEffort: 'high', capabilities: { effortFormat: 'reasoning_effort' } },
+      ]),
+      [],
+    )
+  })
+
+  it('stays quiet for models without a reasoningEffort level', () => {
+    assert.deepEqual(effortChannelNotes('my-relay', [{ id: 'glm-5.2' }]), [])
   })
 })
 

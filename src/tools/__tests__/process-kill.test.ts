@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { killProcessTree, taskkillArgs, jobLaunchArgv, spawnShell } from '../process-kill.js'
+import { join } from 'node:path'
+import { killProcessTree, taskkillArgs, jobLaunchArgv, spawnShell, findJobLauncher } from '../process-kill.js'
 
 // 注：这里显式传 platform，让两个分支在任意 CI 主机上都能被测到。
 // （此前该文件隐式依赖宿主平台：Windows 上注入的 kill spy 永远走不到，两个用例静默变红。）
@@ -114,5 +115,69 @@ describe('jobLaunchArgv', () => {
   it('keeps the command as one argv element (no shell re-quoting on our side)', () => {
     const argv = jobLaunchArgv({ cmd: 'bash', args: ['-c'] }, 'echo "a b" | wc -l', '/tmp', 4242)
     assert.deepEqual(argv, ['--cwd', '/tmp', '--parent-pid', '4242', 'bash', '-c', 'echo "a b" | wc -l'])
+  })
+})
+
+// issue #144 上游移植补的缺口：`resolveJobLauncher` 原用固定 `../../`，只在源码布局
+// （`src/tools/*.ts`）恰好命中仓根；产物态下 `dist/main.js` / `dist/cli/entry.js` 的
+// `import.meta.url` 都在 `dist/` 下，固定两级会跳出安装根 → 生产包永远找不到 helper，
+// 而 fail-open 让这个缺口在源码态下完全看不见。以下用例把四种布局锁死。
+//
+// 用注入的假文件系统：真在磁盘上造一棵安装树是不可能的，而 `findJobLauncher` 的 `exists`
+// 参数正是为此留的接缝（与 killProcessTree 的 platform、spawnShell 的 launcher 同风格）。
+describe('findJobLauncher (job launcher path resolution)', () => {
+  const fakeFs = (paths: string[]) => {
+    const present = new Set(paths)
+    return (candidate: string) => present.has(candidate)
+  }
+  const ROOT = join('C:', 'app') // 只是个字符串前缀，随宿主平台生成分隔符，不必真的存在
+  const EXE = 'job-launch.exe'
+
+  it('源码态：从 src/tools 起跳 2 跳到 <root>/native/', () => {
+    const exists = fakeFs([join(ROOT, 'native', EXE)])
+    assert.equal(
+      findJobLauncher(join(ROOT, 'src', 'tools'), exists),
+      join(ROOT, 'native', EXE),
+    )
+  })
+
+  it('产物态 dist 根：0 跳命中 <root>/dist/native/', () => {
+    const exists = fakeFs([join(ROOT, 'dist', 'native', EXE)])
+    assert.equal(
+      findJobLauncher(join(ROOT, 'dist'), exists),
+      join(ROOT, 'dist', 'native', EXE),
+    )
+  })
+
+  it('产物态 dist/cli 子目录：1 跳命中 <root>/dist/native/（固定 ../../ 会跳出安装根）', () => {
+    const exists = fakeFs([join(ROOT, 'dist', 'native', EXE)])
+    assert.equal(
+      findJobLauncher(join(ROOT, 'dist', 'cli'), exists),
+      join(ROOT, 'dist', 'native', EXE),
+    )
+  })
+
+  it('同级优先：native/ 先于 dist/native/', () => {
+    const both = [join(ROOT, 'native', EXE), join(ROOT, 'dist', 'native', EXE)]
+    const exists = fakeFs(both)
+    // 同一级里两个都在 → 取 native/
+    assert.equal(findJobLauncher(ROOT, exists), join(ROOT, 'native', EXE))
+    // 从 dist 起跳时，该级只有 dist/native/ → 取它（不越级去够 <root>/native/）
+    assert.equal(findJobLauncher(join(ROOT, 'dist'), exists), join(ROOT, 'dist', 'native', EXE))
+  })
+
+  it('上溯深度封顶 5 跳，第 6 跳够不到', () => {
+    const exists = fakeFs([join(ROOT, 'native', EXE)])
+    // 距 ROOT 恰好 5 跳 → 够得到
+    assert.equal(
+      findJobLauncher(join(ROOT, 'a', 'b', 'c', 'd', 'e'), exists),
+      join(ROOT, 'native', EXE),
+    )
+    // 距 ROOT 恰好 6 跳 → 够不到（封顶生效，避免走到安装根之外撞无关 native/）
+    assert.equal(findJobLauncher(join(ROOT, 'a', 'b', 'c', 'd', 'e', 'f'), exists), null)
+  })
+
+  it('均不存在 → null（调用方 fail-open 回落到现状 spawn）', () => {
+    assert.equal(findJobLauncher(join(ROOT, 'src', 'tools'), fakeFs([])), null)
   })
 })

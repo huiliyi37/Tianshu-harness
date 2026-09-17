@@ -32,7 +32,8 @@ cd native && build-windows.bat
 ## 接线与部署
 
 - `src/tools/process-kill.ts` 里的 `resolveJobLauncher()` 按顺序找：
-  `RIVET_JOB_LAUNCHER` 环境变量 → `<repo>/native/job-launch.exe` → `<repo>/dist/native/job-launch.exe`；
+  `RIVET_JOB_LAUNCHER` 环境变量 → 从本模块所在目录**逐级上溯**（≤5 跳），每级先看
+  `<dir>/native/job-launch.exe`、再看 `<dir>/dist/native/job-launch.exe`（同级 `native/` 优先）；
 - **解析不到就返回 `null`，`spawnShell` 原样 `spawn`**（fail-open，行为与今天完全一致）；
 - 发布时建议按平台预编译（`win32-x64` / `win32-arm64`）随包分发，`.exe` 不进 git。
 

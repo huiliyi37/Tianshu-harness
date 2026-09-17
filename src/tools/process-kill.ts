@@ -96,24 +96,61 @@ const HERE = dirname(fileURLToPath(import.meta.url))
  * 终止时只要杀掉 helper，它持有的作业句柄随之关闭，`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 把整棵树
  * （shell + nohup 出来的 node + 它自己的 fork 链）一起带走——不需要枚举进程表，也不需要归属校验。
  *
- * 顺序：`RIVET_JOB_LAUNCHER` 覆盖 → `<repo>/native/` → `<repo>/dist/native/`。
+ * 查找顺序：`RIVET_JOB_LAUNCHER` 覆盖 → 从本模块所在目录**逐级上溯**（≤5 跳），每级先看
+ * `<dir>/native/` 再看 `<dir>/dist/native/`（同级 native/ 优先）。
+ *
+ * 为什么不能是固定 `../../`：那个写法只在源码布局（`src/tools/*.ts`）恰好命中仓根。产物态下
+ * `dist/main.js` / `dist/chunk-*.js` / `dist/cli/entry.js` 的 `import.meta.url` 都在 `dist/` 下，
+ * 固定两级会**跳出安装根**，于是生产包永远解析不到 `dist/native/job-launch.exe`——而 fail-open
+ * 会让这个缺口在源码态下完全看不见（上游移植时在开发仓库补上，见 PR #166）。
+ *
+ * 5 跳的上限与 `src/repo/native-resolver.ts` 同口径：最深真实调用方是 `dist/<area>/<sub>/*.js`
+ * （3 跳到 `dist`），5 留了余量，又不至于走到安装根之外、撞上无关的 `native/`。
  */
-export function resolveJobLauncher(): string | null {
-  if (process.platform !== 'win32') return null
-  const candidates = [
-    process.env.RIVET_JOB_LAUNCHER,
-    join(HERE, '..', '..', 'native', 'job-launch.exe'),
-    join(HERE, '..', '..', 'dist', 'native', 'job-launch.exe'),
-  ]
-  for (const candidate of candidates) {
-    if (!candidate) continue
-    try {
-      if (existsSync(candidate)) return candidate
-    } catch {
-      // 探测失败就当这个候选不存在，继续下一个
+const MAX_NATIVE_LOOKUP_DEPTH = 5
+
+/**
+ * 纯核心：从 `startDir` 逐级上溯找 helper。
+ *
+ * `exists` 可注入——四种布局（源码态 / `dist` 根 / `dist/cli/` 子目录 / 均不存在）只有注入才锁得住，
+ * 不可能靠真在磁盘上造一棵安装树来测。与 `killProcessTree` 的 `platform`、`spawnShell` 的
+ * `launcher`/`spawnFn` 同风格。
+ */
+export function findJobLauncher(
+  startDir: string,
+  exists: (candidate: string) => boolean = existsSync,
+): string | null {
+  let dir = startDir
+  for (let depth = 0; depth <= MAX_NATIVE_LOOKUP_DEPTH; depth++) {
+    // 同级优先顺序固定：先 native/，再 dist/native/。
+    for (const candidate of [
+      join(dir, 'native', 'job-launch.exe'),
+      join(dir, 'dist', 'native', 'job-launch.exe'),
+    ]) {
+      try {
+        if (exists(candidate)) return candidate
+      } catch {
+        // 探测失败就当这个候选不存在，继续下一个
+      }
     }
+    const parent = dirname(dir)
+    if (parent === dir) break // 文件系统根
+    dir = parent
   }
   return null
+}
+
+export function resolveJobLauncher(): string | null {
+  if (process.platform !== 'win32') return null
+  const override = process.env.RIVET_JOB_LAUNCHER
+  if (override) {
+    try {
+      if (existsSync(override)) return override
+    } catch {
+      // 覆盖路径探测失败 → 落到常规查找
+    }
+  }
+  return findJobLauncher(HERE)
 }
 
 /** helper 的 argv 契约：`job-launch.exe [--cwd <dir>] [--parent-pid <pid>] <exe> [args...]` */

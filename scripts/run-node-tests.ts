@@ -186,7 +186,19 @@ for (const [batchIdx, batch] of batches.entries()) {
   totalPass += out.pass
   totalFail += out.fail
   if (!out.complete) incompleteBatches++
-  if (out.code !== 0) worstExit = out.code
+  if (out.code !== 0) {
+    worstExit = out.code
+    // 退出码非零但该批 `fail 0`（或压根没出汇总）时，日志里会**一条线索都没有**：
+    // `失败批末帧` 只重放带 `failing tests:` 的批，这类批没有末帧；而合计行只报总数。
+    // CI 上出现过 `合计：17980 条（pass 17968 / fail 0）· 3 批` 却整体 exit 1 —— 正是这个盲区。
+    // 所以只要非零就点名该批与它自己的计数，把「哪一批、什么码、真失败还是空手退出」摆出来。
+    console.log(
+      `⚠️  批 ${batchIdx + 1}/${batches.length} 退出码 ${out.code}`
+      + `（该批 tests ${out.tests} / pass ${out.pass} / fail ${out.fail}`
+      + `${out.complete ? '' : ' · 未出汇总'}，${batch.length} 个测试文件）`
+      + `——非零退出即整体判失败；fail 0 而码非零查该批的未收尾异步/退出码来源。`,
+    )
+  }
   if (out.failureExcerpt) {
     failureExcerpts.push({ batchNo: batchIdx + 1, fileCount: batch.length, excerpt: out.failureExcerpt })
   }

@@ -1463,3 +1463,50 @@ test('GET /sessions/search aborts its scan when the client response closes', asy
   assert.equal(observedSignal?.aborted, true)
   assert.equal(result.status, 200)
 })
+
+// ── 路由参数穿越守卫（2026-09-17 审计：decode 后直进 join 的族病） ──────────
+// 段匹配对 %2e%2e%2f 原样放行，decode 还原 ../ 后若无包含性检查即越界。
+// 守卫必须在触碰 manager/文件系统之前 400——全部用不存在的会话 id 即可断言。
+
+const TRAVERSAL = encodeURIComponent('../../pwn')
+
+test('traversal skill name is rejected with 400 on PUT and DELETE', async () => {
+  const { router } = setup()
+  const put = await router('PUT', `/sessions/nope/skills/${TRAVERSAL}`, { content: '---\nname: x\ndescription: x\n---\nbody' }, AUTH)
+  assert.equal(put.status, 400)
+  const del = await router('DELETE', `/sessions/nope/skills/${TRAVERSAL}`, {}, AUTH)
+  assert.equal(del.status, 400)
+})
+
+test('legit skill name passes the guard (404 on missing session, not 400)', async () => {
+  const { router } = setup()
+  const put = await router('PUT', '/sessions/nope/skills/pdf-tools', { content: '---\nname: x\ndescription: x\n---\nbody' }, AUTH)
+  assert.equal(put.status, 404)
+})
+
+test('traversal plan slug is rejected with 400 on GET/PUT/approve/reject', async () => {
+  const { router } = setup()
+  assert.equal((await router('GET', `/sessions/nope/plans/${TRAVERSAL}`, {}, AUTH)).status, 400)
+  assert.equal((await router('PUT', `/sessions/nope/plans/${TRAVERSAL}`, { content: '# x' }, AUTH)).status, 400)
+  assert.equal((await router('POST', `/sessions/nope/plans/${TRAVERSAL}/approve`, {}, AUTH)).status, 400)
+  assert.equal((await router('POST', `/sessions/nope/plans/${TRAVERSAL}/reject`, {}, AUTH)).status, 400)
+})
+
+test('legit plan slug passes the guard (404 on missing session, not 400)', async () => {
+  const { router } = setup()
+  assert.equal((await router('GET', '/sessions/nope/plans/build-step-1', {}, AUTH)).status, 404)
+})
+
+test('traversal workerId is rejected with 400 on the log route', async () => {
+  const { router } = setup()
+  const res = await router('GET', `/sessions/nope/workers/${TRAVERSAL}/log`, {}, AUTH)
+  assert.equal(res.status, 400)
+})
+
+test('traversal team-resume groupId is rejected with 400', async () => {
+  const { router } = setup()
+  const created = await router('POST', '/sessions', { title: 'T' }, AUTH)
+  const id = (created.body as { id: string }).id
+  const res = await router('POST', `/sessions/${id}/team-resume`, { groupId: '../../pwn' }, AUTH)
+  assert.equal(res.status, 400)
+})

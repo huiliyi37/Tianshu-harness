@@ -29,9 +29,7 @@ export interface DispatchCardOptions {
   theme: RivetTheme
 }
 
-/** CSI / OSC 转义序列。整段剥，只删 ESC 字节会把 `[31m` 之类残渣留成可见乱码。 */
-// eslint-disable-next-line no-control-regex
-const ANSI_SEQ = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g
+import { ANSI_SEQ_RE } from '../engine/ansi.js'
 
 /**
  * 控制字符清洗。objective 是模型自由文本，本函数的产物直接 write 到
@@ -40,7 +38,7 @@ const ANSI_SEQ = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-
  */
 function sanitize(text: string): string {
   return text
-    .replace(ANSI_SEQ, '')
+    .replace(ANSI_SEQ_RE, '')
     // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x1F\x7F]/g, ' ')
     .replace(/\s+/g, ' ')

@@ -73,6 +73,7 @@ import { join, resolve, dirname } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { existsSync, copyFileSync, statSync, mkdirSync } from 'node:fs'
 import { resolveSessionWorkspaceForSession, type SessionWorkspaceMode } from './workspace.js'
+import { stripTerminalEscapes } from '../utils/safe-path.js'
 import { createWorktree, removeWorktree, listWorktrees, hasUnlandedWork, commitAll, revParseHead, squashMergeBranch, pushBranch, type WorktreeEntry } from '../agent/worktree.js'
 import { createPr } from './gh-cli.js'
 import { getGitGraph, getWorkingTreeFiles, getFileDiff, getFileAtBase, listGitBranches } from '../tools/git.js'
@@ -2218,7 +2219,9 @@ export class RuntimeSessionManager {
         updatedAt: ts,
         cwd,
         workspaceSource: workspace.source,
-        title: input.title,
+        // 标题来自 HTTP body、不经消息消毒链——落盘前剥终端转义（标题会经
+        // /sessions、Chronicle、退出摘要三条路径反复回放终端，OSC 52 驻留）。
+        title: input.title === undefined ? undefined : stripTerminalEscapes(input.title),
         lastSeq: 0,
         pendingApprovals: 0,
         approvalMode: input.approvalMode,
@@ -4418,7 +4421,7 @@ export class RuntimeSessionManager {
   setTitle(id: string, title: string): boolean {
     const s = this.sessions.get(id)
     if (!s) return false
-    s.record.title = title.trim()
+    s.record.title = stripTerminalEscapes(title).trim()
     this.touch(s)
     this.persistRecord(s)
     return true

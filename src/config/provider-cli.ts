@@ -127,7 +127,10 @@ export function effortChannelNotes(
     notes.push(
       `[档位不生效] ${model.id}：模型带 reasoningEffort(${model.reasoningEffort})，但 provider "${providerName}" 解析出的推理通道是 `
       + `none——档位会在请求体里被静默丢弃。补 capabilities: { effortFormat: 'reasoning_effort' }（provider 级）`
-      + `或写在该 model 的 capabilities 上即可生效。`,
+      + `或写在该 model 的 capabilities 上即可把该字段发出去。`
+      + `\n  注意：部分中转站在**带 tools** 时拒绝 reasoning_effort 并返回 400`
+      + `（实测见 issue #153：\`Function tools with reasoning_effort are not supported …\`），`
+      + `那种站上开了反而整条 provider 不可用——若开始报 400 就撤掉这个声明。`,
     )
   }
   return notes

@@ -83,6 +83,10 @@ describe('toModelDescriptors', () => {
     assert.equal(notes.length, 1)
     assert.match(notes[0]!, /effortFormat/)
     assert.match(notes[0]!, /reasoning_effort/, '提示要给可直接抄的键值')
+    // 2026-09-17 真中转站实测：某站在带 tools 时对 reasoning_effort 返回 400
+    // （"Function tools with reasoning_effort are not supported"）。照提示开通道
+    // 反而会让整条 provider 不可用，所以提示必须自带这条反向告警。
+    assert.match(notes[0]!, /400/, '提示要带上"部分中转会拒绝"的告警，别把静默换成雷')
   })
 
   it('stays quiet when the provider name itself resolves to an effort channel', () => {

@@ -78,7 +78,8 @@
     "playwright-core": "1.62.0",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.7.0",
-    "web-tree-sitter": "^0.24.7"
+    "web-tree-sitter": "^0.24.7",
+    "zod-to-json-schema": "^3.25.2"
   },
   "optionalDependencies": {
     "@huiliyi37/node-addon-landlock-run": "^0.4.0",
@@ -111,15 +112,5 @@
     "turndown": "^7.2.4",
     "undici": "^8.3.0",
     "zod": "^3.24.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@ast-grep/lang-json",
-      "@ast-grep/lang-python",
-      "@ast-grep/napi",
-      "better-sqlite3",
-      "esbuild",
-      "lzo"
-    ]
   }
 }

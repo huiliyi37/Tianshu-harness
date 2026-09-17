@@ -189,7 +189,7 @@ rivet
 > 手机端能力说明：沙箱自动降级为无沙箱（走正常审批流）、`better-sqlite3` 拿不到预编译时退化为内存库、LSP/语音等按缺失静默降级——核心对话与编码工具链完整可用。`rivet -p "..."` 无头模式同样可跑。实验性强行安装可设 `RIVET_ALLOW_MOBILE_INSTALL=1`（自担风险）。
 
 **手机端使用技巧**：
-- **回看输出**：流式期间终端会把视口拽到底部（任何新输出都会）。`Ctrl+S` 冻结输出——冻结期零写入，随便往上翻；`Ctrl+S`/`Ctrl+Q` 解冻后新内容按序补上，不丢。`/scroll` 打开全屏翻页器看最近 1000 行。源码构建用 pnpm 的用户：仓库已声明 `pnpm.onlyBuiltDependencies`，`pnpm install` 会自动放行必需原生依赖的构建脚本（老版本 pnpm 用 `pnpm approve-builds`）。
+- **回看输出**：流式期间终端会把视口拽到底部（任何新输出都会）。`Ctrl+S` 冻结输出——冻结期零写入，随便往上翻；`Ctrl+S`/`Ctrl+Q` 解冻后新内容按序补上，不丢。`/scroll` 打开全屏翻页器看最近 1000 行。源码构建用 pnpm 的用户：仓库根目录的 `pnpm-workspace.yaml` 已声明构建放行白名单（`allowBuilds`），`pnpm install` 会自动放行必需原生依赖的构建脚本（老版本 pnpm 用 `pnpm approve-builds`）。注意白名单**不能**写在 `package.json` 的 `pnpm` 字段里——pnpm ≥10 已不再读取该字段，写了也不生效（issue #57）。
 - **字形缺字/对齐错位**：Termux 默认字体缺部分装饰字形时设 `RIVET_ASCII_UI=1` 强制 ASCII 边框；中文用户遇 `—`/`…` 撑破对齐设 `RIVET_AMBIGUOUS_WIDTH=wide`。
 - **软键盘占半屏**：终端高度 < 14 行时自动隐藏状态行与键位提示行，输入框优先。
 

@@ -26,7 +26,13 @@ related: []
 
 ### 三层验证手段
 
-**① 真模块探针**（`.rivet/scratch/premise-probe.ts`，直接 import 生产模块读值，非 grep）
+**① 真模块探针**（本地一次性脚本，未入库——等价于下面几行：直接 import 生产模块读值，非 grep）
+
+```ts
+Object.entries(STAR_DOMAINS).map(([id, d]) => [id, d.courageThreshold])  // 16 个域
+disciplineReanchorEntry()                                               // ×500，统计变体集合
+DISCIPLINE_REANCHOR_INTERVAL; CONSTITUTIONAL_PRIORITY                   // 直接读常量
+```
 
 ```
 【星域数】16（StarDomainId 是 16 成员联合类型，域数受类型强制）

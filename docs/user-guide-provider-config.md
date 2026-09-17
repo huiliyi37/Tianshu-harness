@@ -8,17 +8,17 @@
 
 Provider 是「模型接入点」——你告诉天枢从哪里调用模型、用什么认证方式、支持哪些能力。
 
-天枢内置了 5 个 Provider 预设，开箱即用：
+天枢内置了以下 Provider 预设，开箱即用：
 
 | Provider | 对应模型 | 协议 | 认证方式 | Context Window | 特点 |
 |----------|----------|------|----------|----------------|------|
 | `deepseek` | DeepSeek V4 Pro / Flash | OpenAI-compatible | API Key | 1M tokens | 原生前缀缓存，Cache Hit 可达 90%+ |
 | `opencode-go` | DeepSeek / MiMo / GLM / Kimi 等开源模型 | OpenAI-compatible | API Key | 1M tokens | OpenCode Go 订阅服务，首月 $5，每月 $10 |
 | `opencode-go-anthropic` | Qwen / MiniMax 等开源模型 | Anthropic Messages | API Key | 1M tokens | OpenCode Go 的 Anthropic 协议端点，支持 cache_control |
-| `glm` | 智谱 GLM-5.2 | OpenAI-compatible | API Key | 1M tokens | 支持 thinking |
+| `glm` | 智谱 GLM-5.3 / GLM-5.3-Flash / GLM-5.2 | OpenAI-compatible | API Key | 1M tokens | 支持 thinking |
 | `mimo` | 小米 MiMo-v2.5-Pro | OpenAI-compatible | API Key | 1M tokens | 支持 thinking，prefix cache |
-| `minimax` | MiniMax M2.7 | OpenAI-compatible | API Key | 204.8K tokens | 需过滤 `top_k/metadata/cache_control` 参数 |
-| `codex` | GPT-5.5 (ChatGPT 订阅) | Codex Responses | OAuth PKCE | 1M tokens | 使用 ChatGPT 订阅（非 API 计费），自动 token 刷新 |
+| `minimax` | MiniMax M3 / M2.7 | OpenAI-compatible | API Key | 204.8K tokens | 需过滤 `top_k/metadata/cache_control` 参数 |
+| `codex` | GPT-5.6 (ChatGPT 订阅) | Codex Responses | OAuth PKCE | 1M tokens | 使用 ChatGPT 订阅（非 API 计费），自动 token 刷新 |
 
 > 📌 上表 `codex` 行为**预设默认**（直连 ChatGPT OAuth）。本机实际已把 codex 改走本地
 > **cliproxy 账号池**（GPT-5.5 / `claude-opus-4-5`）——配置、排障、账号池维护与自动刷新
@@ -28,45 +28,17 @@ Provider 是「模型接入点」——你告诉天枢从哪里调用模型、�
 
 ## 配置方式概览
 
-### 方式一：交互式向导（推荐首次使用）
+### 方式一：TUI `/connect`（推荐首次使用）
 
-在终端运行：
+运行：
 
 ```bash
-rivet config
+rivet
 ```
 
-会进入 TTY 交互向导，依次询问：
+首次没有可用 API Key 时，天枢先显示主界面，再自动打开 `/connect`。在该界面选择内置 Provider 或自定义 OpenAI-compatible 服务，按步骤完成认证和模型选择；配置成功后会直接切换到可用会话。
 
-1. **选择 Provider**：输入 `deepseek` / `glm` / `mimo` / `minimax` / `codex`，或直接回车使用当前默认
-2. **认证方式**（非 Codex）：
-   - `env` → 输入环境变量名（如 `DEEPSEEK_API_KEY`）
-   - `inline` → 直接粘贴 API Key
-   - `keep` → 保持现有配置不变
-3. **Base URL**：直接回车使用预设地址，或输入自定义地址
-4. **Model ID**：直接回车使用默认模型，或输入自定义模型 ID
-5. **Model Alias**（可选）：简写别名
-6. **Context Window**：直接回车使用预设值
-7. **Max Tokens**：直接回车使用预设值
-8. **设为默认？** `[y/N]`：输入 `y` 将此 Provider 设为默认
-
-示例输出：
-
-```
-Rivet provider configuration
-Built-in providers: deepseek, glm, mimo, minimax, codex
-Current default: deepseek
-Provider [deepseek|glm|mimo|minimax|codex]: deepseek
-Auth mode [env|inline|keep]: env
-API key env var: DEEPSEEK_API_KEY
-Base URL [https://api.deepseek.com/v1]: 
-Model ID [deepseek-v4-pro]: 
-Model alias: 
-Context window [1000000]: 
-Max tokens [163000]: 
-Set as default? [y/N]: y
-Provider deepseek configured. Run "rivet config providers" to inspect.
-```
+之后随时在 TUI 输入 `/connect` 添加或更新 Provider。`rivet config` 只显示脚本化配置命令帮助，不再启动 readline 交互向导。
 
 ### 方式二：命令行脚本化配置
 
@@ -279,6 +251,35 @@ rivet config setup deepseek --key-env DEEPSEEK_API_KEY --default
 
 OpenCode Go 是 [OpenCode](https://opencode.ai) 提供的低成本订阅服务（首月 $5，之后每月 $10），提供经过测试和基准评估的开源编程模型的稳定访问。模型托管在美国、欧盟和新加坡。
 
+#### 预设（推荐）
+
+CLI 与桌面端都已内置两个预设，无需手写配置：
+
+```bash
+rivet config setup opencode-go --key sk-xxxx --default          # OpenAI 协议（DeepSeek/GLM/Kimi/MiMo）
+rivet config setup opencode-go-anthropic --key sk-xxxx          # Anthropic 协议（Qwen/MiniMax）
+```
+
+桌面端在「服务商」页的未配置预设卡片里同样能找到这两项。
+
+#### 上游强制的请求头（天枢自动注入）
+
+OpenCode Go 要求客户端表明自身身份，否则请求会被拒：
+
+| 要求 | 天枢的实现 |
+|------|-----------|
+| 不得使用通用 SDK / HTTP 库名作为 UA | 统一发送 `tianshu-tui/<version>` |
+| 每次对话在 `x-opencode-session` 中带稳定会话 ID | 会话 ID 自动注入；缺会话上下文的内部调用（goal 判定、headless 委派）使用进程级稳定 ID |
+
+**缺失 `x-opencode-session` 会直接失败**（实测，2026-09）：
+
+```
+HTTP 400 {"type":"error","error":{"type":"MissingSessionID",
+  "message":"...Request is missing x-opencode-session and cannot be routed efficiently..."}}
+```
+
+该头对 `/v1/chat/completions` 与 `/v1/messages` 两个端点都强制要求。注入按 baseUrl host 判定（`opencode.ai` 及其子域），因此无论 Provider 条目叫什么名字都能生效——包括手工配置的 `name: "anthropic"` 形态。
+
 #### 两个 Provider 条目
 
 由于 OpenCode Go 的不同模型使用不同 API 协议，天枢需要配置两个 Provider 条目：
@@ -288,7 +289,7 @@ OpenCode Go 是 [OpenCode](https://opencode.ai) 提供的低成本订阅服务�
 | `opencode-go` | OpenAI Chat Completions | `/v1/chat/completions` | DeepSeek V4 Pro/Flash, MiMo-V2.5/V2.5-Pro, GLM-5.2, Kimi K2.5/K2.6 |
 | `opencode-go-anthropic` | Anthropic Messages | `/v1/messages` | Qwen3.5/3.6/3.7, MiniMax M2.5/M2.7 |
 
-> **注意**：`opencode-go-anthropic` 的 `name` 字段必须设为 `"anthropic"`，这样天枢的 factory 才会路由到 `AnthropicClient`，使用 `/v1/messages` 端点。
+> **注意**：手工配置时 `name` 可设为 `"anthropic"`（schema 会据此默认 `protocol: "anthropic"`），也可自行命名并显式写 `protocol: "anthropic"`。两种方式都会路由到 `/v1/messages`；内置预设采用后者。
 
 #### 配置方法
 
@@ -392,6 +393,8 @@ curl https://opencode.ai/zen/go/v1/models \
 curl https://opencode.ai/zen/go/v1/chat/completions \
   -H "Authorization: Bearer $OPENCODE_GO_KEY" \
   -H "Content-Type: application/json" \
+  -H "User-Agent: my-coding-agent/1.0" \
+  -H "x-opencode-session: local-probe-1" \
   -d '{"model":"deepseek-v4-pro","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
 
 # Anthropic 协议模型
@@ -399,17 +402,19 @@ curl https://opencode.ai/zen/go/v1/messages \
   -H "x-api-key: $OPENCODE_GO_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
+  -H "User-Agent: my-coding-agent/1.0" \
+  -H "x-opencode-session: local-probe-1" \
   -d '{"model":"qwen3.7-max","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 #### 路由原理
 
-天枢的 `factory.ts` 根据 Provider 配置决定使用哪个 HTTP Client：
+天枢的 `factory.ts` 按 Provider 配置的 `protocol` 字段决定使用哪个 HTTP Client：
 
-- `name === 'opencode-go'` → `OpenAIClient` → 请求 `/v1/chat/completions`
-- `name === 'anthropic'` 或 `prefixCache === 'anthropic-cache-control'` → `AnthropicClient` → 请求 `/v1/messages`
+- `protocol: 'openai'` → `OpenAIClient` → 请求 `/v1/chat/completions`
+- `protocol: 'anthropic'` → `AnthropicClient` → 请求 `/v1/messages`
 
-这就是为什么 `opencode-go-anthropic` 的 `name` 必须是 `"anthropic"` —— 触发 Anthropic 协议路由。
+预设 `opencode-go-anthropic` 显式写了 `protocol: "anthropic"`。手工配置时把 `name` 设为 `"anthropic"` 同样有效（schema 对名为 anthropic 的条目默认 protocol 为 anthropic），但显式 `protocol` 字段更不容易误配。
 
 ---
 
@@ -420,6 +425,11 @@ curl https://opencode.ai/zen/go/v1/messages \
 ```bash
 rivet config setup glm --key-env ZHIPU_API_KEY
 ```
+
+可选模型：
+- `glm-5.3`：文本旗舰，1M 上下文 / 128K 输出（Coding Plan 已上线）
+- `glm-5.3-flash`：原生多模态，1M 上下文（视觉 Coding）
+- `glm-5.2`（默认）：1M 上下文，视觉支持
 
 注意：GLM 不支持 `stream_options` 参数，配置中会自动添加 `unsupported: ["stream_options"]`。
 
@@ -443,22 +453,101 @@ rivet config setup minimax --key-env MINIMAX_API_KEY
 
 注意：MiniMax 需要过滤 `top_k`、`metadata`、`service_tier`、`cache_control` 参数，配置中已自动处理。
 
-### Codex（GPT-5.5 via ChatGPT 订阅）
+### Codex（GPT-5.6 via ChatGPT 订阅）
 
-**推荐场景**：已订阅 ChatGPT Plus，想用 GPT-5.5 而不想额外付费。
+**推荐场景**：已订阅 ChatGPT Plus，想用 GPT-5.6 而不想额外付费。
 
 **不需要 API Key**，使用 OAuth PKCE 认证：
 
 ```bash
 rivet config setup codex --default
-node dist/main.js  # 首次运行会弹出浏览器登录
+rivet config login codex   # 打开浏览器完成 OAuth 授权（TUI 会话内则用 /login）
 ```
 
 认证流程：
-1. 首次运行 `rivet config setup codex` 后，使用 `--provider codex` 启动时会自动打开浏览器
+1. `rivet config setup codex` 写入预设配置；`rivet config login codex`（或 TUI 内 `/login`）打开浏览器授权
 2. 完成 ChatGPT OAuth 登录
 3. Token 自动保存到 `~/.rivet/auth/codex.json`
 4. 每 55 分钟自动刷新 Token
+
+---
+
+## 重试与速率限制
+
+天枢对可重试的 API 错误（限流、超时、网络抖动、服务端 5xx）自动重试。默认策略开箱可用；
+`provider.providers.<name>` 下的 `retry` 块用于按服务商精调——**全部可选，未配置时行为与默认完全一致**。
+
+### 默认重试策略（按错误类别）
+
+| 错误类别 | 触发 | 默认重试次数 | 默认等待 |
+|---|---|---|---|
+| `rate_limit` | HTTP 429 | 5 | 2000ms |
+| `overloaded` | 529 / 503 / 425 / 文案匹配 | 3 | 3000ms |
+| `server_error` | 500 / 502 / 其他 5xx | 3 | 2000ms |
+| `timeout` | 408 / ETIMEDOUT / ECONNRESET / EPIPE 等 | 3 | 2000–3000ms |
+| `stream_parse` | SSE 解析失败 | 2 | 1000ms |
+| `unknown` | 兜底 | 2 | 2000ms |
+| `image_strip` | 413 / 图片处理失败 | 1（只剥离一次） | 0 |
+| `auth_error` / `client_error` / `context_overflow` | 401/403/404/其他 4xx | 0（不重试） | — |
+
+未配置时的等待 = 上表固定值 + 0–50% 抖动；服务端返回 `Retry-After` 响应头时以服务端为准
+（固定 + 抖动，不做指数放大）。
+
+### 配置示例
+
+```json
+{
+  "provider": {
+    "providers": {
+      "deepseek": {
+        "maxRetries": 8,
+        "retry": {
+          "maxTotalDurationMs": 600000,
+          "backoff": { "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.3 },
+          "overrides": { "rate_limit": { "maxRetries": 8, "retryDelayMs": 5000 } },
+          "rateLimit": { "requestsPerSecond": 5, "burst": 10 }
+        }
+      }
+    }
+  }
+}
+```
+
+### 字段说明
+
+**`retry.maxTotalDurationMs`** — 单次请求（含全部重试）的总时长预算。默认 glm 20 分钟、其余服务商 10 分钟。
+
+**`retry.backoff`** — 一旦配置，**所有可重试类别**改用统一的指数退避曲线：
+`等待 = min(base × 2^(第几次重试−1), maxDelayMs) + 抖动`，其中 base 取该类别自己的等待基准
+（`overrides.<类别>.retryDelayMs`，未设置则用分类器默认值），抖动 = `random() × jitterRatio × 等待上限`。
+- `baseDelayMs`：仅当类别没有自己的基准（如 image_strip 的 0）时作为兜底起点，默认 1000
+- `maxDelayMs`：单次等待封顶，默认 30000
+- `jitterRatio`：抖动比例 0–2，默认 0.5
+
+**`retry.overrides.<类别>`** — 按错误类别覆盖（类别名拼错会在加载配置时直接报错，不会静默失效）：
+- `maxRetries`：该类别的重试上限（0–20）。**显式值不再被该类别默认值向下夹取**——想把 429 从 5 次调到 8 次，写这里即可
+- `retryDelayMs`：该类别的等待基准（ms）。配置了 `backoff` 时，它是指数退避的起点
+
+**`retry.rateLimit`** — 客户端令牌桶限速（默认关闭）。适合免费额度 / 共享配额的廉价服务商被多个 worker 同时打满的场景：
+- `requestsPerSecond`：稳态速率
+- `burst`：瞬时突发额度，默认 = ceil(requestsPerSecond)
+
+同一进程内**同 provider 的所有请求共享一只桶**（含 subagent / team wave 派发的请求）；
+worker 是独立进程、各有自己的桶，跨进程限速不在覆盖范围。
+
+### 与 `maxRetries` 的关系
+
+`provider.providers.<name>.maxRetries`（0–20，TUI `/connect`「高级设置」中可调）是**全局上限**：
+
+| 配置组合 | 生效的重试上限 |
+|---|---|
+| 只设 `maxRetries` | 所有类别都用它（类别默认值被覆盖） |
+| 只设 `retry.overrides.<类别>.maxRetries` | 用类别值 |
+| 两者都设 | 取两者较小值 |
+| 都不设 | 上表的类别默认值（默认行为） |
+
+> 历史提示：在 `retry` 块出现之前，`maxRetries` 会被类别默认值（如 429 的 5）向下夹取——
+> 把它从 10 调到 20 对 429 并不生效。该问题已修复。
 
 ---
 
@@ -514,7 +603,7 @@ node dist/main.js  # 首次运行会弹出浏览器登录
 Token 每 55 分钟自动刷新。如果长时间未使用导致过期，重新运行即可：
 
 ```bash
-node dist/main.js --provider codex
+rivet --provider codex
 ```
 
 浏览器会弹出重新授权。
@@ -533,7 +622,7 @@ node dist/main.js --provider codex
 或启动时指定：
 
 ```bash
-node dist/main.js --provider mimo --model mimo-v2.5-pro
+rivet --provider mimo --model mimo-v2.5-pro
 ```
 
 ### Q: 如何完全重置配置？
@@ -541,9 +630,13 @@ node dist/main.js --provider mimo --model mimo-v2.5-pro
 删除用户配置文件，天枢将恢复使用内置默认值：
 
 ```bash
-rm ~/.rivet/config.json
+rm ~/.rivet/config.json ~/.rivet/secrets.json ~/.rivet/provider-keys.json
 rivet config providers  # 应该只显示内置 Provider
 ```
+
+三个文件缺一不可：`config.json` 是 provider / 模型 / `keyRef` 指针；`secrets.json` 是 `keyRef → 明文密钥`（0600 权限）；`provider-keys.json` 是多 key 池（每个 key 的模型归属与凭据槽）。**只删 `config.json` 会留下密钥材料**——下次重新 `--connect` 同名 provider 时可能命中旧密钥，表现为「刚配的新 key 却被忽略」。
+
+同理，**备份或迁移到新机器时这三个文件要一起带走**；只备份 `config.json` 的典型症状是「配置都在，但每个 provider 都 401」（指针带过去了，明文没带）。多 key 池为什么单独成文件、为什么不放在 `config.json` 里，见 [故障排查 · API key / 认证失败](guides/troubleshooting.md#3-api-key--认证失败)。
 
 ---
 
@@ -773,6 +866,30 @@ rivet config providers  # 应该只显示内置 Provider
 
 ---
 
+## 生图（文生图）
+
+注册一个 OpenAI 形态的文生图端点（SiliconFlow / OpenAI Images 等），agent 即可用 `generate_image` 工具出图。
+
+- **独立用途槽 `agent.imageGenModel`**——`provider.default` 与 `agent.defaultModel` **完全不动**，前缀缓存锚定不受影响。未配置时工具根本不进工具表，对不启用该功能的用户零影响。
+- **只回路径、不回字节**：图片落盘后只把本地文件路径写回对话，**base64 绝不进上下文**（返回类型里就没有 base64 字符串），也绝不进错误文案。
+- **桌面端**：设置 → 生图模型——端点注册、**真实出图真测**（会消耗一次生成额度）、已注册生图模型的下拉快选。**注册后当前会话即时生效**，不必新开会话。
+- 尺寸字段名可配（OpenAI 发 `size`、SiliconFlow 发 `image_size`），常见响应形状自动适配；ComfyUI 原生 API 暂不支持（它是「提交 workflow → 轮询 history → 取 `/view`」三步链路，需先在本机装 OpenAI 兼容桥接插件）。
+
+配置示例（`~/.rivet/config.json`）：
+
+```jsonc
+{
+  "agent": {
+    "imageGenModel": {
+      "provider": "siliconflow-image",  // 独立注册的 provider，不影响 provider.default
+      "model": "black-forest-labs/FLUX.2-pro",
+      "size": "1024x1024",              // 默认尺寸（可选）
+      "sizeField": "image_size"         // OpenAI 发 size，SiliconFlow 发 image_size（可选）
+    }
+  }
+}
+```
+
 ## 调试
 
 查看完整配置：
@@ -806,4 +923,5 @@ curl https://open.bigmodel.cn/api/coding/paas/v4/models \
 - 实现计划：[Provider 配置模式优化实现计划](./plans/2026-05-28-设计一下我们模型接入的provider的模式配置优化-比如初始化的时候-输入-r.md)
 - Provider 预设源码：src/config/provider-presets.ts
 - 配置管理器：src/config/manager.ts
-- 配置向导：src/config/provider-wizard.ts
+- TUI Provider 接入流程：src/tui/connect-flow.ts
+- Provider 探测：src/api/provider-probe.ts

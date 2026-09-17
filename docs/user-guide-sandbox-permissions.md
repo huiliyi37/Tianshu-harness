@@ -80,7 +80,7 @@ rivet
 RIVET_SANDBOX=1 rivet
 ```
 
-YOLO（`dangerously-skip-permissions`）模式会**自动开启**沙箱 —— 免审批不等于免边界，详见 2.4。
+全自动（`dangerously-skip-permissions`，别名 YOLO）会**自动开启**沙箱 —— 免审批不等于免边界，详见 2.4。
 
 要在任何模式下都强制关闭：
 
@@ -143,18 +143,18 @@ RIVET_SANDBOX=0 rivet
 - 授权是会话级内存态，配置文件本身就是持久来源——改配置即改授权
 - CLI 与桌面端（sidecar）都会在会话创建时加载
 
-### 2.4 YOLO 与沙箱 —— 免审批不等于免边界
+### 2.4 全自动与沙箱 —— 免审批不等于免边界
 
-> **语义变更（2026-07-26）**：此前 `dangerously-skip-permissions` 会自动批准外出路径授权、且不开沙箱。现在**反过来**：YOLO 自动**开启**沙箱，而扩大写边界是唯一幸存的审批。
+> **语义变更（2026-07-26）**：此前 `dangerously-skip-permissions` 会自动批准外出路径授权、且不开沙箱。现在**反过来**：全自动（别名 YOLO）自动**开启**沙箱，而扩大写边界是唯一幸存的审批。
 
 审批和沙箱是两条独立的轴：**「谁被问」** 和 **「能写到哪」**。把它们混在一起会得到错误的耦合方向：
 
-- **非 YOLO 下**：审批本身就是边界，沙箱只是双保险 —— 边际收益低，而破坏构建的摩擦成本要全额付。所以沙箱默认关。
-- **YOLO 下**：没人盯着，沙箱是**唯一**的边界。所以 YOLO 必须打开沙箱，而不是关掉。
+- **监督 / 自动下**：审批本身就是边界，沙箱只是双保险 —— 边际收益低，而破坏构建的摩擦成本要全额付。所以沙箱默认关。
+- **全自动下**：没人盯着，沙箱是**唯一**的边界。所以全自动必须打开沙箱，而不是关掉。
 
 这与 Codex 的做法一致：`--full-auto` = 不问 + workspace-write 沙箱，真正无边界需要另一个刻意更长的 flag。
 
-**YOLO 下仍会询问的，只有 `request_path_access`**（以及 `computer_use` 的 js_eval / browser_adopt）。理由：YOLO 的意思是「别再为普通工具调用打扰我」，不是「在没人看着的时候悄悄溶解唯一的边界」。
+**全自动下仍会询问的，只有 `request_path_access`**（以及 `computer_use` 的 js_eval / browser_adopt）。理由：全自动的意思是「别再为普通工具调用打扰我」，不是「在没人看着的时候悄悄溶解唯一的边界」。
 
 摩擦量级是**每个工作区外路径每工作区一次**，不是每条命令一次：
 
@@ -166,7 +166,7 @@ RIVET_SANDBOX=0 rivet
 
 **无人值守场景**（headless / CI）：没有人能回答提示，所以外出授权会 fail-closed。请预先在配置里声明 `permissions.additionalWriteDirs`（见 2.3），不要指望运行时授权。
 
-**真的想裸奔**：`RIVET_SANDBOX=0` 在任何模式下都优先，包括 YOLO。此时无写边界、无审批，回滚是唯一安全网。
+**真的想裸奔**：`RIVET_SANDBOX=0` 在任何模式下都优先，包括全自动。此时无写边界、无审批，回滚是唯一安全网。
 
 ### 2.5 哪些命令不受沙箱保护
 
@@ -427,7 +427,7 @@ jq -r '.deniedPaths[]' ~/.rivet/sandbox-learn.jsonl | sort -u
 - 写文件：默认只能写项目目录
 - 执行命令：开启沙箱后受内核约束写范围；被拒时给出被拒路径与授权路线，而非裸报错
 - 危险命令：无论模式如何，deny 规则和硬编码风险模式都会拦截
-- 外出访问：必须经用户授权或显式配置 —— **YOLO 也不例外**
+- 外出访问：必须经用户授权或显式配置 —— **全自动也不例外**
 - 网络：通常放行（build/test/git 需要）
 
-审批和沙箱是两条轴：**「谁被问」和「能写到哪」**。提高审批自动化程度（`auto-safe` → `auto-accept` → `dangerously-skip-permissions`）不等于放弃写边界 —— 恰恰相反，越自动越需要边界，所以 YOLO 会自动开启沙箱。要减少摩擦，正确的顺序是补 `permissions.additionalWriteDirs` 和 `bash.allowlist`，而不是关沙箱。
+审批和沙箱是两条轴：**「谁被问」和「能写到哪」**。提高审批自动化程度（自动 `auto-safe` → 隐档 `auto-accept` → 全自动 `dangerously-skip-permissions`）不等于放弃写边界 —— 恰恰相反，越自动越需要边界，所以全自动会自动开启沙箱。要减少摩擦，正确的顺序是补 `permissions.additionalWriteDirs` 和 `bash.allowlist`，而不是关沙箱。

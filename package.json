@@ -1,7 +1,7 @@
 {
   "name": "tianshu-tui",
   "version": "3.21.1",
-  "description": "Terminal coding agent optimized for DeepSeek V4 prefix cache",
+  "description": "Cognitive runtime (CVM) for coding agents — stable, evidence-gated delivery; prefix cache works with all models (98–99% hit rate)",
   "license": "Apache-2.0",
   "type": "module",
   "keywords": [

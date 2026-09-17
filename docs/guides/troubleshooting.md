@@ -102,11 +102,11 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 - 中文对齐错位 → 设 `RIVET_AMBIGUOUS_WIDTH` 覆盖 CJK 宽度判定（各终端对宽字符判定不一）。
 - 颜色不用手动管：truecolor / 256 色 / 16 色三轨自动降级；`/theme list` 换主题，`/theme auto` 探测终端背景色自动适配明暗。
 
-详见 [README 终端 UI 节](../../README.md#终端-uitui) 及「环境变量 → TUI 显示」表。
+详见 [用户手册「终端 UI」](../user-guide.md#终端-uitui) 及「环境变量 → TUI 显示」表。
 
 ## 8. 缓存命中率掉了 / 成本突然升高
 
-**现象**：GlanceBar 状态栏上的命中率明显低于平时的 95–99% 稳态区间，或单轮成本异常升高。
+**现象**：GlanceBar 状态栏上的命中率明显低于平时的 98–99% 稳态区间，或单轮成本异常升高。
 
 **先看**：
 

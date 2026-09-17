@@ -19,6 +19,9 @@
 - [进阶能力](#进阶能力)
   - [Mirror 镜像加速（GFW 用户）](#mirror-镜像加速gfw-用户)
   - [Computer Use（GUI 自动化）](#computer-usegui-自动化)
+  - [星域与工具档位](#星域与工具档位)
+- [功能一览与快捷键](#功能一览与快捷键)
+- [语音输入](#语音输入)
 - [检查点与回滚](#检查点与回滚)
 - [参考](#参考)
 
@@ -196,6 +199,83 @@ Settings → 外观 提供 26 套内置主题（含暗色/亮色各半，如 `da
 
 > 典型场景：操作不支持 CLI 的工具、自动化图形工作流、跨应用联动。开启 `RIVET_COMPUTER_USE_AUTOMOUNT` 可让 browser-debug 自动挂载 computer-use。
 
+### 星域与工具档位
+
+新会话的初始星域在 Settings → System → 「默认星域」设置（默认启明，固定不自动切换；选 Auto 才按任务关键词路由）。星域决定系统提示词、工具白名单与决策阈值。
+
+**最小集绑定星域**（Settings → System，默认星域卡旁）：一键组合「钉定默认星域 + taiyi 16 件最小工具档」——新会话启动即该域的最小集形态，**不含 lean 资源减配**。清空 = 恢复默认域启明（该域工具档覆盖会保留，可在 Settings → Behavior → Lean 资源档 → 按域覆盖中删除）。
+
+**工具档位**（Settings → Behavior → 工具档位）控制每个会话装配的工具集，四档：
+
+| 档位 | 工具数 | 适用 |
+|---|---|---|
+| minimal | 29 | 日常开发全能力，省 token |
+| frontend（默认） | 30 | + `browser_debug` 浏览器验证 |
+| full | 50 | 全集（编排 / semantic_search / computer_use / 办公工具族），system prompt 开销更大 |
+| taiyi | 16 | 最小评测档——钉定太一域时自动落此档，无需手选 |
+
+> 生效时机：档位与绑定都在**新会话**装配（会话中途 `/domain` 切换不换工具——改工具指纹会重建前缀缓存）。想给某个星域单独配档位/lean/阈值：Settings → Behavior → Lean 资源档 → 按域覆盖（`runtime.domains.<域>`，域列表随新增星域自动扩展）。
+
+---
+
+## 功能一览与快捷键
+
+除招牌特性外，桌面端还有一组日常高频能力：
+
+- **集成终端**：`⌘/Ctrl+J` 或 `` Ctrl+` `` 唤出内嵌终端（xterm.js + Rust portable-pty），不必离开天枢就能跑命令
+- **+ 菜单**：议事会 ♟、团队模式 ⬡、派子代理、模型切换、星域选择一键触达（不再需要手敲 slash 命令）
+- **推理强度选择器**：`/effort`（无参数）弹出交互面板，上下选档位（Auto/Max/High/Medium/Low/Off），回车确认
+- **思考计时器**：agent 执行时显示实时 elapsed（如 "思考中 · explore · 1m 23s"），超过 10 分钟变红提示可能卡住
+- **@file 文件预览**：消息中提及的文件可点击，右侧抽屉展示文件内容（语法高亮 + 行号）
+- **DeepSeek 余额查询**：Insights 面板顶部显示账户余额和欠费状态（调官方 API）
+- **自定义 Provider**：设置 → 连接模型服务商 → + 自定义 Provider，支持任意 OpenAI 兼容端点（Ollama/vLLM/直连 OpenAI），API Key 可选
+- **sidecar 内存自适应**：堆上限按机器内存自动分档（8G→2G / 16G→4G / 32G→6G / 64G+→8G，`RIVET_SIDECAR_HEAP_MB` 可覆盖），≤8GB 机器自动启用 lean 资源档
+- **watchdog 自动恢复**：边界停滞时自动续跑，桌面端时间线可见恢复事件（⟳ 自动恢复 / ⏹ 配额耗尽）
+- **多会话并发**：标签栏管理多个会话，独立 cwd + 模型 + 审批模式
+- **功能面板**（左侧栏 `⌘1…9` 切换）：Mission Control（多会话控制台）、Inbox（收件箱）、Automations（定时任务）、Skills / Hooks 管理、Git / GitHub、Changes（改动审查）、Delegation（委派舰队与团队波次 DAG）、Cockpit 驾驶舱
+- **Popout 独立窗口**：把单个会话线程弹成独立窗口，多屏并行
+- **JobsDock / TodoDock 常驻抽屉**：后台任务停靠条（展开日志 / Kill / 在终端打开）、跨标签常驻 todo
+- **手机遥控**：设置 → Network → Remote Access 开启后，手机浏览器扫码看进度、批审批——详见 [远程访问指南](remote-access.md)
+
+### 桌面端快捷键
+
+`⌘/Ctrl+/` 随时唤出快捷键速查表（ShortcutOverlay）。核心快捷键：
+
+| 快捷键 | 作用 |
+|--------|------|
+| `⌘/Ctrl+K` | 命令面板 |
+| `⌘/Ctrl+N` | 新会话 |
+| `⌘/Ctrl+1…9` | 切换功能面板 |
+| `⌘/Ctrl+,` | 设置 |
+| `⌘/Ctrl+Shift+]` / `[` | 下/上一个会话标签 |
+| `⌘/Ctrl+W` | 关闭标签 |
+| `⌘/Ctrl+B` | 切侧栏 |
+| `⌘/Ctrl+Shift+B` | 切审查面板 |
+| `⌘/Ctrl+J` · `` Ctrl+` `` | 切集成终端 |
+| `⌘/Ctrl+;` | SideChat 旁路提问 |
+| `⌘/Ctrl+.` | Zen 模式（隐藏侧栏的纯 UI 专注模式） |
+| `⌘/Ctrl+O` | 视图模式循环（standard → verbose → summary） |
+| `Shift+Tab` | Plan / Agent 模式切换 |
+| `Esc Esc` | 倒带（桌面端 Rewind） |
+
+## 语音输入
+
+输入框的麦克风按钮支持语音输入，**macOS 与 Windows 通用**。识别由**本地 whisper.cpp 引擎**完成——离线、隐私（录音不上传任何服务器），中英文混杂场景的精度优于系统自带识别。
+
+**首次使用引导**：
+
+- 首次点击麦克风会自动下载识别模型（tiny 约 75MB，国内走镜像加速）。下载未完成时点击会提示「语音识别失败（whisper-unavailable）」，稍候重试即可。
+- macOS 首次使用会请求麦克风权限：点击「允许」即可；若误拒，到「系统设置 → 隐私与安全性 → 麦克风」中开启本应用。
+- Windows 若提示权限被拒，在「系统设置 → 隐私 → 麦克风」中允许本应用。
+
+**注意事项**：
+
+- 识别全程在本地完成，录音不离开设备。
+- 点击一次开始录音，再点一次结束并识别。
+- 本地引擎不可用时（如模型未下载），macOS 自动回退系统语音识别；Windows 则提示模型未就绪。
+- 追求更高精度可换用 base 模型（约 244MB）：`desktop/scripts/fetch-whisper-runtime.js --with-base` 预下载。
+- 网络受限环境可设 `RIVET_WHISPER_PROXY=http://代理:端口` 加速模型下载。
+
 ---
 
 ## 检查点与回滚
@@ -219,9 +299,10 @@ Settings → 外观 提供 26 套内置主题（含暗色/亮色各半，如 `da
 - [Provider 配置手册](./user-guide-provider-config.md) —— 模型 Provider、API Key、子代理路由
 - [审查纪律规范](./review-discipline.md) —— 审查门的完整规范、三级开关、重入护栏
 - [沙箱与权限](./user-guide-sandbox-permissions.md) —— `agent.permissions`、path-grants 详解
-- [README](../README.md) —— 项目总览、CLI 命令速查、关键配置
+- [README](../README.md) —— 项目总览
+- [用户手册](./user-guide.md) —— CLI 命令全表、TUI 键位、配置文件与环境变量、日志排查
 - [发版记录](./releases/) —— 每个版本的特性与修复
 
 ---
 
-> 本指南覆盖桌面端独有特性。遇到本文未覆盖的问题，先查 [README](../README.md) 的「斜杠命令」「关键配置速查」章节，或用 `⌘K` 命令面板探索——桌面端几乎所有功能都能从命令面板触达。
+> 本指南覆盖桌面端独有特性。遇到本文未覆盖的问题，先查 [用户手册](./user-guide.md) 的「斜杠命令」「配置文件」「环境变量」章节，或用 `⌘K` 命令面板探索——桌面端几乎所有功能都能从命令面板触达。

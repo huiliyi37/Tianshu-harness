@@ -2128,3 +2128,19 @@ test('createSession: 显式 cwd 恒优先于任何模式（含 scratch）', () =
     assert.equal(rec.workspaceSource, 'explicit')
   })
 })
+
+// ── 标题落盘前剥终端转义（2026-09-17 审计：标题三路回放终端，OSC 52 驻留）──
+test('createSession strips CSI/OSC sequences from the raw HTTP title', () => {
+  const manager = new RuntimeSessionManager({ createAgent: () => { throw new Error('not needed') }, defaultCwd: '/tmp/work' })
+  const rec = manager.createSession({ title: '\x1B]52;c;cGduZWQ=\x07evil \x1B[2J\x1B[H title' })
+  assert.ok(!rec.title!.includes('\x1B'), 'no ESC byte may persist into the title')
+  assert.equal(rec.title, 'evil  title')
+})
+
+test('setTitle (PATCH route path) strips terminal escapes too', () => {
+  const manager = new RuntimeSessionManager({ createAgent: () => { throw new Error('not needed') }, defaultCwd: '/tmp/work' })
+  const rec = manager.createSession({ title: 'clean' })
+  manager.setTitle(rec.id, '\x1B]0;pwned\x07injected')
+  const after = manager.getSession(rec.id)!
+  assert.equal(after.title, 'injected')
+})

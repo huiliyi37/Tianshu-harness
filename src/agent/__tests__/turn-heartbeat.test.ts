@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { TurnHeartbeat } from '../turn-heartbeat.js'
 import { wrapCallbacksWithHeartbeat } from '../turn-orchestrator.js'
@@ -10,19 +10,34 @@ function delay(ms: number): Promise<void> {
 }
 
 describe('TurnHeartbeat', () => {
-  it('fires after silentMs of silence', async () => {
+  it('fires after silentMs of silence', () => {
+    // 用受控时钟（mock.timers 同时接管 setTimeout 与 Date），而不是 `await delay(80)` 之后
+    // 断言墙上时钟的 `elapsed >= 50`。
+    //
+    // 为什么必须换：`elapsed` 由实现用 `Date.now() - lastTick` 算（turn-heartbeat.ts 的
+    // fire()），而它唯一的漂移守卫是 `elapsed < silentMs - 500` —— 在 silentMs=50 时是
+    // **负界**，等于零余量。于是平台定时器的任何亚毫秒早触发都会原样传进断言：CI 上
+    // 实测过一次 `AssertionError: elapsed should be >= 50ms, got 49`。
+    // 受控时钟让 elapsed 精确等于 silentMs，断言反而**更紧**（=== 50，不是放宽到 >=49）。
+    mock.timers.enable({ apis: ['setTimeout', 'Date'] })
     const events: Array<{ elapsed: number; activity: string }> = []
     const hb = new TurnHeartbeat({
       silentMs: 50,
       repeatMs: 50,
       onHeartbeat: (elapsed, activity) => events.push({ elapsed, activity }),
     })
-    hb.start()
-    await delay(80)
-    hb.stop()
-    assert.ok(events.length >= 1, `expected at least 1 heartbeat, got ${events.length}`)
-    assert.equal(events[0]!.activity, 'starting')
-    assert.ok(events[0]!.elapsed >= 50, `elapsed should be >= 50ms, got ${events[0]!.elapsed}`)
+    try {
+      hb.start()
+      mock.timers.tick(49)
+      assert.equal(events.length, 0, '不到 silentMs 不该触发')
+      mock.timers.tick(1)
+      assert.ok(events.length >= 1, `expected at least 1 heartbeat, got ${events.length}`)
+      assert.equal(events[0]!.activity, 'starting')
+      assert.equal(events[0]!.elapsed, 50, `elapsed 应精确等于 silentMs，实得 ${events[0]!.elapsed}`)
+    } finally {
+      hb.stop()
+      mock.timers.reset()
+    }
   })
 
   it('does not fire if tick happens before silentMs', async () => {
@@ -112,7 +127,14 @@ describe('TurnHeartbeat', () => {
   })
 
   describe('hard-stall watchdog', () => {
-    it('fires onHardStall once when silence exceeds hardStallMs', async () => {
+    it('fires onHardStall once when silence exceeds hardStallMs', () => {
+      // 同 `fires after silentMs of silence`：原断言 `elapsed >= hardStallMs` 也是墙上时钟的
+      // 精确下界、零余量，同样会被平台定时器的亚毫秒差击穿。改受控时钟后精确断言。
+      //
+      // 关键：`mock.timers.tick(n)` 是**先把时钟推到 now+n，再执行到期的定时器**，回调里
+      // 新排的要等下一次 tick（实测：tick(59) 后回调看到的时间就是 59）。TurnHeartbeat
+      // 每次 fire 都按 repeatMs 重排，所以这里必须**按代推进**——一次大 tick 只会跑第一代。
+      mock.timers.enable({ apis: ['setTimeout', 'Date'] })
       const stalls: Array<{ elapsed: number; activity: string }> = []
       const hb = new TurnHeartbeat({
         silentMs: 20,
@@ -121,13 +143,21 @@ describe('TurnHeartbeat', () => {
         onHeartbeat: () => {},
         onHardStall: (elapsed, activity) => stalls.push({ elapsed, activity }),
       })
-      hb.start()
-      hb.tick('read_file returned')
-      await delay(140)
-      hb.stop()
-      assert.equal(stalls.length, 1, `onHardStall must fire exactly once, got ${stalls.length}`)
-      assert.equal(stalls[0]!.activity, 'read_file returned')
-      assert.ok(stalls[0]!.elapsed >= 60, `elapsed should be >= hardStallMs, got ${stalls[0]!.elapsed}`)
+      try {
+        hb.start()
+        hb.tick('read_file returned')
+        mock.timers.tick(20) // 第 1 代：elapsed 20 < 60，只出心跳
+        assert.equal(stalls.length, 0, '第 1 代不该报硬停滞')
+        mock.timers.tick(20) // 第 2 代：elapsed 40
+        assert.equal(stalls.length, 0, '第 2 代不该报硬停滞')
+        mock.timers.tick(20) // 第 3 代：elapsed 60 → 越界
+        assert.equal(stalls.length, 1, `onHardStall must fire exactly once, got ${stalls.length}`)
+        assert.equal(stalls[0]!.activity, 'read_file returned')
+        assert.equal(stalls[0]!.elapsed, 60, `elapsed 应精确等于 hardStallMs，实得 ${stalls[0]!.elapsed}`)
+      } finally {
+        hb.stop()
+        mock.timers.reset()
+      }
     })
 
     it('does not fire onHardStall when a tick resets the clock in time', async () => {

@@ -2082,7 +2082,7 @@ async function executeToolUseInner(
       // 先相对化再判；出界路径（relative 以 .. 开头）才落回内存图。
       const filePath = tu.input.file_path as string
       const db = deps.meridianIndexer?.getDb()
-      const relFilePath = isAbsolute(filePath) ? relative(deps.cwd, filePath) : filePath
+      const relFilePath = (isAbsolute(filePath) ? relative(deps.cwd, filePath) : filePath).replace(/\\/g, '/')
       // P1-2：冷库（新 clone 首启索引为空）时 db 为真值但无数据——analyzeImpact 恒返回
       // 空集且不落回 importGraph，impact hint 静默变空（9a9bbf49b 提交信息「importGraph
       // 留作兜底」仅对 indexer=null/路径出界成立）。加 hasFiles() 空库探测：库空时与

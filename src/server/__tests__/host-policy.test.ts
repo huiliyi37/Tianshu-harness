@@ -34,12 +34,14 @@ function rawRequest(
       lines.push('Connection: close', '', '')
       sock.write(lines.join('\r\n'))
     })
-    let data = ''
-    sock.on('data', (c) => { data += c.toString() })
+    const chunks: Buffer[] = []
+    sock.on('data', (c: Buffer) => { chunks.push(c) })
     sock.on('end', () => {
-      const idx = data.indexOf('\r\n\r\n')
-      if (idx < 0) { reject(new Error(`malformed response: ${data.slice(0, 200)}`)); return }
-      const head = data.slice(0, idx)
+      const buf = Buffer.concat(chunks)
+      const sep = Buffer.from('\r\n\r\n')
+      const idx = buf.indexOf(sep)
+      if (idx < 0) { reject(new Error(`malformed response: ${buf.toString('utf-8', 0, 200)}`)); return }
+      const head = buf.toString('utf-8', 0, idx)
       const headLines = head.split('\r\n')
       const status = Number(headLines[0]?.split(' ')[1])
       const headers: Record<string, string> = {}
@@ -48,21 +50,27 @@ function rawRequest(
         if (i > 0) headers[l.slice(0, i).toLowerCase().trim()] = l.slice(i + 1).trim()
       }
       // Node 对无 Content-Length 的响应自动 chunked——按帧解码，否则 body 带帧前缀。
-      let body = data.slice(idx + 4)
+      // 必须按**字节**切：chunk 头里的长度是字节数，body 含多字节字符时（如中文网卡名
+      // "以太网"，9 字节/3 字符）字符串下标 ≠ 字节偏移，按字符切会多吃几个字符、末尾残留
+      // "0\r\n\r"，JSON.parse 报 "Unexpected non-whitespace character after JSON"。
+      const raw = buf.subarray(idx + sep.length)
+      let out: Buffer
       if (headers['transfer-encoding'] === 'chunked') {
-        let out = ''
-        let rest = body
-        while (rest.length > 0) {
-          const lineEnd = rest.indexOf('\r\n')
+        const parts: Buffer[] = []
+        let off = 0
+        while (off < raw.length) {
+          const lineEnd = raw.indexOf('\r\n', off)
           if (lineEnd < 0) break
-          const size = parseInt(rest.slice(0, lineEnd), 16)
+          const size = parseInt(raw.toString('latin1', off, lineEnd), 16)
           if (!Number.isFinite(size) || size <= 0) break
-          out += rest.slice(lineEnd + 2, lineEnd + 2 + size)
-          rest = rest.slice(lineEnd + 2 + size + 2)
+          parts.push(raw.subarray(lineEnd + 2, lineEnd + 2 + size))
+          off = lineEnd + 2 + size + 2
         }
-        body = out
+        out = Buffer.concat(parts)
+      } else {
+        out = raw
       }
-      resolve({ status, headers, body })
+      resolve({ status, headers, body: out.toString('utf-8') })
     })
     sock.on('error', reject)
     sock.setTimeout(5000, () => { sock.destroy(); reject(new Error('rawRequest timeout')) })

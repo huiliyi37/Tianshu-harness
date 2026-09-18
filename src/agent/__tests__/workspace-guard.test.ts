@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -68,8 +68,7 @@ function makeDir(cwd: string, dir: string): void {
 
 function makeFile(cwd: string, path: string, content: string): void {
   const fullPath = join(cwd, path)
-  const dir = fullPath.substring(0, fullPath.lastIndexOf('/'))
-  if (dir) mkdirSync(dir, { recursive: true })
+  mkdirSync(dirname(fullPath), { recursive: true })
   writeFileSync(fullPath, content)
 }
 

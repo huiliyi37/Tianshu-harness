@@ -3,7 +3,7 @@
  * 本模块保留仅供 fallback（tool-pipeline 无 meridianIndexer 时），计划在确认全量迁移后移除。
  */
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
-import { join, resolve, dirname } from 'path'
+import { join, resolve, dirname, isAbsolute } from 'path'
 
 export interface ImportGraph {
   forward: Map<string, Set<string>>
@@ -16,9 +16,15 @@ const MAX_FILES = 1000
 function resolveImport(fromFile: string, importPath: string, cwd: string): string | null {
   const baseDir = dirname(fromFile)
   const absPath = resolve(cwd, baseDir, importPath)
-  const extensions = ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js']
-  for (const ext of extensions) {
+  for (const ext of ['', '.ts', '.tsx', '.js', '.jsx']) {
     const candidate = absPath + ext
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate
+  }
+  // index 候选必须用 join 而非字符串拼 '/index.ts'：Windows 上拼出来是混合分隔符
+  // （…\mod/index.ts），与 collectTsFiles 收集的原生路径（…\mod\index.ts）字符串不等，
+  // forward.has(resolved) 落空 → index 形式的重导出在 Windows 上恒丢边。
+  for (const idx of ['index.ts', 'index.tsx', 'index.js']) {
+    const candidate = join(absPath, idx)
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate
   }
   return null
@@ -164,12 +170,14 @@ export async function buildImportGraphAsync(cwd: string): Promise<ImportGraph | 
 }
 
 export function getReverseDeps(graph: ImportGraph, file: string, cwd?: string): Set<string> {
-  const absPath = file.startsWith('/') ? file : cwd ? resolve(cwd, file) : ''
+  // isAbsolute 而非 startsWith('/')：Windows 绝对路径是 D:\… / D:/…，只查 '/' 会把它
+  // 当成相对路径——不传 cwd 时 absPath 退化成 '' 并返回空集，反向依赖在 Windows 上静默失明。
+  const absPath = isAbsolute(file) ? file : cwd ? resolve(cwd, file) : ''
   return absPath ? (graph.reverse.get(absPath) ?? new Set()) : new Set()
 }
 
 export function invalidateFile(graph: ImportGraph, cwd: string, file: string): ImportGraph {
-  const absFile = file.startsWith('/') ? file : resolve(cwd, file)
+  const absFile = isAbsolute(file) ? file : resolve(cwd, file)
 
   // Remove old forward edges for this file
   const oldImports = graph.forward.get(absFile) ?? new Set()

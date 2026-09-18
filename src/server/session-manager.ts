@@ -693,6 +693,17 @@ export interface RuntimeSessionManagerOptions {
    * of how much history accumulates. Default 16.
    */
   maxLoadedSessions?: number
+  /**
+   * 外部新增会话的发现间隔（ms）。同一个 home 可能被多个进程同时使用
+   * （例如聊天桥自起的 serve 与桌面端 sidecar 各自 `rivet serve`），而
+   * `rehydrate()` 只在构造时读盘一次——外部进程之后建的会话不在本进程的
+   * `sessions` 里，`GET /sessions` 不返回、按 id 取 404，UI 只能靠重启才看得到。
+   * 本项让进程定期扫盘，把**不认识的**会话 id 增量装填并推
+   * `onSessionsChanged('external')`，客户端据此 invalidateQueries 重取。
+   * 只增不删、不覆盖已有条目（归档/删除由持有它的那个进程负责）。
+   * Default 5000；0 = 关闭该扫描。
+   */
+  externalScanMs?: number
   /** Auto-resolve a pending intervention after this many ms. 0 = never. Default 0. */
   approvalTimeoutMs?: number
   /** C2 刹车 — watchdog 停滞续跑前的可取消倒计时窗口（ms）。Default 5000. */
@@ -1214,6 +1225,9 @@ export class RuntimeSessionManager {
   /** 阶段 4 — 会话列表失效提示回调（见 RuntimeSessionManagerOptions.onSessionsChanged）。 */
   private readonly onSessionsChanged?: (reason: string) => void
   private idleSweepTimer?: ReturnType<typeof setInterval>
+  /** 外部新增会话的扫描定时器（见 externalScanMs）。 */
+  private externalScanTimer?: ReturnType<typeof setInterval>
+  private readonly externalScanMs: number
   /** Per-session coordinator refs for worker steer/kill (set by main.ts after agent build). */
   private readonly coordinatorBySession = new Map<string, () => import('../agent/coordinator.js').DelegationCoordinator | undefined>()
 
@@ -1257,12 +1271,21 @@ export class RuntimeSessionManager {
     this.loadPlans = opts.listPlans ?? storeListPlans
     this.missionStore = opts.missionStore
     this.onSessionsChanged = opts.onSessionsChanged
+    const envExternalScan = Number(process.env.RIVET_EXTERNAL_SCAN_MS)
+    this.externalScanMs = opts.externalScanMs
+      ?? (Number.isFinite(envExternalScan) && envExternalScan >= 0 ? Math.floor(envExternalScan) : 5_000)
     if (this.idleAgentTtlMs > 0) {
       // Sweep once a minute; unref so the timer never keeps the process alive.
       this.idleSweepTimer = setInterval(() => this.sweepIdleAgents(), 60_000)
       this.idleSweepTimer.unref?.()
     }
     if (this.persistence) this.rehydrate()
+    if (this.persistence && this.externalScanMs > 0) {
+      // 同上：unref——发现定时器不该把进程钉住（sidecar 退出时它必须能退）。
+      // 首扫刻意不在此刻做：rehydrate 刚装填完，紧接着扫一次只会空转。
+      this.externalScanTimer = setInterval(() => this.adoptExternalSessions(), this.externalScanMs)
+      this.externalScanTimer.unref?.()
+    }
   }
 
   /**
@@ -1359,6 +1382,58 @@ export class RuntimeSessionManager {
    * 'aborted' (interrupted by restart) and is view-only until a fresh run is
    * started in the same cwd. events.jsonl is the source of truth for seq.
    */
+  /**
+   * 发现**外部进程**新增的会话并增量装填（见 `externalScanMs`）。
+   *
+   * 为什么需要：`rehydrate()` 只在构造时读盘一次。同一个 home 被两个进程
+   * 共用时（桌面端 sidecar + 聊天桥自起的 serve），后者建的会话不在本进程的
+   * `sessions` 里——`GET /sessions` 不返回、按 id 取 404，UI 只能靠重启才看得到。
+   * 这里定期扫盘，把**不认识的 id** 补进来并通知客户端重取。
+   *
+   * 边界（刻意保守，避免与对方争同一份状态）：
+   *   - **只增**：绝不删除或覆盖已存在的会话；归档/删除由持有它的那个进程做，
+   *     本进程下一轮扫描自然不再「新增」它；
+   *   - **只走新会话路径**：外部刚建的会话不可能处于 `running`，故不需要
+   *     `rehydrate()` 里那套崩溃收尾（孤儿审批 / resume_offer 标记）；
+   *   - 装填与 `rehydrate()` 同形，事件日志同样懒加载（`eventsLoaded: false`），
+   *     内存开销与一次 rehydrate 同级。
+   */
+  private adoptExternalSessions(): void {
+    const p = this.persistence
+    if (!p || typeof p.loadRecords !== 'function') return
+    let records: SessionRecord[]
+    try { records = p.loadRecords() } catch { return }
+    let adopted = 0
+    for (const rawRecord of records) {
+      const id = rawRecord.id
+      if (!id || this.sessions.has(id)) continue
+      const rec = sanitizeSessionDomain(rawRecord)
+      this.sessions.set(id, {
+        record: { ...rec, lastSeq: rec.lastSeq, pendingApprovals: 0 },
+        agent: null,
+        events: [],
+        eventsLoaded: false,
+        seq: rec.lastSeq,
+        running: false,
+        lifecycleGeneration: 0,
+        pending: new Map(),
+        pendingDelegations: new Map(),
+        listeners: new Set(),
+        knownArtifacts: new Set(),
+        steer: new SteerBuffer(),
+        queueLane: [],
+        domainState: resolveDomainState(rec.domain ?? 'auto')?.state,
+        disabledSkills: new Set(),
+        skillLoadErrors: [],
+        reasoningEffort: rec.reasoningEffort as import('../agent/auto-reasoning.js').ReasoningEffort | 'auto' | undefined,
+        planAutoApproveUi: rec.planAutoApproveUi === true,
+        approvalMode: rec.approvalMode,
+      })
+      adopted++
+    }
+    if (adopted > 0) this.onSessionsChanged?.('external')
+  }
+
   private rehydrate(): void {
     const p = this.persistence!
     // Lazy boot: read only the lightweight index.json records — NOT the event

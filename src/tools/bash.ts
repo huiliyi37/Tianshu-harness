@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -6,7 +6,7 @@ import { DANGEROUS_BASH_PATTERNS } from '../agent/approval-risk.js'
 import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
-import { killProcessTree } from './process-kill.js'
+import { killProcessTree, spawnShell } from './process-kill.js'
 import { getShellCommand, getShellDiagnostics, WinStreamDecoder, rewriteWindowsNullRedirect, rewritePowershellNullRedirect } from '../platform.js'
 import { wrapSandboxCommand as sandboxWrap } from './sandbox-profile.js'
 import type { SandboxBackendKind } from './sandbox-profile.js'
@@ -534,7 +534,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     const mirrorEnv = buildMirrorEnv(mirrorConfig)
     const earlyFailEnv = gitCloneEarlyFailEnv(rawCommand, mirrorConfig)
     debugLog(`[bash-spawn] kind=${shell.kind} shell=${shell.cmd} args=${JSON.stringify(shell.args)} cwd=${params.cwd ?? process.cwd()}`)
-    const child = track(spawn(shell.cmd, [...shell.args, commandToRun], {
+    const child = track(spawnShell(shell, commandToRun, {
       // Hide the transient console window on Windows (no-op elsewhere) — also
       // avoids stdio handoff quirks；置于首行以落在 architecture-guards 的 ±10 行窗口内。
       windowsHide: true,

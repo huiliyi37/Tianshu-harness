@@ -452,22 +452,6 @@ export function isLongRunner(command: string): boolean {
 }
 
 /** One full attempt. Extracted verbatim so execute() can retry it in learn mode. */
-/** Default foreground command timeout (ms). */
-const DEFAULT_BASH_TIMEOUT_MS = 120_000
-
-/**
- * Resolve the `timeout` input into a usable positive delay.
- *
- * Nullish-coalescing alone only covers null/undefined: a literal 0 (or a
- * negative / NaN value) reached setTimeout unchanged and fired the timeout
- * branch on the very next tick — an instant kill reported as exitCode -1, which
- * the model cannot tell apart from a genuine command failure. Anything
- * non-positive or non-finite now falls back to the documented default.
- */
-function normalizeBashTimeout(raw: unknown): number {
-  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BASH_TIMEOUT_MS
-}
-
 async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> {
   const rawCommand = params.input.command as string
   const rewritten = rtkRewrite(rawCommand, params.toolUseId)
@@ -475,7 +459,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
   const rewrittenWithMirrors = rewriteGitHubUrls(rewritten, mirrorConfig)
   const sandbox = wrapSandboxCommand(rewrittenWithMirrors, params.cwd)
   const command = sandbox.command
-  const timeout = normalizeBashTimeout(params.input.timeout)
+  const timeout = Number(params.input.timeout) > 0 ? Number(params.input.timeout) : 120_000 // 0/负数/NaN/未给 → 默认（#187）
   const startTime = Date.now()
 
   // Background path: explicit run_in_background=true, or auto-detected long-runner
@@ -841,28 +825,16 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     let timer: ReturnType<typeof setTimeout> | null = null
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null
 
-    // Drop the delayed SIGKILL fallback once the child is gone. Otherwise it
-    // fires ~3s later against a pid that may already be recycled (on Windows
-    // killProcessTree issues a bare taskkill /PID), and it keeps the event loop
-    // alive for those 3s. finish() cannot cover this: on the timeout/abort paths
-    // it runs with settled already set and returns before any cleanup.
-    const clearForceKillTimer = () => {
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer)
-        forceKillTimer = null
-      }
-    }
-
     const signal = params.abortSignal
     const cleanupAbort = () => {
       if (signal) signal.removeEventListener('abort', onAbort)
     }
 
-    const finish = async (code: number, isTimeout = false, clearForceKill = true) => {
+    const finish = async (code: number, isTimeout = false) => {
+      if (forceKillTimer) clearTimeout(forceKillTimer) // 必须在 settled 早退之前：超时/中止已 settle，close 仍会走到这里
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      if (clearForceKill) clearForceKillTimer()
       cleanupAbort()
       // 结果装配兜底：buildResult 内任何异常（如 dist 混构导致的
       // ReferenceError，session 22d00a37）从 child 事件处理器逃逸时不会变成
@@ -914,15 +886,11 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     timer = setTimeout(() => {
       timedOut = true
       killProcessTree(child, 'SIGTERM')
+      void finish(0, true)
       forceKillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 3000)
-      void finish(0, true, false)
     }, timeout)
 
     child.on('close', (code) => {
-      // The child is gone — a pending SIGKILL fallback would only target a
-      // possibly-recycled pid. Clear it here, before finish() (which early-returns
-      // when the timeout/abort path has already settled).
-      clearForceKillTimer()
       void finish(code ?? 1, timedOut)
     })
 
@@ -930,7 +898,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      clearForceKillTimer()
+      if (forceKillTimer) clearTimeout(forceKillTimer)
       cleanupAbort()
       uiOutput.flush()
       uiOutput.dispose()

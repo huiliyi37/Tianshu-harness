@@ -1,0 +1,27 @@
+# pnpm ≥10 不再读取 package.json 的 `pnpm` 字段——运行任何 pnpm 命令都会打印
+# 「The "pnpm" field in package.json is no longer read by pnpm」，构建放行白名单
+# 必须落在 pnpm-workspace.yaml 里（issue #57）。
+#
+# 缺了这个文件，全新 clone 的 `pnpm install` 会打印 `ERR_PNPM_IGNORED_BUILDS`
+# 并静默跳过下列包的 install 脚本：better-sqlite3 因此拿不到
+# better_sqlite3.node，任何走 SQLite 的路径都以「Could not locate the bindings
+# file」失败（2026-09-17 于 Windows + pnpm 11.25 上 A/B 复现：无此文件 → 报错
+# 且绑定缺失；有此文件 → 脚本编译通过）。
+#
+# 两个键都写：`allowBuilds` 是 pnpm 11/12 实际生效的形态
+# （`pnpm approve-builds --all` 写出的就是它），`onlyBuiltDependencies` 是
+# pnpm 10 的名字——pnpm 11 会读它但**不用它决策构建放行**（实测：只写后者仍然
+# 报 ERR_PNPM_IGNORED_BUILDS）。同列一份是为了让 pnpm 10 用户开箱可用。
+allowBuilds:
+  '@ast-grep/lang-json': true
+  '@ast-grep/lang-python': true
+  better-sqlite3: true
+  esbuild: true
+
+onlyBuiltDependencies:
+  - '@ast-grep/lang-json'
+  - '@ast-grep/lang-python'
+  - '@ast-grep/napi'
+  - better-sqlite3
+  - esbuild
+  - lzo

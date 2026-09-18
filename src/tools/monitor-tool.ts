@@ -55,6 +55,8 @@ Actions:
         }
 
         let resolvedJobId = jobId
+        let spawnedJobId: string | undefined
+        let jobsForRollback: typeof params.jobs
         if (command) {
           // command 模式：先按 bash 后台任务的同款环境 spawn 成 job，再订阅它
           // （sanitizeEnv + getResolvedEnv + mirrorEnv 三层与 bash.ts 一致；
@@ -62,6 +64,7 @@ Actions:
           if (!params.jobs) {
             return { content: '后台任务系统不可用，无法启动 command。', isError: true }
           }
+          jobsForRollback = params.jobs
           const snapshot = params.jobs.spawn({
             command,
             rawCommand: command,
@@ -69,10 +72,20 @@ Actions:
             env: { ...sanitizeEnv(getResolvedEnv(params.cwd)), ...buildMirrorEnv(loadConfig({ cwd: params.cwd }).mirrors) },
           })
           resolvedJobId = snapshot.id
+          spawnedJobId = snapshot.id
         }
 
         const res = monitors.subscribe({ jobId: resolvedJobId!, pattern })
-        if (!res.ok) return { content: res.error, isError: true }
+        if (!res.ok) {
+          // subscribe 可能在 spawn 之后才失败（已达 monitor 上限 / pattern 非法）。
+          // 留下的 job 会变成孤儿继续跑，而错误文案里不带 job id，模型事后无法
+          // 用 job 工具回收它——必须在这里就地回滚。
+          if (spawnedJobId && jobsForRollback) {
+            try { jobsForRollback.kill(spawnedJobId) } catch { /* best-effort */ }
+          }
+          const rollbackNote = spawnedJobId ? `（已回收刚启动的后台任务 ${spawnedJobId}）` : ''
+          return { content: res.error + rollbackNote, isError: true }
+        }
         const m = res.monitor
         const desc = `◉ 监视 ${m.id} → job ${m.jobId}${pattern ? ` /${pattern}/` : ''}`
         return {

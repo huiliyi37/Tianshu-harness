@@ -82,6 +82,38 @@ describe('monitor 工具', () => {
     assert.match(res.content, /不可用/)
   })
 
+  it('subscribe(command) 订阅失败时回收刚 spawn 的 job（不泄漏）', async () => {
+    // 独立 registry 且上限为 1：先占满，让下一次 subscribe 必然失败。
+    const limit1 = new MonitorRegistry(() => store, { maxMonitors: 1 })
+    const first = store.spawn({ command: "sh -c 'sleep 5'", rawCommand: 'sleep 5', cwd: dir, env })
+    assert.equal(limit1.subscribe({ jobId: first.id }).ok, true)
+
+    const killed: string[] = []
+    const origKill = store.kill.bind(store)
+    store.kill = ((id: string) => { killed.push(id); return origKill(id) }) as typeof store.kill
+
+    const idsBefore = new Set(store.list().map(j => j.id))
+    try {
+      const res = await MONITOR_TOOL.execute({
+        input: { action: 'subscribe', command: "sh -c 'sleep 5'" },
+        cwd: dir,
+        jobs: store,
+        monitors: limit1,
+      } as unknown as ToolCallParams)
+
+      assert.equal(res.isError, true)
+      assert.match(res.content, /已达 monitor 上限/)
+
+      const spawned = store.list().map(j => j.id).filter(id => !idsBefore.has(id))
+      assert.equal(spawned.length, 1, 'command 模式应先 spawn 出一个 job')
+      assert.deepEqual(killed, spawned, '订阅失败后必须回收刚 spawn 的 job，不能留孤儿')
+    } finally {
+      store.kill = origKill
+      store.kill(first.id)
+      limit1.dispose()
+    }
+  })
+
   it('requiresApproval：command 命中危险命令闸门才需审批，其余免审批', () => {
     const approval = (input: Record<string, unknown>): boolean =>
       MONITOR_TOOL.requiresApproval!({ input, cwd: dir } as unknown as ToolCallParams)

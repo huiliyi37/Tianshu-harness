@@ -452,6 +452,22 @@ export function isLongRunner(command: string): boolean {
 }
 
 /** One full attempt. Extracted verbatim so execute() can retry it in learn mode. */
+/** Default foreground command timeout (ms). */
+const DEFAULT_BASH_TIMEOUT_MS = 120_000
+
+/**
+ * Resolve the `timeout` input into a usable positive delay.
+ *
+ * Nullish-coalescing alone only covers null/undefined: a literal 0 (or a
+ * negative / NaN value) reached setTimeout unchanged and fired the timeout
+ * branch on the very next tick — an instant kill reported as exitCode -1, which
+ * the model cannot tell apart from a genuine command failure. Anything
+ * non-positive or non-finite now falls back to the documented default.
+ */
+function normalizeBashTimeout(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BASH_TIMEOUT_MS
+}
+
 async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> {
   const rawCommand = params.input.command as string
   const rewritten = rtkRewrite(rawCommand, params.toolUseId)
@@ -459,7 +475,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
   const rewrittenWithMirrors = rewriteGitHubUrls(rewritten, mirrorConfig)
   const sandbox = wrapSandboxCommand(rewrittenWithMirrors, params.cwd)
   const command = sandbox.command
-  const timeout = (params.input.timeout as number) ?? 120_000
+  const timeout = normalizeBashTimeout(params.input.timeout)
   const startTime = Date.now()
 
   // Background path: explicit run_in_background=true, or auto-detected long-runner
@@ -825,6 +841,18 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     let timer: ReturnType<typeof setTimeout> | null = null
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null
 
+    // Drop the delayed SIGKILL fallback once the child is gone. Otherwise it
+    // fires ~3s later against a pid that may already be recycled (on Windows
+    // killProcessTree issues a bare taskkill /PID), and it keeps the event loop
+    // alive for those 3s. finish() cannot cover this: on the timeout/abort paths
+    // it runs with settled already set and returns before any cleanup.
+    const clearForceKillTimer = () => {
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer)
+        forceKillTimer = null
+      }
+    }
+
     const signal = params.abortSignal
     const cleanupAbort = () => {
       if (signal) signal.removeEventListener('abort', onAbort)
@@ -834,7 +862,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      if (clearForceKill && forceKillTimer) clearTimeout(forceKillTimer)
+      if (clearForceKill) clearForceKillTimer()
       cleanupAbort()
       // 结果装配兜底：buildResult 内任何异常（如 dist 混构导致的
       // ReferenceError，session 22d00a37）从 child 事件处理器逃逸时不会变成
@@ -891,6 +919,10 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     }, timeout)
 
     child.on('close', (code) => {
+      // The child is gone — a pending SIGKILL fallback would only target a
+      // possibly-recycled pid. Clear it here, before finish() (which early-returns
+      // when the timeout/abort path has already settled).
+      clearForceKillTimer()
       void finish(code ?? 1, timedOut)
     })
 
@@ -898,7 +930,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      if (forceKillTimer) clearTimeout(forceKillTimer)
+      clearForceKillTimer()
       cleanupAbort()
       uiOutput.flush()
       uiOutput.dispose()
@@ -977,7 +1009,7 @@ export const BASH_TOOL: Tool = {
       type: 'object',
       properties: {
         command: { type: 'string', description: '要执行的 shell 命令' },
-        timeout: { type: 'integer', description: '超时毫秒数（默认 120000）' },
+        timeout: { type: 'integer', minimum: 1, description: '超时毫秒数（默认 120000；非正数按默认值处理）' },
         run_in_background: { type: 'boolean', description: '设为 true 转入后台并返回 job id。自动检测已知长跑命令。' },
       },
       required: ['command'],

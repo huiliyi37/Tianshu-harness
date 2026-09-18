@@ -71,14 +71,15 @@ export const DANGEROUS_BASH_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\bdrop\s+table\b/i,
   /\bsudo\s+(?:rm|chmod|chown|dd|mkfs|mount|umount|systemctl|shutdown|reboot|passwd|user(?:add|del|mod))\b/,  // sudo + destructive subcommand
   /\bchmod\s+(?:777|[0-7]*7[0-7]*7)\b/,  // chmod 777, chmod 757, chmod 737, etc.
-  /\bwget\b.*\|\s*(?:sh|bash|zsh|fish)\b/,
-  /\bcurl\b.*\|\s*(?:sh|bash|zsh|fish)\b/,
+  /\bwget\b.*\|\s*(?:\S*\/)?(?:sh|bash|zsh|fish)\b/,   // 管道进 shell——执行器可以是绝对路径（/bin/bash）
+  /\bcurl\b.*\|\s*(?:\S*\/)?(?:sh|bash|zsh|fish)\b/,
+  /\b(?:sh|bash|zsh|dash)\s+-c\s+["']?\$\(/,           // shell -c "<命令替换>"——无管道无 eval 的下载执行形态
   /\beval\b.*\$[({]/,                   // eval "$(curl ...)" or eval $(...)
   FORCE_PUSH_PATTERN,                         // force push (reference shared for reason detection)
   /\b(?:shutdown|reboot|halt|poweroff)\b/,                    // system control — disruptive even without sudo
   /\bnpm\s+(?:publish|unpublish)\b/,                          // irreversible registry operations
   /\bxargs\b.*\brm\b/,                                        // mass deletion via xargs pipe
-  /\bbase64\b[^\n]*\|\s*(?:sh|bash|zsh|fish)\b/,             // obfuscated execution via base64 decode
+  /\bbase64\b[^\n]*\|\s*(?:\S*\/)?(?:sh|bash|zsh|fish)\b/,             // obfuscated execution via base64 decode
   ...GLOBAL_INSTALL_PATTERNS,                                  // global package installs — environment-level mutation
 ]
 
@@ -135,7 +136,7 @@ export const INJECTION_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\beval\b.*\bexec\b/,                     // eval + exec chain
   /\bsource\b.*\/etc\/|^\.\s+\/etc\//,     // sourcing system config files
   /\benv\b.*\b(?:SHELL|PATH|HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES)=/, // env var override for privilege escalation
-  /\b(?:python|perl|ruby|node)\s+-[ec]\s/, // inline code execution interpreters
+  /\b(?:python[\d.]*|perl|ruby|node|osascript)\s+-[ec]\s/, // inline code execution interpreters（python3/osascript 同门禁）
   /\bcrontab\b/,                            // cron modification — persistence mechanism
   /\bsystemctl\b.*\b(?:enable|start|stop|restart|mask)\b/, // systemd service manipulation
 ]
@@ -168,9 +169,33 @@ function stripDevNullRedirects(command: string): string {
   return command.replace(DEV_NULL_REDIRECT_PATTERN, ' ')
 }
 
+/**
+ * 命令文本归一化——只服务风险判定，不改变执行（执行仍是原始命令）。
+ * 审批门在文本层、bash 语义在展开层：反斜杠续行拆散「命令名+旗标」、
+ * ${IFS} 替代空白、字符级转义（r\m）与引号拼接（"r"m）都能让语义不变的
+ * 命令在文本上认不出。归一化视图与原始视图并检（见 testBoth）：
+ * 语义相同、判定必须相同。
+ */
+export function normalizeBashCommand(command: string): string {
+  return command
+    .replace(/\\\r?\n/g, ' ')   // 续行：rm \<newline> -rf 是一条命令
+    .replace(/\$\{IFS\}/gi, ' ') // ${IFS} 默认展开为空白
+    .replace(/\\(.)/g, '$1')    // 字符级转义：r\m → rm（检测视图内剥转义）
+    .replace(/["']/g, '')       // 引号拼接："r"m → rm
+}
+
+function testBoth(pattern: RegExp, command: string): boolean {
+  return pattern.test(command) || pattern.test(normalizeBashCommand(command))
+}
+
+/** manual 档审批门统一入口：原始与归一化视图并检 DANGEROUS 清单。 */
+export function matchesDangerousBash(command: string): boolean {
+  return DANGEROUS_BASH_PATTERNS.some(pattern => testBoth(pattern, command))
+}
+
 export function bashCommandMayWrite(command: string): boolean {
   const normalized = stripDevNullRedirects(command)
-  return BASH_WRITE_PATTERNS.some(pattern => pattern.test(normalized))
+  return BASH_WRITE_PATTERNS.some(pattern => testBoth(pattern, normalized))
 }
 
 /**
@@ -179,9 +204,9 @@ export function bashCommandMayWrite(command: string): boolean {
  */
 export function isSafeWriteOnly(command: string): boolean {
   const normalized = stripDevNullRedirects(command)
-  if (RISKY_WRITE_PATTERNS.some(p => p.test(normalized))) return false
-  if (DANGEROUS_BASH_PATTERNS.some(p => p.test(normalized))) return false
-  return SAFE_WRITE_PATTERNS.some(p => p.test(normalized))
+  if (RISKY_WRITE_PATTERNS.some(p => testBoth(p, normalized))) return false
+  if (DANGEROUS_BASH_PATTERNS.some(p => testBoth(p, normalized))) return false
+  return SAFE_WRITE_PATTERNS.some(p => testBoth(p, normalized))
 }
 
 /**
@@ -194,25 +219,30 @@ export function isSafeWriteOnly(command: string): boolean {
  * 管道符切开以覆盖 `echo x>>~/f` 粘接形态；`./out.txt`、`src/x`、裸文件名不受影响。
  */
 export function hasOutOfWorkspaceWriteTarget(command: string): boolean {
-  for (const token of stripDevNullRedirects(command).split(/\s+/)) {
-    for (const raw of token.split(/[<>|;&]+/)) {
-      // 剥首尾引号：`>"D:\x\y"` 的目标与 `~/f'` 等引号包裹形态同样要判
-      const frag = raw.replace(/^['"]+|['"]+$/g, '')
-      if (frag === '') continue
-      if (frag.startsWith('~')) return true
-      if (frag.startsWith('/') || frag.startsWith('\\')) return true
-      if (/^[A-Za-z]:[\\/]/.test(frag)) return true
-      // $VAR / ${VAR} 单独或带路径后缀——展开结果位置未知，fail-closed；
-      // awk 的 $1 位置参数（数字开头）不在此列，避免误伤常规文本处理
-      if (/^\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)(?:[\\/].*)?$/.test(frag)) return true
-      if (/%[^%\s]+%/.test(frag)) return true
-      // issue #118 — 按路径段判 `..`，不能只判开头：`foo/../../etc/cron.d/x` 以
-      // `foo` 开头，而内层 `/` 不在 [<>|;&] 切分集合里，于是整段不被切开 →
-      // 中段穿越被判成工作区内写，auto-safe（无沙箱）下越界写零提示放行。
-      if (frag.split(/[\\/]/).includes('..')) return true
+  const scan = (view: string): boolean => {
+    for (const token of stripDevNullRedirects(view).split(/\s+/)) {
+      for (const raw of token.split(/[<>|;&]+/)) {
+        // 剥首尾引号：`>"D:\x\y"` 的目标与 `~/f'` 等引号包裹形态同样要判
+        const frag = raw.replace(/^['"]+|['"]+$/g, '')
+        if (frag === '') continue
+        if (frag.startsWith('~')) return true
+        if (frag.startsWith('/') || frag.startsWith('\\')) return true
+        if (/^[A-Za-z]:[\\/]/.test(frag)) return true
+        // $VAR / ${VAR} 单独或带路径后缀——展开结果位置未知，fail-closed；
+        // awk 的 $1 位置参数（数字开头）不在此列，避免误伤常规文本处理
+        if (/^\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)(?:[\\/].*)?$/.test(frag)) return true
+        if (/%[^%\s]+%/.test(frag)) return true
+        // issue #118 — 按路径段判 `..`，不能只判开头：`foo/../../etc/cron.d/x` 以
+        // `foo` 开头，而内层 `/` 不在 [<>|;&] 切分集合里，于是整段不被切开 →
+        // 中段穿越被判成工作区内写，auto-safe（无沙箱）下越界写零提示放行。
+        if (frag.split(/[\\/]/).includes('..')) return true
+      }
     }
+    return false
   }
-  return false
+  // 归一化视图并检：${IFS} 粘成的单 token 让 `^\$` 锚定与空白分词同时失效
+  // （echo${IFS}x>${IFS}$HOME/.zshenv 在原视图是一个 token、oow=false）。
+  return scan(command) || scan(normalizeBashCommand(command))
 }
 
 /** Detect scope-bypassing bash git commands (unscoped add/commit/stash). */
@@ -327,7 +357,7 @@ export function assessToolRisk(
   if (toolName === 'bash') {
     const cmd = typeof input.command === 'string' ? input.command : ''
     for (const pattern of DANGEROUS_BASH_PATTERNS) {
-      if (pattern.test(cmd)) {
+      if (testBoth(pattern, cmd)) {
         // Distinguish force push for clearer reason
         if (pattern === FORCE_PUSH_PATTERN) {
           reasons.push('force push can overwrite shared remote history')

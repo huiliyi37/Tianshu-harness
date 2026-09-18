@@ -12,6 +12,16 @@ import chalk from 'chalk'
 
 // ── 原始转义序列常量 ──────────────────────────────────────────
 
+/**
+ * CSI/OSC/双字符 ESC 序列的全谱匹配（2026-09-17 审计）：不可信文本（模型输出、
+ * 工具输出、网页抓取正文）直写终端时，OSC 52 可覆写系统剪贴板、CSI 可清屏/
+ * 踢出 alt-screen——渲染 sink 必须在写出前剥除。整段剥而非只删 ESC 字节，
+ * 避免把 `[31m` 残渣留成可见乱码。消费方：commit-engine 的 entry.text 契约
+ * 兜底、worker-dispatch-card 的委派卡消毒。
+ */
+// eslint-disable-next-line no-control-regex
+export const ANSI_SEQ_RE = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g
+
 /** ANSI 转义序列原始常量。直接用模板字面量拼接到输出字符串。 */
 export const ANSI = {
   /** 保存当前光标位置 */

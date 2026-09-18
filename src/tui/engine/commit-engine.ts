@@ -13,7 +13,7 @@
  */
 
 import type { WriteStream } from 'node:tty'
-import { ANSI } from './ansi.js'
+import { ANSI, ANSI_SEQ_RE } from './ansi.js'
 import { createRingBuffer, type RingBuffer } from '../ring-buffer.js'
 
 /** Scrollback buffer 默认行数上限（长会话防内存无限增长）。 */
@@ -34,6 +34,14 @@ export interface CommitEngineOptions {
   flush?: boolean
   /** Scrollback buffer 行数上限（超出后丢弃最旧条目）。默认 1000。 */
   scrollbackMaxLines?: number
+}
+
+// eslint-disable-next-line no-control-regex
+function enforceTextContract(text: string): string {
+  return text
+    .replace(ANSI_SEQ_RE, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
 }
 
 export class CommitEngine {
@@ -68,7 +76,11 @@ export class CommitEngine {
    * 重绘区域之前（cursor save 之前），因此天然按时间顺序排列。
    */
   write(entry: CommittedEntry): void {
-    let content = entry.ansi ?? entry.text
+    // entry.text 的契约是「不含 ANSI 序列」——但契约此前只写在注释里，生产者
+    // 侧没有强制，模型输出/工具输出/网页正文里的 CSI/OSC 原样进 scrollback
+    // （OSC 52 覆写系统剪贴板、CSI 清屏/踢出 alt-screen）。在唯一汇聚点兜底
+    // 执行契约：剥转义与控制字符、保留换行。自产序列走 entry.ansi，不经此兜底。
+    let content = entry.ansi ?? enforceTextContract(entry.text)
     if (!content.endsWith('\n')) content += '\n'
     if (entry.trailingNewline) content += '\n'
     this.buffer.push(content.trimEnd())

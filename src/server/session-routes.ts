@@ -71,6 +71,7 @@ import { classifyModelSpecMiss } from './serve.js'
 import { withAuth } from './route-auth.js'
 import { buildStorageCleanupHandler } from './storage-cleanup-route.js'
 import { buildScratchRoutes } from './scratch-cleanup.js'
+import { isSafeFileName } from '../utils/safe-path.js'
 
 export type ArtifactKind = 'plan' | 'task-list' | 'walkthrough' | 'diff' | 'screenshot' | 'test-result' | 'markdown' | 'html'
 
@@ -551,7 +552,9 @@ export function buildSessionRoutes(
 
     // Plan read — full markdown content for one plan.
     'GET /sessions/:id/plans/:slug': withAuth(async (_body, params) => {
-      const plan = await manager.readPlan(params!.id!, decodeSlug(params!.slug!))
+      const slug = decodeSlug(params!.slug!)
+      if (!isSafeFileName(slug)) return { status: 400, body: { error: 'Invalid plan slug' } }
+      const plan = await manager.readPlan(params!.id!, slug)
       if (plan === undefined) return { status: 404, body: { error: 'Session not found' } }
       if (!plan) return { status: 404, body: { error: 'Plan not found' } }
       return { status: 200, body: { plan } }
@@ -560,11 +563,13 @@ export function buildSessionRoutes(
     // Plan edit — replace a submitted plan's markdown before approval
     // (desktop review → tweak → Build loop; Cursor 3.0 parity).
     'PUT /sessions/:id/plans/:slug': withAuth(async (body, params) => {
+      const slug = decodeSlug(params!.slug!)
+      if (!isSafeFileName(slug)) return { status: 400, body: { error: 'Invalid plan slug' } }
       const data = (body ?? {}) as { content?: string }
       if (typeof data.content !== 'string') {
         return { status: 400, body: { error: 'Missing "content" string' } }
       }
-      const outcome = await manager.updatePlan(params!.id!, decodeSlug(params!.slug!), data.content)
+      const outcome = await manager.updatePlan(params!.id!, slug, data.content)
       if (!outcome.ok) {
         const status =
           outcome.code === 'session-missing' || outcome.code === 'plan-not-found' ? 404
@@ -582,7 +587,9 @@ export function buildSessionRoutes(
       const selectedApproach = typeof data.selectedApproach === 'string' && data.selectedApproach.trim()
         ? data.selectedApproach.trim()
         : undefined
-      const outcome = await manager.approvePlan(params!.id!, decodeSlug(params!.slug!), selectedApproach)
+      const slug = decodeSlug(params!.slug!)
+      if (!isSafeFileName(slug)) return { status: 400, body: { error: 'Invalid plan slug' } }
+      const outcome = await manager.approvePlan(params!.id!, slug, selectedApproach)
       if (!outcome.ok) {
         const status =
           outcome.code === 'session-missing' || outcome.code === 'plan-not-found' ? 404
@@ -596,7 +603,9 @@ export function buildSessionRoutes(
     // Reject — mark a plan rejected (kept on disk) with optional revision feedback.
     'POST /sessions/:id/plans/:slug/reject': withAuth(async (body, params) => {
       const data = (body ?? {}) as { comment?: string }
-      const ok = await manager.rejectPlan(params!.id!, decodeSlug(params!.slug!), data.comment)
+      const slug = decodeSlug(params!.slug!)
+      if (!isSafeFileName(slug)) return { status: 400, body: { error: 'Invalid plan slug' } }
+      const ok = await manager.rejectPlan(params!.id!, slug, data.comment)
       if (!ok) return { status: 404, body: { error: 'Session or plan not found' } }
       return { status: 200, body: { ok: true } }
     }, apiToken),
@@ -755,6 +764,7 @@ export function buildSessionRoutes(
       }
       const scope = data.scope === 'global' ? 'global' : 'project'
       const skillName = decodeRouteParam(params!.name!)!
+      if (!isSafeFileName(skillName)) return { status: 400, body: { error: 'Invalid skill name' } }
       try {
         const result = manager.writeSkill(params!.id!, skillName, data.content, scope)
         if (!result) return { status: 404, body: { error: 'Session not found' } }
@@ -768,6 +778,7 @@ export function buildSessionRoutes(
     // built-in / plugin / global skills the project panel can't remove.
     'DELETE /sessions/:id/skills/:name': withAuth((_body, params) => {
       const skillName = decodeRouteParam(params!.name!)!
+      if (!isSafeFileName(skillName)) return { status: 400, body: { error: 'Invalid skill name' } }
       const result = manager.uninstallSkill(params!.id!, skillName)
       if (result === undefined) return { status: 404, body: { error: 'Session not found' } }
       if (!result.removed) return { status: 409, body: { error: 'Cannot remove built-in/plugin/global skill from the project panel' } }
@@ -1079,7 +1090,9 @@ export function buildSessionRoutes(
     // Worker log — 失败钻取(W2):活动流 + 终态结果 + 转录尾部。
     // ?full=1 拉完整转录(不截 50 条尾部,正文上限放宽,工具帧带参数摘要)。
     'GET /sessions/:id/workers/:workerId/log': withAuth(async (_body, params) => {
-      const log = await manager.getWorkerLog(params!.id!, decodeURIComponent(params!.workerId!), {
+      const workerId = decodeURIComponent(params!.workerId!)
+      if (!isSafeFileName(workerId)) return { status: 400, body: { error: 'Invalid worker id' } }
+      const log = await manager.getWorkerLog(params!.id!, workerId, {
         full: params?.full === '1',
       })
       if (!log) return { status: 404, body: { error: 'Session not found' } }
@@ -2152,6 +2165,7 @@ export function buildSessionRoutes(
       if (!data.groupId || typeof data.groupId !== 'string') {
         return { status: 400, body: { error: 'Missing or invalid groupId' } }
       }
+      if (!isSafeFileName(data.groupId)) return { status: 400, body: { error: 'Invalid groupId' } }
       const cp = loadCheckpoint(rec.cwd, data.groupId)
       if (!cp) return { status: 404, body: { error: `Checkpoint ${data.groupId} not found` } }
       const resume = buildResumeFromCheckpoint(cp)

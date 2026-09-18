@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto'
 import type { DependencyEdge, WorkerResult, WorkOrder } from './work-order.js'
 import { dependencyId } from './work-order.js'
 import { serializeUnifiedPlan, type UnifiedPlan } from './unified-plan.js'
+import { isSafeFileName } from '../utils/safe-path.js'
 
 const CHECKPOINT_DIR = '.rivet/checkpoints'
 
@@ -61,6 +62,9 @@ export interface WaveCheckpoint {
 }
 
 function getCheckpointPath(cwd: string, groupId: string): string {
+  // groupId 会拼进文件名——拒绝分隔符与父目录逃逸（与 coordinator 的
+  // isSafeRoundNonce 同族；groupId 亦来自 HTTP body，路由层之外的第二道门）。
+  if (!isSafeFileName(groupId)) throw new Error(`Invalid checkpoint group id: ${JSON.stringify(groupId)}`)
   return join(cwd, CHECKPOINT_DIR, `${groupId}.json`)
 }
 

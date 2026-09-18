@@ -10,6 +10,7 @@ import { createTransport, type TransportResult } from './transport-factory.js'
 import { LogRingBuffer } from './log-buffer.js'
 import { getNetworkConfig } from '../config/manager.js'
 import type { McpNetworkConfig } from './stdio-env.js'
+import { HealthChecker, type HealthState } from './health-check.js'
 
 const DEFAULT_MCP_TIMEOUT_MS = 60_000
 
@@ -122,11 +123,22 @@ export class McpManager {
    * 会话里的 mcp__* 工具依然不在」，等于白连。
    */
   private readonly onToolsChanged?: (tools: Tool[]) => void
+  // Health checker for proactive monitoring (initialized in constructor)
+  private healthChecker: HealthChecker
 
   constructor(config: McpConfig, opts: { onToolsChanged?: (tools: Tool[]) => void } = {}) {
     this.onToolsChanged = opts.onToolsChanged
     this.config = config
     this.timeoutMs = config.timeoutMs ?? DEFAULT_MCP_TIMEOUT_MS
+
+    // Initialize health checker with config or defaults
+    this.healthChecker = new HealthChecker({
+      intervalMs: config.healthCheck?.intervalMs ?? 60_000,
+      timeoutMs: config.healthCheck?.timeoutMs ?? 10_000,
+      failureThreshold: config.healthCheck?.failureThreshold ?? 3,
+      retryBackoffBaseMs: config.healthCheck?.retryBackoffBaseMs ?? 5_000,
+      maxRetries: config.healthCheck?.maxRetries ?? 10,
+    })
   }
 
   async initialize(): Promise<void> {
@@ -196,6 +208,9 @@ export class McpManager {
   }
 
   async shutdown(): Promise<void> {
+    // Stop all health checks first
+    this.healthChecker.shutdown()
+
     // 抑制重连必须**先于** close：关 transport 会触发 onclose 钩子，不抑制的话
     // 钩子会把子进程重新拉起来——shutdown 反倒制造出一个新进程，把短命进程
     // （测试、CLI 的一次性连接）吊住不退出（实测：shutdown 后仍有
@@ -255,6 +270,10 @@ export class McpManager {
     // Clear pending reconnect timer for this server.
     const timer = this.reconnectTimers.get(serverId)
     if (timer) { clearTimeout(timer); this.reconnectTimers.delete(serverId) }
+
+    // Stop health checks for this server
+    this.healthChecker.unregister(serverId)
+
     const conn = this.connections.get(serverId)
     if (conn) {
       // 抑制重连用标记，而不是把 onclose 置空——置空会连带丢掉 Protocol 的
@@ -387,6 +406,14 @@ export class McpManager {
         })
         // Reset reconnect counter on successful connect.
         this.reconnectAttempts.delete(serverId)
+
+        // Register for health monitoring after successful connection
+        this.healthChecker.register(
+          serverId,
+          server.client,
+          (sid, healthState) => this._handleHealthStateChange(sid, healthState),
+        )
+
         return rivetTools
       } catch (err) {
         // Tool discovery failed — close the transport that was just opened
@@ -608,5 +635,49 @@ export class McpManager {
       description: t.description,
       inputSchema: (t.inputSchema ?? { type: 'object' as const, properties: {} }) as McpToolDef['inputSchema'],
     }))
+  }
+
+  /**
+   * Handle health state changes from the health checker.
+   * Maps health states to connection statuses and notifies UI.
+   */
+  private _handleHealthStateChange(serverId: string, healthState: HealthState): void {
+    const current = this.states.get(serverId)
+    if (!current) return
+
+    // Map health states to connection statuses
+    let newStatus: McpConnectionState['status']
+    let errorMessage: string | undefined
+
+    switch (healthState) {
+      case 'healthy':
+        newStatus = 'connected'
+        break
+      case 'degraded':
+        newStatus = 'degraded'
+        errorMessage = 'Health check degraded'
+        break
+      case 'retrying':
+        newStatus = 'degraded'
+        errorMessage = 'Health check retrying'
+        break
+      case 'failed':
+        newStatus = 'error'
+        errorMessage = 'Health check failed'
+        break
+    }
+
+    // Update state and notify UI
+    this.states.set(serverId, {
+      ...current,
+      status: newStatus,
+      error: errorMessage ?? current.error,
+      lastErrorAt: healthState === 'failed' ? Date.now() : current.lastErrorAt,
+    })
+
+    // If health recovered, notify that tools are available again
+    if (healthState === 'healthy' && current.status !== 'connected') {
+      this.onToolsChanged?.(this.tools)
+    }
   }
 }

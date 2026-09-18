@@ -887,3 +887,69 @@ test('applyGlobalApprovalMode 只广播无 override 的存活 agent，返回套�
   assert.equal(plainAgent!.liveMode, 'dangerously-skip-permissions')
   assert.equal(overrideAgent!.liveMode, undefined, '会话级 override 尊重用户选择，不被全局广播覆盖')
 })
+
+// ── 外部进程新增会话的自动发现（externalScanMs）──────────────────────
+// 背景：同一个 home 可能被多个进程同时 `rivet serve`（桌面端 sidecar + 聊天桥
+// 自起的 serve）。rehydrate() 只在构造时读盘一次，外部进程之后建的会话本进程
+// 不知道——`GET /sessions` 不返回、按 id 取 404，UI 只能靠重启才看得到。
+// adoptExternalSessions() 定期把**不认识的 id** 增量补进来并推事件。
+
+function seeded(id: string, over: Partial<SessionRecord> = {}): PersistedSession {
+  return {
+    record: {
+      id, status: 'completed', createdAt: 1, updatedAt: 1,
+      cwd: '/work', lastSeq: 0, pendingApprovals: 0, ...over,
+    },
+    events: [],
+  }
+}
+
+/** 关掉定时器、直接调私有方法——避免依赖真实时序（不引入 flake）。 */
+function adoptNow(mgr: RuntimeSessionManager): void {
+  (mgr as unknown as { adoptExternalSessions(): void }).adoptExternalSessions()
+}
+
+test('外部新增的会话被增量装上，并恰好推一次 sessions_changed（reason=external）', () => {
+  const p = new LazyMemoryPersistence([seeded('a'), seeded('b')])
+  const changes: string[] = []
+  const mgr = new RuntimeSessionManager({
+    createAgent: () => new NoopAgent(),
+    persistence: p,
+    externalScanMs: 0,
+    onSessionsChanged: (reason) => changes.push(reason),
+  })
+
+  assert.deepEqual(mgr.listAllSessions().map((s) => s.id).sort(), ['a', 'b'])
+  assert.deepEqual(changes, [], '构造期（rehydrate）不应推送')
+
+  // 模拟「另一个进程建了会话」：只落到共享 persistence，本进程毫不知情
+  p.saveRecord(seeded('c').record)
+
+  adoptNow(mgr)
+  assert.deepEqual(mgr.listAllSessions().map((s) => s.id).sort(), ['a', 'b', 'c'])
+  assert.deepEqual(changes, ['external'], '发现新增应恰好推一次')
+
+  // 幂等：没有新增时不重复推
+  adoptNow(mgr)
+  assert.equal(mgr.listAllSessions().length, 3)
+  assert.deepEqual(changes, ['external'], '无新增不推')
+})
+
+test('外部扫描只增不覆盖：id 已在本进程内存时保持本进程状态', () => {
+  const p = new LazyMemoryPersistence([seeded('a')])
+  const mgr = new RuntimeSessionManager({
+    createAgent: () => new NoopAgent(),
+    persistence: p,
+    externalScanMs: 0,
+  })
+  const before = mgr.listAllSessions().find((s) => s.id === 'a')!
+
+  // 磁盘上出现同 id、但状态不同的记录（外部进程动过它）
+  p.saveRecord({ ...seeded('a').record, status: 'running', updatedAt: 999 })
+
+  adoptNow(mgr)
+
+  const after = mgr.listAllSessions().find((s) => s.id === 'a')!
+  assert.equal(after.updatedAt, before.updatedAt, '不得被磁盘记录覆盖')
+  assert.equal(after.status, before.status, '会话状态归持有它的那个进程管')
+})

@@ -33,4 +33,40 @@ describe('GitignoreFilter', () => {
       'different-home outside-project paths should NOT be blocked',
     )
   })
+
+  it('honours root-anchored patterns (/foo) only at the repo root', () => {
+    const filter = new GitignoreFilter('/repo', ['/js'])
+
+    assert.equal(filter.isIgnored('/repo', '/repo/js'), true, 'the anchored dir itself')
+    assert.equal(filter.isIgnored('/repo', '/repo/js/bundle.js'), true, 'a file under it')
+    assert.equal(
+      filter.isIgnored('/repo', '/repo/vendor/js/a.js'),
+      false,
+      'a same-named dir deeper down must NOT be covered by a root anchor',
+    )
+  })
+
+  it('expands ** across zero or more directory levels', () => {
+    const secrets = new GitignoreFilter('/repo', ['**/secrets.json'])
+    assert.equal(secrets.isIgnored('/repo', '/repo/secrets.json'), true, 'zero-depth (root) match')
+    assert.equal(secrets.isIgnored('/repo', '/repo/a/b/secrets.json'), true, 'nested match')
+    assert.equal(secrets.isIgnored('/repo', '/repo/a/b/config.json'), false)
+
+    const dir = new GitignoreFilter('/repo', ['foo/**'])
+    assert.equal(dir.isIgnored('/repo', '/repo/foo/x.js'), true, 'direct child')
+    assert.equal(dir.isIgnored('/repo', '/repo/foo/a/b.js'), true, 'deep child')
+    assert.equal(dir.isIgnored('/repo', '/repo/bar/a/b.js'), false)
+  })
+
+  it('still applies ignore rules to in-tree names starting with two dots', () => {
+    const filter = new GitignoreFilter('/repo', ['node_modules'])
+
+    assert.equal(
+      filter.isIgnored('/repo', '/repo/..cache/node_modules/a.js'),
+      true,
+      'a dir literally named "..cache" is inside the tree and stays ignorable',
+    )
+    // A genuine parent hop is still outside the tree and bypasses gitignore.
+    assert.equal(filter.isIgnored('/repo', '/repo/../node_modules/a.js'), false)
+  })
 })

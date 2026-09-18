@@ -38,7 +38,6 @@ export class GitignoreFilter {
     return new GitignoreFilter(cwd, patterns)
   }
 
-
   isIgnored(cwd: string, filePath: string): boolean {
     const absPath = resolve(cwd, filePath)
     const relPath = relativePosix(cwd, absPath)
@@ -46,7 +45,10 @@ export class GitignoreFilter {
     // Gitignore rules only apply inside the project tree. Paths outside the
     // project (e.g. ~/.rivet/sessions/ on the same machine) must not be blocked
     // — the user may have explicitly granted access to read session logs.
-    if (relPath.startsWith('..')) return false
+    // Guard on a real parent hop ('..' / '../…'): an in-tree entry whose name
+    // merely starts with two dots (e.g. `..cache/`) is NOT outside the tree and
+    // must stay subject to the ignore rules.
+    if (relPath === '..' || relPath.startsWith('../')) return false
 
     for (const pattern of this.patterns) {
       if (this.matchPattern(pattern, relPath)) return true
@@ -59,8 +61,17 @@ export class GitignoreFilter {
     if (pattern.startsWith('!')) return false
 
     // Directory-only patterns (trailing /)
-    const dirOnly = pattern.endsWith('/')
-    const cleanPattern = dirOnly ? pattern.slice(0, -1) : pattern
+    let cleanPattern = pattern
+    const dirOnly = cleanPattern.endsWith('/')
+    if (dirOnly) cleanPattern = cleanPattern.replace(/\/+$/, '')
+
+    // Root-anchored patterns (leading /). Git reads a leading slash as "anchored
+    // at the repository root": strip the marker and match the full relative path
+    // only. Falling through to the per-segment loop below would let `/js` also
+    // match `vendor/js`, defeating the anchor.
+    const anchored = cleanPattern.startsWith('/')
+    if (anchored) cleanPattern = cleanPattern.replace(/^\/+/, '')
+    if (anchored) return this.matchGlob(cleanPattern, relPath)
 
     // Check if any path segment or the full path matches
     const segments = relPath.split('/')
@@ -93,10 +104,45 @@ export class GitignoreFilter {
   }
 }
 
+/** Backslash, built without a literal so the escape survives any transform. */
+const BACKSLASH = String.fromCharCode(92)
+
+/** Regex metacharacters that must be escaped when interpolated as literals. */
+const RE_SPECIAL = new Set([
+  '.', '$', '^', '{', '}', '(', ')', '|', '[', ']', BACKSLASH,
+])
+
+/**
+ * Translate a gitignore glob into an anchored RegExp.
+ *
+ * Two glob features the previous implementation got wrong:
+ *  - a double star matches across separators, and a double star followed by a
+ *    slash matches "zero or more directories" so it also covers the root;
+ *  - a pattern that names a directory also ignores everything beneath it.
+ */
 function globToRegex(glob: string): RegExp {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]')
-  return new RegExp(`(^|/)${escaped}$`)
+  let re = ''
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]!
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        i++
+        if (glob[i + 1] === '/') {
+          i++
+          re += '(?:.*/)?'
+        } else {
+          re += '.*'
+        }
+      } else {
+        re += '[^/]*'
+      }
+    } else if (ch === '?') {
+      re += '[^/]'
+    } else if (RE_SPECIAL.has(ch)) {
+      re += BACKSLASH + ch
+    } else {
+      re += ch
+    }
+  }
+  return new RegExp('^(?:' + re + ')(?:/.*)?$')
 }

@@ -66,6 +66,19 @@ export const mcpServerConfigSchema = z.object({
   { message: 'MCP server must have either "command" (stdio) or "url" (SSE/Streamable HTTP), but not both' },
 )
 
+export const mcpHealthCheckConfigSchema = z.object({
+  /** Health check interval in milliseconds (default: 60000 = 1 minute) */
+  intervalMs: z.number().int().positive().optional(),
+  /** Health check timeout in milliseconds (default: 10000 = 10 seconds) */
+  timeoutMs: z.number().int().positive().optional(),
+  /** Number of consecutive failures before marking degraded (default: 3) */
+  failureThreshold: z.number().int().positive().optional(),
+  /** Base delay for exponential backoff in milliseconds (default: 5000 = 5 seconds) */
+  retryBackoffBaseMs: z.number().int().positive().optional(),
+  /** Maximum number of retry attempts (default: 10) */
+  maxRetries: z.number().int().positive().optional(),
+})
+
 export const mcpConfigSchema = z.object({
   enabled: z.boolean().default(true),
   servers: z.record(z.string(), mcpServerConfigSchema).default({}),
@@ -78,6 +91,8 @@ export const mcpConfigSchema = z.object({
    * （与改造前逐字节一致）。仅对声明了 workspace 的 server 生效。
    */
   subAgentWorkspace: subAgentWorkspacePolicySchema.optional(),
+  /** Health check configuration for MCP servers (default: enabled with 60s interval) */
+  healthCheck: mcpHealthCheckConfigSchema.optional(),
 })
 
 export type SubAgentWorkspacePolicy = z.infer<typeof subAgentWorkspacePolicySchema>
@@ -86,3 +101,4 @@ export type McpServerWorkspaceDeclaration = z.infer<typeof mcpServerWorkspaceSch
 export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
 export type McpConfig = z.infer<typeof mcpConfigSchema>
 export type McpToolPolicy = z.infer<typeof mcpToolPolicySchema>
+export type McpHealthCheckConfig = z.infer<typeof mcpHealthCheckConfigSchema>

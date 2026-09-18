@@ -228,7 +228,7 @@ export async function writePlan(
   const filePath = planFilePath(cwd, slug)
   const body = buildPlanFrontmatter(options) + content.replace(PLAN_OPTIONS_FRONTMATTER_RE, '')
   await writeFile(filePath, body, 'utf-8')
-  return join(PLANS_DIR, `${slug}.md`)
+  return `${PLANS_DIR}/${slug}.md`
 }
 
 /** 读单个计划 */
@@ -246,7 +246,7 @@ export async function readPlan(
       slug,
       title: extractTitle(content),
       content,
-      path: join(PLANS_DIR, `${slug}.md`),
+      path: `${PLANS_DIR}/${slug}.md`,
       createdAt: s.birthtime,
       status,
       options: parsePlanOptions(content),
@@ -271,7 +271,7 @@ export function readPlanSync(cwd: string, slug: string): PlanDocument | null {
       slug,
       title: extractTitle(content),
       content,
-      path: join(PLANS_DIR, `${slug}.md`),
+      path: `${PLANS_DIR}/${slug}.md`,
       createdAt: s.birthtime,
       status: parsePlanStatus(content),
       options: parsePlanOptions(content),
@@ -344,7 +344,7 @@ export function listPlansSync(cwd: string): PlanDocument[] {
         slug,
         title: extractTitle(content),
         content,
-        path: join(PLANS_DIR, `${slug}.md`),
+        path: `${PLANS_DIR}/${slug}.md`,
         createdAt: s.birthtime,
         status: parsePlanStatus(content),
         options: parsePlanOptions(content),

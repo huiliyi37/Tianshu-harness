@@ -7,6 +7,7 @@ import { parseFile, parseTypeScriptFile, initParser, detectLang } from './meridi
 import { buildRepoMap } from './meridian-graph.js'
 import { analyzeImpact, inferTestedByTargets } from './meridian-impact.js'
 import { extractExpressRoutes, extractJsxChildren } from './meridian-framework.js'
+import { toPosixPath } from '../path-format.js'
 import type { RepoMapResult, MeridianSymbol, MeridianSymbolKind, MeridianEdge } from './meridian-types.js'
 import type { CallSite } from './meridian-types.js'
 import type { RepoMapOptions } from './meridian-graph.js'
@@ -452,7 +453,14 @@ export class MeridianIndexer {
     // Prefix guard BEFORE slicing (review MEDIUM-3): a shared-prefix outside path
     // (e.g. cwd+'-other/...') would otherwise leave a residual suffix that lands
     // inside realCwd after rebasing and pass the check.
-    if (!absFile.startsWith(absCwd + '/')) return null
+    //
+    // Compare on POSIX-normalized forms: on Windows resolve() (and realpathSync)
+    // yield backslash-separated paths, so a literal '/' suffix never matches —
+    // every path, including plain repo-relative ones, would be rejected and the
+    // indexer would silently index nothing.
+    const posixCwd = toPosixPath(absCwd)
+    const posixFile = toPosixPath(absFile)
+    if (!posixFile.startsWith(posixCwd + '/')) return null
     let realFile: string
     try {
       // Existing file: resolve symlinks so an in-repo link pointing outside
@@ -466,10 +474,10 @@ export class MeridianIndexer {
       // normalizes them, the prefix check below rejects escapes).
       realFile = resolve(realCwd, '.' + absFile.slice(absCwd.length))
     }
-    if (!realFile.startsWith(realCwd + '/')) return null
+    if (!toPosixPath(realFile).startsWith(toPosixPath(realCwd) + '/')) return null
     // Key by the non-canonical relative path so DB keys stay stable
     // regardless of symlink resolution differences across runs.
-    return absFile.slice(absCwd.length + 1)
+    return posixFile.slice(posixCwd.length + 1)
   }
 
   private isIndexable(filePath: string): boolean {
@@ -496,15 +504,19 @@ export class MeridianIndexer {
   }
 
   private resolveImport(fromFile: string, importPath: string): string | null {
+    // Repo-relative keys must be POSIX to match toRepoRelative's DB keys: a
+    // native slice() on Windows yields backslashes, so the edge is stored under
+    // a key nothing ever looks up (reverse dependents come back empty).
+    const posixRoot = toPosixPath(resolve(this.cwd))
     const baseDir = dirname(resolve(this.cwd, fromFile))
     for (const ext of TS_EXTENSIONS) {
       const withExt = resolve(baseDir, importPath.replace(/\.[jt]sx?$/, '') + ext)
       if (existsSync(withExt)) {
-        return withExt.slice(resolve(this.cwd).length + 1)
+        return toPosixPath(withExt).slice(posixRoot.length + 1)
       }
       const indexFile = resolve(baseDir, importPath, 'index' + ext)
       if (existsSync(indexFile)) {
-        return indexFile.slice(resolve(this.cwd).length + 1)
+        return toPosixPath(indexFile).slice(posixRoot.length + 1)
       }
     }
     return null

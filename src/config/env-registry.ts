@@ -546,6 +546,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '打断留痕开关，默认开；设 0/false/off/no 关闭（等价 config agent.interruptMarker=false）——关闭时用户 Stop 撤回未答的 user 消息（旧行为）',
   },
   {
+    name: 'RIVET_EXTERNAL_SCAN_MS',
+    defaultHint: '5000',
+    files: ['server/session-manager.ts'],
+    description: '外部进程新增会话的发现间隔（ms）。同一 home 被多个进程共用时，定期把不认识的会话增量装入并推 sessions_changed；0 = 关闭。',
+  },
+  {
     name: 'RIVET_ISSUE_',
     defaultHint: '',
     files: ['tools/__tests__/bash-windows-smoke.test.ts'],

@@ -70,7 +70,7 @@ import { createAuthProvider } from '../auth/registry.js'
 import type { AuthProvider } from '../auth/types.js'
 import { SessionPersist } from '../agent/session-persist.js'
 import { SessionContext } from '../agent/context.js'
-import { buildOpenPathCommand, buildRevealCommand } from '../tools/open-path.js'
+import { buildOpenPathCommand, buildRevealCommand, decideOpenAction, isDirectoryPath, windowsFileHasHandler } from '../tools/open-path.js'
 import { installStallObserver, listStallActivities } from '../agent/stall-observer.js'
 import { SessionRegistry } from '../agent/session-registry.js'
 import { ProviderHealthTracker } from '../agent/provider-health.js'
@@ -1013,14 +1013,24 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     if (!existsSync(resolved)) {
       return { status: 404, body: { error: `Path not found: ${resolved}` } }
     }
-    const command = reveal ? buildRevealCommand(resolved) : buildOpenPathCommand(resolved)
+    const command = buildOpenPathCommand(resolved)
     // Windows 上 reveal=false (打开文件/文件夹) 时绕过 buildOpenPathCommand 的
     // PowerShell Start-Process——实测 spawned ok 但实际窗口/编辑器不弹 (尤其
     // 中文/特殊字符路径)。直接 spawn explorer.exe [路径]: explorer 对文件夹
     // 打开资源管理器, 对文件用关联程序打开 (跟双击一样), 不经 PowerShell 引号
     // 二次解析, 最可靠。reveal=true 仍走 buildRevealCommand (explorer /select,)。
-    let effectiveCommand = command
-    if (!reveal && process.platform === 'win32') {
+    //
+    // 例外（issue #193）：文件若没有关联处理程序，「跟双击一样」会弹「选取应用」
+    // 对话框——它 detached 存活，调用方既回收不了也察觉不到。这类退化为定位
+    // (explorer /select, 必定成功且不弹框)，并把结果如实回报（此前一律回 opened）。
+    const isDir = isDirectoryPath(resolved)
+    const action = reveal ? 'reveal' : decideOpenAction({
+      platform: process.platform,
+      isDirectory: isDir,
+      hasHandler: isDir ? undefined : windowsFileHasHandler(resolved),
+    })
+    let effectiveCommand = action === 'reveal' ? buildRevealCommand(resolved) : command
+    if (action === 'open' && process.platform === 'win32') {
       effectiveCommand = { cmd: 'explorer.exe', args: [resolved.replace(/\//g, '\\')] }
     }
     try {
@@ -1030,7 +1040,9 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
         child.on('error', reject)
         child.on('spawn', () => { child.unref(); resolve() })
       })
-      return { status: 200, body: { opened: resolved } }
+      return action === 'reveal'
+        ? { status: 200, body: { opened: false, revealed: true, path: resolved } }
+        : { status: 200, body: { opened: resolved } }
     } catch (err) {
       console.error(`[open-file] spawn failed: ${effectiveCommand.cmd} ${effectiveCommand.args.join(' ')} → ${(err as Error).message}`)
       return { status: 500, body: { error: `启动失败: ${(err as Error).message}` } }

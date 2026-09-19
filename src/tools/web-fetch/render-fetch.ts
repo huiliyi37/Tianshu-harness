@@ -4,15 +4,32 @@
  * web_fetch 三级降级的中间层：本地 turndown 质量差时，本地渲染拿 JS 执行
  * 后的真实 DOM（无外发请求、不受网络封锁影响），仍失败才走 Jina 兜底。
  *
- * SSRF 双层防护（现有 web_fetch 不执行 JS，渲染引入了新攻击面——必做、不可裁剪）：
- *   1. goto 前 resolveAndAssertPublic 预检主 URL（浏览器自解析 DNS，必须预检）
- *   2. page.route 逐请求拦截（主文档 + 全部子资源）——只检主 URL 会被页面内
- *      169.254.169.254 / 127.0.0.1 等内网子资源打穿；请求级拦截同时关闭
- *      预检与浏览器 DNS 解析之间的 rebinding 窗口
- *   3. domcontentloaded 后复检 final URL（防客户端跳转带出域）
+ * SSRF 防护（渲染执行页面 JS，引入了 web_fetch 直连路径没有的新攻击面——必做、不可裁剪）：
+ *   1. goto 前 resolveAndAssertPublic 预检主 URL（DNS 失败按渲染不可用降级 Jina）。
+ *   2. 进程内 pin 代理：chromium 以 --proxy-server 挂上 createPinningProxy，浏览器把
+ *      目标 hostname 交给代理（自己不解析），代理解析一次后即用 buildPinnedLookup
+ *      把 socket 钉死在预校验过的 IP 上——预检与真实连接之间没有第二个解析点，
+ *      DNS rebinding 窗口由此关闭（issue #212，复用 http-fetch.ts 的 pin 机制）。
+ *      ⚠ 能力边界：仅当**未**配置上游代理时生效。配了 config.network.proxy /
+ *      HTTPS_PROXY / 系统代理时，chromium 直连上游、目标由上游解析，本层 pin 不到，
+ *      退回「预检 + route 拦截」——与 http-fetch.ts 代理模式同一条边界
+ *      （见其 dispatcherConnectOptions 注释）。
+ *   3. page.route 逐请求拦截（主文档 + 全部子资源）：广告域名直接掐；私网/保留地址
+ *      与非 http(s) scheme 一律 abort。depth-in-depth，是 pin 之外的第二道网，
+ *      而非唯一防线。
+ *   4. domcontentloaded 后复检 final URL（防客户端跳转带出域）。
  */
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { resolveAndAssertPublic, SSRFError, type LookupFn } from '../net/ssrf.js'
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
+import { connect as netConnect, type AddressInfo } from 'node:net'
+import type { Duplex } from 'node:stream'
+import { resolveAndAssertPublic, SSRFError, type LookupFn, type ResolvedAddress } from '../net/ssrf.js'
+import { buildPinnedLookup, isConnectionPinningEnabled, type PinnedLookup } from '../net/http-fetch.js'
 import { resolveProxyForUrl, type ProxyResolverOptions } from '../net/proxy-resolver.js'
 import type { PwPage } from '../net/playwright-driver.js'
 import { htmlToMarkdownSmart, extractLinks } from './extract.js'
@@ -40,6 +57,175 @@ const AD_SERVING_DOMAINS = [
 
 function isAdHost(hostname: string): boolean {
   return AD_SERVING_DOMAINS.some((d) => hostname === d || hostname.endsWith('.' + d))
+}
+
+/**
+ * pin 代理的 socket 连接参数。host 仍是原 hostname（http/net 用它写 Host 头与
+ * SNI），但把 lookup 换成 buildPinnedLookup：无论被问什么名字，都返回预校验过的
+ * 地址。与 http-fetch.ts 直连路径同一套机制，不另起一套。
+ */
+export function pinnedConnectOptions(
+  hostname: string,
+  port: number,
+  resolved: ResolvedAddress,
+): { host: string; port: number; lookup: PinnedLookup } {
+  return { host: hostname, port, lookup: buildPinnedLookup(resolved.address, resolved.family) }
+}
+
+type ProxyDial = (
+  opts: { host: string; port: number; lookup: PinnedLookup },
+  onConnect: (err: Error | null, socket: Duplex | null) => void,
+) => void
+
+const defaultProxyDial: ProxyDial = (opts, onConnect) => {
+  const socket = netConnect({ host: opts.host, port: opts.port, lookup: opts.lookup as never })
+  socket.once('connect', () => onConnect(null, socket))
+  socket.once('error', (err) => onConnect(err, null))
+}
+
+export interface PinningProxyOptions {
+  lookup?: LookupFn
+  /** 测试注入：替换真实 socket 连接。 */
+  dial?: ProxyDial
+}
+
+export interface PinningProxy {
+  /** 形如 http://127.0.0.1:<port>，作为 chromium 的 --proxy-server。 */
+  readonly url: string
+  close(): Promise<void>
+}
+
+/**
+ * 仅监听回环的进程内 pin 代理。交给 chromium 作 --proxy-server 后，浏览器的每个
+ * 出站连接都先到此：resolveAndAssertPublic 校验一次 → 用 buildPinnedLookup 把
+ * socket 钉死在预校验 IP。私网/保留地址、DNS 失败一律 403（fail-closed）。
+ * 这不是开放代理——只绑 127.0.0.1 的随机端口。
+ */
+export async function createPinningProxy(opts: PinningProxyOptions = {}): Promise<PinningProxy> {
+  const lookup: LookupFn = opts.lookup ?? ((hostname) => dnsLookup(hostname))
+  const dial = opts.dial ?? defaultProxyDial
+
+  const server = createHttpServer((req, res) => {
+    void handlePlainProxyRequest(req, res, lookup)
+  })
+  server.on('connect', (req, clientSocket, head) => {
+    handleConnectProxyRequest(req, clientSocket, head, lookup, dial)
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  server.unref()
+  const { port } = server.address() as AddressInfo
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections?.()
+        server.close(() => resolve())
+      }),
+  }
+}
+
+/** https/ws 的 CONNECT 隧道：校验后把 socket 钉到预校验 IP，双向透传（TLS 端到端）。 */
+function handleConnectProxyRequest(
+  req: IncomingMessage,
+  clientSocket: Duplex,
+  head: Buffer,
+  lookup: LookupFn,
+  dial: ProxyDial,
+): void {
+  clientSocket.on('error', () => {
+    /* 客户端提前断开——忽略 */
+  })
+  const raw = req.url ?? ''
+  const sep = raw.lastIndexOf(':')
+  const hostname = (sep >= 0 ? raw.slice(0, sep) : raw).replace(/^\[|\]$/g, '')
+  const port = sep >= 0 ? Number.parseInt(raw.slice(sep + 1), 10) || 443 : 443
+  void resolveAndAssertPublic(hostname, lookup).then(
+    (resolved) => {
+      dial(pinnedConnectOptions(hostname, port, resolved), (err, socket) => {
+        if (err || !socket) {
+          clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+          return
+        }
+        socket.on('error', () => clientSocket.destroy())
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+        if (head.length > 0) socket.write(head)
+        socket.pipe(clientSocket)
+        clientSocket.pipe(socket)
+      })
+    },
+    () => {
+      // 私网/保留地址或 DNS 失败——fail-closed。
+      clientSocket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
+    },
+  )
+}
+
+/** 普通 http 请求（chromium 走代理时会发 absolute-URI 形式）：预检后钉到预校验 IP。 */
+async function handlePlainProxyRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  lookup: LookupFn,
+): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(req.url ?? '')
+  } catch {
+    res.writeHead(400).end('bad request')
+    return
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    res.writeHead(400).end('bad request')
+    return
+  }
+  let resolved: ResolvedAddress
+  try {
+    resolved = await resolveAndAssertPublic(parsed.hostname, lookup)
+  } catch {
+    res.writeHead(403).end('blocked')
+    return
+  }
+  const port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80
+  const headers: Record<string, string | string[] | undefined> = { ...req.headers }
+  delete headers['proxy-connection']
+  const upstream = httpRequest(
+    {
+      ...pinnedConnectOptions(parsed.hostname, port, resolved),
+      method: req.method,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers,
+    } as never,
+    (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
+      upstreamRes.pipe(res)
+    },
+  )
+  upstream.on('error', () => {
+    if (!res.headersSent) res.writeHead(502)
+    res.end()
+  })
+  req.pipe(upstream)
+}
+
+let pinningProxy: Promise<PinningProxy | undefined> | null = null
+
+/** 进程内 pin 代理单例。RIVET_FETCH_PIN=0 或启动失败 → undefined（退回旧行为）。 */
+function getPinningProxy(): Promise<PinningProxy | undefined> {
+  if (!isConnectionPinningEnabled()) return Promise.resolve(undefined)
+  if (!pinningProxy) pinningProxy = createPinningProxy().catch(() => undefined)
+  return pinningProxy
+}
+
+/**
+ * 选渲染池。配了上游代理就交给上游（目标由上游解析，本层 pin 不到——见文件头）；
+ * 否则挂上进程内 pin 代理，让 chromium 把解析交给它。
+ */
+async function resolveRenderPool(upstreamProxy?: string): Promise<RenderPool> {
+  if (upstreamProxy) return getDefaultRenderPool({ proxy: { server: upstreamProxy } })
+  const pinProxy = await getPinningProxy()
+  return getDefaultRenderPool(pinProxy ? { proxy: { server: pinProxy.url } } : {})
 }
 
 export interface RenderFetchResult {
@@ -101,7 +287,8 @@ export async function fetchViaPlaywright(
   }
 
   const proxyServer = resolveProxyForUrl(rawUrl, opts.proxy)
-  const pool = opts.pool ?? getDefaultRenderPool(proxyServer ? { proxy: { server: proxyServer } } : {})
+  const pool: Pick<RenderPool, 'acquirePage' | 'releasePage'> =
+    opts.pool ?? (await resolveRenderPool(proxyServer))
 
   let page: PwPage
   try {
@@ -113,7 +300,7 @@ export async function fetchViaPlaywright(
   let blockedRequests = 0
   let blockedAds = 0
   try {
-    // 第二层：逐请求拦截（主文档 + 全部子资源）
+    // 第三层：逐请求拦截（主文档 + 全部子资源）——pin 之外的第二道网
     await page.route('**/*', async (route, request) => {
       const reqUrl = request.url()
       let parsed: URL
@@ -162,7 +349,7 @@ export async function fetchViaPlaywright(
       actionResults = await executeRenderActions(page, opts.actions)
     }
 
-    // 第三层：final URL 复检（客户端跳转/动作导航可能把页面带出已验证的域）
+    // 第四层：final URL 复检（客户端跳转/动作导航可能把页面带出已验证的域）
     const finalUrl = page.url()
     if (finalUrl.startsWith('http:') || finalUrl.startsWith('https:')) {
       const finalHost = new URL(finalUrl).hostname

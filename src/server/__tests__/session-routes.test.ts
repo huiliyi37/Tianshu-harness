@@ -1178,6 +1178,39 @@ test('GET /skills/installable lists .claude candidates; POST /skills/install cop
   assert.equal(ghost.status, 404)
 })
 
+test('POST /skills/install rejects path-traversal names (#207)', async () => {
+  const { router } = setupPlus()
+  // cwd 嵌在 base 下；逃逸目标落在 cwd 之外、base 之内，便于断言且不污染 tmp 根。
+  const base = mkdtempSync(join(tmpdir(), 'skill-install-traversal-'))
+  const cwd = join(base, 'work')
+  mkdirSync(cwd, { recursive: true })
+  const escapeTarget = join(base, 'escaped-skill')
+
+  // 一个真实候选：请求若被放行它就会被复制，用来验证拒绝是 fail-closed 的。
+  const legit = join(cwd, '.claude', 'skills', 'legit-skill')
+  mkdirSync(legit, { recursive: true })
+  writeFileSync(join(legit, 'SKILL.md'), '---\nname: legit-skill\ndescription: a demo\n---\nBody.')
+
+  const s = await router('POST', '/sessions', { cwd }, AUTH)
+  const id = (s.body as { id: string }).id
+
+  // 1) 穿越名 → 400，且 cwd 之外不得有任何落盘。
+  const traversal = await router('POST', `/sessions/${id}/skills/install`, { names: ['../../../escaped-skill'] }, AUTH)
+  assert.equal(traversal.status, 400, 'path traversal in names[] must be rejected with 400')
+  assert.ok(!existsSync(escapeTarget), 'traversal must not create anything outside .rivet/skills')
+
+  // 2) 合法名与穿越名混用 → 整体拒绝（fail-closed），合法项也不落地。
+  const mixed = await router('POST', `/sessions/${id}/skills/install`, { names: ['legit-skill', '../../../escaped-skill'] }, AUTH)
+  assert.equal(mixed.status, 400, 'one bad name must reject the whole request')
+  assert.ok(!existsSync(join(cwd, '.rivet', 'skills', 'legit-skill')), 'no partial install on a rejected request')
+  assert.ok(!existsSync(escapeTarget))
+
+  // 3) 合法名不受影响。
+  const ok = await router('POST', `/sessions/${id}/skills/install`, { names: ['legit-skill'] }, AUTH)
+  assert.equal(ok.status, 200)
+  assert.ok(existsSync(join(cwd, '.rivet', 'skills', 'legit-skill', 'SKILL.md')))
+})
+
 test('GET /skills surfaces loadErrors for a malformed installed skill', async () => {
   const { router } = setupPlus()
   const cwd = mkdtempSync(join(tmpdir(), 'skill-loaderr-route-'))

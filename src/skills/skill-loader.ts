@@ -20,6 +20,7 @@ import { homedir } from 'node:os'
 import { join, relative, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { normalizeFrontmatterSource } from '../utils/frontmatter.js'
+import { isSafeFileName } from '../utils/safe-path.js'
 
 export type SkillSource = 'rivet' | 'global-rivet' | 'project-claude' | 'global-claude' | 'builtin' | 'plugin' | 'global-agents' | 'project-agents'
 
@@ -578,6 +579,13 @@ export function importSkillsIntoRivet(
   const rivetDir = join(cwd, '.rivet', 'skills')
   for (const name of names) {
     try {
+      // Guard before join: `name` reaches the HTTP route and the config
+      // `skills.importFromClaude` list — a `../` segment would escape `.rivet/skills`
+      // on both the dest and the src side (issue #207). Same invariant as #178.
+      if (!isSafeFileName(name)) {
+        errors.push(`${name}: invalid skill name`)
+        continue
+      }
       const dest = join(rivetDir, name)
       if (existsSync(dest) || existsSync(`${dest}.md`)) {
         skipped.push(name)

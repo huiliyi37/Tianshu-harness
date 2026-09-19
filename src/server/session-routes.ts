@@ -740,6 +740,9 @@ export function buildSessionRoutes(
       if (names.length === 0) {
         return { status: 400, body: { error: 'Missing or invalid "names" (non-empty string array)' } }
       }
+      if (names.some((n) => !isSafeFileName(n))) {
+        return { status: 400, body: { error: 'Invalid skill name in "names"' } }
+      }
       const result = manager.installSkills(params!.id!, names)
       if (!result) return { status: 404, body: { error: 'Session not found' } }
       return { status: 200, body: result }

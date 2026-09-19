@@ -1520,12 +1520,12 @@ describe('workspace routes (issue #147)', () => {
 
   it('PUT 写入后 GET 回读一致，且落盘到 user config.json', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
-    const put = await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: '/work/scratch' }, AUTH)
+    const put = await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: join(home, 'scratch') }, AUTH)
     assert.equal(put.status, 200)
     const putBody = put.body as { defaultDir: string | null; scratchDir: string | null; scratchRoot: string }
     assert.equal(putBody.defaultDir, '/work/default')
     // scratchDir 已配 → scratchRoot 跟随它（桌面端展示的「临时会话落点」）。
-    assert.equal(putBody.scratchRoot, '/work/scratch')
+    assert.equal(putBody.scratchRoot, join(home, 'scratch'))
 
     const getRes = await router('GET', '/config/workspace', {}, AUTH)
     assert.deepEqual(getRes.body, put.body)
@@ -1536,14 +1536,23 @@ describe('workspace routes (issue #147)', () => {
 
   it('PUT 只传单字段 = 部分更新，未传字段保留（审查跟进 2026-09-15）', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
-    await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: '/work/scratch' }, AUTH)
+    await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: join(home, 'scratch') }, AUTH)
     // 桌面设置页每个控件独立提交——只改默认工作区不得顺带清掉隔离根
     // （scratchDir 无 UI 编辑入口，被清掉无法自助恢复）。
     const put = await router('PUT', '/config/workspace', { defaultDir: '/work/next' }, AUTH)
     assert.equal(put.status, 200)
     const body = put.body as { defaultDir: string | null; scratchDir: string | null }
     assert.equal(body.defaultDir, '/work/next')
-    assert.equal(body.scratchDir, '/work/scratch', '未传的字段必须保留（整体替换会静默清掉它）')
+    assert.equal(body.scratchDir, join(home, 'scratch'), '未传的字段必须保留（整体替换会静默清掉它）')
+  })
+
+  it('scratchDir 落在数据根之外 → 400，不落盘（issue #223）', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const outside = process.platform === 'win32' ? 'C:\\Windows\\Temp\\evil-scratch' : '/tmp/evil-scratch'
+    const put = await router('PUT', '/config/workspace', { scratchDir: outside }, AUTH)
+    assert.equal(put.status, 400)
+    const raw = JSON.parse(readFileSync(process.env.RIVET_CONFIG_PATH!, 'utf-8')) as { workspace?: { scratchDir?: string } }
+    assert.notEqual(raw.workspace?.scratchDir, outside, '被拒的 scratchDir 不得落盘')
   })
 
   it('PUT 空白字符串 / null = 清除字段（回到旧行为）', async () => {

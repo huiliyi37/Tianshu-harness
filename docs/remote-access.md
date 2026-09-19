@@ -138,3 +138,44 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/sessions  # 无 t
 - CORS 不开放跨源：浏览器侧的跨站读取仍被三个已知本地源白名单挡住
   （`tauri://localhost` / `http://tauri.localhost` / `http://localhost:5273`）。
 - Token 生命周期 = serve 进程生命周期；sidecar 重启后令牌轮换，旧令牌立即失效。
+
+
+## 扩展 `/mobile`：自带页面的配置与运维
+
+`/mobile` 前缀本质是一个**静态挂载点**：`RIVET_MOBILE_DIR` 目录下的任何文件都会按路径原样服务
+（`/mobile/<相对路径>`，MIME 按扩展名推导，无扩展名白名单）。因此可以**在不修改任何官方文件**的
+前提下，往该目录放一个自包含页面，用来补官方页面显式不含的能力（例如「主动发指令」——
+见上文 P2 条目里的「显式不含」清单）。
+
+### 最小示例：自带页面发指令
+
+自带页面与 serve **同源**（都是 `http://<host>:<port>`），零 CORS；带上 Bearer 令牌即可直接调
+运行时 API：
+
+| 动作 | 路由 | 请求体 |
+|---|---|---|
+| 列会话 | `GET /sessions` | — |
+| **发指令** | `POST /sessions/:id/prompt` | **`{"prompt": "…"}`** |
+| 新建会话 | `POST /sessions` | `{"cwd": "…", "prompt": "…"}` |
+| 中止 | `POST /sessions/:id/abort` | `{}` |
+| 读事件 | `GET /sessions/:id/events?limit=N` | — |
+
+> ⚠ 字段名是 **`prompt`**，不是 `text`。传 `{"text": "…"}` 会得到
+> `400 {"error":"Missing or empty \"prompt\" field"}`。
+
+> 附注：v3.23.1 之前，`mobile.html` 入口的打包产物内部 `sendPrompt` 定义发的是 `{text: …}`
+> （移动端「问题回复」链路实际会调到它，会 400）——已在本版本修复为 `{prompt: …}`。
+
+### 运维：升级会整体替换该目录
+
+桌面端升级会**整体替换**安装目录下的 `mobile-web/`（见上文「桌面壳集成状态」的资源 staging），
+自带页面会被一并抹掉 —— 表现为 `/mobile/<你的文件>` 变 404，而 `/mobile/` 与官方资产仍是 200。
+
+最小恢复方式：**把主副本放在安装目录之外**（升级不会碰到它），升级后重新复制一次。
+
+Windows 上还可以再加一层自动化兜底：一个**当前用户级**计划任务（登录 + 定时触发），worker 先比
+SHA256、内容一致就**不写盘**（幂等），因此反复触发也不会产生多余写入或窗口闪烁。
+
+> 注意：若系统把 **Windows Terminal 设为默认终端宿主**，计划任务直接启动 `powershell.exe`
+> ——**即使带 `-WindowStyle Hidden`**——每次都会弹出终端窗口（隐藏只是事后生效，窗口已显示过）。
+> 需改为经 GUI 子系统宿主启动，例如 `wscript.exe` + `WScript.Shell.Run(cmd, 0, False)`。

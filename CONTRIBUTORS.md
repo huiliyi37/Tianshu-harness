@@ -24,9 +24,11 @@
 | **lei454577-web** | SolidWorks 程序化接入总结——COM / pywin32 三层接入架构、33 条问题清单与排查方法论（文档） | [#160](https://github.com/huiliyi37/Tianshu-harness/pull/160) |
 | **jian-in** | MCP server 健康检查与熔断——周期 tools/list 探测 + healthy/degraded/failed/retrying 状态机 + 指数退避 | [#201](https://github.com/huiliyi37/Tianshu-harness/pull/201) |
 | **sky-mirrors** | prompt 构建性能——buildOaiRequest 的估算/签名链加消息级缓存 | [#209](https://github.com/huiliyi37/Tianshu-harness/pull/209) |
+| **EarthxxRhythm** | skills/install 的 names[] 路径穿越封堵（issue #207） | [#210](https://github.com/huiliyi37/Tianshu-harness/pull/210) |
+| **moyan3691** | /mobile 扩展文档与契约核对——静态挂载扩展方式、prompt 字段契约（顺带发现移动端 sendPrompt 字段缺陷）、自带页面指南与可运行示例 | [#211](https://github.com/huiliyi37/Tianshu-harness/pull/211), [#214](https://github.com/huiliyi37/Tianshu-harness/pull/214) |
 
 本文件由 `scripts/contributors.ts` 生成与对账（`--check` 只报告差异；`--write` 合并写回）。
-共 20 位外部贡献者 / 122 个 PR，按首次贡献时间排序。
+共 22 位外部贡献者 / 125 个 PR，按首次贡献时间排序。
 **「贡献」列由人工撰写，自动流程只增不删**——既有条目、描述与顺序不会被覆盖。
 PR 编号以 `huiliyi37/Tianshu-harness` 为准（该仓库由 `Tianshu-Tui` 更名而来，历史链接自动重定向）。
 

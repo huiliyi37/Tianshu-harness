@@ -85,8 +85,8 @@
       "note": "1270→1278：图片附件编辑闭环——undo 快照纳入 images（UndoUnit+undo/redo 恢复）、backspace 空文本删最后一张图、clearAll 原子清空（+8，2026-08-26）"
     },
     "src/prompt/volatile.ts": {
-      "ceiling": 1263,
-      "note": "1197→1226：捆绑技能消融——<plan-mode> 并入五条调研纪律 + 新增 renderPlanExecutingBlock 原生执行纪律块（writing/executing-plans 技能消融的落点，+29）。 1226→1253：renderPermissionNote 免审批档提示（def690436 +27）落地时未上账，2026-09-09 审查补记 1253→1263：zen 回流 Wave 3（2026-09-13）——VolatileContext.zenLean 字段 + push() 首行裁剪 CVM 动态注入块（ctx.zenLean && source !== undefined；keep-list 块不挂 source 故保留）+ 注释（+10）。"
+      "ceiling": 1267,
+      "note": "1197→1226：捆绑技能消融——<plan-mode> 并入五条调研纪律 + 新增 renderPlanExecutingBlock 原生执行纪律块（writing/executing-plans 技能消融的落点，+29）。 1226→1253：renderPermissionNote 免审批档提示（def690436 +27）落地时未上账，2026-09-09 审查补记 1253→1263：zen 回流 Wave 3（2026-09-13）——VolatileContext.zenLean 字段 + push() 首行裁剪 CVM 动态注入块（ctx.zenLean && source !== undefined；keep-list 块不挂 source 故保留）+ 注释（+10）。 1263→1267：issue #218 未受信项目的 AGENTS.md / .rivet.md 不注入——判定逻辑封装在 src/config/project-trust.ts 的 projectInstructionsAllowed（含未受信一次性提示），本文件只留 +1 import 与 +1 行门（含 2 行注释）；volatile-snapshot.ts 共用同一函数，零新增行。"
     },
     "src/agent/turn-step-producer.ts": {
       "ceiling": 1200,

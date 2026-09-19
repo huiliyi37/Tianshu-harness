@@ -127,6 +127,9 @@ export function buildMcpRoutes(
           /** True while the sidecar MCP manager is still booting (POST will
            *  persist config and be picked up by reconcile when ready). */
           managerReady: mgr != null,
+          /** issue #215 — 待连接级审批的 server 列表（含 command/args/cwd/env
+           *  **键名**（值遮蔽）/url/来源）。UI 据此渲染「批准 / 拒绝」两个动作。 */
+          pendingApproval: mgr ? mgr.getPendingApprovals() : [],
           /** 项目级 MCP 被信任门剥离时的实情——桌面端据此解释空列表，
            *  而不是让用户对着「什么都没有」猜。null = 无需提示。
            *  cwd 由调用方给出：桌面端的项目是会话工作区，而 sidecar 进程的
@@ -266,6 +269,46 @@ export function buildMcpRoutes(
           return { status: 500, body: { error: state.error ?? 'connect failed', serverId, lastErrorClass: state.lastErrorClass } }
         }
         return { status: 200, body: { ok: true, serverId, toolCount: tools.length } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }, token),
+
+    // POST /mcp/servers/:id/approve — issue #215：批准连接级审批。
+    // 持久化当前配置的指纹并立即连接；未获批的 server 从不 spawn（见
+    // mcp/manager._connectAndDiscover 的门），此路由是唯一的放行口。
+    'POST /mcp/servers/:id/approve': withAuth(async (_, params) => {
+      const serverId = params?.id
+      if (!serverId) return { status: 400, body: { error: 'server id is required' } }
+      const cfg = loadConfig().mcp?.servers[serverId]
+      if (!cfg) return { status: 404, body: { error: `MCP server "${serverId}" not found` } }
+      const mgr = getMgr()
+      if (!mgr) return { status: 503, body: { error: 'MCP manager not initialized' } }
+      try {
+        const tools = await mgr.approveServerConnection(serverId, cfg)
+        notifyTools(mgr, serverId)
+        const state = mgr.getStates().find((s) => s.serverId === serverId)
+        if (state?.status === 'error') {
+          return { status: 500, body: { error: state.error ?? 'connect failed', serverId, lastErrorClass: state.lastErrorClass } }
+        }
+        return { status: 200, body: { ok: true, serverId, toolCount: tools.length } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }, token),
+
+    // POST /mcp/servers/:id/deny — issue #215：拒绝连接级审批。
+    // 持久化拒绝并断开已连连接；此后该指纹一律不连，直到再次批准。
+    'POST /mcp/servers/:id/deny': withAuth(async (_, params) => {
+      const serverId = params?.id
+      if (!serverId) return { status: 400, body: { error: 'server id is required' } }
+      const cfg = loadConfig().mcp?.servers[serverId]
+      if (!cfg) return { status: 404, body: { error: `MCP server "${serverId}" not found` } }
+      const mgr = getMgr()
+      if (!mgr) return { status: 503, body: { error: 'MCP manager not initialized' } }
+      try {
+        await mgr.denyServerConnection(serverId, cfg)
+        return { status: 200, body: { ok: true, serverId, denied: true } }
       } catch (err) {
         return { status: 500, body: { error: (err as Error).message } }
       }

@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
+import { isKnownWorkspace, UNKNOWN_WORKSPACE_ERROR } from './workspace-guard.js'
 import { findProjectConfig } from '../config/manager.js'
 import {
   isProjectTrusted,
@@ -64,11 +65,24 @@ function projectDirFor(cwd: string): { projectDir: string; projectPath: string |
   return { projectDir: projectPath ? dirname(projectPath) : cwd, projectPath }
 }
 
-export function buildTrustRoutes(apiToken?: string): Record<string, RouteHandler> {
+/**
+ * @param knownWorkspaces 已注册工作区（存活会话 cwd + 默认工作区）。缺省为空 =
+ * 拒绝一切显式 cwd——fail-closed，装配点必须显式提供（issue #221）。
+ */
+export function buildTrustRoutes(
+  apiToken?: string,
+  knownWorkspaces: () => string[] = () => [],
+): Record<string, RouteHandler> {
   return {
     // GET /project/trust — 当前项目的授信状态与赌注。
     'GET /project/trust': withAuth((_body, params) => {
-      const cwd = resolveDir(params?.cwd) ?? process.cwd()
+      const requested = resolveDir(params?.cwd)
+      // 显式传入的 cwd 必须命中已注册工作区；省略时回落到服务进程自己的 cwd
+      // （那不是调用方可控的输入，保持原行为）。
+      if (requested && !isKnownWorkspace(requested, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
+      const cwd = requested ?? process.cwd()
       const { projectDir, projectPath } = projectDirFor(cwd)
       return {
         status: 200,
@@ -88,6 +102,9 @@ export function buildTrustRoutes(apiToken?: string): Record<string, RouteHandler
       const data = (body ?? {}) as { cwd?: unknown; trusted?: unknown }
       const cwd = resolveDir(data.cwd)
       if (!cwd) return { status: 400, body: { error: 'cwd is required' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       if (typeof data.trusted !== 'boolean') {
         return { status: 400, body: { error: 'trusted must be a boolean' } }
       }
@@ -104,6 +121,9 @@ export function buildTrustRoutes(apiToken?: string): Record<string, RouteHandler
     'POST /project/trust/dismiss': withAuth((body) => {
       const cwd = resolveDir((body as { cwd?: unknown } | undefined)?.cwd)
       if (!cwd) return { status: 400, body: { error: 'cwd is required' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       const { projectDir } = projectDirFor(cwd)
       dismissProjectTrustPrompt(projectDir)
       return { status: 200, body: { cwd, projectDir, dismissed: isTrustPromptDismissed(projectDir) } }

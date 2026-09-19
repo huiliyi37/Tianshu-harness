@@ -36,7 +36,7 @@ test('GET /project/trust：未授信项目列出会被剥离的敏感键', async
   await withTempHome(async () => {
     const cwd = makeProject({ mcp: { servers: { a: { command: 'npx' } } }, agent: { approval: 'auto' } })
     try {
-      const routes = buildTrustRoutes('tok')
+      const routes = buildTrustRoutes('tok', () => [cwd])
       const res = await routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
       assert.equal(res.status, 200)
       const body = res.body as {
@@ -62,7 +62,7 @@ test('POST /project/trust：授信后 GET 变 true，撤销后变回 false（幂
   await withTempHome(async () => {
     const cwd = makeProject({ mcp: { servers: {} } })
     try {
-      const routes = buildTrustRoutes('tok')
+      const routes = buildTrustRoutes('tok', () => [cwd])
       const post = (trusted: boolean) =>
         routes['POST /project/trust']!({ cwd, trusted }, undefined, AUTH, undefined)
       const get = () => routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
@@ -87,7 +87,7 @@ test('GET /project/trust：没有项目配置时 stakes 为空（无需提示）
   await withTempHome(async () => {
     const cwd = makeProject()
     try {
-      const routes = buildTrustRoutes('tok')
+      const routes = buildTrustRoutes('tok', () => [cwd])
       const res = await routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
       const body = res.body as {
         projectPath?: string
@@ -106,7 +106,7 @@ test('GET /project/trust：.rivet/hooks.json 存在即算赌注（hooks 未授�
   await withTempHome(async () => {
     const cwd = makeProject(undefined, true)
     try {
-      const routes = buildTrustRoutes('tok')
+      const routes = buildTrustRoutes('tok', () => [cwd])
       const res = await routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
       const body = res.body as { stakes: { hasHooks: boolean } }
       assert.equal(body.stakes.hasHooks, true)
@@ -128,7 +128,7 @@ test('POST /project/trust/dismiss：记「不再提示」，授信后清除（�
   await withTempHome(async () => {
     const cwd = makeProject({ verify: { typecheck: 'tsc --noEmit' } })
     try {
-      const routes = buildTrustRoutes('tok')
+      const routes = buildTrustRoutes('tok', () => [cwd])
       const dismiss = () => routes['POST /project/trust/dismiss']!({ cwd }, undefined, AUTH, undefined)
       const get = () => routes['GET /project/trust']!({}, { cwd }, AUTH, undefined)
       const dismissedNow = async (): Promise<boolean> =>
@@ -156,6 +156,27 @@ test('POST /project/trust/dismiss：缺 cwd 时 400', async () => {
     const routes = buildTrustRoutes('tok')
     const res = await routes['POST /project/trust/dismiss']!({}, undefined, AUTH, undefined)
     assert.equal(res.status, 400)
+  })
+})
+
+test('未注册工作区的 cwd 一律 403（issue #221）', async () => {
+  await withTempHome(async () => {
+    const known = makeProject()
+    const outside = makeProject({ mcp: { servers: {} } })
+    try {
+      const routes = buildTrustRoutes('tok', () => [known])
+      const get = await routes['GET /project/trust']!({}, { cwd: outside }, AUTH, undefined)
+      assert.equal(get.status, 403, '未注册目录的 GET 必须被拒')
+      const post = await routes['POST /project/trust']!({ cwd: outside, trusted: true }, undefined, AUTH, undefined)
+      assert.equal(post.status, 403, '未注册目录不得被授信')
+      const dismiss = await routes['POST /project/trust/dismiss']!({ cwd: outside }, undefined, AUTH, undefined)
+      assert.equal(dismiss.status, 403, '未注册目录不得被记「不再提示」')
+      // 在册的工作区照常
+      assert.equal((await routes['GET /project/trust']!({}, { cwd: known }, AUTH, undefined)).status, 200)
+    } finally {
+      rmSync(known, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
 

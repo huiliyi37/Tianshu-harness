@@ -7,6 +7,7 @@
  */
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
+import { isKnownWorkspace, UNKNOWN_WORKSPACE_ERROR } from './workspace-guard.js'
 import {
   needsTemplatesInit,
   applyProjectTemplates,
@@ -29,7 +30,14 @@ export interface ProjectTemplatesApplyBody {
   agentsMode: ApplyTemplatesOptions['agentsMode']
 }
 
-export function buildProjectTemplatesRoutes(apiToken?: string): Record<string, RouteHandler> {
+/**
+ * @param knownWorkspaces 已注册工作区（存活会话 cwd + 默认工作区）。缺省为空 =
+ * 拒绝一切 cwd——fail-closed，装配点必须显式提供（issue #221）。
+ */
+export function buildProjectTemplatesRoutes(
+  apiToken?: string,
+  knownWorkspaces: () => string[] = () => [],
+): Record<string, RouteHandler> {
   return {
     'GET /project-templates/status': (body, params, headers) => {
       if (!isAuthorizedRequest({ body, headers }, apiToken)) {
@@ -37,6 +45,9 @@ export function buildProjectTemplatesRoutes(apiToken?: string): Record<string, R
       }
       const cwd = typeof params?.cwd === 'string' ? params.cwd : ''
       if (!cwd) return { status: 400, body: { error: 'Missing cwd query parameter' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       const status: ProjectTemplatesStatus = {
         needsInit: needsTemplatesInit(cwd),
         cwd,
@@ -54,6 +65,9 @@ export function buildProjectTemplatesRoutes(apiToken?: string): Record<string, R
       const cwd = typeof input?.cwd === 'string' ? input.cwd : ''
       const agentsMode = input?.agentsMode ?? 'overwrite'
       if (!cwd) return { status: 400, body: { error: 'Missing cwd' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       if (!['overwrite', 'append', 'skip'].includes(agentsMode)) {
         return { status: 400, body: { error: 'Invalid agentsMode' } }
       }

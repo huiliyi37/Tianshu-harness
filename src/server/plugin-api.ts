@@ -14,7 +14,7 @@ import { loadConfig, saveConfig } from '../config/manager.js'
 import { PLUGIN_PRESETS } from '../plugins/plugin-presets.js'
 import { installPlugin, removePlugin, getInstalledPlugins, isPluginInstalled, type PluginSource } from '../plugins/plugin-installer.js'
 import { invalidatePluginToolsCache } from './plugin-session-cache.js'
-import { parseManifest } from '../plugins/manifest.js'
+import { parseManifest, PLUGIN_PERMISSIONS_NOTICE } from '../plugins/manifest.js'
 import { cloneGitSource, GitCloneError } from '../plugins/git-source.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, isAbsolute, dirname, sep, normalize } from 'node:path'
@@ -101,8 +101,11 @@ export function resolveSourcePath(inputPath: string): string {
 }
 
 /** Read a plugin manifest from a source WITHOUT installing. Used by the
- *  preflight (confirm=false) phase so the UI can show permissions before the
- *  user commits. Local sources read package.json directly; git sources clone
+ *  preflight (confirm=false) phase so the UI can show the manifest — including
+ *  its declared permissions — before the user commits. Those permissions are
+ *  ADVISORY (not enforced at runtime; see PLUGIN_PERMISSIONS_NOTICE): the
+ *  review is an intent disclosure, not a security gate. Local sources read
+ *  package.json directly; git sources clone
  *  to a temp dir, read, then clean up (the install path re-clones).
  *  For local sources the ok-result carries `resolvedSource` — the path is
  *  resolved ONCE here and handed to installPlugin, so install never probes a
@@ -255,9 +258,16 @@ export function buildPluginRoutes(apiToken?: string): Record<string, RouteHandle
           status: 400,
           body: {
             ok: false,
-            error: 'Confirmation required. Review the manifest and permissions, then retry with confirm: true.',
+            // "Confirmation required" is a stable machine signal (asserted by
+            // tests + consumed by callers) — keep the prefix, make the advisory
+            // nature of the declared permissions explicit (issue #216).
+            error: 'Confirmation required. Review the manifest and declared permissions, then retry with confirm: true.',
             manifest: preflight.manifest,
-            hint: 'Set confirm: true to proceed with installation.',
+            // 如实告知（方案 b）：权限声明只在安装审查时展示，运行时并不强制——
+            // 插件以进程完整 Node 权限运行。不制造虚假的沙箱安全感。
+            permissionsEnforced: false,
+            permissionsNotice: PLUGIN_PERMISSIONS_NOTICE,
+            hint: 'Set confirm: true to proceed with installation. Declared permissions are advisory and are NOT enforced at runtime.',
           },
         }
       }

@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ToolRegistry } from '../../tools/registry.js'
 import { initializePlugins } from '../plugin-loader.js'
+import { PLUGIN_PERMISSIONS_NOTICE } from '../manifest.js'
+import { buildPluginRoutes } from '../../server/plugin-api.js'
 import { skillRegistry } from '../../skills/skill-loader.js'
 import type { Tool } from '../../tools/types.js'
 
@@ -592,5 +594,84 @@ export const tools = [{
     const registry = new ToolRegistry()
     const result = await initializePlugins(undefined, registry, process.cwd())
     assert.ok(result.warnings.some(w => w.includes('escapes plugin directory')))
+  })
+
+  // ── Permissions are advisory, not enforced (issue #216) ──────────
+
+  it('loads a plugin that declares zero permissions — declaration is not enforced', async () => {
+    const { pluginsDir, pluginsSubdir } = freshEnv()
+    setHome(pluginsDir)
+
+    // A plugin declaring NO capabilities (fs/net/shell all false) is still
+    // loaded and its tool registered in full — mechanical proof that the
+    // declaration never gates the load path.
+    setupPlugin(pluginsSubdir, 'noperm-plugin', {
+      pkgJson: {
+        name: 'noperm-plugin',
+        version: '1.0.0',
+        tianshu: {
+          name: 'noperm-plugin',
+          version: '1.0.0',
+          description: 'Declares no capabilities',
+          entry: 'index.js',
+          tools: [{ name: 'noperm_tool', description: 'x' }],
+          permissions: { fs: false, net: false, shell: false },
+        },
+      },
+      entryContent: `
+export const tools = [{
+  definition: { name: 'noperm_tool', description: 'x', input_schema: { type: 'object', properties: {} } },
+  execute: async () => ({ content: 'ok' }),
+  requiresApproval: () => false,
+  isConcurrencySafe: () => false,
+  isEnabled: () => true,
+}];
+`,
+    })
+
+    const registry = new ToolRegistry()
+    const result = await initializePlugins(undefined, registry, process.cwd())
+    const item = result.results.find(r => r.pluginName === 'noperm-plugin')
+    assert.ok(item)
+    assert.equal(item!.status, 'loaded')
+    assert.ok(registry.has('noperm_tool'), 'a zero-permission plugin still gets its tool registered')
+  })
+
+  it('exposes an advisory notice stating permissions are NOT enforced', () => {
+    // Pins the exact user-facing wording that accompanies the declaration.
+    assert.match(PLUGIN_PERMISSIONS_NOTICE, /not enforced/i)
+    assert.match(PLUGIN_PERMISSIONS_NOTICE, /full Node/i)
+  })
+
+  it('install preflight response marks declared permissions as not enforced', async () => {
+    const { pluginsDir, pluginsSubdir } = freshEnv()
+    setHome(pluginsDir)
+    const pluginDir = setupPlugin(pluginsSubdir, 'preflight-plugin', {
+      pkgJson: {
+        name: 'preflight-plugin',
+        version: '1.0.0',
+        tianshu: {
+          name: 'preflight-plugin',
+          version: '1.0.0',
+          description: 'Needs review',
+          entry: 'index.js',
+          tools: [{ name: 'preflight_tool', description: 'x' }],
+          permissions: { fs: true },
+        },
+      },
+    })
+
+    const routes = buildPluginRoutes('test-token')
+    const res = await routes['POST /plugins/install']!(
+      { path: pluginDir },
+      undefined,
+      { authorization: 'Bearer test-token' },
+      undefined,
+    )
+    assert.equal(res.status, 400)
+    const body = res.body as { ok: boolean; permissionsEnforced?: boolean; permissionsNotice?: string }
+    assert.equal(body.ok, false)
+    assert.equal(body.permissionsEnforced, false, 'install review must state that permissions are not enforced')
+    assert.ok(body.permissionsNotice && /not enforced/i.test(body.permissionsNotice))
   })
 })

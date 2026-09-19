@@ -38,7 +38,12 @@ const RUNNER = join(repoRoot, 'scripts', 'run-node-tests.ts')
  * 导出供 RED 自检脚本对历史版本复算——断言必须能对旧代码打红。
  */
 export function extractExitBranch(source: string): string {
-  const matched = source.match(/\n {2}if \(out\.code !== 0\) \{([\s\S]*?)\n {2}\}\n/)
+  // 行尾归一：windows-smoke runner 以 CRLF 检出（Git for Windows 的 core.autocrlf
+  // 默认为开，本仓无 .gitattributes 兜底），而下面按 `\n` 锚定的正则要求闭合花括号
+  // 紧跟 `\n`——在 CRLF 的 `}\r\n` 处失配，windows-smoke 因此恒红（ubuntu 的 LF
+  // 检出通过，故 ci(24) 无此红）。归一后两端同判，判定不变量不变。
+  const norm = source.replace(/\r\n?/g, '\n')
+  const matched = norm.match(/\n {2}if \(out\.code !== 0\) \{([\s\S]*?)\n {2}\}\n/)
   assert.ok(
     matched,
     'run-node-tests.ts 里找不到 `if (out.code !== 0) {` 分支——'

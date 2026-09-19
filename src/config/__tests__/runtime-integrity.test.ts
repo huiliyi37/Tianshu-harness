@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,16 @@ import { makeTestSigner } from './grant-fixtures.js'
 const FIXTURE_PATH = fileURLToPath(
   new URL('../../../desktop/integrity-conformance/fixtures/conformance.json', import.meta.url)
 )
+
+/**
+ * 跨语言夹具由桌面端仓（desktop/integrity-conformance/）提供，与 Rust 侧消费同一份；
+ * 公共 harness 镜像不含该目录。缺夹具时依赖它的两组用例整组跳过（同 bash-windows-smoke
+ * 的 winOnly 口径），而不是 ENOENT 假红。枚举规则与摘要格式两组用例不依赖夹具，仍全量运行。
+ */
+const fixturePresent = existsSync(FIXTURE_PATH)
+const skipNoFixture = fixturePresent
+  ? false
+  : '本仓无 desktop/integrity-conformance/fixtures/conformance.json（跨仓夹具缺失）'
 
 interface ConformanceFixture {
   mode: 'code' | 'full'
@@ -85,7 +95,7 @@ describe('摘要计算 — 格式锁定', () => {
   })
 })
 
-describe('跨语言一致性 fixture（JS 侧消费 Rust 侧同一份）', () => {
+describe('跨语言一致性 fixture（JS 侧消费 Rust 侧同一份）', { skip: skipNoFixture }, () => {
   let fixture: ConformanceFixture
   let stage: string
 
@@ -188,7 +198,7 @@ describe('跨语言一致性 fixture（JS 侧消费 Rust 侧同一份）', () =>
   })
 })
 
-describe('清单校验 — 攻击面', () => {
+describe('清单校验 — 攻击面', { skip: skipNoFixture }, () => {
   let fixture: ConformanceFixture
   let stage: string
 

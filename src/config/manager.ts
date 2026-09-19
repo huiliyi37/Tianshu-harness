@@ -260,6 +260,42 @@ function migrateInlineApiKeys(raw: Record<string, unknown>): boolean {
   return changed
 }
 
+/** search key 在 secrets.json 里的 keyRef 命名——`search:<backend>`，与 provider
+ *  名/`provider:keyId` 命名空间互不撞键。 */
+export function searchKeyRef(backend: string): string {
+  return `search:${backend}`
+}
+
+/**
+ * One-shot migration: plaintext `search.<backend>ApiKey` values in config.json move
+ * into the AES-256-GCM secrets.json store, leaving only a `search.<backend>KeyRef`
+ * pointer behind — 与 migrateInlineApiKeys（provider.apiKey→keyRef）同规（issue #220）。
+ * Idempotent：已带 keyRef 或本就无内联 key 的 backend 不动。原地改 `raw`。
+ * 返回是否有改动。写 secrets 失败时保留明文而非丢 key（下次读取重试）。
+ */
+function migrateSearchInlineApiKeys(raw: Record<string, unknown>): boolean {
+  const search = raw.search as Record<string, unknown> | undefined
+  if (!search || typeof search !== 'object') return false
+  let changed = false
+  for (const backend of KEYED_SEARCH_BACKENDS) {
+    const apiKeyField = `${backend}ApiKey`
+    const refField = `${backend}KeyRef`
+    const value = search[apiKeyField]
+    if (typeof value !== 'string' || value.length === 0) continue
+    if (typeof search[refField] === 'string' && search[refField]) continue
+    const ref = searchKeyRef(backend)
+    try {
+      writeSecret(ref, value)
+    } catch {
+      continue // secrets 写失败——保留内联 key 而非丢 key
+    }
+    delete search[apiKeyField]
+    search[refField] = ref
+    changed = true
+  }
+  return changed
+}
+
 /** PR#38 审查阻断 3：旧 capabilities 字段 supportsThinking/thinkingFormat 已从
  *  schema 删除——zod strip 不报错，老用户显式写的配置静默丢失（thinking 行为
  *  回弹）。加载期映射到新模型（幂等；thinkingBlock 已存在时不动——新字段优先）：
@@ -402,13 +438,14 @@ export function loadConfig(options?: {
     const flashChanged = migrateV4FlashEffort(cpMigrated)
     const visionExpRetired = migrateDeepseekVisionExpRetirement(cpMigrated)
     const keysMoved = migrateInlineApiKeys(cpMigrated)
+    const searchKeysMoved = migrateSearchInlineApiKeys(cpMigrated)
     const capsChanged = migrateLegacyCapabilities(cpMigrated)
     const protoChanged = migrateAnthropicProtocol(cpMigrated)
     const backfillChanged = migratePresetModelBackfill(cpMigrated)
     const aliasStripped = migrateStripModelAlias(cpMigrated)
     // Write back if any migration modified the raw config so the fix
     // persists across restarts (one-shot, idempotent).
-    if (cpMigrated !== raw || dsChanged || flashChanged || visionExpRetired || keysMoved || capsChanged || protoChanged || backfillChanged || aliasStripped) {
+    if (cpMigrated !== raw || dsChanged || flashChanged || visionExpRetired || keysMoved || searchKeysMoved || capsChanged || protoChanged || backfillChanged || aliasStripped) {
       try {
         writeFileAtomicSync(configPath, JSON.stringify(cpMigrated, null, 2) + '\n')
       } catch {
@@ -536,6 +573,20 @@ export function loadConfig(options?: {
     }
   }
 
+  // search key 物化（与 provider.apiKey 同规）：secrets.json 里 `search:<backend>`
+  // 的密钥按 keyRef 读回内存 search.<backend>ApiKey 槽——运行时消费方
+  // （getSearchKeyStatus / maskConfigSecrets / 内联优先的 resolveSearchKey）读取
+  // 路径不变；写盘时 saveConfig 再剥回 keyRef，绝不让明文落盘。读失败则保持
+  // undefined（fail-open，与 secrets-store 同规）。issue #220。
+  const searchMaterialized = config.search as unknown as Record<string, unknown>
+  for (const backend of KEYED_SEARCH_BACKENDS) {
+    const ref = searchMaterialized[`${backend}KeyRef`]
+    if (typeof ref === 'string' && ref && !searchMaterialized[`${backend}ApiKey`]) {
+      const secret = readSecret(ref)
+      if (secret) searchMaterialized[`${backend}ApiKey`] = secret
+    }
+  }
+
   // A′：keys 池权威源改为 provider-keys.json（详见 provider-keys-store.ts 头注）。
   // 必须放在 migrateProviderToKeys 之后——后者在 config.json 无 keys 时只合成
   // keys[0]，靠文件覆盖才恢复完整池。
@@ -572,6 +623,13 @@ export function saveConfig(config: Config): void {
     if (provider.name === 'anthropic' && provider.protocol === 'anthropic') {
       delete (provider as unknown as { protocol?: string }).protocol
     }
+  }
+
+  // search inline key 同样是运行时物化值（loadConfig 从 secrets.json 按 keyRef 读回），
+  // 磁盘只留 keyRef 指针——与 provider.apiKey 同规，config.json 绝不落明文（issue #220）。
+  const searchToWrite = toWrite.search as unknown as Record<string, unknown>
+  for (const backend of KEYED_SEARCH_BACKENDS) {
+    searchToWrite[`${backend}ApiKey`] = undefined
   }
 
   // 墓碑保全：用户层 providers[name]=null 是「删除内置预设」的标记
@@ -980,19 +1038,28 @@ export function getSearchKeyStatus(backend: string): SearchKeyStatus {
 }
 
 /**
- * 持久化 search backend 的 inline API key（明文存 config，与 provider.apiKey 同构）。
- * 桌面端 UI「设置 Key」按钮走此函数。空串清除 key。
+ * 持久化 search backend 的 API key——密钥落 secrets.json（AES-256-GCM），config.json
+ * 只留 `<backend>KeyRef` 指针（与 provider.apiKey→keyRef 同规，issue #220）。
+ * 桌面端 UI「设置 Key」按钮走此函数。空串清除 key（同时回收 secret 与 keyRef）。
  */
 export function setSearchApiKey(backend: string, key: string): SearchKeyStatus {
   if (!KEYED_SEARCH_BACKENDS.includes(backend as typeof KEYED_SEARCH_BACKENDS[number])) {
     throw new Error(`Backend "${backend}" does not support API key (only ${KEYED_SEARCH_BACKENDS.join(', ')})`)
   }
   const cfg = loadConfig()
-  const field = `${backend}ApiKey` as keyof typeof cfg.search
+  const search = cfg.search as unknown as Record<string, unknown>
+  const refField = `${backend}KeyRef`
+  const apiKeyField = `${backend}ApiKey`
+  const ref = searchKeyRef(backend)
   if (key && key.trim()) {
-    ;(cfg.search as Record<string, unknown>)[field] = key.trim()
+    writeSecret(ref, key.trim())
+    search[refField] = ref
+    // 内存物化：本次返回的状态直接可读；saveConfig 写盘前会剥回 keyRef。
+    search[apiKeyField] = key.trim()
   } else {
-    delete (cfg.search as Record<string, unknown>)[field]
+    deleteSecret(ref)
+    delete search[refField]
+    delete search[apiKeyField]
   }
   saveConfig(cfg)
   return getSearchKeyStatus(backend)
@@ -1009,8 +1076,9 @@ export function setSearchConfig(input: Record<string, unknown>): SearchConfigSna
   const cfg = loadConfig()
   const merged: Record<string, unknown> = { ...cfg.search }
   for (const [key, val] of Object.entries(input)) {
-    // 拒绝 inline key 字段经通用端点写入——只能走 setSearchApiKey
-    if (key.endsWith('ApiKey')) continue
+    // 拒绝 inline key / keyRef 字段经通用端点写入——凭证只能走 setSearchApiKey（
+    // ApiKey 是明文；KeyRef 是 secrets 指针，任意改向等于把别的 secret 当搜索 key）。
+    if (key.endsWith('ApiKey') || key.endsWith('KeyRef')) continue
     if (val === '' || val === null) {
       delete merged[key]
     } else {

@@ -7,6 +7,7 @@ import { BraveBackend } from './brave.js'
 import { TavilyBackend } from './tavily.js'
 import { BochaBackend } from './bocha.js'
 import { createProxyAwareFetch } from './proxy-fetch.js'
+import { readSecret } from '../../config/secrets-store.js'
 
 export interface BuildBackendsDeps {
   fetch?: SearchFetch
@@ -22,15 +23,16 @@ export interface BuildBackendsDeps {
 }
 
 /**
- * Resolve a search backend's API key using the same 3-tier fallback as
- * `api/factory.ts:resolveApiKey` for providers:
- *   1. inline config value `search.<backend>ApiKey`（桌面端 UI 填的明文）
+ * Resolve a search backend's API key using the same fallback chain as
+ * `api/factory.ts:tryResolveCredentialKey` for providers:
+ *   0. keyRef → secrets.json（AES-256-GCM 密文；config.json 只存指针）
+ *   1. inline config value `search.<backend>ApiKey`（运行时物化值 / 旧版明文配置）
  *   2. explicit env var named by `search.<backend>ApiKeyEnv`
  *   3. standard `<BACKEND>_API_KEY` env var
  *
- * Lets users configure search keys either via the desktop UI (inline, no shell
- * export needed) or via environment variables (CLI/server), mirroring how
- * provider API keys work.
+ * Lets users configure search keys either via the desktop UI (落 secrets.json，
+ * config.json 留 keyRef 指针) or via environment variables (CLI/server), mirroring
+ * how provider API keys work. issue #220：搜索 key 不再明文落 config.json。
  */
 export function resolveSearchKey(
   config: Config,
@@ -38,7 +40,15 @@ export function resolveSearchKey(
   backend: 'bocha' | 'brave' | 'tavily',
 ): string | undefined {
   const s = config.search
-  // 1. inline config value（桌面端 UI 填的明文，与 provider.apiKey 同构）
+  // 0. keyRef 指针 → secrets.json。与 provider 的 tryResolveCredentialKey 同序
+  //    （keyRef 优先）。loadConfig 已把 secret 物化进 <backend>ApiKey，故对经
+  //    loadConfig 的配置这是等价路径；对未物化的 Config（测试/直接构造）则是唯一来源。
+  const keyRef = s[`${backend}KeyRef` as keyof typeof s]
+  if (typeof keyRef === 'string' && keyRef.length > 0) {
+    const secret = readSecret(keyRef)
+    if (secret) return secret
+  }
+  // 1. inline config value（运行时物化值，与 provider.apiKey 同构）
   const inlineKey = s[`${backend}ApiKey` as keyof typeof s]
   if (typeof inlineKey === 'string' && inlineKey.length > 0) return inlineKey
   // 2. 显式 env 变量名（apiKeyEnv 字段，如 BRAVE_API_KEY）

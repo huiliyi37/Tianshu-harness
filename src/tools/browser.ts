@@ -5,6 +5,11 @@
  *  - requiresApproval() ALWAYS true — every action goes through the N2 approval
  *    gate (a human confirms each navigation).
  *  - URL host must be on a fail-closed allowlist (empty allowlist = deny all).
+ *  - Every request (main document + redirects + iframes + subresources) is
+ *    re-checked per request via a page.route interceptor: host on the allowlist
+ *    AND not a private/reserved address. Checking only the initial URL lets an
+ *    allowlisted host 302 / <iframe> / page fetch() straight into 127.0.0.1 or
+ *    the cloud metadata service (issue #213).
  *  - screenshots are persisted as `screenshot`-kind Artifacts (base64 PNG) so the
  *    desktop browser panel can render them.
  *
@@ -12,13 +17,21 @@
  * so the tool ships without forcing the browser binaries on every install, and so
  * the security logic is unit-testable with a fake driver.
  */
+import { lookup as dnsLookup } from 'node:dns/promises'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
+import { resolveAndAssertPublic, SSRFError, type LookupFn } from './net/ssrf.js'
+import type { PwRouteHandler } from './net/playwright-driver.js'
 
 export interface BrowserDriver {
   goto(url: string): Promise<void>
   screenshot(): Promise<Buffer>
   textContent(selector?: string): Promise<string>
   click(selector: string): Promise<void>
+  /**
+   * 逐请求拦截（重定向 / iframe / 子资源）——实现须转发到 page.route。
+   * 只校验初始 URL 会被 30x / <iframe> / 页面内 fetch() 打穿到内网（#213）。
+   */
+  route(pattern: string, handler: PwRouteHandler): Promise<void>
   close(): Promise<void>
 }
 
@@ -29,6 +42,8 @@ export interface BrowserToolOptions {
   driverFactory?: BrowserDriverFactory
   /** Returns the allowed host list. Empty ⇒ deny all (fail-closed). */
   allowlist?: () => string[]
+  /** 逐请求 SSRF 预检的 DNS 解析（测试注入；默认 node:dns/promises）。 */
+  lookup?: LookupFn
   enabled?: boolean
 }
 
@@ -52,6 +67,82 @@ export function isHostAllowed(host: string, allowlist: string[]): boolean {
   return allowlist.some((entry) => h === entry || h.endsWith('.' + entry))
 }
 
+/** 单请求判定结果（reason 供测试/遥测使用）。 */
+export interface BrowserRequestDecision {
+  allow: boolean
+  reason:
+    | 'ok'
+    | 'local-scheme'
+    | 'unsupported-scheme'
+    | 'not-allowlisted'
+    | 'private-address'
+    | 'dns-failure'
+  hostname?: string
+}
+
+/** data:/blob:/about: 不产生网络请求，放行；其余非 http(s) scheme 一律阻断（同 render-fetch）。 */
+function isLocalScheme(protocol: string): boolean {
+  return protocol === 'data:' || protocol === 'blob:' || protocol === 'about:'
+}
+
+/**
+ * 对**单个请求**做与初始 URL 同一套判定：scheme 白名单 → allowlist 主机 →
+ * 私网/保留地址预检（复用 net/ssrf 的 resolveAndAssertPublic）。DNS 经 lookup 注入，
+ * 因此可脱离 Playwright 单测。不合规一律 fail-closed。
+ */
+export async function evaluateBrowserRequest(
+  reqUrl: string,
+  allowlist: string[],
+  lookup: LookupFn,
+): Promise<BrowserRequestDecision> {
+  let parsed: URL
+  try {
+    parsed = new URL(reqUrl)
+  } catch {
+    return { allow: false, reason: 'unsupported-scheme' }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return isLocalScheme(parsed.protocol)
+      ? { allow: true, reason: 'local-scheme' }
+      : { allow: false, reason: 'unsupported-scheme' }
+  }
+  const hostname = parsed.hostname
+  if (!isHostAllowed(hostname, allowlist)) {
+    return { allow: false, reason: 'not-allowlisted', hostname }
+  }
+  try {
+    await resolveAndAssertPublic(hostname, lookup)
+    return { allow: true, reason: 'ok', hostname }
+  } catch (err) {
+    // 私网目标或 DNS 解析失败一律阻断（fail-closed）
+    return {
+      allow: false,
+      reason: err instanceof SSRFError ? 'private-address' : 'dns-failure',
+      hostname,
+    }
+  }
+}
+
+/**
+ * 构造 page.route 处理器：逐请求判定，合规放行、不合规 abort。
+ * 与 render-fetch 的第二层拦截同构——只是把「广告域名」换成了「allowlist」。
+ */
+export function createBrowserRequestGuard(
+  allowlist: string[],
+  lookup: LookupFn,
+  onBlocked?: (decision: BrowserRequestDecision) => void,
+): PwRouteHandler {
+  return async (route, request) => {
+    const decision = await evaluateBrowserRequest(request.url(), allowlist, lookup)
+    if (decision.allow) {
+      await route.continue()
+    } else {
+      onBlocked?.(decision)
+      await route.abort()
+    }
+  }
+}
+
 async function playwrightDriver(): Promise<BrowserDriver> {
   // Dynamic specifier via a variable so tsc doesn't try to resolve the optional
   // 'playwright-core' types at build time.
@@ -72,6 +163,7 @@ async function playwrightDriver(): Promise<BrowserDriver> {
     textContent: (s: string) => Promise<string | null>
     evaluate: (fn: string) => Promise<string>
     click: (s: string) => Promise<void>
+    route: (pattern: string, handler: PwRouteHandler) => Promise<void>
   }
   return {
     goto: async (url) => { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }) },
@@ -81,6 +173,7 @@ async function playwrightDriver(): Promise<BrowserDriver> {
         ? (await page.textContent(selector)) ?? ''
         : await page.evaluate('document.body.innerText'),
     click: (selector) => page.click(selector),
+    route: (pattern, handler) => page.route(pattern, handler),
     close: () => browser.close(),
   }
 }
@@ -90,6 +183,7 @@ type BrowserAction = 'screenshot' | 'text' | 'click'
 export function createBrowserTool(options: BrowserToolOptions = {}): Tool {
   const driverFactory = options.driverFactory ?? playwrightDriver
   const allowlist = options.allowlist ?? envAllowlist
+  const lookup: LookupFn = options.lookup ?? ((hostname) => dnsLookup(hostname))
   const enabled = options.enabled ?? false
 
   return {
@@ -138,18 +232,30 @@ export function createBrowserTool(options: BrowserToolOptions = {}): Tool {
       let driver: BrowserDriver | null = null
       try {
         driver = await driverFactory()
+        if (typeof driver.route !== 'function') {
+          return {
+            content:
+              'browser 已拒绝：浏览器驱动未提供逐请求拦截（route）——无法拦截重定向/iframe/子资源的内网访问（fail-closed）。',
+            isError: true,
+          }
+        }
+        // 逐请求防护（#213）：必须在 goto 之前挂上，覆盖主文档 + 重定向 + iframe + 子资源。
+        let blockedRequests = 0
+        const blockedSuffix = (): string =>
+          blockedRequests > 0 ? `（已拦截 ${blockedRequests} 个不合规子请求）` : ''
+        await driver.route('**/*', createBrowserRequestGuard(list, lookup, () => { blockedRequests += 1 }))
         await driver.goto(rawUrl)
 
         if (action === 'click') {
           if (!selector) return { content: 'click 需要 "selector"。', isError: true }
           await driver.click(selector)
-          return { content: `已在 ${rawUrl} 点击 ${selector}` }
+          return { content: `已在 ${rawUrl} 点击 ${selector}${blockedSuffix()}` }
         }
 
         if (action === 'text') {
           const text = await driver.textContent(selector)
           const trimmed = text.slice(0, 20_000)
-          return { content: `来自 ${rawUrl}${selector ? `（${selector}）` : ''} 的文本：\n\n${trimmed}` }
+          return { content: `来自 ${rawUrl}${selector ? `（${selector}）` : ''} 的文本：\n\n${trimmed}${blockedSuffix()}` }
         }
 
         // screenshot
@@ -166,7 +272,10 @@ export function createBrowserTool(options: BrowserToolOptions = {}): Tool {
           })
         }
         return {
-          content: `${BROWSER_SCREENSHOT_OF_PREFIX} ${rawUrl}` + (artifactId ? ` → artifact ${artifactId}` : ''),
+          content:
+            `${BROWSER_SCREENSHOT_OF_PREFIX} ${rawUrl}` +
+            (artifactId ? ` → artifact ${artifactId}` : '') +
+            blockedSuffix(),
           rawPath: undefined,
         }
       } catch (err) {

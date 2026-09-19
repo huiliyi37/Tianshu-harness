@@ -506,7 +506,7 @@ tianshu --resume                   # 启动后打开会话选择器
 
 `.rivet/skills/`에 YAML frontmatter（`name`, `description`, `triggers`）가 있는 `.md` 커스텀 skill을 넣을 수도 있습니다.
 
-> `writing-plans` / `executing-plans`는 이미 네이티브 프로세스로 내장되어 있습니다（계획기는 시스템 프롬프트의 `<plan-mode>` 규율, 실행기는 `<plan-executing>` 규율에 따라 실행）, 더 이상 skill 파일이 필요 없습니다. `agent-harness-testing` / `cognitive-alignment` / `research-spec`은 기본 배포에서 빠지고 [`docs/skills/optional/`](docs/skills/optional/)에 보관됩니다——필요 시 수동으로 `.rivet/skills/`에 복사해 넣으면 활성화됩니다.
+> `writing-plans` / `executing-plans`는 이미 네이티브 프로세스로 내장되어 있습니다（계획기는 시스템 프롬프트의 `<plan-mode>` 규율, 실행기는 `<plan-executing>` 규율에 따라 실행）, 더 이상 skill 파일이 필요 없습니다. `agent-harness-testing` / `research-spec`은 기본 배포에서 빠지고 [`docs/skills/optional/`](docs/skills/optional/)에 보관됩니다——필요 시 수동으로 `.rivet/skills/`에 복사해 넣으면 활성화됩니다.
 
 ### 세션 간 메모리
 
@@ -1175,9 +1175,9 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 
 | 기여자 | 기여 내용 |
 |--------|----------|
-| [@banxia](https://github.com/banxia) | 프로젝트 창시자 · 핵심 개발 |
+| [@huiliyi37](https://github.com/huiliyi37) | 프로젝트 창시자 · 핵심 개발 |
 
-전체 목록（외부 기여자 17명 / 89 PR）→ CONTRIBUTORS.md
+전체 목록（외부 기여자 20명 / 122 PR）→ CONTRIBUTORS.md
 
 외부 PR은「이식(收编)」절차로 병합되며, 저자 서명은 `Co-authored-by`로 기여자 그래프에
 반영됩니다（scripts/credit-contributors.sh 가 자동 기록）——기여자 월（전체 목록은 CONTRIBUTORS.md）:

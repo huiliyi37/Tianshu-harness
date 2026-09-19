@@ -505,7 +505,7 @@ tianshu --resume                   # 起動後にセッションセレクタを�
 
 `.rivet/skills/` に YAML frontmatter（`name`、`description`、`triggers`）付きの `.md` を置けばカスタム skill にもできます。
 
-> `writing-plans` / `executing-plans` はネイティブフローとして内蔵済み（計画期はシステムプロンプトの `<plan-mode>` 規律、実行期は `<plan-executing>` 規律で実行）。skill ファイルは不要になりました。`agent-harness-testing` / `cognitive-alignment` / `research-spec` はデフォルト配布から外れ、[`docs/skills/optional/`](docs/skills/optional/) にアーカイブ——必要なとき手動で `.rivet/skills/` にコピーすれば有効化できます。
+> `writing-plans` / `executing-plans` はネイティブフローとして内蔵済み（計画期はシステムプロンプトの `<plan-mode>` 規律、実行期は `<plan-executing>` 規律で実行）。skill ファイルは不要になりました。`agent-harness-testing` / `research-spec` はデフォルト配布から外れ、[`docs/skills/optional/`](docs/skills/optional/) にアーカイブ——必要なとき手動で `.rivet/skills/` にコピーすれば有効化できます。
 
 ### セッション間メモリ
 
@@ -1173,9 +1173,9 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 
 | コントリビューター | 貢献内容 |
 |--------|----------|
-| [@banxia](https://github.com/banxia) | プロジェクト創設者 · コア開発 |
+| [@huiliyi37](https://github.com/huiliyi37) | プロジェクト創設者 · コア開発 |
 
-完全なリスト（外部コントリビューター 17 名 / 89 PR）→ CONTRIBUTORS.md。
+完全なリスト（外部コントリビューター 20 名 / 122 PR）→ CONTRIBUTORS.md。
 
 外部 PR は「取り込み（收编）」フローでマージされ、著者署名は `Co-authored-by` で
 コントリビューターグラフに計上されます（scripts/credit-contributors.sh が自動記録）——

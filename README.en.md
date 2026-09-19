@@ -459,7 +459,7 @@ Reusable workflow playbooks. `visual-acceptance` (frontend/UI change acceptance:
 
 Create a custom skill by dropping a `.md` file with YAML frontmatter (`name`, `description`, `triggers`) into `.rivet/skills/`.
 
-> `writing-plans` / `executing-plans` are now built-in native flows (planning follows the system prompt's `<plan-mode>` discipline, execution the `<plan-executing>` discipline) — no skill files needed. `agent-harness-testing` / `cognitive-alignment` / `research-spec` left the default distribution and are archived in [`docs/skills/optional/`](docs/skills/optional/) — copy them into `.rivet/skills/` to enable.
+> `writing-plans` / `executing-plans` are now built-in native flows (planning follows the system prompt's `<plan-mode>` discipline, execution the `<plan-executing>` discipline) — no skill files needed. `agent-harness-testing` / `research-spec` left the default distribution and are archived in [`docs/skills/optional/`](docs/skills/optional/) — copy them into `.rivet/skills/` to enable.
 
 ### Cross-Session Memory
 
@@ -1034,9 +1034,9 @@ Thank you to everyone who has contributed to Tianshu (ordered by first contribut
 
 | Contributor | Contributions |
 |-------------|---------------|
-| [@banxia](https://github.com/banxia) | Project creator · Core development |
+| [@huiliyi37](https://github.com/huiliyi37) | Project creator · Core development |
 
-Full list (17 external contributors / 89 PRs) → CONTRIBUTORS.md.
+Full list (20 external contributors / 122 PRs) → CONTRIBUTORS.md.
 
 External PRs land via a "port" flow; authorship is credited with `Co-authored-by`
 trailers (auto-recorded by scripts/credit-contributors.sh) — contributor wall (full list in CONTRIBUTORS.md):

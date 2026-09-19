@@ -43,6 +43,12 @@ export const HELP_TEXT = `Available commands:
 /goal-cancel — Cancel autonomous goal
 /goal-criteria [set '["..."]'] — View or set success criteria
 /todo [list|add <content>|done <id>|skip <id>|move <id> up|down] — Manage task list
+/plan-mode — 切换计划编写模式（只读，只允许写计划文件）。再次执行退出
+/plan-list — 列出待审批的计划文档
+/plan-view [slug] — 预览计划文档全文（无参=唯一待审批，否则撰写中草稿）
+/plan-approve <slug> [option] — 审批计划并开始执行
+/plan-reject <slug> <反馈> — 驳回计划并附反馈让 agent 修改
+/plan-close — 预览或应用计划收尾（归档/标记完成）
 
 ▌▌ 模型 · 星域 · 权限 ▌▌
 
@@ -54,6 +60,10 @@ export const HELP_TEXT = `Available commands:
 /grant [path] [read|write] — 授权并记住工作区外目录（无参列出本工作区已记住的授权）
 /trust [status|off] — 授信当前项目：项目级 hooks 生效、配置安全键（verify/permissions/mcp…）参与合并（status 查询 · off 撤销；仅本机生效，绝不写回仓库）
 /login [provider] — OAuth 登录（codex 等订阅型服务商，浏览器授权；/connect 选 codex 后的下一步）
+/disconnect — 断开服务商——整组删除该 key 注册的模型列表并清除密钥
+/vision — 配置独立视觉模型（探测 + 真实图片验证后才保存）
+/yes — 跳过所有权限确认并持久化为默认；off 退出。与 /yolo 同义，显式输入即视为确认
+/yolo — ⚠ 同 /yes——无刹车无打扰模式。仅在你完全信任当前任务时使用
 
 ▌▌ 会话与项目 ▌▌
 
@@ -70,6 +80,13 @@ export const HELP_TEXT = `Available commands:
 /leave [symbol] <summary> — Leave your mark in the starmap as you depart
 /queue <text> — 排队一条消息到下轮（无参预览队列）；busy 时也可攒，回车随下条一并发送
 /btw <问题> — 侧问：就当前会话问一句，回答显示在浮层，不进对话历史
+/resume [id|序号] — 继续一个历史会话（无参打开选择器；/sessions 看列表）
+/remember <要记住的事> — 把一句话写进项目长期记忆（跨会话生效，新会话自动携带）；无参查看最近记忆
+/chat — 切换到轻量聊天模式（不走完整 agent 循环，适合简单问答）
+/task — 任务模式（已废弃：意图自动检测；子代理面板用 /tasks）
+/jobs — 打开后台任务面板（bash 后台启动的 shell 任务列表）
+/plugin [list|install|remove|enable|disable|info] — 插件管理
+/logout — 登出天枢账号（清除本机 account 凭据；不影响 provider 的 OAuth）
 
 ▌▌ 审查与验证 ▌▌
 
@@ -80,7 +97,7 @@ export const HELP_TEXT = `Available commands:
 /verify — Show verification status
 /evidence — Show last turn evidence summary
 /undo [<number>|preview <number>] — Undo file changes with preview
-/rollback [<N>] — Rollback file changes (alias of /undo)
+/rollback — 检查点回滚（两阶段）：无参预览将还原/删除的文件与被其他会话占用的跳过项，再 /rollback confirm 执行、/rollback cancel 放弃。与 /undo 不同：/undo 按本会话快照撤销，/rollback 回到 git 检查点
 
 ▌▌ 上下文 · 诊断 · 环境 ▌▌
 
@@ -99,6 +116,10 @@ export const HELP_TEXT = `Available commands:
 /python [status|setup] — Check Python/uv/Git environment or auto-setup a Python project with uv
 /mirror [status|on|off|china|default] — Toggle domestic mirrors for GitHub/npm/pip/go/rust downloads
 /workflow [list|<name>|replay <id>] — YAML workflow orchestration + trace replay
+/mode — 查看或切换提示词模式（标准/详尽/摘要，影响输出详细度）
+/cache — 打开缓存面板（token 消耗 / 命中率 / 缓存省钱 / DeepSeek 官方账单），同 F3
+/settings — 设置面板（同 /config）——子代理路由 / 审查子代理 / 识图模型 / 基础项
+/setup — 设置面板（同 /config）
 
 ▌▌ 界面与其他 ▌▌
 
@@ -108,12 +129,21 @@ export const HELP_TEXT = `Available commands:
 /verbose — Toggle verbose tool output
 /scroll — Browse session history in pager
 /cockpit [summary|trace|verify|context|safety|model|mcp|advisory|off] — Toggle cockpit panel
+/pager — 分页浏览历史输出（滚走的内容可回看）
+/palette — 打开命令面板（模糊搜索全部命令与界面动作，同 Ctrl+P）
+/glance [compact|full] — 切换概览栏密度（单行 / 完整）
+/panel [on|off] — 开关右侧面板（无参切换）
+/rewind — 打开 rewind 浮层：回退到历史消息点（只回对话 / 只回代码 / 两者）
+/starmap — 星图总览浮层 — 看整张星图与你的位置
+/chronicle — 阶段传说 — 翻项目里程碑编年史
+/zen [on|off|status] — 禅模式：收敛工具面做深度专注（写配置，新会话生效）
+/fast — 解除禅模式，恢复全量工具面（/zen 的出口）
 /skill [list|install <name>|import <name>|<name>|off <name>|review|approve <name>|reject <name>] — List/load skills; install from .claude/skills; review drafts
 /diagram [list|<type>] — Generate a mermaid diagram skeleton (architecture|dataflow|sequence|flowchart|comparison|state)
 /clear — Clear screen
 /update — Check and install the latest Rivet release
 /exit — Exit Rivet
-/quit — Exit
+/quit — Exit（/exit 的别名）
 Ctrl+C — Interrupt current turn (press twice to exit)
 ↑ / Ctrl+N — 翻历史命令（单行 ↑ 上一条；多行编辑时方向键只做行间导航，用 Ctrl+R 历史搜索）
 Ctrl+P — 命令面板（模糊搜索全部命令与界面动作；Ctrl+Esc 被 Windows「开始菜单」抢占，已换绑）

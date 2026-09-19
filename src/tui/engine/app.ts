@@ -2036,14 +2036,16 @@ export class TuiApp {
    *  静默绕过 slash 分发（4175e5b9 引入的回归）。 */
   getCommandPredicate(): (name: string) => boolean {
     const fromHints = buildCommandPredicate(this.inputController.slashCommands)
-    const fromRegistry = buildCommandPredicate(this.slashRegistry.list())
+    // listNames()（canonical ∪ 别名）而非 list()：漏掉别名会让「输入别名」在谓词层
+    // 被判为非命令，别名等于没接。
+    const fromRegistry = buildCommandPredicate(this.slashRegistry.listNames().map(name => ({ name })))
     return (name: string) => fromHints(name) || fromRegistry(name)
   }
 
   /** 构建命令前缀谓词，供 looksLikeFilePath 把 `/h` 这类模糊输入识别为 slash 命令。 */
   private getCommandPrefixPredicate(): (name: string) => boolean {
     const fromHints = buildCommandPrefixPredicate(this.inputController.slashCommands)
-    const fromRegistry = buildCommandPrefixPredicate(this.slashRegistry.list())
+    const fromRegistry = buildCommandPrefixPredicate(this.slashRegistry.listNames().map(name => ({ name })))
     return (name: string) => fromHints(name) || fromRegistry(name)
   }
 
@@ -4999,21 +5001,9 @@ export class TuiApp {
         handler: () => true,
       },
       {
+        // /quit 收敛为别名（曾是与 /exit 逐字重复的第二条命令）。
         name: '/exit',
-        description: 'Exit Rivet',
-        immediate: true,
-        handler: () => {
-          this.dispose()
-          if (this.onExitCallback) {
-            this.onExitCallback()
-          } else {
-            process.exit(0)
-          }
-          return true
-        },
-      },
-      {
-        name: '/quit',
+        aliases: ['/quit'],
         description: 'Exit Rivet',
         immediate: true,
         handler: () => {

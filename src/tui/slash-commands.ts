@@ -1,6 +1,7 @@
 import type { AgentLoop } from '../agent/loop.js'
 import type { SessionContext } from '../agent/context.js'
 import { looksLikeFilePath } from './engine/app.js'
+import { catalogMetaFor } from './command-catalog.js'
 import { SessionPersist, getSessionDir } from '../agent/session-persist.js'
 import { forkSession, listBranches, countMessageLines } from '../agent/session-fork.js'
 import { type StarDomainId } from '../agent/star-domain.js'
@@ -553,6 +554,8 @@ export async function approvePlanAndKickoff(
 
 interface TuiSlashCommandDef {
   readonly name: string
+  /** 别名（见 SlashCommand.aliases）。别名只影响输入匹配，不进帮助/面板。 */
+  readonly aliases?: readonly string[]
   readonly description?: string
   readonly immediate?: true
   readonly handler: (ctx: SlashHandlerContext) => boolean | Promise<boolean>
@@ -659,20 +662,10 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     },
   },
   {
+    // /quit 曾是独立注册的第二条命令（与 /exit 逐字重复）。收敛为别名，
+    // 输入侧行为不变，但注册表/帮助/面板只有一个 canonical。
     name: '/exit',
-    immediate: true,
-    handler(ctx) {
-      const { parts, pushStatic, setIsStreaming } = ctx
-      const cmd = parts[0]!.toLowerCase()
-      ctx.persist.compactOai(ctx.session.getMessages())
-      pushStatic(createLogEntry({ type: 'system', content: 'Session saved. Goodbye!' }))
-      process.emit('SIGINT')
-      return true
-
-    },
-  },
-  {
-    name: '/quit',
+    aliases: ['/quit'],
     immediate: true,
     handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
@@ -1427,7 +1420,10 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     },
   },
   {
-    name: '/cancel-goal',
+    // canonical 取 /goal-cancel（与 /goal-status|pause|resume|criteria 同族），
+    // /cancel-goal 保留为别名——它曾是注册名，且桌面端 ThreadView 仍在用。
+    name: '/goal-cancel',
+    aliases: ['/cancel-goal'],
     immediate: true,
     async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
@@ -2335,12 +2331,75 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     },
   },
   {
+    // 检查点回滚。与 /undo 的分工：/undo 按 FileHistory 快照撤销**本会话内的
+    // 文件写入**；/rollback 走 git 检查点（agent 触碰过的文件），撤销到检查点
+    // 时刻，且**带确认令牌的两阶段**——先预览拿到 token，再 confirm 才动手。
+    //
+    // 两阶段不是多余礼节：rollbackToCheckpoint 要求 confirmationToken 与检查点
+    // 文件里的一致（checkpoint.ts 的防误触设计），且预览会把候选文件、被其他
+    // 会话占用的跳过项、以及 git 无法撤销的 bash 副作用一并摊开。
+    //
+    // 注意：CLI 侧拿不到 SessionRegistry（那是 server 侧概念），因此跨会话归属
+    // guard 传 undefined ——预览文案会显式标注这一点，不静默降级。
     name: '/rollback',
-    handler(ctx) {
+    immediate: true,
+    async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
-      const cmd = parts[0]!.toLowerCase()
-      return false
+      setIsStreaming(false)
+      const cwd = ctx.agent.cwd
+      const sessionId = ctx.currentSessionId
+      const sub = parts[1]?.toLowerCase()
 
+      const { rollbackToCheckpoint, getRollbackPreview } = await import('../agent/checkpoint.js')
+
+      if (sub === 'confirm' || sub === 'yes') {
+        const token = ctx.rollbackTokenRef.current
+        if (!token) {
+          pushStatic(createLogEntry({ type: 'system', content: '没有待确认的回滚。先运行 /rollback 预览，再 /rollback confirm。' }))
+          return true
+        }
+        // 一次性令牌：无论成败都清掉，避免过期令牌被复用。
+        ctx.rollbackTokenRef.current = null
+        const result = await rollbackToCheckpoint(cwd, token, sessionId)
+        if (!result.success) {
+          const detail = [
+            result.skipped?.length ? `跳过（被其他会话占用）：${result.skipped.join(', ')}` : '',
+            '回滚未执行（令牌失效、无检查点，或没有可还原的文件）。重新运行 /rollback 预览。',
+          ].filter(Boolean).join('\n')
+          pushStatic(createLogEntry({ type: 'system', content: detail, isError: true }))
+          return true
+        }
+        const lines = [`✓ 已回滚到检查点 ${result.hash ?? ''}`.trim()]
+        if (result.skipped?.length) lines.push(`跳过（被其他会话占用）：${result.skipped.join(', ')}`)
+        for (const effect of result.unrevertable ?? []) lines.push(`⚠️  git 无法撤销的副作用：${effect}`)
+        pushStatic(createLogEntry({ type: 'system', content: lines.join('\n') }))
+        return true
+      }
+
+      if (sub === 'cancel') {
+        ctx.rollbackTokenRef.current = null
+        pushStatic(createLogEntry({ type: 'system', content: '已取消待确认的回滚。' }))
+        return true
+      }
+
+      // 无参（或未知子命令）：预览并预置令牌。
+      const preview = await getRollbackPreview(cwd, sessionId)
+      if (!preview) {
+        ctx.rollbackTokenRef.current = null
+        pushStatic(createLogEntry({ type: 'system', content: '没有可回滚的检查点（或已无 agent 触碰过的文件）。' }))
+        return true
+      }
+      ctx.rollbackTokenRef.current = preview.confirmationToken
+      pushStatic(createLogEntry({
+        type: 'system',
+        content: [
+          preview.text,
+          '',
+          '⚠️  CLI 端未做跨会话归属检查（无 SessionRegistry）——若同一分支有并发会话，请先确认上述文件不是别人正在改的。',
+          '执行：/rollback confirm　·　放弃：/rollback cancel',
+        ].join('\n'),
+      }))
+      return true
     },
   },
   {
@@ -3987,7 +4046,10 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
   for (const cmd of TUI_SLASH_COMMANDS) {
     app.registerSlashCommand({
       name: cmd.name,
-      description: cmd.description,
+      aliases: cmd.aliases,
+      // description 从命令目录回填：数组式定义一向留空，导致 registry 的
+      // description 字段形同虚设、描述被迫在面板里重写一遍（漂移之源）。
+      description: cmd.description ?? catalogMetaFor(cmd.name)?.description,
       immediate: cmd.immediate,
       handler: async ({ app, input, trimmed }) => cmd.handler(buildHandlerContext(trimmed)),
     })
@@ -4030,15 +4092,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
   // 进程，也绕过退出摘要。
   register("/exit", {
     description: "Exit Rivet",
-    immediate: true,
-    handler: () => {
-      process.emit('SIGINT')
-      return true
-    },
-  })
-
-  register("/quit", {
-    description: "Exit Rivet",
+    aliases: ["/quit"],
     immediate: true,
     handler: () => {
       process.emit('SIGINT')

@@ -333,7 +333,7 @@ triggers: [deploy, 部署, release]
 2. 确认回滚方案
 ```
 
-可按名称导入 Claude Code 的技能。`writing-plans` / `executing-plans` 已内置为原生流程（规划期按系统提示的 `<plan-mode>` 纪律、执行期按 `<plan-executing>` 纪律执行），不再需要技能文件。`agent-harness-testing` / `cognitive-alignment` / `research-spec` 撤出默认分发，归档在 [`docs/skills/optional/`](skills/optional/)——需要时手动拷入 `.rivet/skills/` 即可启用。
+可按名称导入 Claude Code 的技能。`writing-plans` / `executing-plans` 已内置为原生流程（规划期按系统提示的 `<plan-mode>` 纪律、执行期按 `<plan-executing>` 纪律执行），不再需要技能文件。`agent-harness-testing` / `research-spec` 撤出默认分发，归档在 [`docs/skills/optional/`](skills/optional/)——需要时手动拷入 `.rivet/skills/` 即可启用。
 
 ### 跨会话记忆
 

@@ -23,6 +23,7 @@ import {
   type DriftEvent,
 } from './fingerprint.js'
 import { FieldHabituationTracker } from './field-habituation.js'
+import { messageSignature } from './message-signature.js'
 import { isSystemReminder } from './system-reminder.js'
 import { runResumePreflightOai } from '../context/resume-preflight.js'
 import type { WriteProbe } from '../context/write-evidence-probe.js'
@@ -70,14 +71,6 @@ function simpleHash(s: string): string {
   return `${h}:${s.length}`
 }
 
-/** Full-content djb2 (no truncation) — prefix-divergence probe needs to detect
- *  byte changes anywhere in a message, not just the first 2000 chars. */
-function fullHash(s: string): string {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
-  return `${h}:${s.length}`
-}
-
 /**
  * Prefix-divergence probe result: how this request's serialized messages
  * differ from the previous MAIN-turn request. `null`-able consume-once value —
@@ -98,16 +91,6 @@ export interface PrefixDivergence {
   newCount: number
   /** Approximate char offset of the diverged message's start in the serialized request. */
   approxCharPos: number
-}
-
-/** Serialize one request message to the byte-relevant parts for hashing. */
-function messageSignature(m: OaiMessage): { sig: string; len: number } {
-  const rec = m as unknown as Record<string, unknown>
-  let s = typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content))
-  if (rec.tool_calls) s += '\u0000' + JSON.stringify(rec.tool_calls)
-  if (rec.reasoning_content) s += '\u0000' + String(rec.reasoning_content)
-  if (rec.tool_call_id) s += '\u0000' + String(rec.tool_call_id)
-  return { sig: `${m.role}\u0000${fullHash(s)}`, len: s.length }
 }
 
 export interface PromptEngineConfig {

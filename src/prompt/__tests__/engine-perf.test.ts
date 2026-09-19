@@ -2,6 +2,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { semanticPruneLayer1 } from '../../compact/semantic-prune.js'
 import { detectStaleness } from '../../compact/staleness-detect.js'
+import { estimateOaiMessageTokens, estimateCacheStats } from '../../compact/micro.js'
+import { PromptEngine } from '../engine.js'
+import { messageSignature, signatureCacheStats } from '../message-signature.js'
 import type { OaiMessage } from '../../api/oai-types.js'
 
 function makeAssistant(toolCalls: { id: string; name: string; args: string }[]): OaiMessage {
@@ -86,5 +89,142 @@ describe('buildOaiRequest sub-pass scaling', () => {
 
     const result = detectStaleness(messages, 2)
     assert.equal(result.supersededCount, 10, 'exactly the 10 re-read files should be superseded')
+  })
+})
+
+describe('request-build hashing caches (issue #139)', () => {
+  /**
+   * issue #139: buildOaiRequest re-hashed the ENTIRE request every main turn
+   * (full-content djb2 per message for the divergence probe, per-char token
+   * estimate for the T7 gate) even though request prefixes are byte-stable by
+   * design. The caches make the steady state O(new + changed) instead of
+   * O(history). Deterministically verified via computation counters — not
+   * wall-clock timing, per this suite's philosophy.
+   */
+
+  function makePerfEngine() {
+    return new PromptEngine({
+      model: 'test',
+      maxTokens: 1024,
+      staticCtx: { tools: [{ name: 'edit_file', description: 'Edit file', input_schema: { type: 'object', properties: {} } }] },
+      volatileCtx: { cwd: '/repo' },
+    })
+  }
+
+  /** Short contents (<200 chars) keep every sub-pass passive — messages pass
+   *  through by reference, exactly like real steady-state history. */
+  function buildSession(turns: number): OaiMessage[] {
+    const messages: OaiMessage[] = [{ role: 'user', content: 'start the task' }]
+    for (let i = 0; i < turns; i++) {
+      messages.push(makeAssistant([{ id: `call_${i}`, name: 'edit_file', args: `{"file_path":"src/f${i}.ts"}` }]))
+      messages.push({ role: 'tool', tool_call_id: `call_${i}`, content: `edit ok ${i}` })
+      messages.push({ role: 'assistant', content: `step ${i} done` })
+      if (i < turns - 1) messages.push({ role: 'user', content: `continue with step ${i + 1}` })
+    }
+    return messages
+  }
+
+  it('messageSignature preserves divergence-probe semantics', () => {
+    const sig = (m: OaiMessage) => messageSignature(m).sig
+    // Equal fields → equal signature (fresh object hits the content-keyed cache)
+    assert.equal(sig({ role: 'user', content: 'hello' }), sig({ role: 'user', content: 'hello' }))
+    // Same content, different role must NOT cross-reuse (role is part of the sig)
+    assert.notEqual(sig({ role: 'user', content: 'hello' }), sig({ role: 'system', content: 'hello' }))
+    // tool_call_id is part of the signature
+    assert.notEqual(
+      sig({ role: 'tool', tool_call_id: 'a', content: 'out' }),
+      sig({ role: 'tool', tool_call_id: 'b', content: 'out' }),
+    )
+    // tool_calls arguments are part of the signature
+    assert.notEqual(
+      sig(makeAssistant([{ id: 'x', name: 'f', args: '{"a":1}' }])),
+      sig(makeAssistant([{ id: 'x', name: 'f', args: '{"a":2}' }])),
+    )
+  })
+
+  it('messageSignature recomputes on in-place mutation (field-ref guard)', () => {
+    // Production never mutates request messages in place, but a stale hit on a
+    // mutated object would silently blind the divergence probe. A tool message
+    // (tool_call_id set) takes the WeakMap path, so the mutation below can ONLY
+    // be caught by the entry's source-field refs — this exercises the guard's
+    // eviction branch, not a mere content-map miss.
+    const m: OaiMessage = { role: 'tool', tool_call_id: 'guard_1', content: 'v1' }
+    const s1 = messageSignature(m).sig
+    const before = signatureCacheStats.computations
+    assert.equal(messageSignature(m).sig, s1, 'same object, unchanged fields → WeakMap hit')
+    assert.equal(signatureCacheStats.computations, before, 'WeakMap hit must not recompute')
+    m.content = 'v2'
+    const s2 = messageSignature(m).sig
+    assert.notEqual(s1, s2, 'mutated field must invalidate the cached signature')
+    assert.equal(signatureCacheStats.computations, before + 1, 'field-ref mismatch must fall through to a recompute')
+  })
+
+  it('estimateOaiMessageTokens caches by object and by content', () => {
+    const content = 'x'.repeat(400) + '中文'
+    const expected = Math.ceil(400 / 4) + Math.ceil(2 / 1.2)
+    const msg: OaiMessage = { role: 'tool', tool_call_id: 't1', content }
+
+    const before = estimateCacheStats.computations
+    assert.equal(estimateOaiMessageTokens(msg), expected)
+    assert.equal(estimateCacheStats.computations, before + 1, 'first estimate scans the content')
+
+    // Same object → WeakMap hit
+    assert.equal(estimateOaiMessageTokens(msg), expected)
+    assert.equal(estimateCacheStats.computations, before + 1)
+
+    // Fresh object, equal-content fresh string → content-keyed hit
+    assert.equal(estimateOaiMessageTokens({ role: 'tool', tool_call_id: 't2', content: 'x'.repeat(400) + '中文' }), expected)
+    assert.equal(estimateCacheStats.computations, before + 1)
+
+    // In-place mutation must not serve a stale estimate (field-ref guard)
+    msg.content = 'y'.repeat(8)
+    assert.equal(estimateOaiMessageTokens(msg), 2)
+    assert.equal(estimateCacheStats.computations, before + 2)
+  })
+
+  it('assistant estimates bypass the content map (tool_calls fold into the estimate)', () => {
+    const a1 = makeAssistant([{ id: 'c1', name: 'f', args: '{"a":1}' }])
+    const a2 = makeAssistant([{ id: 'c1', name: 'f', args: '{"a":1}' }])
+    const before = estimateCacheStats.computations
+    const v1 = estimateOaiMessageTokens(a1)
+    const v2 = estimateOaiMessageTokens(a2)
+    assert.equal(v1, v2)
+    assert.equal(estimateCacheStats.computations, before + 2, 'fresh assistant objects always recompute (object path only)')
+    assert.equal(estimateOaiMessageTokens(a1), v1)
+    assert.equal(estimateCacheStats.computations, before + 2, 'repeat call on the same object hits the WeakMap')
+  })
+
+  it('steady-state buildOaiRequest hashes only new messages, not history', () => {
+    const engine = makePerfEngine()
+    const base = buildSession(30) // ~120 request messages
+    const nextTurn: OaiMessage[] = [
+      { role: 'user', content: 'continue with the final step' },
+      makeAssistant([{ id: 'call_final', name: 'edit_file', args: '{"file_path":"src/final.ts"}' }]),
+      { role: 'tool', tool_call_id: 'call_final', content: 'edit ok final' },
+      { role: 'assistant', content: 'final step done' },
+    ]
+
+    // First build: everything is new — both the signature probe and the T7
+    // estimate (contextWindow ≥ 200K) hash the full history once.
+    const sigBefore1 = signatureCacheStats.computations
+    const estBefore1 = estimateCacheStats.computations
+    engine.buildOaiRequest([...base], undefined, 200_000)
+    const sigDelta1 = signatureCacheStats.computations - sigBefore1
+    const estDelta1 = estimateCacheStats.computations - estBefore1
+    assert.ok(sigDelta1 >= 100, `first build should hash the full history, got ${sigDelta1}`)
+    assert.ok(estDelta1 >= 100, `first build should estimate the full history, got ${estDelta1}`)
+
+    // Steady state (one appended turn): bounded by the new messages, not by
+    // history size. This is the issue #139 regression guard.
+    const sigBefore2 = signatureCacheStats.computations
+    const estBefore2 = estimateCacheStats.computations
+    engine.buildOaiRequest([...base, ...nextTurn], undefined, 200_000)
+    const sigDelta2 = signatureCacheStats.computations - sigBefore2
+    const estDelta2 = estimateCacheStats.computations - estBefore2
+    // 4 new history messages + a handful of rebuilt wrappers (trailer/system)
+    assert.ok(sigDelta2 <= 8, `steady-state signature hashing must be O(new), got ${sigDelta2} for 4 new messages`)
+    assert.ok(estDelta2 <= 8, `steady-state token estimating must be O(new), got ${estDelta2} for 4 new messages`)
+    assert.ok(sigDelta2 < sigDelta1 / 4, `signature cache must decouple cost from history size (${sigDelta2} vs ${sigDelta1})`)
+    assert.ok(estDelta2 < estDelta1 / 4, `estimate cache must decouple cost from history size (${estDelta2} vs ${estDelta1})`)
   })
 })

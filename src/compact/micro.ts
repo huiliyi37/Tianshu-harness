@@ -65,7 +65,58 @@ function compactOaiReasoning(_msg: OaiMessage): { msg: OaiMessage; changed: bool
   return { msg: _msg, changed: false }
 }
 
+/**
+ * issue #139: per-message estimates are a pure function of (role, content,
+ * tool_calls, reasoning_content) — and buildOaiRequest re-estimates the whole
+ * history every turn even though request prefixes are byte-stable by design.
+ * Cache by object identity (pass-through messages keep refs across turns) and
+ * by string content (rebuilt user/system wrappers share frozen string
+ * instances). Assistant messages always go through the object path: their
+ * estimate also folds in tool_calls + reasoning_content. The field refs on the
+ * entry are an O(1) belt-and-suspenders guard — production code never mutates
+ * messages in place, but a stale estimate after an in-place mutation would
+ * skew compaction/T7 gate decisions, so a ref mismatch recomputes.
+ */
+interface EstimateCacheEntry {
+  tokens: number
+  content: unknown
+  toolCalls: unknown
+  reasoning: unknown
+}
+
+const estimateByObject = new WeakMap<OaiMessage, EstimateCacheEntry>()
+const estimateByContent = new Map<string, number>()
+const ESTIMATE_CONTENT_CACHE_CAP = 2048
+
+/** Test observability: full per-char scans actually performed (issue #139). */
+export const estimateCacheStats = { computations: 0 }
+
 export function estimateOaiMessageTokens(msg: OaiMessage): number {
+  // OaiMessage is a role-discriminated union; the cache guards read the
+  // optional fields through a Record view (mirrors message-signature.ts).
+  const rec = msg as unknown as Record<string, unknown>
+  const hit = estimateByObject.get(msg)
+  if (
+    hit && hit.content === rec.content && hit.toolCalls === rec.tool_calls
+    && hit.reasoning === rec.reasoning_content
+  ) {
+    return hit.tokens
+  }
+  if (msg.role !== 'assistant' && typeof msg.content === 'string') {
+    const byContent = estimateByContent.get(msg.content)
+    if (byContent !== undefined) return byContent
+  }
+  const tokens = estimateOaiMessageTokensUncached(msg)
+  estimateCacheStats.computations++
+  estimateByObject.set(msg, { tokens, content: rec.content, toolCalls: rec.tool_calls, reasoning: rec.reasoning_content })
+  if (msg.role !== 'assistant' && typeof msg.content === 'string') {
+    if (estimateByContent.size >= ESTIMATE_CONTENT_CACHE_CAP) estimateByContent.clear()
+    estimateByContent.set(msg.content, tokens)
+  }
+  return tokens
+}
+
+function estimateOaiMessageTokensUncached(msg: OaiMessage): number {
   let content: string
   if (msg.role === 'assistant') {
     // Count content + tool_calls + reasoning together. The old exclusive

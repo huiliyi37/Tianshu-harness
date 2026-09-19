@@ -18,7 +18,7 @@
  */
 
 import type { WriteStream } from 'node:tty'
-import { ANSI, cursorUp, cursorDown, cursorToCol } from './ansi.js'
+import { ANSI, cursorUp, cursorDown, cursorToCol, enforceTextContract } from './ansi.js'
 import { displayWidth, ambiguousWideEnabled } from '../width.js'
 
 export interface LiveRegionLine {
@@ -303,13 +303,16 @@ export class LiveEngine {
    * scrollback，正是「输入框重影叠屏」的形态。
    *
    * 处理：`\n` 展开为独立行；`\r`/`\t` 替换为空格（同样是 string-width 计 0 宽
-   * 但终端会移动光标/跳列的字符）。内容侧净化（progressSnippet）是第一道防线，
-   * 这里是引擎层兜底——任何未来新增的内容路径都不能再破坏行数追踪。
+   * 但终端会移动光标/跳列的字符）；ESC/OSC/非 SGR CSI 交给 enforceTextContract 剥除
+   * ——live 区是外部内容（bash 输出 / read_file 内容 / web_fetch 正文）的裸写路径，
+   * OSC 52 可覆写剪贴板、非 SGR CSI 可清屏/踢 alt-screen（issue #222）。
+   * 内容侧净化（progressSnippet）是第一道防线，这里是引擎层兜底——任何未来新增的
+   * 内容路径都不能再破坏行数追踪或注入终端转义。
    */
   private normalizeLines(lines: readonly LiveRegionLine[]): readonly LiveRegionLine[] {
     let dirty = false
     for (const l of lines) {
-      if (l.text.includes('\n') || l.text.includes('\r') || l.text.includes('\t')) {
+      if (l.text.includes('\n') || l.text.includes('\r') || l.text.includes('\t') || l.text.includes('\x1B')) {
         dirty = true
         break
       }
@@ -317,7 +320,7 @@ export class LiveEngine {
     if (!dirty) return lines
     const out: LiveRegionLine[] = []
     for (const l of lines) {
-      const cleaned = l.text.replace(/[\r\t]/g, ' ')
+      const cleaned = enforceTextContract(l.text).replace(/[\r\t]/g, ' ')
       if (!cleaned.includes('\n')) {
         out.push(cleaned === l.text ? l : { ...l, text: cleaned })
         continue

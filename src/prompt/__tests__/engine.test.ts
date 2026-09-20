@@ -1,6 +1,10 @@
-import { describe, it } from 'node:test'
+import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PromptEngine } from '../engine.js'
+import { createVolatileSnapshot } from '../volatile-snapshot.js'
 import { stableStringify } from '../../api/stable-json.js'
 import { latestUserTrailer } from './helpers/message-selectors.js'
 import type { OaiChatRequest, OaiMessage } from '../../api/oai-types.js'
@@ -908,5 +912,76 @@ describe('PromptEngine advisory deduplication', () => {
     engine.setPlanMethodology('full')
     const req3 = engine.buildOaiRequest([{ role: 'user', content: 'c' }])
     assert.match(lastAppendixContent(req3), /<plan-methodology route="full">/)
+  })
+})
+
+describe('project trust gate for AGENTS.md/.rivet.md injection (#218)', () => {
+  const prevTrust = process.env.RIVET_TRUST_PROJECT
+  const prevHome = process.env.RIVET_HOME
+  const tmpDirs: string[] = []
+
+  function tmpProject(agents: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-trust-gate-'))
+    writeFileSync(join(dir, 'AGENTS.md'), agents)
+    tmpDirs.push(dir)
+    return dir
+  }
+
+  function engineAt(cwd: string): PromptEngine {
+    return new PromptEngine({
+      model: 'test',
+      maxTokens: 1024,
+      staticCtx: { tools: [] },
+      volatileCtx: { cwd },
+    })
+  }
+
+  function joined(messages: OaiMessage[]): string {
+    return messages
+      .map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
+      .join('\n')
+  }
+
+  afterEach(() => {
+    if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = prevTrust
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('engine path does NOT inject AGENTS.md from an untrusted project dir', () => {
+    const cwd = tmpProject('UNTRUSTED_AGENTS_SENTINEL_218')
+    process.env.RIVET_TRUST_PROJECT = '0'
+    const req = engineAt(cwd).buildOaiRequest([{ role: 'user', content: 'hi' }])
+    assert.doesNotMatch(joined(req.messages), /UNTRUSTED_AGENTS_SENTINEL_218/)
+  })
+
+  it('engine path injects AGENTS.md from a trusted project dir', () => {
+    const cwd = tmpProject('TRUSTED_AGENTS_SENTINEL_218')
+    process.env.RIVET_TRUST_PROJECT = '1'
+    const req = engineAt(cwd).buildOaiRequest([{ role: 'user', content: 'hi' }])
+    assert.match(joined(req.messages), /TRUSTED_AGENTS_SENTINEL_218/)
+  })
+
+  it('snapshot path does NOT inject AGENTS.md from an untrusted project dir', () => {
+    const cwd = tmpProject('UNTRUSTED_SNAPSHOT_SENTINEL_218')
+    // 隔离 home，避免触碰真实 ~/.rivet（与 project-trust.test.ts 同纪律）。
+    const home = mkdtempSync(join(tmpdir(), 'rivet-trust-gate-home-'))
+    tmpDirs.push(home)
+    process.env.RIVET_HOME = home
+    process.env.RIVET_TRUST_PROJECT = '0'
+    const snapshot = createVolatileSnapshot({ cwd, getGitStatus: () => undefined })
+    assert.equal(snapshot.rivetMd, undefined)
+  })
+
+  it('snapshot path injects AGENTS.md from a trusted project dir', () => {
+    const cwd = tmpProject('TRUSTED_SNAPSHOT_SENTINEL_218')
+    const home = mkdtempSync(join(tmpdir(), 'rivet-trust-gate-home-'))
+    tmpDirs.push(home)
+    process.env.RIVET_HOME = home
+    process.env.RIVET_TRUST_PROJECT = '1'
+    const snapshot = createVolatileSnapshot({ cwd, getGitStatus: () => undefined })
+    assert.match(snapshot.rivetMd ?? '', /TRUSTED_SNAPSHOT_SENTINEL_218/)
   })
 })

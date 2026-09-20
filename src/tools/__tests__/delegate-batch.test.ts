@@ -62,6 +62,34 @@ describe('DELEGATE_BATCH_TOOL', () => {
     assert.equal(events.length, 2)
   })
 
+  // B1 归属回流：delegate_batch 与 delegate_task 是两处独立接线（bootstrap 各一处），
+  // 只测一处会让另一处静默腐烂——两条路径都必须把 passed worker 的 changedFiles
+  // 交回主控（failed/blocked 的写入不构成归属证据）。
+  it('B1 归属回流：passed worker 的 changedFiles 经第 5 参回填，failed 不回填', async () => {
+    const backfilled: string[][] = []
+    const base = makeRun()
+    const coordinator: DelegateBatchCoordinator = {
+      delegateBatch: async () => ({
+        ...base,
+        results: [
+          { ...base.results[0]!, workOrderId: 'batch:0', status: 'passed', changedFiles: ['src/worker-a.ts'] },
+          { ...base.results[0]!, workOrderId: 'batch:1', status: 'failed', changedFiles: ['src/worker-b.ts'] },
+        ],
+      }),
+    }
+    const tool = createDelegateBatchTool(coordinator, undefined, undefined, undefined, files => backfilled.push(files))
+
+    const result = await tool.execute({
+      toolUseId: 'tu_batch_backfill',
+      cwd: '/repo',
+      sessionTurnCount: 5,
+      input: { tasks: [{ objective: 'Verify the backfill seam thoroughly.', kind: 'verify', profile: 'verifier' }] },
+    } as never)
+
+    assert.equal(result.isError, false, '无 backfill 也不该影响返回')
+    assert.deepEqual(backfilled, [['src/worker-a.ts']], '只回填 passed worker 的文件')
+  })
+
   it('exposes work-order kind and aggregation policy enums from the work-order schema', () => {
     const tool = createDelegateBatchTool({ delegateBatch: async () => makeRun() })
     const schema = tool.definition.input_schema as any

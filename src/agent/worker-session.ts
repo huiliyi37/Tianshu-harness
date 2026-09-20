@@ -1058,6 +1058,9 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
         }
         const pollutionHint = detectPollutionFailure(transcript)
         const approvalHint = detectApprovalDeadlock(transcript)
+        // 这里的 blocked 是「abort 时的原始形态」——coordinator 回收侧还会过一道
+        // completed-aborted 产物校验（upgradeAbortedDelivery）：scope 声明产物已
+        // 按预期写盘的 abort 结果会在那里升级为 passed + deliveredOnAbort。
         return {
           result: {
             ...buildBlockedWorkerResult(

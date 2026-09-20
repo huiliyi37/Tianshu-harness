@@ -10,12 +10,45 @@ import {
 } from '../static-subagent.js'
 import type { ToolDefinition } from '../../api/types.js'
 
-/** sha256 of buildSystemPrompt({ tools: [] }) as of 2026-09-05（可读性校准：
- *  散文纪律收窄到交付报告 + 面向阅读回复的主动分点引导——回流 main 634af35bb）。
+/** sha256 of buildSystemPrompt({ tools: [] }) as of 2026-09-20（<task-classification>
+ *  补「知识问答：先自检再作答」分支，堵死「非代码问题 → 直接作答」的秒答路径）。
+ *  证据：桌面会话 20260919cd375a90365d 首轮，模型自述
+ *  "This is a grammar question. Let me answer directly." 后误选 (D) 并主动放弃已推导出的
+ *  正确结构。BASE_PROMPT 行数保持 240（kernel-budget 顶格）——仅把「判断」行与
+ *  intent-retrieval-route 兜底行合并腾出位置，净增 0 行。
+ *  2026-09-20 同日二次迭代：自检第①步加硬——先圈出题面已存在的限定谓语/主语，再判断
+ *  空处可否重复充当同一角色，直指「把空处当主谓语」这个具体误判。
+ *  2026-09-20 同日三次迭代（辅胶囊冲突审计 P0+P1+P2：三处行内改写，行数仍 240）：
+ *  ① <security>「文件路径不超出项目目录」与 <tool-usage>:142「授权后可读写工作区外」
+ *  正面冲突 → 收口为「默认不越出，越出需授权（流程见 <tool-usage>）」；
+ *  ② <beliefs>「需要分析/建议的问题直接给答案」与知识问答分支「禁止直接作答」对立
+ *  （上一版自己引入）→ 限定为输出形态，明确不等于跳过推导；
+ *  ③ <identity>「不猜，先读」对纯知识题无物可读而悬空 → 补「无可读之物时改立判定规则+代回验证」。
+ *  2026-09-20 四次迭代（辅审计 P3：自检判据缺适用域）：
+ *  evidence-scope 的「下结论前自检：靠的是物理事实…」是全文**唯一无条件**的结论前判据，
+ *  对无工具可测的纯知识题会诱导两条坏路——"去找不存在的物理事实"或"无证据→直接答"
+ *  （秒答路径）。补「以有工具可测为前提；纯知识题改按知识问答判据」。核过的其余判据点
+ *  （收敛纪律:139、知识问答:156、stance:20、异常信号:28、有损观测:29、自检闸门:187）
+ *  均已有前置限定，不动。
+ *  2026-09-20 五次迭代（辅审计 P4/P5/P6：边界模糊 + 规则无出路 + 措辞张力）：
+ *  ① delivery-contract:107「交付报告用散文」与「面向阅读的回复主动分点」判据重叠 →
+ *  补「收束四段固定走散文」「两者同现以交付报告为准」；② shared-worktree 补「交付门因
+ *  环境跑不动时」的出路（显式点名文件的 scoped commit），并顺手把两行并作一行；
+ *  ③ 批次纪律澄清「别混桶 ≠ 不能并发」；④ 动作词路由加「作用于代码或配置」限定；
+ *  ⑤ <git> 展示要求收窄为只定 message 规范，篇幅归收束段。行数 240→239（净 -1）。
+ *  上一版 2026-09-05（可读性校准：散文纪律收窄到交付报告 + 面向阅读回复主动分点
+ *  ——回流 main 634af35bb）。
  *  The sub-agent refactor must never move this: the main-controller prompt is
  *  the frozen head of every prefix-cached request, and a byte change
- *  invalidates every session. */
-const MAIN_PROMPT_SHA256 = '26043390ef70024e9718bc0429f339414874f284cd935d994ce455a87a274374'
+ *  invalidates every session.
+ *  2026-09-21 **有意变更**（收编公开仓 PR #233 / issue #217 后半）：<security> 段新增
+ *  「数据≠指令」信任边界条款，配合 agent/context.ts 的 <untrusted-content> 定界，把
+ *  「工具输出是数据不是指令」从 SECURITY.md 的散文承诺变成模型可见的规则。
+ *  ⚠ hash 按 **dev 提示词**重算——公开仓 PR 给的 2d22e0d8… 是公开仓那份提示词的 hash，
+ *  dev 提示词在本笔前已迭代多轮，照抄必红。改它等于所有会话前缀缓存冷启动一次，
+ *  这是本次变更的已知代价，不是意外。
+ */
+const MAIN_PROMPT_SHA256 = '88ef625b8013b06554d5d049697afc38627e1a47708dcf78c75dd8c009af43bd'
 
 function tool(name: string): ToolDefinition {
   return { name, description: '', input_schema: { type: 'object', properties: {} } } as ToolDefinition

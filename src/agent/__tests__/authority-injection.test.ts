@@ -176,4 +176,15 @@ describe('V3 Component A — authority injection', () => {
     assert.ok(wo.allowedTools.includes('edit_file'))
     assert.ok(wo.allowedTools.includes('bash'))
   })
+
+  // G1 同族回归（git_scout 回流 2026-09-21）：git_scout 的立身之本就是「让 readonly
+  // worker 能对 git 史实取证」，而带 authority 的 worker 还要过 domain.toolWhitelist
+  // 这道交集。白名单漏了它，工具在注册表里、在 profile 里，**worker 手里没有**——
+  // 与 G1（账本工具）同一个死接线形状：能力送到了注册表，没送到执行者。
+  test('git_scout survives the intersection for every built-in authority', () => {
+    for (const id of starDomainRegistry.getDomainIds()) {
+      const order = readOnlyOrder({ profile: 'code_scout', authority: id })
+      assert.ok(order.allowedTools.includes('git_scout'), `code_scout(${id}) 应保留 git_scout`)
+    }
+  })
 })

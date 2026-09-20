@@ -650,13 +650,21 @@ export const searchSchema = z.object({
   tavilyApiKeyEnv: z.string().default('TAVILY_API_KEY'),
   /** Env var holding the Bocha (博查) Search API key — 国内直连 AI 搜索（Tavily 国内替代）。 */
   bochaApiKeyEnv: z.string().default('BOCHA_API_KEY'),
-  /** Inline API key（明文存 config，与 provider.apiKey 同构）。桌面端 UI 可填，
-   *  解析优先级：inline config > apiKeyEnv 指向的 env > 标准 BOCHA_API_KEY。 */
+  /** Inline Bocha Search API key。**运行时物化值**——明文只活在内存：loadConfig
+   *  按 bochaKeyRef 从 secrets.json（AES-256-GCM）读回；config.json 只留 keyRef
+   *  指针，绝不落明文（issue #220，与 provider.apiKey 同规）。 */
   bochaApiKey: z.string().optional(),
-  /** Inline Brave Search API key（明文存 config）。 */
+  /** Inline Brave Search API key（运行时物化，落盘只留 braveKeyRef）。 */
   braveApiKey: z.string().optional(),
-  /** Inline Tavily Search API key（明文存 config）。 */
+  /** Inline Tavily Search API key（运行时物化，落盘只留 tavilyKeyRef）。 */
   tavilyApiKey: z.string().optional(),
+  /** secrets.json 中 Bocha key 的 keyRef 指针（`search:bocha`）。迁移前的老配置若
+   *  仍是明文 bochaApiKey，loadConfig 首次读取时迁入 secrets.json 并改写此指针。 */
+  bochaKeyRef: z.string().optional(),
+  /** secrets.json 中 Brave key 的 keyRef 指针（`search:brave`）。 */
+  braveKeyRef: z.string().optional(),
+  /** secrets.json 中 Tavily key 的 keyRef 指针（`search:tavily`）。 */
+  tavilyKeyRef: z.string().optional(),
   /** Per-backend request timeout (ms). */
   timeoutMs: z.number().int().positive().default(15_000),
   /** Optional region/country hint passed to backends that support it (Brave). */
@@ -1001,7 +1009,7 @@ export const configSchema = z.object({
   env: envSchema,
   ui: uiSchema,
   verify: verifySchema,
-  workspace: workspaceConfigSchema,  /** 工具装配档位：minimal / frontend（默认）/ full / taiyi（16 评测档）。
+  workspace: workspaceConfigSchema,  /** 工具装配档位：minimal / frontend（默认）/ full / taiyi（14 评测档）。
    *  会话启动期解析，会话内冻结（前缀缓存安全）；RIVET_TOOL_PRESET env 优先于此配置。 */
   tools: z.object({
     preset: z.enum(['minimal', 'frontend', 'full', 'taiyi']).optional(),

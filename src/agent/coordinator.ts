@@ -45,6 +45,7 @@ import {
   normalizeReviewVerdictStatus,
 } from './work-order.js'
 import { resolveSharedWorkspace } from './isolation-policy.js'
+import { upgradeAbortedDelivery } from './abort-delivery.js'
 import { buildContractProjection, type ContractProjection } from './contract-projection.js'
 import { reconcileWithObjective } from './worker-objective-gate.js'
 import { buildPrimaryWorkerPacket } from './worker-prompts.js'
@@ -223,6 +224,9 @@ export interface DelegationRequest {
   kind: WorkOrderKind
   profile: WorkerProfile
   scope: WorkOrderScope
+  /** 计划全文指针（cwd 相对路径）——随工单下发，worker prompt 渲染「计划全文见」。
+   *  未给时由 config.getPlanRef 兜底（见 resolveOrderPlanRef）。 */
+  planRef?: string
   /** Task-level constraints rendered into the worker prompt. Absent falls back
    *  to profile boilerplate, which is what every dispatch got before this field
    *  existed — the plan's anti-goals died in the orchestrator's paraphrase
@@ -445,6 +449,11 @@ export interface DelegationCoordinatorConfig {
    *  合并后进工单（request 在前，计划级在后）。best-effort——抛错或返回空都只是少
    *  几条约束，绝不阻断派发。 */
   getPlanConstraints?: (objective: string) => readonly string[] | undefined
+  /** 计划全文指针兜底（D2 契约传导）：objective → **可读的 cwd 相对路径**。
+   *  与 getPlanConstraints 同源（bootstrap 两处都从 resolvePlanContract 派生），
+   *  但独立成钩子是因为两者生命周期不同：约束可来自会话契约/回退链，指针只在
+   *  「确实有一份计划文件」时才该出现。best-effort——抛错即视为无指针。 */
+  getPlanRef?: (objective: string) => string | undefined
 }
 
 /**
@@ -472,6 +481,25 @@ export function withPlanConstraints(
   }
   if (!planLevel || planLevel.length === 0) return constraints
   return [...(constraints ?? []), ...planLevel]
+}
+
+/**
+ * D2 工单计划指针解析：显式 request.planRef 优先（显式来源在场，兜底让位），
+ * 否则问 config.getPlanRef；两者都无 / 抛错 → undefined（fail-open，绝不阻断派发）。
+ * 与 withPlanConstraints 同一「四个创建点共用一份逻辑」的纪律。
+ */
+export function resolveOrderPlanRef(
+  objective: string,
+  config: Pick<DelegationCoordinatorConfig, 'getPlanRef'>,
+  explicitRef?: string,
+): string | undefined {
+  if (explicitRef) return explicitRef
+  if (!config.getPlanRef) return undefined
+  try {
+    return config.getPlanRef(objective)
+  } catch {
+    return undefined
+  }
 }
 
 export function shouldDelegateObjective(objective: string, scope: WorkOrderScope): boolean {
@@ -1652,6 +1680,7 @@ export class DelegationCoordinator {
             objective: request.objective,
             scope: request.scope,
             constraints: withPlanConstraints(request.constraints, request.objective, this.config),
+            planRef: resolveOrderPlanRef(request.objective, this.config, request.planRef),
             reviewDepth: request.reviewDepth,
             delegationDepth: (request.delegationDepth ?? 0) + 1,
             dependencies: request.dependencies,
@@ -1670,6 +1699,7 @@ export class DelegationCoordinator {
             objective: request.objective,
             scope: request.scope,
             constraints: withPlanConstraints(request.constraints, request.objective, this.config),
+            planRef: resolveOrderPlanRef(request.objective, this.config, request.planRef),
             reviewDepth: request.reviewDepth,
             delegationDepth: (request.delegationDepth ?? 0) + 1,
             dependencies: request.dependencies,
@@ -1746,6 +1776,9 @@ export class DelegationCoordinator {
       if (result.summary.length >= SUMMARY_MIN_LENGTH) break
       // Only expand passed results — blocked/failed results are inherently terse
       if (result.status !== 'passed') break
+      // abort 优先（与 decideContinuation/decideRevision 同纪律）：调用方已中止时
+      // 不再为摘要扩写多烧一轮——completed-aborted 升级出的 passed 结果尤其如此。
+      if (mergedSignal.aborted) break
 
       const expansionOrder: WorkOrder = {
         ...order,
@@ -2989,7 +3022,9 @@ export class DelegationCoordinator {
           if (checkpoint?.partialResult) {
             const salvaged = salvageWorkerResult(checkpoint.partialResult, order.id)
             if (salvaged) {
-              const enriched = identify(this.enrichResult(salvaged, selected.model, workerConfig.providerName))
+              // completed-aborted：打捞结果仍是 blocked，但产物可能已落盘——按 fs 事实升级。
+              const delivered = upgradeAbortedDelivery(order, this.config.cwd ?? workerConfig.cwd, dispatchStartedAt, salvaged)
+              const enriched = identify(this.enrichResult(delivered, selected.model, workerConfig.providerName))
               return {
                 status: 'completed' as const,
                 order,
@@ -3004,7 +3039,13 @@ export class DelegationCoordinator {
           }
         }
         if (!isAbort && profileRegistry.get(order.profile)?.tierLock) this.circuitBreaker.recordFailure(order.profile)
-        const degraded = identify(this.enrichResult(workerFailureResult(order, error, { failureReason: classifyWorkerError(error) }), selected.model, workerConfig.providerName))
+        const degraded = identify(this.enrichResult(
+          // completed-aborted：abort（caller_aborted/timeout）收尾且产物已写盘时，
+          // 按已交付计入而非一味 failed（2026-09-05 team-76dc14a1 事故修复）。
+          upgradeAbortedDelivery(order, this.config.cwd ?? workerConfig.cwd, dispatchStartedAt, workerFailureResult(order, error, { failureReason: classifyWorkerError(error) })),
+          selected.model,
+          workerConfig.providerName,
+        ))
         return {
           status: 'completed' as const,
           order,
@@ -3036,6 +3077,13 @@ export class DelegationCoordinator {
     // 预算耗尽 → 自动续跑。必须在 enrichResult / 熔断记账 / 升级判定之前：否则
     // 首轮的 blocked 先污染连败计数，而续跑产出的结果又拿不到模型元数据。
     run = await this.maybeContinueExhausted(order, workerConfig, mergedSignal, isWrite, run)
+
+    // completed-aborted（2026-09-05 team-76dc14a1 事故修复，2026-09-21 回流）：
+    // worker 被 abort（父信号 / 预算墙钟）斩杀但其 scope 声明产物已按预期写盘时，
+    // 按已交付计入（passed + deliveredOnAbort，证据钉死 unverified），不再一味
+    // failed。必须在续跑/复核/熔断记账之前：升级后的 passed 不该再触发任何重跑，
+    // 连败计数也不该为「交付后被斩杀」记一笔。真正失败（无产物落盘）原样穿过。
+    run = { ...run, result: upgradeAbortedDelivery(order, this.config.cwd ?? workerConfig.cwd, dispatchStartedAt, run.result) }
 
     // 证据不达标 → 打回复核一轮。同样必须在 enrichResult / 熔断记账之前：复核
     // 产出的才是最终结果，让它拿到模型元数据、也让熔断记的是最终判定。
@@ -3289,6 +3337,7 @@ export class DelegationCoordinator {
             objective: r.objective,
             scope: r.scope,
             constraints: withPlanConstraints(r.constraints, r.objective, this.config),
+            planRef: resolveOrderPlanRef(r.objective, this.config, r.planRef),
             reviewDepth: r.reviewDepth,
             delegationDepth: (r.delegationDepth ?? 0) + 1,
             dependencies: r.dependencies,
@@ -3311,6 +3360,7 @@ export class DelegationCoordinator {
             objective: r.objective,
             scope: r.scope,
             constraints: withPlanConstraints(r.constraints, r.objective, this.config),
+            planRef: resolveOrderPlanRef(r.objective, this.config, r.planRef),
             reviewDepth: r.reviewDepth,
             delegationDepth: (r.delegationDepth ?? 0) + 1,
             dependencies: r.dependencies,

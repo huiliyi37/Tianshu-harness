@@ -306,27 +306,11 @@ export function formatVerificationStatus(agent: AgentLoop): string {
   return `Verification Status\n\nModified files:\n${lines.join('\n')}\n\nVerification: ${summary.verified}/${summary.total} (${percent}%)${lastLine}`
 }
 
-/** MCP 状态文本——/mcp（裸）与 /debug mcp 共用。
- *  修复前 /mcp 的 subcmd 取 parts[0]（恒为 '/mcp' 本身）：auth/logs 分支不可达、
- *  裸 /mcp 只打用法不打状态（排障页审计发现）。 */
-export function mcpStatusText(mgr: import('../mcp/manager.js').McpManager | null | undefined): string {
-  if (!mgr) return 'MCP not initialized (no servers configured or MCP disabled).'
-  const states = mgr.getStates()
-  const tools = mgr.getAllTools()
-  const lines = [`MCP Status (${states.length} server(s), ${tools.length} tool(s)):`]
-  for (const s of states) {
-    const detail = s.status === 'connected'
-      ? `connected — ${s.toolCount} tools`
-      : s.status === 'error'
-        ? `error: ${s.error}`
-        : s.status
-    lines.push(`  ${s.serverId}: ${detail}`)
-  }
-  if (tools.length > 0) {
-    lines.push('Tools: ' + tools.map(t => t.definition.name).join(', '))
-  }
-  return lines.join('\n')
-}
+/** MCP 状态文本——/mcp（裸）与 /debug mcp 共用。实现外提到 format/mcp-status.ts
+ *  （本文件 ceiling 顶死）；导出面保持不变。 */
+import { mcpStatusText } from './format/mcp-status.js'
+import { runMcpApprovalCommand } from './mcp-approval.js'
+export { mcpStatusText }
 
 function knowledgeDir(): string {
   return join(process.cwd(), '.rivet', 'knowledge')
@@ -3002,12 +2986,21 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         return true
       }
 
+      // issue #215：连接级审批的批准/拒绝入口。后端在 spawn 之前拦截，未批的 server
+      // 不会连接也不暴露工具——没有这条命令，用户只能看着「服务器不见了」却无处可按。
+      if ((subcmd === 'approve' || subcmd === 'deny') && serverId) {
+        const res = await runMcpApprovalCommand(ctx.mcpManagerRef?.current, subcmd, serverId)
+        pushStatic(createLogEntry({ type: 'system', content: res.text, isError: res.isError }))
+        setIsStreaming(false)
+        return true
+      }
+
       // Default：裸 /mcp（status）出真实状态（与 /debug mcp 同源）；未知子命令打用法
       pushStatic(createLogEntry({
         type: 'system',
         content: subcmd === 'status'
           ? mcpStatusText(ctx.mcpManagerRef?.current)
-          : 'Usage:\n  /mcp — show status\n  /mcp auth <serverId> — start OAuth flow\n  /mcp logs <serverId> [tail] — view stderr log buffer',
+          : 'Usage:\n  /mcp — show status (includes servers awaiting approval)\n  /mcp approve <serverId> — connect an awaiting server\n  /mcp deny <serverId> — refuse it\n  /mcp auth <serverId> — start OAuth flow\n  /mcp logs <serverId> [tail] — view stderr log buffer',
       }))
       setIsStreaming(false)
       return true

@@ -147,10 +147,10 @@ export const APPROVAL_OPTIONS: readonly SettingsOption[] = [
 ]
 
 export const TOOL_PRESET_OPTIONS: readonly SettingsOption[] = [
-  { id: 'minimal', label: 'minimal — 29 个工具（省 token）' },
-  { id: 'frontend', label: 'frontend — 30 个，含 browser_debug（默认）' },
-  { id: 'full', label: 'full — 50 个全集，含 computer_use / 办公工具' },
-  { id: 'taiyi', label: 'taiyi — 16 个最小集（评测档；太一域钉定默认此档）' },
+  { id: 'minimal', label: 'minimal — 30 个工具（省 token）' },
+  { id: 'frontend', label: 'frontend — 31 个，含 browser_debug（默认）' },
+  { id: 'full', label: 'full — 51 个全集，含 computer_use / 办公工具' },
+  { id: 'taiyi', label: 'taiyi — 14 个最小集（评测档；太一域钉定默认此档）' },
 ]
 
 export const MIRROR_PRESET_OPTIONS: readonly SettingsOption[] = [
@@ -709,7 +709,7 @@ function basicsCategory(): SettingsCategory {
       label: '工具档位',
       block: 'toolPreset',
       effect: 'next-session',
-      hint: '装配工具集：minimal 29 日常全能力；frontend 30（默认）+ browser_debug；full 50 全集（编排/semantic/computer_use/办公族，system prompt 更贵）；taiyi 16 最小评测档——太一域钉定自动落此档。某域专属档位用「最小集绑定星域」或 runtime.domains 按域覆盖',
+      hint: '装配工具集：minimal 30 日常全能力；frontend 31（默认）+ browser_debug；full 51 全集（编排/semantic/computer_use/办公族，system prompt 更贵）；taiyi 14 最小评测档——太一域钉定自动落此档。某域专属档位用「最小集绑定星域」或 runtime.domains 按域覆盖',
       options: TOOL_PRESET_OPTIONS,
       get: d => d.basics.toolPreset,
       set: (d, value) => withBasics(d, { toolPreset: value }),
@@ -794,7 +794,7 @@ function basicsCategory(): SettingsCategory {
       kind: 'enum',
       block: 'domainBind',
       effect: 'next-session',
-      hint: '选中某域：defaultDomain 钉定该域 + taiyi 16 件最小工具档——rivet 启动即该域的最小集会话，无需启动参数（不含 lean 资源减配）。清空 = 恢复默认域',
+      hint: '选中某域：defaultDomain 钉定该域 + taiyi 14 件最小工具档——rivet 启动即该域的最小集会话，无需启动参数（不含 lean 资源减配）。清空 = 恢复默认域',
       display: d => d.basics.domainBind || '（不绑定）',
       options: (_d, env) => [
         { id: '', label: '（不绑定）' },

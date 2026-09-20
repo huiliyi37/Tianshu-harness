@@ -11,6 +11,7 @@ import { isAuthorizedRequest } from './auth.js'
 import { AGENTS_MD_PATH, RIVET_MD_PATH } from '../bootstrap/project-templates.js'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, relative, isAbsolute } from 'node:path'
+import { isKnownWorkspace, UNKNOWN_WORKSPACE_ERROR } from './workspace-guard.js'
 
 export interface ProjectDocs {
   cwd: string
@@ -63,7 +64,14 @@ function readDocs(cwd: string): ProjectDocs {
   }
 }
 
-export function buildProjectDocsRoutes(apiToken?: string): Record<string, RouteHandler> {
+/**
+ * @param knownWorkspaces 已注册工作区（存活会话 cwd + 默认工作区）。缺省为空 =
+ * 拒绝一切 cwd——fail-closed，装配点必须显式提供（issue #221）。
+ */
+export function buildProjectDocsRoutes(
+  apiToken?: string,
+  knownWorkspaces: () => string[] = () => [],
+): Record<string, RouteHandler> {
   return {
     'GET /project-docs': (body, params, headers) => {
       if (!isAuthorizedRequest({ body, headers }, apiToken)) {
@@ -71,6 +79,9 @@ export function buildProjectDocsRoutes(apiToken?: string): Record<string, RouteH
       }
       const cwd = typeof params?.cwd === 'string' ? params.cwd : ''
       if (!cwd) return { status: 400, body: { error: 'Missing cwd query parameter' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       try {
         return { status: 200, body: readDocs(cwd) }
       } catch (err) {
@@ -85,6 +96,9 @@ export function buildProjectDocsRoutes(apiToken?: string): Record<string, RouteH
       const input = (body ?? {}) as Record<string, unknown>
       const cwd = typeof input.cwd === 'string' ? input.cwd : ''
       if (!cwd) return { status: 400, body: { error: 'Missing cwd' } }
+      if (!isKnownWorkspace(cwd, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
 
       const agentsMd = input.agentsMd
       const rivetMd = input.rivetMd

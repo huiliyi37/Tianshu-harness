@@ -683,3 +683,41 @@ describe('SessionContext contextCalibrationRatio', () => {
     assert.ok(Math.abs(ratio - 1.553) < 0.01, `step3 0.1x should clamp to 0.5, then EMA to 1.553, got ${ratio}`)
   })
 })
+
+describe('assistant transport sanitize (JSON body guard)', () => {
+  // 上游按字节截断 body 时，切进一个 `\uXXXX` 转义就是那条
+  // "unexpected end of hex escape" 400。assistant 侧的正文/reasoning/工具参数
+  // 此前完全没洗过——模型复刻终端输出（ESC）或粘贴二进制即可把 `\u00XX` 送上网。
+  it('strips C0 control chars from assistant text and reasoning', () => {
+    const ctx = new SessionContext()
+    ctx.addAssistantBlocks([
+      { type: 'text', text: 'before\u001bafter' },
+      { type: 'thinking', thinking: 'think\u0007ing' },
+    ])
+    const msg = ctx.getMessages()[0]!
+    assert.equal(msg.content, 'before after')
+    assert.equal((msg as { reasoning_content?: string }).reasoning_content, 'think ing')
+  })
+
+  it('tool_call arguments need no sanitize: JSON escaping already defuses them', () => {
+    // 这不是"忘了洗"，是有意的：stableStringify 把 ESC 转义成 `\u001b`（6 个字符），
+    // 外层 JSON.stringify 再把反斜杠双写。上层字节截断切进去只会得到未闭合字符串，
+    // 不会触发 "unexpected end of hex escape"——所以参数保持原样（也少一次全量扫描）。
+    const ctx = new SessionContext()
+    ctx.addAssistantBlocks([
+      { type: 'tool_use', id: 't1', name: 'bash', input: { command: 'ls \u001b[31mred\u001b[0m' } },
+    ])
+    const msg = ctx.getMessages()[0] as { tool_calls?: { function: { arguments: string } }[] }
+    const args = msg.tool_calls?.[0]?.function.arguments ?? ''
+    assert.ok(args.includes('ls '), '正常内容保留')
+    assert.ok(args.includes('\\u001b'), `控制字符必须以转义形态存在：${args}`)
+    // 外层序列化后是双反斜杠（`\\u001b`）——截断它不会产生 hex-escape 错误
+    assert.ok(JSON.stringify(args).includes('\\\\u001b'), '外层 stringify 必须双写反斜杠')
+  })
+
+  it('leaves clean text byte-identical (prefix cache must not shift)', () => {
+    const ctx = new SessionContext()
+    ctx.addAssistantBlocks([{ type: 'text', text: 'plain ascii + 中文 + emoji 😀' }])
+    assert.equal(ctx.getMessages()[0]!.content, 'plain ascii + 中文 + emoji 😀')
+  })
+})

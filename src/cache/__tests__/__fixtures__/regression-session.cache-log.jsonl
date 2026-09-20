@@ -1,0 +1,10 @@
+{"t":1700000000000,"turn":1,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"t":1700000001000,"turn":2,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"t":1700000002000,"turn":3,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"t":1700000003000,"turn":4,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"t":1700000004000,"turn":5,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"t":1700000005000,"turn":6,"model":"deepseek-v4-pro","provider":"deepseek","input":10000,"cacheRead":9000,"cacheCreate":1000,"output":500,"hitRate":"90.0%"}
+{"event":"side_path","kind":"llm-speculation","t":1700000006500,"model":"deepseek-v4-pro","provider":"deepseek","input":8000,"cacheRead":800,"cacheCreate":0,"output":100,"hitRate":"10.0%"}
+{"event":"side_path","kind":"compact-summary","t":1700000007000,"model":"deepseek-v4-pro","provider":"deepseek","input":8000,"cacheRead":800,"cacheCreate":0,"output":300,"hitRate":"10.0%"}
+{"event":"side_path","kind":"llm-speculation","t":1700000007500,"model":"deepseek-v4-pro","provider":"deepseek","input":8000,"cacheRead":800,"cacheCreate":0,"output":100,"hitRate":"10.0%"}
+{"event":"reclaim_decision","t":1700000008000,"turn":6,"action":"compact","commit":false,"reason":"below_threshold","force":false,"windowBand":"mid","billing":0,"cache":0,"beforeTokens":10000,"afterTokens":10000,"reclaimedTokens":0,"reclaimRatio":0}

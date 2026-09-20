@@ -225,6 +225,18 @@ describe('classifyApiError', () => {
     assert.equal(result.maxRetries, 0)
   })
 
+  it('classifies RequestBodyTooLargeError as context_overflow (no retry — 确定性失败)', () => {
+    // 护栏的超限判定是确定性的：重试逐字节重现同一个超限体。走 unknown 兜底
+    // 会白烧 2 轮 backoff 才把可行动文案还给用户（该文案原样透出，不含凭证）。
+    const err = new Error('请求体 4.6MB 超出传输上限 4.0MB……')
+    err.name = 'RequestBodyTooLargeError'
+    const result = classifyApiError(err)
+    assert.equal(result.category, 'context_overflow')
+    assert.equal(result.retryable, false)
+    assert.equal(result.maxRetries, 0)
+    assert.equal(result.userMessage, err.message)
+  })
+
   it('classifies "prompt is too long" as context_overflow', () => {
     const result = classifyApiError(new Error('prompt is too long: 200000 tokens'))
     assert.equal(result.category, 'context_overflow')

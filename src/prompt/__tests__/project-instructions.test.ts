@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -117,6 +117,21 @@ describe('budget fitting', () => {
 })
 
 describe("this repo's own project instructions", () => {
+  // #218 信任门（收编公开仓 PR #234）：未受信目录的项目指令不读不注入——本套件读的
+  // 正是**本仓自己的** AGENTS.md/.rivet.md，故必须显式声明受信，否则只在「同批别的
+  // 测试恰好设过 RIVET_TRUST_PROJECT=1」时才绿（顺序依赖）。
+  // 作用域限定在 before/after，不用模块顶层赋值：那会把受信 env 泄漏给同进程的
+  // 其它测试文件（runner 分批同进程跑）。
+  let prevTrust: string | undefined
+  before(() => {
+    prevTrust = process.env.RIVET_TRUST_PROJECT
+    process.env.RIVET_TRUST_PROJECT = '1'
+  })
+  after(() => {
+    if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = prevTrust
+  })
+
   const block = (): string => {
     const out = buildStableVolatileBlock({ cwd: REPO })
     return out.match(/<project-instructions>[\s\S]*?<\/project-instructions>/)![0]

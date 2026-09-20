@@ -1,7 +1,16 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { McpManager } from '../manager.js'
+import { approveMcpServer, checkMcpServerApproval, resolveMcpApproval } from '../server-approval.js'
 import type { McpServerConfig, McpConfig } from '../config.js'
+
+// issue #215：连接级审批门与既有用例表达的「连接」语义正交。既有用例统一固定为
+// headless fail-open（等价 always-approve 桩），避免「跑在 TTY 里就变红」的非确定性；
+// 审批门本身由文件末尾的 issue #215 用例专门覆盖。
+process.env.RIVET_MCP_APPROVAL = 'open'
 
 function makeConfig(servers: Record<string, McpServerConfig> = {}): McpConfig {
   return { enabled: true, servers }
@@ -349,5 +358,124 @@ describe('McpManager', () => {
     await mgr.connectAndDiscover('same', { command: 'node', args: ['same.js'] })
     await mgr.connectAndDiscover('same', { command: 'node', args: ['same.js'] })
     assert.equal(calls, 2)
+  })
+})
+
+// ── issue #215: 连接级审批门（spawn 之前） ──────────────────────────
+
+/** 隔离的审批 home + 强制门生效（RIVET_MCP_APPROVAL=gate）。 */
+function withApprovalHome(fn: () => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-approval-'))
+  const prevHome = process.env.RIVET_HOME
+  const prevMode = process.env.RIVET_MCP_APPROVAL
+  process.env.RIVET_HOME = dir
+  process.env.RIVET_MCP_APPROVAL = 'gate'
+  return fn().finally(() => {
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    if (prevMode === undefined) delete process.env.RIVET_MCP_APPROVAL
+    else process.env.RIVET_MCP_APPROVAL = prevMode
+    rmSync(dir, { recursive: true, force: true })
+  })
+}
+
+function mockConnectedServer(serverId: string, onSpawn?: () => void): any {
+  onSpawn?.()
+  return { client: {} as any, transport: { close: async () => {} }, transportType: 'stdio', serverId }
+}
+
+describe('McpManager connection-level approval gate (issue #215)', () => {
+  it('未批时未 spawn，并标记 awaiting-approval + 待批列表', async () => {
+    await withApprovalHome(async () => {
+      const cfg = { command: 'node', args: ['evil.js'], env: { TOKEN: 'secret-value' } }
+      const mgr = new McpManager(makeConfig({ evil: cfg }))
+      let spawned = false
+      mgr['_connectServer'] = async (serverId) => mockConnectedServer(serverId, () => { spawned = true })
+      mgr['_discoverTools'] = async () => []
+
+      await mgr.initialize()
+
+      assert.equal(spawned, false, '未获批的 server 绝不能被 spawn')
+      const state = mgr.getStates().find(s => s.serverId === 'evil')
+      assert.equal(state?.status, 'awaiting-approval')
+      const pending = mgr.getPendingApprovals()
+      assert.equal(pending.length, 1)
+      assert.equal(pending[0]!.serverId, 'evil')
+      assert.equal(pending[0]!.command, 'node')
+      assert.deepEqual(pending[0]!.args, ['evil.js'])
+      assert.deepEqual(pending[0]!.envKeys, ['TOKEN'], '只暴露 env 键名')
+      assert.ok(!JSON.stringify(pending[0]).includes('secret-value'), 'env 值必须遮蔽')
+    })
+  })
+
+  it('批准后连接（指纹持久化）', async () => {
+    await withApprovalHome(async () => {
+      const cfg = { command: 'node', args: ['ok.js'] }
+      const mgr = new McpManager(makeConfig({ ok: cfg }))
+      let spawns = 0
+      mgr['_connectServer'] = async (serverId) => mockConnectedServer(serverId, () => { spawns++ })
+      mgr['_discoverTools'] = async () => [{
+        name: 't', description: 'T', inputSchema: { type: 'object' as const, properties: {} },
+      }]
+
+      await mgr.initialize()
+      assert.equal(spawns, 0)
+      assert.equal(mgr.getPendingApprovals().length, 1)
+
+      const tools = await mgr.approveServerConnection('ok', cfg)
+      assert.equal(spawns, 1, '批准后应连接')
+      assert.equal(tools.length, 1)
+      assert.equal(mgr.getStates().find(s => s.serverId === 'ok')?.status, 'connected')
+      assert.equal(mgr.getPendingApprovals().length, 0, '批准后清空待批')
+    })
+  })
+
+  it('改 command 需重新审批（指纹键控，不是 serverId）', async () => {
+    await withApprovalHome(async () => {
+      const original = { command: 'node', args: ['a.js'] }
+      approveMcpServer(original)
+      assert.equal(checkMcpServerApproval(original), 'approved')
+      assert.equal(checkMcpServerApproval({ command: 'node', args: ['b.js'] }), 'awaiting')
+      assert.equal(checkMcpServerApproval({ command: 'evil', args: ['a.js'] }), 'awaiting')
+    })
+  })
+
+  it('拒绝后保持未连接并标记 denied', async () => {
+    await withApprovalHome(async () => {
+      const cfg = { command: 'node', args: ['no.js'] }
+      const mgr = new McpManager(makeConfig({ no: cfg }))
+      let spawned = false
+      mgr['_connectServer'] = async (serverId) => mockConnectedServer(serverId, () => { spawned = true })
+      await mgr.initialize()
+
+      await mgr.denyServerConnection('no', cfg)
+      assert.equal(spawned, false)
+      assert.equal(mgr.getStates().find(s => s.serverId === 'no')?.status, 'denied')
+      assert.equal(mgr.getPendingApprovals().length, 0)
+
+      // 拒绝后再次连接仍不 spawn（门以 store 为准）。
+      await mgr.connectAndDiscover('no', cfg)
+      assert.equal(spawned, false)
+    })
+  })
+
+  it('headless / fail-open 路径照跑不拦', async () => {
+    const prev = process.env.RIVET_MCP_APPROVAL
+    process.env.RIVET_MCP_APPROVAL = 'open'
+    try {
+      // 无批准记录，但 headless → 直接放行。
+      assert.equal(resolveMcpApproval({ command: 'node', args: ['x.js'] }), 'approved')
+      const mgr = new McpManager(makeConfig({ h: { command: 'node', args: ['h.js'] } }))
+      let spawned = false
+      mgr['_connectServer'] = async (serverId) => mockConnectedServer(serverId, () => { spawned = true })
+      mgr['_discoverTools'] = async () => []
+      await mgr.initialize()
+      assert.equal(spawned, true, 'headless 必须 fail-open 照跑')
+      assert.equal(mgr.getStates().find(s => s.serverId === 'h')?.status, 'connected')
+      assert.equal(mgr.getPendingApprovals().length, 0)
+    } finally {
+      if (prev === undefined) delete process.env.RIVET_MCP_APPROVAL
+      else process.env.RIVET_MCP_APPROVAL = prev
+    }
   })
 })

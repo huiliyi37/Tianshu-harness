@@ -320,6 +320,19 @@ function classifyByPattern(error: unknown): ClassifiedError {
     }
   }
 
+  // 请求体护栏（request-body-guard，4MB）在发送前判定超限——确定性失败，
+  // 重试只会逐字节重现同一个超限体，白烧两轮 backoff 才把错误还给用户。
+  if (name === 'RequestBodyTooLargeError') {
+    return {
+      retryable: false,
+      retryDelayMs: 0,
+      shouldReconnect: false,
+      category: 'context_overflow',
+      userMessage: message, // 护栏的文案本身就是可行动的中文指引，原样透出
+      maxRetries: 0,
+    }
+  }
+
   // Context overflow patterns
   if (
     /prompt is too long|context_length_exceeded|max.*token|context.*overflow/i.test(message)

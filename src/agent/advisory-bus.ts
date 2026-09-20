@@ -122,6 +122,10 @@ export type AdvisoryCategory =
   /** Monitor 工具的事件流（monitor-hook 投递）——独立类别，不与 background
    *  争 MAX_PER_CATEGORY 预算（background-jobs hook 每轮也占 1 条）。 */
   | 'monitor'
+  /** 脱离等待的后台计划执行（detached-plan-hook 投递）——独立类别（同 monitor
+   *  先例）：计划在跑时会持续多轮提醒，不该挤掉 background 类的其它提醒
+   *  （回流偏差 2026-09-21：alpha 归在 'background'）。 */
+  | 'detached-plan'
   /** 星域路由（CCR）与胶囊召回 — 独立类别，不与 discipline 争 MAX_PER_CATEGORY
    *  预算（2026-07-04 触发面修复：discipline 赛道扩容后 CCR 0.55 常被挤出）。 */
   | 'star_domain'

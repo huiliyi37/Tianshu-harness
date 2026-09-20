@@ -104,6 +104,8 @@ export interface PlanExecutorOptions {
    *  已渲染为 ≤400 字符的约束条目。透传进每波派发的 request.constraints（任务级
    *  约束在前，计划级在后）。缺省不注入——解析不到就是空，不报错不拦截。 */
   planConstraints?: string[]
+  /** 计划全文指针（cwd 相对路径）——透传给每个工单，worker 据此 read_file 取计划原文。 */
+  planRef?: string
   /** 上一波 scope-health 检出的计划外改动文件。由 executePlanWaves 在循环内
    *  从上一波 run 传入——单波直调时缺省为空，行为不变。 */
   priorScopeLeaks?: string[]
@@ -227,6 +229,28 @@ export function buildWaveCheckpoint(
 }
 
 /**
+ * T13 超时/abort 兜底用的 checkpoint：波内抛错导致 executePlan 没写下本波
+ * checkpoint 时补一份「已完成到第几波」的元数据，使 `fromWave=lastCompletedWave+1`
+ * 续跑不重跑已完成的波次。
+ *
+ * 与 alpha 手搓对象的差异（回流时修正，2026-08-30 原版）：① 复用
+ * `buildWaveCheckpoint` 单一真相源——`remainingOrders` 按计划派生（原版写 `[]`，
+ * resume 会以为无剩余任务）、`totalWaves` 取计划真实波数（原版写 0，进度文案
+ * 分母变 0）；② 波序号按 `startWave + runs.length - 1` 计——原版用
+ * `runs.length - 1`，在 `startWave > 0` 的**续跑**场景（正是本兜底要服务的场景）
+ * 会把 lastCompletedWave 写小，续跑重跑已完成的波次。
+ */
+export function buildRescueCheckpoint(
+  objective: string,
+  startWave: number,
+  runs: readonly PlanExecutorRun[],
+): WaveCheckpoint {
+  const lastRun = runs[runs.length - 1]!
+  const base = buildWaveCheckpoint({ objective, fromWave: startWave + runs.length - 1 }, lastRun.summary, null)
+  return { ...base, completedResults: runs.flatMap(r => r.summary.run?.results ?? []) }
+}
+
+/**
  * Run a plan's wave-by-wave execution + closed loop. Throws on dispatch failure
  * (the tool layer wraps and reports). Returns the structured summary + notes the
  * tool stitches into its content/uiContent.
@@ -307,6 +331,7 @@ export async function executePlan(opts: PlanExecutorOptions, deps: PlanExecutorD
       // D8 L2：计划约束透传（team-orchestrator 分片在 TeamRunInput 消费并并入
       // waveToRequests 的 request.constraints）。条件注入——空则不带，fail-open。
       ...(opts.planConstraints && opts.planConstraints.length > 0 ? { planConstraints: opts.planConstraints } : {}),
+      ...(opts.planRef ? { planRef: opts.planRef } : {}),
       // 跨波回执：条件注入，空则不带字段——wave 0 与一切正常的波次行为不变。
       ...(priorWaveGateFailures.length > 0 ? { priorWaveGateFailures } : {}),
       ...(opts.priorScopeLeaks && opts.priorScopeLeaks.length > 0 ? { priorScopeLeaks: opts.priorScopeLeaks } : {}),
@@ -681,10 +706,27 @@ export async function executePlanWaves(
   // 由本驱动在循环内直接接力。单波直调 executePlan 时该字段缺省为空。
   let priorScopeLeaks: string[] = []
   for (let wave = startWave; wave < maxWaves; wave++) {
-    const run = await executePlan(
-      { ...planOpts, fromWave: wave, ...(priorScopeLeaks.length > 0 ? { priorScopeLeaks } : {}) },
-      deps,
-    )
+    let run: PlanExecutorRun
+    try {
+      run = await executePlan(
+        { ...planOpts, fromWave: wave, ...(priorScopeLeaks.length > 0 ? { priorScopeLeaks } : {}) },
+        deps,
+      )
+    } catch (err) {
+      // T13 超时/abort 兜底：波内异常（含 withToolTimeout 超时级联的 abort 传播）
+      // 时 executePlan 走不到覆盖式 saveCheckpoint——前波 checkpoint 理应仍在
+      // （未覆盖），此处防御性确认：缺失则补写「最后完成波」元数据，使
+      // fromWave=lastCompletedWave+1 续跑不会重跑已完成的波次。
+      if (runs.length > 0 && opts.cwd) {
+        try {
+          const groupId = deriveTeamGroupId(opts.objective)
+          if (!loadCheckpoint(opts.cwd, groupId)) {
+            saveCheckpoint(opts.cwd, buildRescueCheckpoint(opts.objective, startWave, runs))
+          }
+        } catch { /* checkpoint 是续跑便利，绝不影响派发 */ }
+      }
+      throw err
+    }
     priorScopeLeaks = run.scopeLeakedFiles ?? []
     runs.push(run)
     onWave?.(run, wave)

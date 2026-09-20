@@ -8,6 +8,8 @@ import { createRouter } from '../index.js'
 import { buildConfigRoutes } from '../config-routes.js'
 import { readSecret, writeSecret } from '../../config/secrets-store.js'
 import { PROVIDER_PRESETS, type ProviderPresetKey } from '../../config/provider-presets.js'
+import { __setProGrantPublicKeyForTests } from '../../config/pro-license.js'
+import { makeValidGrant } from '../../config/__tests__/grant-fixtures.js'
 
 const TOKEN = 'secret-token'
 const AUTH = { authorization: `Bearer ${TOKEN}` }
@@ -54,18 +56,30 @@ describe('GET /config/computer-use', () => {
   })
 
   it('reports available=true when platform supports and Pro is enabled', async () => {
-    writeConfig(home, { enabled: true, features: { computerUse: true, chatGateway: true } })
-    const router = createRouter(buildConfigRoutes(TOKEN))
-    const res = await router('GET', '/config/computer-use', {}, AUTH)
-    assert.equal(res.status, 200)
-    const body = res.body as { available: boolean; proRequired: boolean; permissions: unknown; grants: unknown[] }
-    // available follows platform + Pro; on unsupported platforms it stays false.
-    if (process.platform === 'darwin' || process.platform === 'win32') {
-      assert.equal(body.available, true)
-      assert.equal(body.proRequired, false)
-    } else {
-      assert.equal(body.available, false)
-      assert.equal(body.proRequired, false)
+    // 4fa0e87d5 起 Pro 只认签名凭证：config enabled:true 不再解锁。
+    // 签一份真实 grant 落到 home 的 license.json（走真验签路径），测后清理，
+    // 避免凭证泄漏到本文件后续用例。
+    const { token, publicKeyB64 } = makeValidGrant()
+    const licensePath = join(home, 'license.json')
+    writeFileSync(licensePath, JSON.stringify({ token, lastVerifiedAt: Date.now() }))
+    __setProGrantPublicKeyForTests(publicKeyB64)
+    try {
+      writeConfig(home, { enabled: true, features: { computerUse: true, chatGateway: true } })
+      const router = createRouter(buildConfigRoutes(TOKEN))
+      const res = await router('GET', '/config/computer-use', {}, AUTH)
+      assert.equal(res.status, 200)
+      const body = res.body as { available: boolean; proRequired: boolean; permissions: unknown; grants: unknown[] }
+      // available follows platform + Pro; on unsupported platforms it stays false.
+      if (process.platform === 'darwin' || process.platform === 'win32') {
+        assert.equal(body.available, true)
+        assert.equal(body.proRequired, false)
+      } else {
+        assert.equal(body.available, false)
+        assert.equal(body.proRequired, false)
+      }
+    } finally {
+      __setProGrantPublicKeyForTests(null)
+      rmSync(licensePath, { force: true })
     }
   })
 
@@ -1520,12 +1534,12 @@ describe('workspace routes (issue #147)', () => {
 
   it('PUT 写入后 GET 回读一致，且落盘到 user config.json', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
-    const put = await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: '/work/scratch' }, AUTH)
+    const put = await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: join(home, 'scratch') }, AUTH)
     assert.equal(put.status, 200)
     const putBody = put.body as { defaultDir: string | null; scratchDir: string | null; scratchRoot: string }
     assert.equal(putBody.defaultDir, '/work/default')
     // scratchDir 已配 → scratchRoot 跟随它（桌面端展示的「临时会话落点」）。
-    assert.equal(putBody.scratchRoot, '/work/scratch')
+    assert.equal(putBody.scratchRoot, join(home, 'scratch'))
 
     const getRes = await router('GET', '/config/workspace', {}, AUTH)
     assert.deepEqual(getRes.body, put.body)
@@ -1536,14 +1550,23 @@ describe('workspace routes (issue #147)', () => {
 
   it('PUT 只传单字段 = 部分更新，未传字段保留（审查跟进 2026-09-15）', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
-    await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: '/work/scratch' }, AUTH)
+    await router('PUT', '/config/workspace', { defaultDir: '/work/default', scratchDir: join(home, 'scratch') }, AUTH)
     // 桌面设置页每个控件独立提交——只改默认工作区不得顺带清掉隔离根
     // （scratchDir 无 UI 编辑入口，被清掉无法自助恢复）。
     const put = await router('PUT', '/config/workspace', { defaultDir: '/work/next' }, AUTH)
     assert.equal(put.status, 200)
     const body = put.body as { defaultDir: string | null; scratchDir: string | null }
     assert.equal(body.defaultDir, '/work/next')
-    assert.equal(body.scratchDir, '/work/scratch', '未传的字段必须保留（整体替换会静默清掉它）')
+    assert.equal(body.scratchDir, join(home, 'scratch'), '未传的字段必须保留（整体替换会静默清掉它）')
+  })
+
+  it('scratchDir 落在数据根之外 → 400，不落盘（issue #223）', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const outside = process.platform === 'win32' ? 'C:\\Windows\\Temp\\evil-scratch' : '/tmp/evil-scratch'
+    const put = await router('PUT', '/config/workspace', { scratchDir: outside }, AUTH)
+    assert.equal(put.status, 400)
+    const raw = JSON.parse(readFileSync(process.env.RIVET_CONFIG_PATH!, 'utf-8')) as { workspace?: { scratchDir?: string } }
+    assert.notEqual(raw.workspace?.scratchDir, outside, '被拒的 scratchDir 不得落盘')
   })
 
   it('PUT 空白字符串 / null = 清除字段（回到旧行为）', async () => {

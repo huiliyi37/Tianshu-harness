@@ -4,6 +4,7 @@ import { AST_GREP_TOOL } from './ast-grep.js'
 import { createCapabilityTool } from './capability-index.js'
 import { createCliDiscoverTool } from './cli-discover.js'
 import { IMPORT_RESOURCE_TOOL } from './import-resource.js'
+import { GIT_SCOUT_TOOL } from './git-scout.js'
 import { FILE_INFO_TOOL } from './file-info.js'
 import { CREATE_DOCUMENT_TOOL } from './create-document.js'
 import { CREATE_SPREADSHEET_TOOL } from './create-spreadsheet.js'
@@ -52,9 +53,9 @@ import { presetIncludes, resolveToolPreset, type ToolPreset } from './tool-prese
 
 export interface DefaultRegistryOptions {
   /** T8 桌面化办公工具（create_document/spreadsheet/image/presentation/pdf + export_file/open_path）。
-   *  默认关闭：EXTENDED 层（工具预算由 tool-preset 三档控制——minimal 29 /
-   *  frontend 30 / full 48，见 tool-preset.ts；装配口径以 tool-preset.test.ts
-   *  断言为准，文案改动需同步 settings.json 与 README）。 */
+   *  默认关闭：EXTENDED 层（工具预算由 tool-preset 四档控制，具体数字见
+   *  tool-preset.ts 的档位说明与 tool-preset.test.ts 的 totalCount 断言——
+   *  此处不复写，避免随档位演进再次 stale；文案改动需同步 settings.json 与 README）。 */
   desktopTools?: boolean
   /** N4 桌面浏览器验证工具。默认关闭：新攻击面 + 占 kernel budget，仅桌面 sidecar 开启。 */
   browserTool?: boolean
@@ -120,6 +121,12 @@ export function createDefaultToolRegistry(extraTools: Tool[] = [], options: Defa
   registry.register(DIFF_TOOL)
   registry.register(RUN_TESTS_TOOL)
   registry.register(GIT_TOOL)
+  // 只读 git 侦察：`git` 工具含写动作，readonly profile 拿不到它（WRITE_CAPABLE_TOOLS
+  // 把 git 算写权），而 read_file 硬拒 .git/ —— 侦察 worker 无法做 git 史实取证。
+  // git_scout 是纯查询子集（requiresApproval=false / concurrency-safe），补上这条缝。
+  // taiyi 评测档排除：与 ast_grep / repo_map / skill 同纪律——评测档是冻结的 14 工具
+  // 基线，跨版本可比性优先于「新工具一律进各档」（2026-08-07 收过一次同类泄漏）。
+  if (preset !== 'taiyi') registry.register(GIT_SCOUT_TOOL)
   registry.register(options.todoStore ? createTodoTool(options.todoStore) : TODO_TOOL)
   // Agent 自助调度——自动化是基础能力，档位不设限（Pro 门控在 reviewPolicy 侧），
   // 但**只在真有调度器的运行时注册**：调度器由 serve.ts 启动期 setActiveScheduler

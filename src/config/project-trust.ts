@@ -108,9 +108,26 @@ export function listTrustedProjects(): string[] {
   return Object.keys(readTrustStore().trusted)
 }
 
-/** 单次进程内提示去重——hooks 每事件读取、config 可能 HMR 重载，避免刷屏。 */
+/**
+ * 列出已授信项目**带授信时间**（桌面端「授权总览」页用）。
+ * 时间倒序（最近授信在前）——用户来这页多半是"我最近信过谁"或"我要撤掉谁"。
+ * 缺失/坏时间戳不丢条目：排到最后（`''`），列表宁多不少。
+ */
+export function listTrustedProjectEntries(): { path: string; trustedAt: string }[] {
+  const trusted = readTrustStore().trusted
+  return Object.entries(trusted)
+    .map(([path, trustedAt]) => ({ path, trustedAt: typeof trustedAt === 'string' ? trustedAt : '' }))
+    .sort((a, b) => (a.trustedAt < b.trustedAt ? 1 : a.trustedAt > b.trustedAt ? -1 : a.path.localeCompare(b.path)))
+}
+
+/** 单次进程内提示去重——hooks 每事件读取、config 可能 HMR 重载、prompt 每次用户
+ *  边界重建，避免刷屏。 */
 const noticed = new Set<string>()
-export function notifyUntrustedOnce(kind: 'hooks' | 'config', projectDir: string, strippedKeys?: string[]): void {
+export function notifyUntrustedOnce(
+  kind: 'hooks' | 'config' | 'project-instructions',
+  projectDir: string,
+  strippedKeys?: string[],
+): void {
   const key = `${kind}:${projectDir}`
   if (noticed.has(key)) return
   noticed.add(key)
@@ -120,8 +137,31 @@ export function notifyUntrustedOnce(kind: 'hooks' | 'config', projectDir: string
     : 'permissions/mcp/hooks/providers/env/plugins/mirrors/network/fetch/ui.statusLine/agent.approval 等'
   const what = kind === 'hooks'
     ? `检测到项目 hooks（${join(projectDir, '.rivet', 'hooks.json')}），项目未授信，已跳过执行`
-    : `检测到项目配置（${join(projectDir, '.rivet-config.json')}），项目未授信，其中安全敏感键（${keyList}）已忽略`
+    : kind === 'project-instructions'
+      ? `检测到项目指令（${join(projectDir, 'AGENTS.md')} / ${join(projectDir, '.rivet.md')}），项目未授信，已跳过注入——未进入模型上下文`
+      : `检测到项目配置（${join(projectDir, '.rivet-config.json')}），项目未授信，其中安全敏感键（${keyList}）已忽略`
   console.error(`[rivet] ${what}——${how}。信任决策存于 ${trustStorePath()}，绝不写回仓库。`)
+}
+
+/** 目录内是否存在项目指令文件（AGENTS.md / .rivet.md）——供未受信时的跳过提示判定。 */
+export function hasProjectInstructionFiles(cwd: string): boolean {
+  return existsSync(join(cwd, 'AGENTS.md')) || existsSync(join(cwd, '.rivet.md'))
+}
+
+/**
+ * 项目指令（AGENTS.md / .rivet.md）是否允许进入模型上下文 —— issue #218。
+ *
+ * 未受信目录一律不读：这二者是**仓库内容**，等同于让陌生人在你的会话里下指令
+ * （SECURITY.md 的信任边界声明）。受信（/trust、--trust、RIVET_TRUST_PROJECT）
+ * 后照旧。存在指令文件时发一次性提示，免得用户莫名发现自己的 AGENTS.md 没生效。
+ *
+ * 封装在这里而不是两个 prompt 调用点各写一遍：volatile.ts 已顶到源码行数
+ * ceiling，且 volatile.ts 与 volatile-snapshot.ts 必须保持同一契约。
+ */
+export function projectInstructionsAllowed(cwd: string): boolean {
+  if (isProjectTrusted(cwd)) return true
+  if (hasProjectInstructionFiles(cwd)) notifyUntrustedOnce('project-instructions', cwd)
+  return false
 }
 
 export const PROJECT_CONFIG_FILE_NAME = '.rivet-config.json'

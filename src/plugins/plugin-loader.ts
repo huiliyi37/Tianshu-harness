@@ -191,6 +191,11 @@ function inferPathMode(toolName: string, paramName: string): 'read' | 'write' {
  * SUBSTITUTED with the canonicalized absolute path — plugins resolving
  * relative paths against process.cwd() (≠ session cwd in server mode) was a
  * silent cross-session hazard.
+ *
+ * NOT a permission boundary (issue #216): this wrapper never consults
+ * `manifest.permissions`. It only normalizes/validates PATH arguments; the
+ * plugin's full Node privileges (fs/net/shell) are untouched. Declared
+ * permissions are advisory — see PLUGIN_PERMISSIONS_NOTICE in ./manifest.ts.
  */
 function wrapPluginTool(tool: Tool, loadCwd: string): Tool {
   const originalExecute = tool.execute.bind(tool)

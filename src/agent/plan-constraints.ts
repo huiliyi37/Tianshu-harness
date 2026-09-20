@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { validatePathSafe } from '../tools/path-validate.js'
 import { listPlansSync } from '../plan/plan-store.js'
 import { MAX_TASK_CONSTRAINT_CHARS } from './work-order.js'
@@ -191,27 +191,79 @@ export interface PlanConstraintSource {
   objective?: string
   /** 会话契约里已渲染好的条目 */
   fromContract?: readonly string[]
+  /** 显式计划全文指针（会话契约里的 planRef）——截断指针的优先来源。 */
+  planRef?: string
 }
 
-/** 读路径 → 解析 → 渲染。路径经 validatePathSafe 校验（绝对路径落在 cwd 内也放行），
- *  不存在 / 非文件 / 超 512KB / 越界一律返回 []，绝不抛错。 */
-function readPlanAndRender(cwd: string, pathToken: string): string[] {
+/** 计划契约解析结果：约束行 + 可读的计划全文指针（同源派生，避免两处口径）。 */
+export interface ResolvedPlanContract {
+  /** 渲染好的约束行（计划级，含 [计划…] 指纹） */
+  constraints: string[]
+  /** 计划全文的 cwd 相对路径（worker 可直接 read_file）；无文件来源时缺席 */
+  planRef?: string
+}
+
+/** 路径在 cwd 内时给出 POSIX 相对路径；在 cwd 外返回 undefined（不把机器路径泄进 prompt）。 */
+function relativeRef(cwd: string, absPath: string): string | undefined {
+  const rel = relative(cwd, absPath)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return undefined
+  return rel.split(sep).join('/')
+}
+
+/**
+ * 计划全文指针解析（契约传导回流 D1）：输入可以是 ① 项目内的显式相对/绝对路径
+ * （含 `.rivet/plans/x.md` 这种）；② 裸 slug（自动落到 `.rivet/plans/<slug>.md`，
+ * 无后缀也认）。
+ *
+ * 返回**可读的 cwd 相对路径**，且必须真实存在（statSync isFile）——指不到的指针
+ * 比没有指针更糟：worker 会以为能读全文却 read_file 失败。越界路径（`../`、
+ * cwd 外绝对路径）一律 undefined。
+ */
+export function planRefFor(cwd: string, slugOrPath: string): string | undefined {
+  const trimmed = slugOrPath.trim()
+  if (!trimmed) return undefined
+  const candidates = trimmed.includes('/') || trimmed.includes('\\')
+    ? [trimmed]
+    : trimmed.endsWith('.md')
+      ? [`${PLANS_DIR}/${trimmed}`]
+      : [`${PLANS_DIR}/${trimmed}.md`, `${PLANS_DIR}/${trimmed}`]
+  for (const candidate of candidates) {
+    const validated = validatePathSafe(cwd, candidate)
+    if (!validated.ok) continue
+    try {
+      if (!statSync(validated.path).isFile()) continue
+    } catch {
+      continue
+    }
+    const ref = relativeRef(cwd, validated.path)
+    if (ref) return ref
+  }
+  return undefined
+}
+
+/** 读路径 → 解析 → 渲染（连同可读指针一起返回）。路径经 validatePathSafe 校验
+ *  （绝对路径落在 cwd 内也放行），不存在 / 非文件 / 超 512KB / 越界一律返回空，
+ *  绝不抛错。 */
+function readPlanAndRenderContract(cwd: string, pathToken: string): ResolvedPlanContract {
   const validated = validatePathSafe(cwd, pathToken)
-  if (!validated.ok) return []
+  if (!validated.ok) return { constraints: [] }
   let stat
   try {
     stat = statSync(validated.path)
   } catch {
-    return []
+    return { constraints: [] }
   }
-  if (!stat.isFile() || stat.size > MAX_PLAN_BYTES) return []
+  if (!stat.isFile() || stat.size > MAX_PLAN_BYTES) return { constraints: [] }
   let content = ''
   try {
     content = readFileSync(validated.path, 'utf-8')
   } catch {
-    return []
+    return { constraints: [] }
   }
-  return renderPlanConstraints(extractPlanConstraints(content), pathToken)
+  // 指针用**可读相对路径**渲染（不再是调用方给的裸 token——那正是 D1 的断点：
+  // loop 传 `<slug>.md`、markdown 分支干脆不传，worker 都读不到全文）。
+  const planRef = relativeRef(cwd, validated.path)
+  return { constraints: renderPlanConstraints(extractPlanConstraints(content), planRef), ...(planRef ? { planRef } : {}) }
 }
 
 /**
@@ -221,15 +273,33 @@ function readPlanAndRender(cwd: string, pathToken: string): string[] {
  * 任何异常返回 []——解析失败、路径不存在、章节缺席一律降级为空，绝不拦派发。
  */
 export function resolvePlanConstraints(cwd: string, src: PlanConstraintSource): string[] {
-  if (process.env.RIVET_PLAN_CONSTRAINTS === '0') return []
+  return resolvePlanContract(cwd, src).constraints
+}
+
+/**
+ * 约束 + 可读指针的同源解析（契约传导回流 D1）。链与旧版一致：markdown →
+ * planPath → objective 里的 .md → fromContract → 最近 APPROVED 计划，任一级
+ * 产出非空即止（不合并，避免同一份计划在两处各来一遍）。区别只在于**同时**
+ * 把「这一级用的是哪个文件」作为可读 planRef 透出——worker 的全文指针与约束
+ * 出自同一来源，不会出现「约束来自 A 计划、指针指向 B」。
+ *
+ * 指针优先级：显式 src.planRef（会话契约里存的，经 planRefFor 校验）> 实际读到的
+ * 文件路径。markdown / fromContract / approved 回退这几级没有单一文件归属时
+ * planRef 缺席（宁缺勿错——指不到的指针比没有更糟）。
+ */
+export function resolvePlanContract(cwd: string, src: PlanConstraintSource): ResolvedPlanContract {
+  const noRef: ResolvedPlanContract = { constraints: [] }
+  if (process.env.RIVET_PLAN_CONSTRAINTS === '0') return noRef
+  const explicitRef = src.planRef ? planRefFor(cwd, src.planRef) : undefined
+  const withRef = (c: ResolvedPlanContract): ResolvedPlanContract => (explicitRef ? { ...c, planRef: explicitRef } : c)
   try {
     if (src.markdown) {
-      const rendered = renderPlanConstraints(extractPlanConstraints(src.markdown))
-      if (rendered.length > 0) return rendered
+      const rendered = renderPlanConstraints(extractPlanConstraints(src.markdown), explicitRef)
+      if (rendered.length > 0) return withRef({ constraints: rendered })
     }
     if (src.planPath) {
-      const rendered = readPlanAndRender(cwd, src.planPath)
-      if (rendered.length > 0) return rendered
+      const contract = readPlanAndRenderContract(cwd, src.planPath)
+      if (contract.constraints.length > 0) return withRef(contract)
     }
     if (src.objective) {
       const seen = new Set<string>()
@@ -237,16 +307,16 @@ export function resolvePlanConstraints(cwd: string, src: PlanConstraintSource): 
         const token = raw[1]!.trim().replace(/[.,;:)\]}>]+$/, '')
         if (!token || seen.has(token)) continue
         seen.add(token)
-        const rendered = readPlanAndRender(cwd, token)
-        if (rendered.length > 0) return rendered
+        const contract = readPlanAndRenderContract(cwd, token)
+        if (contract.constraints.length > 0) return contract
       }
     }
-    if (src.fromContract && src.fromContract.length > 0) return [...src.fromContract]
+    if (src.fromContract && src.fromContract.length > 0) return withRef({ constraints: [...src.fromContract] })
     const approved = findApprovedPlanConstraints(cwd)
-    if (approved) return approved
-    return []
+    if (approved && approved.length > 0) return withRef({ constraints: approved })
+    return explicitRef ? { constraints: [], planRef: explicitRef } : noRef
   } catch {
-    return []
+    return explicitRef ? { constraints: [], planRef: explicitRef } : noRef
   }
 }
 
@@ -318,12 +388,19 @@ export function findApprovedPlanConstraints(cwd: string): string[] | undefined {
  */
 export function constraintsFromUnifiedPlan(src: {
   nonGoals?: string[]
+  assumptions?: string[]
   obligations?: { kind: string; text: string }[]
 }): string[] {
   const items: PlanConstraint[] = []
   for (const raw of src.nonGoals ?? []) {
     const text = raw.trim()
     if (text) items.push({ kind: 'anti-goal', text, section: 'nonGoals' })
+  }
+  // D4：待验证假设的结构化载体（UnifiedPlan.assumptions → assumption 种类，
+  // 渲染指纹 [计划待验证假设·执行期先验证]——告诉 worker「先验证再执行」）。
+  for (const raw of src.assumptions ?? []) {
+    const text = raw.trim()
+    if (text) items.push({ kind: 'assumption', text, section: 'assumptions' })
   }
   for (const ob of src.obligations ?? []) {
     if (ob.kind === 'advisory_gate') continue

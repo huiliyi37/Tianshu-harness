@@ -302,6 +302,11 @@ function buildOwnershipGuard(deps: {
   return makeOwnershipGuard(registry, sessionId, deps.cwd)
 }
 
+/** T11 超时恢复指引（withToolTimeout 超时错误文案的一部分）——主控要知道
+ *  超时不等于执行停止：worker 写入已落盘、可续跑或交付已完成的波次。 */
+export const TOOL_TIMEOUT_RECOVERY_HINT =
+  '— 底层执行可能仍在后台继续（worker 写入已落盘）。检查 git status / 会话 checkpoint；可用 executePlanWaves fromWave=N 续跑或 deliver 已完成的波次'
+
 function withToolTimeout<T>(
   promise: Promise<T>,
   toolName: string,
@@ -320,7 +325,7 @@ function withToolTimeout<T>(
       // Cascade abort to the underlying op (child proc / fetch) BEFORE rejecting,
       // so the tool stops consuming resources instead of orphaning.
       try { timeoutController?.abort() } catch { /* noop */ }
-      reject(new Error(`Tool ${toolName} timed out after ${timeoutMs / 1000}s`))
+      reject(new Error(`Tool ${toolName} timed out after ${timeoutMs / 1000}s ${TOOL_TIMEOUT_RECOVERY_HINT}`))
     }, timeoutMs)
     const onAbort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }
     signal?.addEventListener('abort', onAbort, { once: true })

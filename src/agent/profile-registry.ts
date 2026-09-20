@@ -39,7 +39,7 @@ export interface ProfileDefinition {
 }
 
 /** 内置只读工具集 */
-const READ_ONLY_TOOLS = ['read_file', 'read_section', 'glob', 'grep', 'ast_grep', 'diff', 'inspect_project', 'repo_map', 'repo_graph', 'related_tests', 'file_info', 'semantic_search', 'web_search', 'web_fetch'] as const
+const READ_ONLY_TOOLS = ['read_file', 'read_section', 'glob', 'grep', 'ast_grep', 'diff', 'inspect_project', 'repo_map', 'repo_graph', 'related_tests', 'file_info', 'semantic_search', 'web_search', 'web_fetch', 'git_scout'] as const
 
 /** 内置写入工具集 */
 const WRITE_TOOLS = [...READ_ONLY_TOOLS, 'edit_file', 'write_file', 'hash_edit', 'apply_patch', 'bash', 'run_tests', 'git'] as const

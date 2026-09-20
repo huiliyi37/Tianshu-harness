@@ -66,6 +66,8 @@ export interface TeamRunInput {
   /** 计划约束（D8 L2）：team-orchestrate 从 planPath 解析的反目标/待验证假设。
    *  透传进每个 DelegationRequest.constraints（任务级约束在前，计划级在后）。 */
   planConstraints?: string[]
+  /** 计划全文指针（cwd 相对路径）——随每一波工单下发，worker 可 read_file 取计划原文。 */
+  planRef?: string
   /** 上一波波间门禁的失败项（仅未通过时提供）。与 priorResults / priorScopeLeaks
    *  一起压成跨波回执注入下一波工单——闭合「验收 → 反馈 → 下一波」回路。 */
   priorWaveGateFailures?: string[]
@@ -438,6 +440,12 @@ async function dispatchWaveAt(
       r.constraints = [...(r.constraints ?? []), ...input.planConstraints]
     }
   }
+  // D2：计划全文指针随同一批派发下发（与 planConstraints 同源、同生命周期）。
+  if (input.planRef) {
+    for (const r of requests) {
+      r.planRef = input.planRef
+    }
+  }
   // 跨波回执（2026-08-05 闭环审计）：上一波的失败、门禁未过项、计划外改动
   // 压成几条约束下传。此前这些结论只进 tool 输出给主控看，下一波 worker
   // 对上一波一无所知，常在同一个坑上再摔一次。走与 planConstraints 同一条
@@ -710,6 +718,12 @@ export async function runTeamSkeleton(input: TeamRunInput, deps: TeamOrchestrato
     if (input.planConstraints && input.planConstraints.length > 0) {
       for (const r of requests) {
         r.constraints = [...(r.constraints ?? []), ...input.planConstraints]
+      }
+    }
+    // D2：计划全文指针随同一批派发下发（与 planConstraints 同源、同生命周期）。
+    if (input.planRef) {
+      for (const r of requests) {
+        r.planRef = input.planRef
       }
     }
     const run = await deps.delegateBatch(requests, 'all_required', input.abortSignal)

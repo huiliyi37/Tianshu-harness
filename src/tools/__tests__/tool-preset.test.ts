@@ -55,8 +55,8 @@ describe('presetIncludes', () => {
     }
   })
 
-  it('taiyi 专属排除：bootstrap 侧编排/辅助工具全 false（16 工具闭环修复 2026-08-07）', () => {
-    // 此前 bootstrap 无条件注册这批工具，taiyi 实装远多于文档 16——
+  it('taiyi 专属排除：bootstrap 侧编排/辅助工具全 false（2026-08-07 闭环修复）', () => {
+    // 此前 bootstrap 无条件注册这批工具，taiyi 实装远多于文档所载——
     // TAIYI_EXCLUDES + bootstrap 的 presetIncludes 门控补上闭环。
     const bootstrapOrchestration = [
       'delegate_task', 'delegate_batch', 'galaxy', 'starflow', 'team_orchestrate',
@@ -71,8 +71,11 @@ describe('presetIncludes', () => {
         assert.ok(presetIncludes(preset, name), `${preset} keeps ${name}（taiyi 排除不外溢）`)
       }
     }
-    // 16 核心集里的交付/计划闭环不受专属排除误伤
-    for (const keep of ['deliver_task', 'plan_submit', 'plan_close', 'memory', 'todo', 'job']) {
+    // 14 核心集里的交付/计划闭环不受专属排除误伤。本断言测的是 TAIYI_EXCLUDES
+    // 语义，故只列真实存在于 taiyi 档的名字——原先列 plan_submit/plan_close/memory
+    // 是空断言：前两名已不是工具名（并作 plan），后者的排除走 default-registry 的
+    // kernel 守卫（另一套机制），presetIncludes 对三者恒真、测不出任何东西。
+    for (const keep of ['deliver_task', 'plan', 'todo', 'job', 'bash', 'diff']) {
       assert.ok(presetIncludes('taiyi', keep), `taiyi keeps ${keep}`)
     }
   })
@@ -81,15 +84,20 @@ describe('presetIncludes', () => {
 describe('assembly counts per preset', () => {
   // 口径 = 无调度器的 CLI 交互模式。schedule 三工具按 isSchedulerAvailable()
   // 条件注册，有调度器的 serve/桌面端各档 +3（见下一条用例）。
-  it('minimal=29 / frontend=30 / full=49（完整装配口径）', () => {
-    assert.equal(totalCount('minimal'), 29)
-    assert.equal(totalCount('frontend'), 30)
+  it('minimal=30 / frontend=31 / full=51（完整装配口径）', () => {
+    // git_scout 只读 git 侦察（3.14alpha 回流）：**taiyi 以外各档无条件注册**（+1）——
+    // 它必须对 readonly worker 可见，而 worker 与主控共用同一张注册表，按档位
+    // 排除会连带把 worker 也排掉（readonly profile 无 bash/git，正是要补这条缝）。
+    // taiyi 仍按评测档纪律排除（冻结基线，见 tool-preset 的 drop 断言）。
+    // 29/30/50 → 30/31/51。
+    assert.equal(totalCount('minimal'), 30)
+    assert.equal(totalCount('frontend'), 31)
     // 118d0505：monitor 工具（full 档专属）入注册表，full 44 → 45
     // B3：web_crawl/web_map（full 档专属）入注册表，full 45 → 47
     // 视觉副驾：ask_image 无条件注册（各档 +1），28/29/47 → 29/30/48
     // capability 能力索引（full 档专属，查询面低频，同 repo_graph/semantic_search），48 → 49
     // cli_discover CLI 能力发现与安装（full 档专属，安装审批硬闸门），49 → 50
-    assert.equal(totalCount('full'), 50)
+    assert.equal(totalCount('full'), 51)
   })
 
   it('schedule 三工具按调度器存在与否条件注册', () => {
@@ -103,9 +111,9 @@ describe('assembly counts per preset', () => {
       for (const n of SCHEDULE_TOOLS) {
         assert.ok(createDefaultToolRegistry([], { preset: 'full' }).has(n), `有调度器要注册 ${n}`)
       }
-      assert.equal(totalCount('minimal'), 32)
-      // cli_discover full 档 +1：49→50（无调度器）/ 52→53（有调度器）
-      assert.equal(totalCount('full'), 53)
+      // git_scout 非 taiyi 各档 +1（见上一用例），故 32→33 / 53→54
+      assert.equal(totalCount('minimal'), 33)
+      assert.equal(totalCount('full'), 54)
     } finally {
       setActiveScheduler(undefined)
     }
@@ -153,7 +161,7 @@ describe('assembly counts per preset', () => {
     for (const keep of ['read_file', 'write_file', 'edit_file', 'hash_edit', 'grep', 'glob', 'bash', 'job', 'git', 'diff', 'run_tests', 'todo', 'plan']) {
       assert.ok(reg.has(keep), `taiyi must keep ${keep}`)
     }
-    for (const drop of ['web_fetch', 'web_search', 'ask_image', 'repo_map', 'read_section', 'ast_grep', 'skill']) {
+    for (const drop of ['web_fetch', 'web_search', 'ask_image', 'repo_map', 'read_section', 'ast_grep', 'skill', 'git_scout']) {
       assert.ok(!reg.has(drop), `taiyi must drop ${drop}`)
     }
   })

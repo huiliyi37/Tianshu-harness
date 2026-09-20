@@ -1,3 +1,4 @@
+import { formatBodyGuardNotice, type BodyGuardNotice } from '../api/request-body-guard.js'
 import type { AgentCallbacks } from './loop-types.js'
 import type { TurnHeartbeat } from './turn-heartbeat.js'
 import type { ResourceSensorSnapshot } from './resource-sensor.js'
@@ -49,6 +50,9 @@ export interface StreamTurnParams {
     onRateLimit: (retryDelayMs?: number) => void
     /** 413 / 图片被拒导致本次请求剥掉了图片——模型这一轮看不到它们（issue #94）。 */
     onImageStripped?: (info: { removedCount: number }) => void
+    /** 出网请求体触发体积护栏：历史工具输出被截断（这一轮模型看到的历史不完整），
+     *  或已逼近传输上限（第三方中转常有更小的上限）。两者都必须可见（issue #94 同源教训）。 */
+    onBodyGuard?: (info: BodyGuardNotice) => void
   }
 }
 
@@ -751,6 +755,23 @@ export class TurnOrchestrator {
             onRateLimit: (retryDelayMs) => {
               rateLimitOccurred = true
               rateLimitRetryMs = retryDelayMs ?? 0
+            },
+            onBodyGuard: (info) => {
+              // 走相位通道（静态警告行）而不是塞进消息流：它既不是模型输出也不是
+              // 用户输入，混进对话会污染前缀；相位只进 UI。
+              callbacks.onPhaseChange?.('body-guard', {
+                reason: formatBodyGuardNotice(info),
+                source: info.kind,
+                // 结构化附载随相位事件落盘（session-manager: `{ phase, ...detail }`），
+                // 桌面端据此按 locale 组装；缺了它 en 用户只能读中文 reason。
+                meta: {
+                  kind: info.kind,
+                  bytes: info.bytes,
+                  limitBytes: info.limitBytes,
+                  ...(info.degradedCount !== undefined ? { degradedCount: info.degradedCount } : {}),
+                  ...(info.removedBytes !== undefined ? { removedBytes: info.removedBytes } : {}),
+                },
+              })
             },
             onImageStripped: (info) => {
               // 413 / 图片被拒后请求体已剥掉图片——模型这一轮看不到图了。必须可见：

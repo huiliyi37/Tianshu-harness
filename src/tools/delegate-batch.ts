@@ -174,6 +174,9 @@ export function createDelegateBatchTool(
   getClaimStore?: () => ContextClaimStore | undefined,
   getSessionId?: () => string | undefined,
   getProblemAttackStore?: () => import('../agent/problem-attack-loop.js').ProblemAttackStore | null,
+  /** B1 worker 归属回流：passed worker 的 changedFiles 写回主控 ledger +
+   *  ownership（同 delegate_task 的 backfillOwnedFiles 语义）。未注入 = 旧行为。 */
+  backfillOwnedFiles?: (changedFiles: string[]) => void,
 ): Tool {
   return {
     definition: {
@@ -457,6 +460,14 @@ export function createDelegateBatchTool(
 
         // Extract worker findings into claim store
         if (run.status === 'completed') {
+          // B1 worker 归属回流：passed 的 changedFiles 写回主控 ledger + ownership。
+          if (backfillOwnedFiles) {
+            for (const r of run.results) {
+              if (r.status === 'passed' && r.changedFiles.length > 0) {
+                backfillOwnedFiles(r.changedFiles)
+              }
+            }
+          }
           const claimStore = getClaimStore?.()
           const sid = getSessionId?.()
           if (claimStore && sid) {

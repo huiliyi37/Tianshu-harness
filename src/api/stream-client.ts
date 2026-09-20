@@ -1,3 +1,4 @@
+import type { BodyGuardNotice } from './request-body-guard.js'
 import type { OaiChatRequest } from './oai-types.js'
 import type { ContentBlock, Usage } from './types.js'
 
@@ -38,6 +39,12 @@ export interface StreamCallbacks {
   onImageStripped?: (info: { removedCount: number }) => void
   /** Called when a stream attempt aborts after receiving partial output (each failed attempt, before any retry). Optional. */
   onStreamAttemptAborted?: (info: StreamAttemptAbortedInfo) => void
+  /** Called when the outgoing body hit the transport-size guard: either it was
+   *  size-degraded (historical tool outputs truncated) or it came close to the
+   *  limit (relays often cap lower). The caller is expected to surface it — a
+   *  truncated history silently reads as "the model forgot what we just did",
+   *  and a near-limit body fails outright on relays. Optional. */
+  onBodyGuard?: (info: BodyGuardNotice) => void
 }
 
 /** Wire-level prefix divergence: how this request's FINAL bytes (after

@@ -634,7 +634,7 @@ rm ~/.rivet/config.json ~/.rivet/secrets.json ~/.rivet/provider-keys.json
 rivet config providers  # 应该只显示内置 Provider
 ```
 
-三个文件缺一不可：`config.json` 是 provider / 模型 / `keyRef` 指针；`secrets.json` 是 `keyRef → 明文密钥`（0600 权限）；`provider-keys.json` 是多 key 池（每个 key 的模型归属与凭据槽）。**只删 `config.json` 会留下密钥材料**——下次重新 `--connect` 同名 provider 时可能命中旧密钥，表现为「刚配的新 key 却被忽略」。
+三个文件缺一不可：`config.json` 是 provider / 模型 / `keyRef` 指针；`secrets.json` 是 `keyRef → 明文密钥`（0600 权限）——**搜索后端的 key（Bocha / Brave / Tavily）也在这里**（keyRef 命名 `search:<backend>`，桌面端「设置 Key」写入后 config.json 只留 `search.<backend>KeyRef` 指针；旧的明文 `*ApiKey` 在首次读取时自动迁入）；`provider-keys.json` 是多 key 池（每个 key 的模型归属与凭据槽）。**只删 `config.json` 会留下密钥材料**——下次重新 `--connect` 同名 provider 时可能命中旧密钥，表现为「刚配的新 key 却被忽略」。
 
 同理，**备份或迁移到新机器时这三个文件要一起带走**；只备份 `config.json` 的典型症状是「配置都在，但每个 provider 都 401」（指针带过去了，明文没带）。多 key 池为什么单独成文件、为什么不放在 `config.json` 里，见 [故障排查 · API key / 认证失败](guides/troubleshooting.md#3-api-key--认证失败)。
 

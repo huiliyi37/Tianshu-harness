@@ -612,6 +612,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
+    name: 'RIVET_MCP_APPROVAL',
+    defaultHint: '\'\'',
+    files: ['mcp/server-approval.ts', 'mcp/__tests__/manager.test.ts'],
+    description: 'MCP 连接级审批门：gate 强制拦截、open 强制 fail-open；未设则按宿主是否有交互 UI 自动降级。',
+  },
+  {
     name: 'RIVET_MCP_LIVE',
     defaultHint: '',
     files: ['server/__tests__/mcp-presets.test.ts'],

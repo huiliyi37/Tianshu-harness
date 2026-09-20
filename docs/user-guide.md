@@ -171,7 +171,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 |------|------|----------|
 | **启明** `qiming` | 晨光向导（默认域） | 通用工程能力 · 全景洞察——需求模糊、方向不明时，先看清全局、直击根因再动手 |
 | **长庚** `changgeng` | 守夜人 | 通用工程能力 · 终局成全——视觉终验、长夜陪伴、交接收尾，收灯前把路标留下 |
-| **太一** `taiyi` | 极简中心 | 极简体验——内置 16 件核心工具（taiyi 档）、不催促不打扰；喜欢安静高效就手动 `/domain taiyi` |
+| **太一** `taiyi` | 极简中心 | 极简体验——内置 14 件核心工具（taiyi 档）、不催促不打扰；喜欢安静高效就手动 `/domain taiyi` |
 | **天权** `tianquan` | 方案审查官 | 擅长规划与审查——架构评估、方案权衡、技术选型，产出可执行计划 |
 | **瑶光** `yaoguang` | 复现验证官 | 擅长审查与验收——复现缺陷、回归验证、盯假绿灯——绿灯不算数 |
 
@@ -202,14 +202,14 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 
 ### 工具集与 preset
 
-天枢内置 50 个工具，按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目/用户 `runtime.domains.<域>.toolPreset` 按域覆盖 > 星域内置默认档（太一域→taiyi）> 默认 `minimal`）：
+天枢内置 51 个工具，按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目/用户 `runtime.domains.<域>.toolPreset` 按域覆盖 > 星域内置默认档（太一域→taiyi）> 默认 `minimal`）：
 
 | Preset | 工具数 | 说明 |
 |--------|--------|------|
-| **minimal**（默认） | 29 | 日常开发全能力——读写/检索/bash/git/测试/委托/web/计划/todo/memory，省 token、保 prefix cache |
-| **frontend** | 30 | minimal + `browser_debug`（UI 渲染验证闭环；有需要显式开启） |
-| **full** | 50 | 全集，含 `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 办公工具族等进阶能力 |
-| **taiyi** | 16 | 最小评测档——高频核心 + 交付闭环，去编排/浏览器/网络/视觉等重工具；太一星域钉定时自动落此档 |
+| **minimal**（默认） | 30 | 日常开发全能力——读写/检索/bash/git 史实侦察（`git_scout`）/测试/委托/web/计划/todo/memory，省 token、保 prefix cache |
+| **frontend** | 31 | minimal + `browser_debug`（UI 渲染验证闭环；有需要显式开启） |
+| **full** | 51 | 全集，含 `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 办公工具族等进阶能力 |
+| **taiyi** | 14 | 最小评测档——高频核心 + 交付闭环，去编排/浏览器/网络/视觉等重工具；太一星域钉定时自动落此档 |
 
 ```bash
 RIVET_TOOL_PRESET=full rivet          # 本次会话用 full
@@ -397,7 +397,7 @@ rivet config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 
 **阈值默认**：Lean 4 会话 / 600000ms（10 分钟）/ 10MB，正常 16 / 1800000ms（30 分钟）/ 50MB；事件日志磁盘下限 1,000,000 字节。
 
-**最小工具集（taiyi 档）**：`RIVET_TOOL_PRESET=taiyi`（或项目配置 `tools.preset: "taiyi"`）只装配高频核心工具（读写/检索/bash/git/测试/交付/计划等 16 个），去掉编排/浏览器/网络/视觉等重工具——适合评测「只留关键工具是否够用」。`full` 档一键回退全集。**太一星域内置此档**：`defaultDomain` 钉定 `taiyi` 时无需任何配置即自动落 taiyi 档（显式给档恒优先可覆盖）；一键组合见下方「最小集绑定星域」。
+**最小工具集（taiyi 档）**：`RIVET_TOOL_PRESET=taiyi`（或项目配置 `tools.preset: "taiyi"`）只装配高频核心工具（读写/检索/bash/git/测试/交付/计划等 14 个），去掉编排/浏览器/网络/视觉等重工具——适合评测「只留关键工具是否够用」。`full` 档一键回退全集。**太一星域内置此档**：`defaultDomain` 钉定 `taiyi` 时无需任何配置即自动落 taiyi 档（显式给档恒优先可覆盖）；一键组合见下方「最小集绑定星域」。
 
 **按域覆盖（runtime.domains）**：`defaultDomain` 钉定某域时，该域的 lean/阈值/工具档位覆盖全局配置（其他域不受影响）：
 

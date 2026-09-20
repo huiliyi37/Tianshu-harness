@@ -595,6 +595,14 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         lines.push('', 'Ownership health warnings:')
         lines.push(...health.warningLines.map(line => `  ${line}`))
       }
+      // B1 pending-adopt 显式清单：无归属分类的 dirty 文件（多为 worker 写入或
+      // 他会话半成品）——明确列出并给认领路径，替代静默 unclassified 导致的
+      // 交付遗漏（worker 文件需事后 adopt 补交）。
+      if (health.pendingAdopt.length > 0) {
+        lines.push('', '⚠️  Pending adopt（无归属分类的 dirty 文件——可能是 worker 写入或他会话半成品）：')
+        lines.push(...health.pendingAdopt.map(f => `  - ${f}`))
+        lines.push('  认领方式：deliver_task commit=true adopt=[...]（确认属于本任务）；不属于则忽略（外部文件不进提交范围）。')
+      }
       if (health.infoLines.length > 0) {
         lines.push('', 'Ownership caveats:')
         lines.push(...health.infoLines.map(line => `  ${line}`))

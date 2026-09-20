@@ -19,8 +19,11 @@ import { runTypeCheck } from '../../client.js'
 
 /** 全仓 tsc 上限。上限存在的意义是「卡死要被发现」，不是「正常但慢要被误杀」。
  *  负载实测：空闲 35–50s、套件并发下 140–300s+ 波动——240s 预算在重载日会被
- *  正常命中（test 被 cancel，runTypeCheck 路径该轮零验证），按极端负载 +50% 余量放宽。 */
-const TSC_BUDGET_MS = 420_000
+ *  正常命中（test 被 cancel，runTypeCheck 路径该轮零验证），按极端负载 +50% 余量放宽。
+ *  2026-09-20 再放宽：仓库规模增长后全仓 tsc 空闲实测已到 ~400s（real 398s /
+ *  user 92s，大头在 I/O 等待而非 CPU），420s 预算空闲单机都会命中。对齐当前
+ *  真实基线 ×2 余量；真卡死仍会被 900s 上限抓到，只是更晚。 */
+const TSC_BUDGET_MS = 900_000
 /**
  * 单用例预算必须高于 `TSC_BUDGET_MS`，否则 node 会先把用例判超时，
  * 我们就拿不到 runTypeCheck 自己的超时诊断。也覆盖 runner 的全局 --test-timeout。

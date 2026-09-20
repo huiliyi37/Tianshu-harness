@@ -1536,7 +1536,9 @@ export class TuiApp {
         // The desktop renders this ladder via the decision-shift card; this
         // static warning line is the CLI counterpart.
         // image-stripped 同走此行：剥图后模型看不到图，静默处理会被读成「模型没理我的截图」。
-        if (phase === 'convergence-warning' || phase === 'image-stripped') {
+        // body-guard 同走此行：wire 体被截断/逼近上限时，模型看到的历史与用户以为的
+        // 不一致——静默即读成「模型忘了我们刚做的事」。
+        if (phase === 'convergence-warning' || phase === 'image-stripped' || phase === 'body-guard') {
           const label = phaseStatusLabel(phase, detail)
           if (label) this.commitStatic(color(label, this.theme.warning))
           return

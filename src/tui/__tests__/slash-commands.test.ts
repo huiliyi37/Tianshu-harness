@@ -1700,6 +1700,9 @@ describe('mcpStatusText（/mcp 裸命令真实状态，与 /debug mcp 同源）'
         { definition: { name: 'mcp__context7__resolve' } },
         { definition: { name: 'mcp__context7__docs' } },
       ],
+      // issue #215：连接级审批的待批列表。本用例只关心状态行与工具清单，故为空
+      // （待批呈现的断言在 src/tui/format/__tests__/mcp-status.test.ts）。
+      getPendingApprovals: () => [],
     }
     const text = mcpStatusText(fakeMgr as never)
     assert.match(text, /2 server\(s\), 2 tool\(s\)/)

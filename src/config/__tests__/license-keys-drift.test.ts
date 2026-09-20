@@ -10,7 +10,7 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { INTEGRITY_SIGNING_DOMAIN, LICENSE_PRODUCT, LICENSE_PUBLIC_KEY_B64 } from '../license-keys.js'
@@ -23,6 +23,17 @@ const ACTIVATION_RS = fileURLToPath(
   new URL('../../../desktop/src-tauri/src/activation.rs', import.meta.url)
 )
 const INTEGRITY_RS = fileURLToPath(new URL('../../../desktop/src-tauri/src/integrity.rs', import.meta.url))
+
+/**
+ * 跨仓源：activation.rs / integrity.rs 属桌面端仓、wrangler.toml 属许可服务端仓，
+ * 只在开发仓的 monorepo 里存在；公共 harness 镜像不含这些目录。缺文件时整组跳过
+ * （与 bash-windows-smoke 的 winOnly 口径一致），而不是把「本仓没有」误报成漂移红。
+ */
+const crossRepoSourcesPresent =
+  existsSync(ACTIVATION_RS) && existsSync(INTEGRITY_RS) && existsSync(WRANGLER_TOML)
+const skipCrossRepo = crossRepoSourcesPresent
+  ? false
+  : '本仓无 desktop/src-tauri 与 license-server（跨仓源缺失）——漂移守卫在开发仓 monorepo 生效'
 
 function readRs(path: string): string {
   return readFileSync(path, 'utf8')
@@ -44,7 +55,7 @@ function rsNumberConst(source: string, name: string): number {
   return Number(raw.replace(/_/g, ''))
 }
 
-describe('授权常量漂移守卫（TS ⇄ Rust）', () => {
+describe('授权常量漂移守卫（TS ⇄ Rust）', { skip: skipCrossRepo }, () => {
   it('Ed25519 公钥三处一致：license-keys.ts ↔ activation.rs', () => {
     const rust = rsStringConst(readRs(ACTIVATION_RS), 'PUBLIC_KEY_B64')
     assert.equal(

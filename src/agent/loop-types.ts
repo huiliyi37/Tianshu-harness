@@ -358,7 +358,12 @@ export interface AgentCallbacks {
   onAbort: (reason?: string) => void
   onApprovalRequired: (id: string, name: string, input: Record<string, unknown>) => Promise<ApprovalResult | boolean>
   onCheckpoint?: (hash: string) => void
-  onPhaseChange?: (phase: string, detail?: { tool?: string; reason?: string; suggestion?: string; voluntary?: boolean; source?: string }) => void
+  /**
+   * 相位变化。`reason` 是服务端给出的中文文案（CLI 中文优先，与 image-stripped 同约定）；
+   * `meta` 是同一件事的**结构化**附载（kind / bytes / …），供有多语系的消费方（桌面端）
+   * 按自己的 locale 重新组装——只给 reason 会让 en 用户读到中文。
+   */
+  onPhaseChange?: (phase: string, detail?: { tool?: string; reason?: string; suggestion?: string; voluntary?: boolean; source?: string; meta?: Record<string, string | number> }) => void
   /** Zen Mode 相位镜像：run 开始与每次晋升各发一次（桌面端读面徽章）。
    *  worker/子代理会话不接 zen → 不触发。 */
   onZenPhaseChange?: (

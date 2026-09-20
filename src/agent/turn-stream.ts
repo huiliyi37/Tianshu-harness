@@ -1,3 +1,4 @@
+import type { BodyGuardNotice } from '../api/request-body-guard.js'
 import type { StreamCallbacks, StreamAttemptAbortedInfo } from '../api/stream-client.js'
 import type { StreamClient } from '../api/stream-client.js'
 import type { OaiChatRequest } from '../api/oai-types.js'
@@ -37,6 +38,9 @@ export interface TurnStreamCallbacks {
   /** 413 / 图片被拒导致本次请求剥掉了 image_url——模型这一轮看不到这些图，
    *  调用方应告知用户，否则会被读成「模型没理我的截图」。 */
   onImageStripped?: (info: { removedCount: number }) => void
+  /** 出网请求体触发了体积护栏（截断历史工具输出 / 逼近上限）。必须可见：被截断的
+   *  历史静默 = 「模型忘了我们刚做的事」，逼近上限在第三方中转上直接 400。 */
+  onBodyGuard?: (info: BodyGuardNotice) => void
 }
 
 export interface TurnStreamDeps {
@@ -215,6 +219,9 @@ export class TurnStreamController {
       },
       onImageStripped: (info) => {
         input.callbacks.onImageStripped?.(info)
+      },
+      onBodyGuard: (info) => {
+        input.callbacks.onBodyGuard?.(info)
       },
       onStreamAttemptAborted: (info) => {
         this.deps.recordStreamAttemptAborted?.(info)

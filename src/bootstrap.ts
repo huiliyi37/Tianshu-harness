@@ -98,7 +98,7 @@ import { ProviderHealthTracker } from './agent/provider-health.js'
 import { effectiveBanditMode, resolveBanditPromotion } from './agent/bandit-promotion.js'
 import { DomainKnowledgeStore } from './agent/domain-knowledge-store.js'
 import { emptyObligationStore } from './agent/evidence-obligation.js'
-import { resolvePlanConstraints } from './agent/plan-constraints.js'
+import { resolvePlanConstraints, resolvePlanContract } from './agent/plan-constraints.js'
 import { profileRegistry } from './agent/profile-registry.js'
 import { starDomainRegistry } from './agent/star-domain-registry.js'
 import type { WorkerRuntimeFactory } from './agent/coordinator.js'
@@ -500,7 +500,7 @@ export function createInteractiveToolRegistry(
     fetchOptions: buildFetchOptions(config),
   })
 
-  // delegate_task —— taiyi 评测档排除（编排类不在 16 核心集；TAIYI_EXCLUDES），
+  // delegate_task —— taiyi 评测档排除（编排类不在 14 核心集；TAIYI_EXCLUDES），
   // 其余档位照旧无条件注册。
   if (presetIncludes(toolPreset, 'delegate_task')) {
     reg.register(createDelegateTaskTool(
@@ -510,6 +510,14 @@ export function createInteractiveToolRegistry(
       () => refs.claimStore ?? undefined,
       () => refs.sessionId ?? undefined,
       () => refs.getProblemAttackStore?.() ?? null,
+      // B1 worker 归属回流：passed 的 changedFiles 写回主控 ledger + ownership——
+      // 修复 worker 写入不在 owned 集（交付需 adopt 补交）的机制根因。
+      (files) => {
+        for (const f of files) {
+          refs.taskLedger?.record({ type: 'file_write', path: f })
+          refs.ownershipLedger?.registerOwned(f)
+        }
+      },
     ))
   }
 
@@ -527,6 +535,13 @@ export function createInteractiveToolRegistry(
       () => refs.claimStore ?? undefined,
       () => refs.sessionId ?? undefined,
       () => refs.getProblemAttackStore?.() ?? null,
+      // B1 worker 归属回流（同 delegate_task 语义）。
+      (files) => {
+        for (const f of files) {
+          refs.taskLedger?.record({ type: 'file_write', path: f })
+          refs.ownershipLedger?.registerOwned(f)
+        }
+      },
     ))
   }
 
@@ -658,7 +673,7 @@ export function createInteractiveToolRegistry(
     }))
   }
 
-  // recall_capsule —— taiyi 排除（不在 16 核心集）。
+  // recall_capsule —— taiyi 排除（不在 14 核心集）。
   if (presetIncludes(toolPreset, 'recall_capsule')) reg.register(createRecallCapsuleTool(() => cwd))
 
   // 将星账本（B1/B2）：recall_general 读战绩，record_general_finding 追加战绩。
@@ -690,7 +705,7 @@ export function createInteractiveToolRegistry(
   if (presetIncludes(toolPreset, 'semantic_search') || zenStructuredRead) reg.register(SEMANTIC_SEARCH_TOOL)
   // APPLY_PATCH: EXTENDED layer — overlap with hash_edit covers >90% of
   // use cases; kept here (interactive) for edge cases (e.g. git-format patches).
-  // taiyi 排除（16 核心集已有 edit_file/hash_edit 覆盖编辑面）。
+  // taiyi 排除（14 核心集已有 edit_file/hash_edit 覆盖编辑面）。
   if (presetIncludes(toolPreset, 'apply_patch')) reg.register(APPLY_PATCH_TOOL)
   // W5 session_vitals: EXTENDED layer（interactive 装配，不占 kernel budget）。
   // 只读自查工具——模型写"系统状态"类结论前的取证入口（incident 20b9714e）。
@@ -710,7 +725,7 @@ export function createInteractiveToolRegistry(
   // web_search is now in the kernel default-registry (CORE layer).
   // Remove the interactive registration to avoid double-registration.
   // PLAN_MODE_ALLOWED_TOOLS already references web_search alongside recall.
-  // plan_task —— taiyi 排除（编排类；16 核心集保留 plan_submit/plan_close 轻量对）。
+  // plan_task —— taiyi 排除（编排类；14 核心集保留 plan 轻量对）。
   if (presetIncludes(toolPreset, 'plan_task')) {
     reg.register(createPlanTaskTool({
       getCoordinator: () => refs.coordinator,
@@ -1182,7 +1197,16 @@ export function createAgentRuntime(deps: {
       resolvePlanConstraints(cwd, {
         objective,
         fromContract: agent.getTaskContract()?.planConstraints,
+        planRef: agent.getTaskContract()?.planRef,
       }),
+    // D1/D2：同一个 resolvePlanContract 派生指针——约束与指针同源（不会出现
+    // 「约束来自 A 计划、指针指向 B」），并带上会话契约里存的 planRef。
+    getPlanRef: objective =>
+      resolvePlanContract(cwd, {
+        objective,
+        fromContract: agent.getTaskContract()?.planConstraints,
+        planRef: agent.getTaskContract()?.planRef,
+      }).planRef,
   })
 
   // H4-D3 恢复半边：session meta 里有 PAL 快照就原地恢复（覆盖 resume、
@@ -2369,9 +2393,16 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   // asyncExtras (default true): fire-and-forget, non-blocking for faster startup
   // asyncExtras=false: synchronous await, completes before bootstrap returns
   if (opts.asyncExtras !== false) {
+    // 晚到注册闸门（回流自 3.14alpha 71872ed9f，缓存碎裂根修）：三个异步注册器
+    // 各自 begin/end 包住；AgentLoop.run() 首请求 await 注册清零（8s 超时放行）。
+    // 晚到的 tools 变化由此吸收进 user 边界断尾，不再中途碎前缀。
+    toolRegistry.beginExtraRegistration()
     initializeMcp(config, toolRegistry, refs).then(() => {
       agent.updateTools()
-    }).catch(() => {})
+    }).catch(() => {}).finally(() => {
+      toolRegistry.endExtraRegistration()
+    })
+    toolRegistry.beginExtraRegistration()
     initializePlugins(config.plugins, toolRegistry, cwd).then((result) => {
       refs.pluginHooks = result.hooks
       refs.pluginCommands = result.commands
@@ -2389,11 +2420,16 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
       }
     }).catch((err) => {
       debugLog(`[plugins] Initialization failed: ${(err as Error).message}`)
+    }).finally(() => {
+      toolRegistry.endExtraRegistration()
     })
+    toolRegistry.beginExtraRegistration()
     initializeLsp(cwd, toolRegistry).then((lspManager) => {
       refs.lspManager = lspManager
       agent.updateTools()
-    }).catch(() => {})
+    }).catch(() => {}).finally(() => {
+      toolRegistry.endExtraRegistration()
+    })
   } else {
     await initializeMcp(config, toolRegistry, refs)
     agent.updateTools()

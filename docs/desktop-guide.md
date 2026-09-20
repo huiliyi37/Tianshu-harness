@@ -203,16 +203,16 @@ Settings → 外观 提供 26 套内置主题（含暗色/亮色各半，如 `da
 
 新会话的初始星域在 Settings → System → 「默认星域」设置（默认启明，固定不自动切换；选 Auto 才按任务关键词路由）。星域决定系统提示词、工具白名单与决策阈值。
 
-**最小集绑定星域**（Settings → System，默认星域卡旁）：一键组合「钉定默认星域 + taiyi 16 件最小工具档」——新会话启动即该域的最小集形态，**不含 lean 资源减配**。清空 = 恢复默认域启明（该域工具档覆盖会保留，可在 Settings → Behavior → Lean 资源档 → 按域覆盖中删除）。
+**最小集绑定星域**（Settings → System，默认星域卡旁）：一键组合「钉定默认星域 + taiyi 14 件最小工具档」——新会话启动即该域的最小集形态，**不含 lean 资源减配**。清空 = 恢复默认域启明（该域工具档覆盖会保留，可在 Settings → Behavior → Lean 资源档 → 按域覆盖中删除）。
 
 **工具档位**（Settings → Behavior → 工具档位）控制每个会话装配的工具集，四档：
 
 | 档位 | 工具数 | 适用 |
 |---|---|---|
-| minimal | 29 | 日常开发全能力，省 token |
-| frontend（默认） | 30 | + `browser_debug` 浏览器验证 |
-| full | 50 | 全集（编排 / semantic_search / computer_use / 办公工具族），system prompt 开销更大 |
-| taiyi | 16 | 最小评测档——钉定太一域时自动落此档，无需手选 |
+| minimal | 30 | 日常开发全能力，省 token |
+| frontend（默认） | 31 | + `browser_debug` 浏览器验证 |
+| full | 51 | 全集（编排 / semantic_search / computer_use / 办公工具族），system prompt 开销更大 |
+| taiyi | 14 | 最小评测档——钉定太一域时自动落此档，无需手选 |
 
 > 生效时机：档位与绑定都在**新会话**装配（会话中途 `/domain` 切换不换工具——改工具指纹会重建前缀缓存）。想给某个星域单独配档位/lean/阈值：Settings → Behavior → Lean 资源档 → 按域覆盖（`runtime.domains.<域>`，域列表随新增星域自动扩展）。
 

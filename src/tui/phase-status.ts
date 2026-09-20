@@ -13,6 +13,10 @@
  * - convergence-warning (loop.ts L2 kick — the escalation rung BEFORE the
  *   convergence abort; must be user-visible or the eventual熔断 looks like it
  *   came out of nowhere: session 8396ac51 got 10 silent nudges then a hard stop)
+ * - body-guard (turn-orchestrator — the outgoing body hit the transport-size guard:
+ *   historical tool outputs were truncated for this request, or the body is close to
+ *   the limit. Either way the model's view differs from what the user believes, and a
+ *   near-limit body 400s outright on relays with smaller caps.)
  * - image-stripped (turn-orchestrator — a 413 / image rejection made the client
  *   drop image_url parts from the request. The model answering that turn never
  *   saw the images; without a visible line the user reads it as "the model
@@ -30,6 +34,7 @@ export function phaseStatusLabel(
     case 'tool-hint': return detail?.tool ? `preparing ${detail.tool}…` : 'preparing…'
     case 'stop-reason': return detail?.reason ?? null
     case 'image-stripped': return detail?.reason ?? null
+    case 'body-guard': return detail?.reason ?? null
     case 'convergence-warning':
       return detail?.reason
         ? `⚠ AI 近几轮无明显进展，已建议切换策略；若再无改善将自动中断`

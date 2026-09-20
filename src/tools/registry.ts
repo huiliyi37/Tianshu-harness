@@ -18,9 +18,54 @@ const FOREIGN_ALIASES: Record<string, string> = {
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>()
+  /** 异步晚到注册（MCP/插件/LSP）未完成计数 + 等待者。见 awaitExtraRegistrations。 */
+  private extraRegistrationPending = 0
+  private extraRegistrationWaiters: Array<() => void> = []
 
   register(tool: Tool): void {
     this.tools.set(tool.definition.name, tool)
+  }
+
+  /**
+   * 异步晚到注册就绪闸门（2026-09-06 缓存碎裂根修，回流自 3.14alpha 71872ed9f）。
+   *
+   * bootstrap 默认走 asyncExtras 快启动路径：MCP/插件/LSP 的注册 fire-and-forget，
+   * 完成时各自调一次 updateTools。若首个 LLM 请求抢在这些注册完成之前发出，晚到的
+   * tools 变化会把已缓存前缀在 tools 位置打断（会话 51f279bd t1 42k 整段重建实证，
+   * v3.12/3.13 用户「缓存一直碎」反馈的主源之一）。
+   *
+   * 用法：bootstrap 每个异步注册期 beginExtraRegistration()，完成后
+   * endExtraRegistration()；AgentLoop.run() 入口 awaitExtraRegistrations()——
+   * pending 清零（常态，后续 run 零开销）或超时放行。等待发生在 user 消息边界，
+   * 断尾本就在此发生，工具变化吸收进边界 = 零缓存成本。
+   */
+  beginExtraRegistration(): void {
+    this.extraRegistrationPending += 1
+  }
+
+  endExtraRegistration(): void {
+    this.extraRegistrationPending = Math.max(0, this.extraRegistrationPending - 1)
+    if (this.extraRegistrationPending === 0) {
+      const waiters = this.extraRegistrationWaiters
+      this.extraRegistrationWaiters = []
+      for (const w of waiters) w()
+    }
+  }
+
+  /** 等待全部异步注册清零；超时放行（防挂死的 MCP 阻塞会话）。已清零时立即返回。 */
+  async awaitExtraRegistrations(timeoutMs: number): Promise<void> {
+    if (this.extraRegistrationPending <= 0) return
+    await new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve()
+      }
+      const timer = setTimeout(finish, timeoutMs)
+      this.extraRegistrationWaiters.push(finish)
+    })
   }
 
   /** Remove a tool by name. No-op if not registered. Returns true if removed. */

@@ -232,3 +232,49 @@ describe('ToolRegistry.getAllNames', () => {
     assert.deepEqual(registry.getAllNames(), ['grep', 'read_file', 'write_file'])
   })
 })
+
+// ── 晚到注册就绪闸门（回流自 3.14alpha 71872ed9f，缓存碎裂根修）──────────────
+describe('ToolRegistry 晚到注册闸门', () => {
+  it('pending=0 时 await 立即返回（常态零开销）', async () => {
+    const r = new ToolRegistry()
+    const t0 = Date.now()
+    await r.awaitExtraRegistrations(5_000)
+    assert.ok(Date.now() - t0 < 50, '清零态应直通')
+  })
+
+  it('begin 后 await 阻塞，end 清零时释放全部等待者', async () => {
+    const r = new ToolRegistry()
+    r.beginExtraRegistration()
+    r.beginExtraRegistration()
+    let released1 = false
+    let released2 = false
+    void r.awaitExtraRegistrations(5_000).then(() => { released1 = true })
+    void r.awaitExtraRegistrations(5_000).then(() => { released2 = true })
+    await new Promise(res => setTimeout(res, 30))
+    assert.ok(!released1 && !released2, 'pending 未清零不应放行')
+    r.endExtraRegistration()
+    await new Promise(res => setTimeout(res, 10))
+    assert.ok(!released1, '仍剩 1 个注册未完成')
+    r.endExtraRegistration()
+    await new Promise(res => setTimeout(res, 10))
+    assert.ok(released1 && released2, '清零后全部等待者释放')
+  })
+
+  it('超时放行：挂死的注册不永久阻塞会话', async () => {
+    const r = new ToolRegistry()
+    r.beginExtraRegistration()
+    const t0 = Date.now()
+    await r.awaitExtraRegistrations(80)
+    assert.ok(Date.now() - t0 >= 70, '应等到超时才放行')
+    r.endExtraRegistration()
+    // 超时后再来一个 await：已清零，直通
+    await r.awaitExtraRegistrations(5_000)
+  })
+
+  it('end 在 0 基线上不透底（幂等防御）', () => {
+    const r = new ToolRegistry()
+    r.endExtraRegistration()
+    r.endExtraRegistration()
+    // 不抛错即通过；内部计数已钳制为 0
+  })
+})

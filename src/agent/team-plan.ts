@@ -65,6 +65,8 @@ export interface UnifiedTeamPlan {
   risks: RiskItem[]
   decisions: PlanDecision[]
   nonGoals: string[]
+  /** 待验证假设（计划「待验证假设」章节）——planJson 路径的 assumption 载体。 */
+  assumptions?: string[]
 }
 
 // ── Markdown section model (internal) ──────────────────────────────────────
@@ -281,7 +283,7 @@ export function buildUnifiedTeamPlan(
   mission: string,
   mode: 'standard' | 'max',
   tasks: TeamTask[],
-  options?: { nonGoals?: string[] },
+  options?: { nonGoals?: string[]; assumptions?: string[] },
 ): UnifiedTeamPlan {
   return {
     mission,
@@ -306,6 +308,7 @@ export function buildUnifiedTeamPlan(
       })),
     decisions: [],
     nonGoals: options?.nonGoals ?? [],
+    assumptions: options?.assumptions ?? [],
   }
 }
 

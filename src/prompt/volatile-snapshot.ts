@@ -9,6 +9,7 @@ import { generateCodebaseIndexBlock, getHeadSha } from '../repo/codebase-index.j
 import { detectCwdRelation } from './self-recognition.js'
 import type { VolatileContext } from './volatile.js'
 import { standardPromptBlocks, type PromptBlockPolicy } from './block-policy.js'
+import { projectInstructionsAllowed } from '../config/project-trust.js'
 
 export interface SnapshotInput {
   cwd: string
@@ -30,6 +31,10 @@ export interface SnapshotInput {
 }
 
 function readRivetMdOnce(cwd: string): string | undefined {
+  // #218 信任门：与 volatile.ts:readRivetMd 同一契约——未受信目录不读不注入。
+  // 这是生产主路径（create-agent-config → createVolatileSnapshot）；门缺失时
+  // volatile.ts 的 readRivetMd 会兜底读到未受信内容，故两处都必须挡。
+  if (!projectInstructionsAllowed(cwd)) return undefined
   // Load AGENTS.md (architecture map) + .rivet.md (operating manual)
   const parts: string[] = []
   const agentsPath = join(cwd, 'AGENTS.md')

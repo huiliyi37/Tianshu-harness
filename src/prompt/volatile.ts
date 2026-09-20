@@ -16,6 +16,7 @@ import type { VerifyConfig } from '../config/schema.js'
 import { detectRuntimeEnvBlock } from './runtime-env.js'
 import { FROZEN_BLOCK_CAPS, type FrozenBlockCaps, type PromptBlockToggles } from './block-policy.js'
 import { selectProjectInstructions } from './project-instructions.js'
+import { projectInstructionsAllowed } from '../config/project-trust.js'
 
 export { FROZEN_BLOCK_CAPS, type FrozenBlockCaps }
 
@@ -439,6 +440,9 @@ function trimCache(): void {
 }
 
 function readRivetMd(cwd: string): string | undefined {
+  // #218 信任门：未受信目录的项目指令不读不注入。门在缓存之前——未受信时不写缓存，
+  // 受信后同一 cwd 才能立即读到（/trust 当次生效）。
+  if (!projectInstructionsAllowed(cwd)) return undefined
   const cached = rivetMdCache.get(cwd)
   if (cached && Date.now() - cached.timestamp < RIVET_MD_CACHE_TTL_MS) {
     return cached.value

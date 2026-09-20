@@ -7,6 +7,10 @@
  *
  * Manifest validation uses zod for schema enforcement at plugin load time;
  * illegal manifests cause the plugin to be skipped (fail-safe, per architecture decision 6).
+ *
+ * NOTE: the `permissions` field is ADVISORY metadata, not a sandbox — it is
+ * shown for install review and is NEVER enforced at runtime. See
+ * PLUGIN_PERMISSIONS_NOTICE below and docs/plugins.md.
  */
 
 import { z } from 'zod'
@@ -27,14 +31,32 @@ export const toolDescriptorSchema = z.object({
 
 export type ToolDescriptor = z.infer<typeof toolDescriptorSchema>
 
-// ── Permissions ────────────────────────────────────────────────────
+// ── Permissions (advisory) ─────────────────────────────────────────
+//
+// `permissions` is a DECLARATIVE INTENT field, not an enforcement mechanism
+// (issue #216). It is collected so install/review UIs can show what a plugin
+// says it needs, and it has NO runtime effect. Plugins load via dynamic
+// import() into the core process and run with the full privileges of that
+// process — filesystem, network, and child_process are all reachable
+// regardless of what is declared here. Declaring `{ net: false }` does NOT
+// stop a plugin from opening a socket; declaring `{ shell: false }` does NOT
+// stop it from spawning a process. Install = trust (see docs/plugins.md).
+
+/** Advisory notice shown wherever declared permissions are surfaced. A
+ *  statement of fact, not a promise: the runtime does not enforce these
+ *  declarations, so the review step must never be mistaken for a sandbox. */
+export const PLUGIN_PERMISSIONS_NOTICE =
+  'Declared permissions are advisory only and are NOT enforced at runtime. '
+  + 'Plugins run in-process with full Node.js privileges (filesystem, network, '
+  + 'subprocesses, environment), so a plugin that declares limited permissions '
+  + 'can still use them. Only install plugins you trust.'
 
 export const permissionsSchema = z.object({
-  /** Read/write files on disk. */
+  /** Declared intent: plugin reads/writes files. Informational only — NOT enforced. */
   fs: z.boolean().optional(),
-  /** Make outbound network requests. */
+  /** Declared intent: plugin makes outbound network requests. Informational only — NOT enforced. */
   net: z.boolean().optional(),
-  /** Execute shell commands. */
+  /** Declared intent: plugin executes shell commands. Informational only — NOT enforced. */
   shell: z.boolean().optional(),
 })
 
@@ -70,7 +92,8 @@ export const pluginManifestSchema = z.object({
   entry: z.string().min(1),
   /** Tools this plugin registers. Used for market preview and conflict detection. */
   tools: z.array(toolDescriptorSchema).min(1),
-  /** Declared permissions. Shown to the user at install time. */
+  /** Declared permissions for install review. ADVISORY ONLY — not enforced at
+   *  runtime; see PLUGIN_PERMISSIONS_NOTICE above. */
   permissions: permissionsSchema,
   /** Optional bundled skills — relative paths to directories containing SKILL.md. */
   skills: z.array(z.string().min(1)).optional(),

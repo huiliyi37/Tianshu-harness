@@ -39,6 +39,7 @@ import { createTypecheckReminderHook } from './hooks/typecheck-reminder-hook.js'
 import { createTodoReminderHook } from './hooks/todo-reminder-hook.js'
 import { createBackgroundJobsHook } from './hooks/background-jobs-hook.js'
 import { createMonitorHook } from './hooks/monitor-hook.js'
+import { createDetachedPlanHook } from './hooks/detached-plan-hook.js'
 import { createEditToolAdvisoryHook } from './hooks/edit-tool-advisory-hook.js'
 import { createSecurityPatternHook } from './hooks/security-pattern-hook.js'
 import { isSecurityGuidanceEnabled } from '../config/security-guidance-config.js'
@@ -956,6 +957,12 @@ export function createDefaultRuntimeHooks(deps: RuntimeHookDeps): RuntimeHook[] 
   // Monitor events — preTurn delivery of subscribed job-output events (requires bus + registry).
   if (deps.advisoryBus && deps.getMonitors) {
     hooks.push(createMonitorHook({ advisoryBus: deps.advisoryBus, getMonitors: deps.getMonitors }))
+  }
+
+  // Detached plan runs — plan_task(execute) 超时「脱离等待」转后台后的 settle 通知 +
+  // 运行中 awareness（registry 为模块级 session 分桶，无需额外依赖）。
+  if (deps.advisoryBus) {
+    hooks.push(createDetachedPlanHook({ advisoryBus: deps.advisoryBus, sessionId: deps.sessionId }))
   }
 
   if (deps.companionPresenceEnabled && deps.companionPresenceCwd && deps.sessionId) {

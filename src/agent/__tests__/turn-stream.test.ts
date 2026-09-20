@@ -1,3 +1,4 @@
+import type { BodyGuardNotice } from '../../api/request-body-guard.js'
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { TurnStreamController } from '../turn-stream.js'
@@ -103,6 +104,37 @@ describe('TurnStreamController', () => {
     })
 
     assert.deepEqual(stripped, [{ removedCount: 2 }], '剥图事件必须到达 agent 层')
+  })
+
+  it('forwards body-guard notices to the agent layer (degraded body must be visible)', async () => {
+    // wire 体被截断/逼近上限时，模型看到的历史与用户以为的不一致——静默即读成
+    // 「模型忘了我们刚做的事」。这条钉住 client → agent 的通道不被人悄悄掐掉。
+    const client: StreamClient = {
+      stream: mock.fn(async (_request: OaiChatRequest, cb: StreamCallbacks) => {
+        cb.onBodyGuard?.({ kind: 'degraded', bytes: 4_400_000, limitBytes: 4_194_304, degradedCount: 2, removedBytes: 90_000 })
+        cb.onBodyGuard?.({ kind: 'near-limit', bytes: 2_200_000, limitBytes: 4_194_304 })
+      }),
+    }
+    const { controller } = makeController(client)
+    const notices: BodyGuardNotice[] = []
+
+    await controller.streamTurn({
+      request,
+      turn: 1,
+      lastTurnTextFingerprint: '',
+      callbacks: {
+        onTextDelta: () => {},
+        onThinkingDelta: () => {},
+        onToolUse: () => {},
+        onError: () => {},
+        onBodyGuard: info => { notices.push(info) },
+      },
+    })
+
+    assert.equal(notices.length, 2, '两种形态都必须到达 agent 层')
+    assert.equal(notices[0]!.kind, 'degraded')
+    assert.equal(notices[0]!.degradedCount, 2)
+    assert.equal(notices[1]!.kind, 'near-limit')
   })
 
   it('pushes text deltas in real-time during stream', async () => {

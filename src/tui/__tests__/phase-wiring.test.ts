@@ -16,7 +16,7 @@ import { phaseStatusLabel } from '../phase-status.js'
  * 必须给得出文案——任一端断裂都变红。
  */
 const APP_SRC = readFileSync(join(process.cwd(), 'src/tui/engine/app.ts'), 'utf8')
-const STATIC_WARNING_PHASES = ['stop-reason', 'convergence-warning', 'image-stripped'] as const
+const STATIC_WARNING_PHASES = ['stop-reason', 'convergence-warning', 'image-stripped', 'body-guard'] as const
 
 describe('onPhaseChange 静态警告行的接线', () => {
   for (const phase of STATIC_WARNING_PHASES) {

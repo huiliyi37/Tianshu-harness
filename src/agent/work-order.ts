@@ -8,6 +8,9 @@ import { profileRegistry, tierTimeoutMultiplier } from './profile-registry.js'
 import { starDomainRegistry } from './star-domain-registry.js'
 import { resolveAuthorityReason } from './star-domain.js'
 import { progressiveTimeout } from './timeout-ladder.js'
+// 循环引用（既知且安全）：plan-constraints 反向 import 本文件的 MAX_TASK_CONSTRAINT_CHARS；
+// 两处都只在函数体内读取，无模块初始化期依赖。
+import { PLAN_CONSTRAINT_PREFIX } from './plan-constraints.js'
 import { repairInvalidJsonEscapes } from '../api/json-escape-repair.js'
 import { repairJsonSyntax } from '../api/json-syntax-repair.js'
 
@@ -176,6 +179,11 @@ const workOrderSchema = z.object({
   delegationDepth: z.number().int().min(0).default(0),
   /** Star domain authority for cognitive injection (V3 Component A). */
   authority: z.string().optional(),
+  /** 计划全文指针（cwd 相对路径，如 .rivet/plans/x.md）——worker 上下文渲染
+   *  「计划全文见 <path>」：objective 只带章节+checklist 摘要，段落级契约
+   *  （接口契约/反目标/待验证假设）在计划全文里，worker 需要时 read_file 自取。
+   *  来源见 plan-constraints.ts 的 planRefFor / resolvePlanContract（D1/D2）。 */
+  planRef: z.string().optional(),
   /** Why this authority was chosen (≤60 chars). Omitted when authority unset. */
   authorityReason: z.string().max(60).optional(),
   /** Team planner risk tier for shadow-only model tier recommendation. */
@@ -293,7 +301,11 @@ export const workerResultSchema = z.object({
    * Why the worker failed — enables recovery-strategy differentiation.
    *
    * status × failureReason 消费矩阵（2026-08-25 收口）：
-   * - caller_aborted → status 'blocked'：父会话主动取消，消费方不得重试、不得按完成态展示。
+   * - caller_aborted → status 'blocked'：父会话主动取消，消费方不得重试。
+   *   例外（2026-09-05 completed-aborted）：abort 收尾时产物已按 scope 声明
+   *   落盘的，coordinator 升级为 status 'passed' + deliveredOnAbort:true
+   *   （证据钉死 unverified）——failureReason 保留 caller_aborted/timeout
+   *   供下游区分「被 abort 杀掉的已交付」与「干净通过」。见 upgradeAbortedDelivery。
    * - timeout / max_turns → 预算耗尽：可续跑信号（hands-session 内部先续跑，
    *   放弃后才对外；消费方见二者不应自动再续）。
    * - worker_blocked → 环境/闸门阻断：环境中性，不计能力惩罚。
@@ -347,6 +359,14 @@ export const workerResultSchema = z.object({
   /** M2 时间账：worker 从进全局并发门到 settle 的墙钟（含等槽排队），由
    *  coordinator 在 settle 后补账——非 worker 自报字段，不进 ingest schema。 */
   durationMs: z.number().optional(),
+  /** completed-aborted 语义（2026-09-05 team-76dc14a1 事故修复，2026-09-21 回流）：
+   *  worker 被 abort（父信号/预算超时）斩杀时，其 scope 声明的产物已按预期写盘——
+   *  coordinator 按 fs 事实（存在 + 非空 + 本次运行有新写入）把它从 blocked/failed
+   *  升级为 passed，并用本字段盖章。证据链被 abort 切断（没跑验证），
+   *  evidenceStatus 恒为 unverified。
+   *  刻意不进 ingest schema（同 objective/durationMs 纪律）——worker 无法自报
+   *  此标记绕过 verifyWorkerEvidence 的未验证改动闸门。 */
+  deliveredOnAbort: z.boolean().optional(),
 })
 
 const workerResultIngestSchema = z.object({
@@ -451,6 +471,8 @@ export interface CreateReadOnlyWorkOrderInput {
   delegationDepth?: number
   /** Star domain authority for cognitive injection (V3 Component A). */
   authority?: string
+  /** 计划全文指针（cwd 相对路径）——渲染进 worker prompt「计划全文见 <path>」。 */
+  planRef?: string
   /** Team planner risk tier for shadow-only model tier recommendation. */
   riskTier?: 'low' | 'medium' | 'high'
   /** B2: current session turn for progressive timeout calculation. */
@@ -501,12 +523,27 @@ function withTaskConstraints(base: string[], task?: string[]): string[] {
   if (!task?.length) return base
   const seen = new Set(base)
   const extra: string[] = []
+  // D3 预算分级（契约传导回流 2026-09-21）：计划级条目（PLAN_CONSTRAINT_PREFIX
+  // 指纹，如 [计划反目标]/[计划待验证假设·执行期先验证]）**不占任务级 12 条预算、
+  // 不做 400 字截断**——它们是执行语义的权威来源，被任务级条目挤掉或截半，等于
+  // worker 在缺契约的情况下自行发挥。任务级（本波情报、跨波回执等）仍按
+  // 12 条 × 400 字裁剪，避免工单被情报噪声淹没。
+  // 两遍扫描而非单遍分支：顺序无关（调用方传入顺序不再影响谁被保下来）。
   for (const raw of task) {
+    if (!raw.startsWith(PLAN_CONSTRAINT_PREFIX)) continue
+    const item = raw.trim()
+    if (!item || seen.has(item)) continue
+    seen.add(item)
+    extra.push(item)
+  }
+  let taskLevelCount = 0
+  for (const raw of task) {
+    if (raw.startsWith(PLAN_CONSTRAINT_PREFIX)) continue
     const item = raw.trim().slice(0, MAX_TASK_CONSTRAINT_CHARS)
     if (!item || seen.has(item)) continue
     seen.add(item)
     extra.push(item)
-    if (extra.length >= MAX_TASK_CONSTRAINTS) break
+    if (++taskLevelCount >= MAX_TASK_CONSTRAINTS) break
   }
   return [...base, ...extra]
 }
@@ -566,6 +603,7 @@ export function createReadOnlyWorkOrder(input: CreateReadOnlyWorkOrderInput): Wo
     delegationDepth: input.delegationDepth ?? 0,
     authority: input.authority,
     authorityReason: resolveAuthorityReason(input.objective, input.authority),
+    planRef: input.planRef,
     riskTier: input.riskTier,
     modelOverride: input.modelOverride,
     tierFloor: input.tierFloor,
@@ -627,6 +665,7 @@ export function createWriteWorkOrder(input: CreateWriteWorkOrderInput): WorkOrde
     delegationDepth: input.delegationDepth ?? 0,
     authority: input.authority,
     authorityReason: resolveAuthorityReason(input.objective, input.authority),
+    planRef: input.planRef,
     riskTier: input.riskTier,
     modelOverride: input.modelOverride,
     tierFloor: input.tierFloor,

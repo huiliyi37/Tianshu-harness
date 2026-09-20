@@ -159,13 +159,15 @@ describe('createPlanTaskTool writeTodos routing', () => {
 // ── timeoutMs (T2 regression guard) ──
 
 describe('timeoutMs', () => {
-  it('execute:true → 600s (aligns with team_orchestrate)', () => {
+  it('execute:true → 600s 等待上限 + 兜底宽限（2026-09-21 起可配：参数/env 覆盖，到点转后台而非斩杀）', () => {
     const tool = createPlanTaskTool({
       getCoordinator: () => null,
       getExecutorDeps: () => ({} as any),
     })
     assert.equal(typeof tool.timeoutMs, 'function')
-    assert.equal(tool.timeoutMs!({ input: { execute: true } } as any), 600_000)
+    // 默认 600_000（与旧硬编码同值）+ PLAN_EXECUTE_PIPELINE_GRACE_MS——内部脱离
+    // 计时恒先触发，pipeline 级联 abort 只作兜底。解析矩阵见 plan-task-timeout.test.ts。
+    assert.equal(tool.timeoutMs!({ input: { execute: true } } as any), 660_000)
   })
 
   it('execute:false → 120s (tool default)', () => {

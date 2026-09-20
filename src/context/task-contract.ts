@@ -28,6 +28,10 @@ export interface TaskContract {
    *  批准计划时灌入，派发时兜底注入 worker 工单。与 constraints（用户散文按分句
    *  抽取）来源不同；best-effort，无相关章节时保持 undefined（不写空数组）。 */
   planConstraints?: string[]
+  /** 计划全文指针（cwd 相对路径，如 .rivet/plans/x.md）。批准计划时与
+   *  planConstraints 同源灌入（resolvePlanContract）；派发时兜底注入工单，
+   *  worker 据此 read_file 取计划原文（对齐 worker prompt 的「计划全文见」）。 */
+  planRef?: string
 }
 
 const FILE_PATTERN = /(?:^|\s)((?:src|lib|test|tests|pkg|cmd|internal|docs|scripts)\/[\w./-]+\.\w+)/g

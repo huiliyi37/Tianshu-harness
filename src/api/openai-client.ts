@@ -10,7 +10,8 @@ import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
-import { sanitizeMessageContent } from '../utils/sanitize.js'
+import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS } from '../utils/sanitize.js'
+import { enforceRequestBodyLimit } from './request-body-guard.js'
 import { stableStringify } from './stable-json.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { debugLog } from '../utils/debug.js'
@@ -417,6 +418,9 @@ export class OpenAIClient implements StreamClient {
   // context windows. We track the sanitized count and only apply the
   // safety-net sanitize to newly appended messages.
   private _sanitizedCount: number
+  /** body 护栏上报去重：-1 = 还没报过；true = 逼近上限已提醒过（每会话一次）。 */
+  private bodyDegradeNotifiedCount = -1
+  private bodyNearLimitNotified = false
 
   setReasoningEffort(effort: string): void {
     // OpenAI uses reasoning_effort in request body — store for next request
@@ -585,9 +589,14 @@ export class OpenAIClient implements StreamClient {
     // request. Historical messages were already sanitized at entry points
     // (addUserMessage/addAssistantBlocks/addToolResults). This avoids O(n)
     // overhead that grows linearly with conversation length.
+    //
+    // 大体积请求（>FULL_SANITIZE_CHARS）一律全量清洗：增量路径会漏掉「历史段被原地
+    // 改写」与「client 实例跨数组复用」两处窗口，而漏过的一个控制字符在 wire 上就是
+    // `\u00XX` 转义——正是上游按字节截断 body 时的切口（4MB 护栏只是兜底，源头也得
+    // 干净）。全量扫描与本次必做的 JSON.stringify 同阶，1M 字符以上已可忽略。
     const msgArray = body.messages as Array<Record<string, unknown>>
-    if (msgArray.length <= this._sanitizedCount) {
-      // Compaction or message replacement: reset and full sanitize
+    if (msgArray.length <= this._sanitizedCount || countContentChars(msgArray) > FULL_SANITIZE_CHARS) {
+      // Compaction / message replacement / 大体积请求: reset and full sanitize
       this._sanitizedCount = 0
     }
     const newMessages = msgArray.slice(this._sanitizedCount)
@@ -767,6 +776,29 @@ export class OpenAIClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
+      // 请求体体积护栏（4MB）：provider 网关超限时会**按字节截断 body**，切进一个
+      // `\uXXXX` 转义就报 "unexpected end of hex escape" HTTP 400——用户只看到一句
+      // 英文 serde 报错，会话从此发不出去。护栏只截 wire 副本（入参不动）、且确定性
+      // （同输入同字节，降级后前缀仍稳定，不会每轮碎缓存）。
+      const guard = enforceRequestBodyLimit(effectiveBody)
+      // 降级/逼近上限必须可见（同 issue #94 的剥图教训：wire 层降级静默 = 用户读成
+      // 「模型变笨了」）。降级只在"降级集合变化"时上报一次——截断是确定性的，同一段
+      // 历史每轮都被同样地截，逐轮上报只会把状态行刷成噪音。
+      if (guard.degraded.length > 0) {
+        if (guard.degraded.length !== this.bodyDegradeNotifiedCount) {
+          this.bodyDegradeNotifiedCount = guard.degraded.length
+          callbacks.onBodyGuard?.({
+            kind: 'degraded',
+            bytes: guard.bytes,
+            limitBytes: guard.limitBytes,
+            degradedCount: guard.degraded.length,
+            removedBytes: guard.degraded.reduce((n, d) => n + d.removedBytes, 0),
+          })
+        }
+      } else if (guard.nearLimit && !this.bodyNearLimitNotified) {
+        this.bodyNearLimitNotified = true
+        callbacks.onBodyGuard?.({ kind: 'near-limit', bytes: guard.nearLimit.bytes, limitBytes: guard.nearLimit.limitBytes })
+      }
       // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
       await acquireRateLimitSlot(this.config.providerName ?? this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const response = await fetchWithTimeout(`${normalizeBaseUrl(this.config.baseUrl)}/chat/completions`, {
@@ -780,7 +812,7 @@ export class OpenAIClient implements StreamClient {
             ? { [this.config.sessionHeader ?? 'X-Request-Session']: this.config.sessionId }
             : {}),
         },
-        body: JSON.stringify(effectiveBody),
+        body: JSON.stringify(guard.body),
         signal: lifecycle.signal,
       }, fetchTimeout, this.proxyDispatcher)
 
@@ -1595,6 +1627,13 @@ export interface ApiErrorProviderContext {
  */
 function apiErrorHint(code: string, message: string, provider?: ApiErrorProviderContext): string {
   const probe = `${code} ${typeof message === 'string' ? message : ''}`
+  // 请求体被判为非法 JSON（provider 网关的 serde 报错原样透传，如
+  // "Failed to parse the request body as JSON: messages[N].content unexpected end
+  // of hex escape"）：这是**我们发出去的体**在上游被按字节切断，不是模型、不是
+  // 密钥、也不是余额问题。用户看到的只是一句英文解析错误——给结论 + 出路。
+  if (/parse the request body|unexpected end of hex escape|as JSON:|invalid json/i.test(probe)) {
+    return '\n提示：请求体被上游判为非法 JSON（多为对话体量超限被按字节截断）。用 /compact 压缩本会话或新开会话继续；若 baseUrl 走第三方中转，中转常有更小的 body 上限。'
+  }
   if (!/insufficient[ _-]?(balance|quota)|余额不足|额度不足/i.test(probe)) return ''
 
   const where = `${provider?.providerName ?? ''} ${provider?.baseUrl ?? ''}`.toLowerCase()

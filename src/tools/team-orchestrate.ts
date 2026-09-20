@@ -29,7 +29,7 @@ import {
   type PlanExecutorDeps,
   type TeamImpactAnalyzer,
 } from '../agent/plan-executor.js'
-import { resolvePlanConstraints, constraintsFromUnifiedPlan } from '../agent/plan-constraints.js'
+import { planRefFor, resolvePlanConstraints, constraintsFromUnifiedPlan } from '../agent/plan-constraints.js'
 import type { PlanWithObligations } from '../agent/council/council-obligations.js'
 
 // Back-compat re-exports: TeamOrchestrateCoordinator was the tool-layer name for
@@ -359,6 +359,10 @@ export function createTeamOrchestrateTool(
         if (!explicitPlanJson) storePlan(planJson, params.sessionId)
       }
 
+      // D1/D2：显式 planPath 时解析可读指针（内联 planMarkdown / planJson 无文件
+      // 归属 → 指针缺席，宁缺勿错）。指针随波浪 opts 下发到每个工单。
+      const explicitPlanRef = planPath ? planRefFor(params.cwd, planPath) : undefined
+
       let markdown = planMarkdown
       if (!markdown && !tasks && planPath) {
         const safe = validatePathSafe(params.cwd, planPath)
@@ -472,6 +476,7 @@ export function createTeamOrchestrateTool(
         : planFromJson
           ? constraintsFromUnifiedPlan({
               nonGoals: planFromJson.nonGoals,
+              assumptions: planFromJson.assumptions,
               obligations: (planFromJson as PlanWithObligations).obligations?.map(o => ({ kind: o.kind, text: o.text })),
             })
           : undefined
@@ -488,6 +493,7 @@ export function createTeamOrchestrateTool(
             tasks,
             planMarkdown: markdown,
             planConstraints: planConstraints && planConstraints.length > 0 ? planConstraints : undefined,
+            ...(explicitPlanRef ? { planRef: explicitPlanRef } : {}),
             startWave: effectiveFromWave,
             autoAdvance: effectiveAutoAdvance,
             maxParallel: maxParallel ?? options?.defaultMaxParallel,

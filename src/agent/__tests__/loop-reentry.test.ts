@@ -24,6 +24,10 @@ test('run claims the instance synchronously before awaiting idle compaction', as
     emitZenPhaseEvent: () => {},
     zenTurnBoundary: () => {},
     zenController: { currentPhase: 'full', lastPromoteReason: undefined },
+    // 晚到注册闸门（3.14alpha 71872ed9f 回流）：run() 在 drain 前还要查
+    // toolRegistry 的异步注册清零状态。裸 fake 缺 config，同款「fake 过时」形态
+    // （补前的症状一样：cancelCalls 恒为 0）——最小桩即可，与本轮不变量无关。
+    config: { toolRegistry: { awaitExtraRegistrations: async () => {} } },
     cancelIdleCompaction: async () => {
       cancelCalls++
       await idleGate

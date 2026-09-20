@@ -9,17 +9,17 @@ import { STAR_DOMAINS } from '../agent/star-domain-data.js'
  * Tool preset — 会话启动期的工具装配档位（会话内冻结，前缀缓存零影响）。
  *
  * 三档语义（2026-07-19 工具审计落地，入口成本实测见 .rivet/scratch/tool-audit.ts）：
- * - **minimal（29 个）**：日常开发全能力——读写/检索/bash/git/测试/委托/
+ * - **minimal（30 个）**：日常开发全能力——读写/检索/bash/git/测试/委托/
  *   交付/plan/web_search/web_fetch。去掉编排（council/team）、browser 系、
  *   attack_case、semantic_search 等重而冷门的工具。
- * - **frontend（默认，30）**：minimal + browser_debug（UI 渲染验证闭环）。
- * - **full（50）**：全集，含 attack_case/council/team/semantic_search/repo_graph/
+ * - **frontend（默认，31）**：minimal + browser_debug（UI 渲染验证闭环）。
+ * - **full（51）**：全集，含 attack_case/council/team/semantic_search/repo_graph/
  *   undo/recall_general/record_general_finding/ast_edit/related_tests/
  *   inspect_project/import_resource/leave_mark/browser_debug/monitor。
- * - **taiyi（16 个，评测档）**：太一星域最小工具集——只保留 2026-08-04 会话
+ * - **taiyi（14 个，评测档）**：太一星域最小工具集——只保留 2026-08-04 会话
  *   使用率审计（最近 40 主会话 / 2938 消息 / 23 工具）中的高频核心 + 交付闭环：
  *   bash/read_file/write_file/edit_file/hash_edit/grep/glob/git/todo/
- *   deliver_task/run_tests/job/plan_submit/plan_close/memory/diff。
+ *   deliver_task/run_tests/job/plan/diff（plan_submit/plan_close 已并作 plan；memory 已移出本档）。
  *   任何 preset 门控工具一律不注册；kernel 无条件注册的 ast_grep/web_fetch/
  *   web_search/repo_map/read_section/request_path_access/ask_image/skill
  *   经 default-registry 的 `preset !== 'taiyi'` 守卫排除；bootstrap 侧
@@ -30,7 +30,7 @@ import { STAR_DOMAINS } from '../agent/star-domain-data.js'
  *   用途：评测「只留关键工具是否够用」；显式 RIVET_TOOL_PRESET=taiyi 或
  *   tools.preset=taiyi 触发。另作太一星域内置默认档（star-domain-data
  *   toolPreset 字段）：defaultDomain 钉定 taiyi 且无任何显式给档时落到本档——
- *   这是「钉太一即 16 件」的默认体验，显式配置恒优先可覆盖。
+ *   这是「钉太一即 14 件」的默认体验，显式配置恒优先可覆盖。
  *
  * 解析优先级：`RIVET_TOOL_PRESET` env > 项目 `.rivet-config.json` tools.preset
  * > 项目 runtime.domains[域].toolPreset > 用户配置 tools.preset（`userConfigPath()`，
@@ -159,8 +159,8 @@ const MINIMAL_EXCLUDES: ReadonlySet<string> = new Set([
 ])
 
 /** taiyi 评测档专属排除：bootstrap 侧无条件注册的编排/辅助工具，均不在
- *  16 核心集内。此前 bootstrap 层完全未按 taiyi 门控（2026-08-07 侦察确认
- *  实装远多于文档 16），本清单 + bootstrap 的 presetIncludes 调用点补上闭环。
+ *  14 核心集内。此前 bootstrap 层完全未按 taiyi 门控（2026-08-07 侦察确认
+ *  实装远多于设计的最小集），本清单 + bootstrap 的 presetIncludes 调用点补上闭环。
  *  minimal/frontend/full 不受影响（这些名字不在 MINIMAL_EXCLUDES，
  *  三档语义与改动前逐字一致）。 */
 const TAIYI_EXCLUDES: ReadonlySet<string> = new Set([

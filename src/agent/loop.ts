@@ -123,7 +123,7 @@ import type { SensoriumEntry } from './retrospect.js'
 import { join, dirname } from 'node:path'
 import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { extractRegressionInventory } from './regression-inventory.js'
-import { extractPlanConstraints, renderPlanConstraints } from './plan-constraints.js'
+import { extractPlanConstraints, planRefFor, renderPlanConstraints } from './plan-constraints.js'
 import type { ApprovalMode, AgentConfig, AgentCallbacks } from './loop-types.js'
 import type { PermissionAllowRule, PermissionOverlay } from './permissions.js'
 import { createPermissionOverlay } from './permissions.js'
@@ -2148,9 +2148,17 @@ export class AgentLoop {
       if (inventory.length > 0 && this.taskContract) {
         this.taskContract = { ...this.taskContract, regressionInventory: inventory }
       }
-      const planConstraints = renderPlanConstraints(extractPlanConstraints(planContent), `${plan.slug}.md`)
-      if (planConstraints.length > 0 && this.taskContract) {
-        this.taskContract = { ...this.taskContract, planConstraints }
+      // D1（契约传导回流）：指针必须是**可读的 cwd 相对路径**——此前这里传裸
+      // `${plan.slug}.md`，worker 从项目根 read_file 读不到（真身在 .rivet/plans/）。
+      // 同时把指针存进契约，供派发侧兜底注入工单（bootstrap 的 getPlanRef）。
+      const planRef = planRefFor(this.cwd, plan.slug)
+      const planConstraints = renderPlanConstraints(extractPlanConstraints(planContent), planRef)
+      if (this.taskContract) {
+        this.taskContract = {
+          ...this.taskContract,
+          ...(planConstraints.length > 0 ? { planConstraints } : {}),
+          ...(planRef ? { planRef } : {}),
+        }
       }
     } catch { /* best-effort: 清单/约束灌入失败不影响计划批准 */ }
     const wasPlanning = this.planModeState === 'planning'
@@ -2540,6 +2548,14 @@ export class AgentLoop {
     this._pendingAbort = false
     this._watchdogAborted = false
     this.abortController = new AbortController()
+    // 晚到注册闸门（回流自 3.14alpha 71872ed9f，缓存碎裂根修）：MCP/插件/LSP 的
+    // 异步注册未清零时先等（8s 封顶，挂死的 MCP 不阻塞会话）——晚到的 tools 变化
+    // 吸收进本 user 边界断尾，不再在请求发出后中途改写 tools 数组碎前缀（会话
+    // 51f279bd t1 42k 整段重建实证）。注册早已完成的常态下 pending=0，零开销直通。
+    // 放在 abort controller 之后：闸门等待期内 Esc 仍能打断实时信号。
+    // 可选调用：测试里有以裸对象冒充 toolRegistry 的桩（只给 getDefinitions），
+    // 缺该方法时跳过闸门而非炸掉 run（生产路径恒为真 ToolRegistry）。
+    await this.config.toolRegistry.awaitExtraRegistrations?.(8_000)
     // W3：每轮用户输入开始时重置 system-reminder 计数器（每轮最多 1 条）。
     this.session.resetSrCount()
     // Cancel + drain any pending/in-flight idle compaction before mutating the

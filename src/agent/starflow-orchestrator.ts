@@ -1026,6 +1026,7 @@ async function runStarflowUnlocked(deps: StarflowDeps, input: StarflowInput, sta
           if (!plan) return undefined
           const rendered = constraintsFromUnifiedPlan({
             nonGoals: plan.nonGoals,
+            assumptions: plan.assumptions,
             obligations: (plan as PlanWithObligations).obligations?.map(o => ({ kind: o.kind, text: o.text })),
           })
           return rendered.length > 0 ? rendered : undefined

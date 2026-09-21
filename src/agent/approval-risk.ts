@@ -81,6 +81,19 @@ export const DANGEROUS_BASH_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\bxargs\b.*\brm\b/,                                        // mass deletion via xargs pipe
   /\bbase64\b[^\n]*\|\s*(?:\S*\/)?(?:sh|bash|zsh|fish)\b/,             // obfuscated execution via base64 decode
   ...GLOBAL_INSTALL_PATTERNS,                                  // global package installs — environment-level mutation
+  // ── Windows 原生 GUI 输入注入族（issue #235）——shell 执行 P/Invoke 抢占前台窗口并
+  // 合成鼠标/键盘事件（user32 的 SetForegroundWindow / BringWindowToTop / SetCursorPos /
+  // mouse_event / keybd_event / SendInput），或 PowerShell 的 SendKeys。改的是「操作者的
+  // 输入设备」而不是文件系统：抢占期间本机输入被持续占用、没有常规中断入口，只能强杀
+  // 进程收场。此前不落任何一类 → 零审批，故并入。误报只是多一次审批，漏报是静默的输入劫持。
+  /\buser32(?:\.dll)?\b/i,                     // P/Invoke user32 —— GUI 输入注入的入口 DLL
+  /\bsetforegroundwindow\b/i,                  // 抢占前台窗口
+  /\bbringwindowtotop\b/i,
+  /\bsetcursorpos\b/i,                         // 移动系统光标
+  /\bmouse_event\b/i,                          // 合成鼠标事件
+  /\bkeybd_event\b/i,                          // 合成键盘事件
+  /\bsendinput\b/i,                            // mouse_event/keybd_event 的现代替代
+  /\bsendkeys\b/i,                             // System.Windows.Forms.SendKeys
 ]
 
 /**

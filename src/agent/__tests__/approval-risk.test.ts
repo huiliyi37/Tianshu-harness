@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { bashGitBypassesScope, isDestructiveGitAction, hasOutOfWorkspaceWriteTarget } from '../approval-risk.js'
-import { assessToolRisk, DANGEROUS_BASH_PATTERNS, BASH_WRITE_PATTERNS, bashCommandMayWrite, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval, CONFIDENCE_THRESHOLDS, RISKY_WRITE_PATTERNS, DESTRUCTIVE_EXTENDED_PATTERNS } from '../approval-risk.js'
+import { assessToolRisk, matchesDangerousBash, DANGEROUS_BASH_PATTERNS, BASH_WRITE_PATTERNS, bashCommandMayWrite, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval, CONFIDENCE_THRESHOLDS, RISKY_WRITE_PATTERNS, DESTRUCTIVE_EXTENDED_PATTERNS } from '../approval-risk.js'
 import type { ContextClaim } from '../../context/claims.js'
 import type { Sensorium } from '../sensorium.js'
 
@@ -867,5 +867,38 @@ describe('obfuscated bash commands are judged on normalized view', () => {
     assert.equal(assessToolRisk('bash', { command: 'grep -rn "TODO" src/' }).level, 'none')
     assert.equal(assessToolRisk('bash', { command: 'cat package.json | wc -l' }).level, 'none')
     assert.equal(isSafeWriteOnly('mkdir -p build && touch build/.keep'), true)
+  })
+})
+
+// issue #235 — Windows 原生 GUI 输入注入：shell 执行 P/Invoke 抢占前台窗口并合成
+// 鼠标/键盘事件（user32 的 SetForegroundWindow / SetCursorPos / mouse_event /
+// keybd_event），或 PowerShell 的 SendKeys。这类命令改的是「操作者的输入设备」而不是
+// 文件系统，此前不落任何危险类别 → 零审批；执行期间本机输入被持续占用，只能强杀进程
+// 收场。破坏面与 rm -rf 同级，故纳入 DANGEROUS 清单——误报只是多一次审批，漏报是
+// 静默的输入劫持。
+describe('Windows GUI input injection — approval gate coverage (issue #235)', () => {
+  it('flags a PowerShell P/Invoke user32 input-injection script', () => {
+    const script = 'powershell -c "Add-Type -MemberDefinition "[DllImport(user32.dll)] public static extern bool SetForegroundWindow(IntPtr h);" -Name W; [W]::SetForegroundWindow(0x1234)"'
+    assert.equal(matchesDangerousBash(script), true)
+  })
+
+  it('flags each user32 input-synthesis primitive', () => {
+    for (const frag of ['SetForegroundWindow', 'BringWindowToTop', 'SetCursorPos', 'mouse_event', 'keybd_event', 'SendInput', 'user32.dll']) {
+      assert.equal(matchesDangerousBash(`powershell -c "${frag}"`), true, `should flag ${frag}`)
+    }
+  })
+
+  it('flags PowerShell SendKeys driving another application', () => {
+    assert.equal(matchesDangerousBash('powershell -c "[System.Windows.Forms.SendKeys]::SendWait(\'^v\')"'), true)
+  })
+
+  it('sees through quote/escape normalization (variants cannot slip the gate)', () => {
+    // normalizeBashCommand 剥字符级转义：SetForeground\\Window → SetForegroundWindow
+    assert.equal(matchesDangerousBash('powershell -c "SetForeground\\Window"'), true)
+  })
+
+  it('leaves unrelated commands at their original verdict', () => {
+    assert.equal(matchesDangerousBash('ls -la src/'), false)
+    assert.equal(matchesDangerousBash('grep -rn "TODO" src/'), false)
   })
 })

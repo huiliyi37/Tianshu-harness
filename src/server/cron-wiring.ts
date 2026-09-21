@@ -16,7 +16,7 @@
  * - 多进程：先 CronLock.acquire()，仅 owner 启动 scheduler
  */
 
-import { CronScheduler, type UnsubscribeTaskDue } from './cron-scheduler.js'
+import { CronScheduler, isFiringStatus, resolveTaskStatus, type UnsubscribeTaskDue } from './cron-scheduler.js'
 import { CronLock } from './cron-lock.js'
 import { TaskRegistry, type RuntimePool } from './task-registry.js'
 import { serverLogger } from './logger.js'
@@ -39,6 +39,7 @@ export interface CronWiringStatus {
   schedulerRunning: boolean
   lockOwner: boolean
   activeTasks: number
+  /** 会真正触发的任务数（暂停 / 停止的不计入，见 countScheduled）。 */
   scheduledCount: number
 }
 
@@ -94,7 +95,7 @@ export class CronWiring {
           schedulerRunning: false,
           lockOwner: false,
           activeTasks: 0,
-          scheduledCount: this.scheduler.list().length,
+          scheduledCount: this.countScheduled(),
         }
       }
     }
@@ -147,13 +148,22 @@ export class CronWiring {
   }
 
   /** 获取当前状态 */
+  /**
+   * 会真正触发的任务数（issue #236）。暂停 / 停止（归档）的任务仍保留定义，
+   * 但不在「计划任务」口径里——把它们算进去会让状态条的 `计划任务 N`
+   * 在归档一堆任务后虚高，观察者无法从数字区分「还在跑」与「已归档」。
+   */
+  private countScheduled(): number {
+    return this.scheduler.list().filter(t => isFiringStatus(resolveTaskStatus(t))).length
+  }
+
   async getStatus(): Promise<CronWiringStatus> {
     const activeTasks = await this.registry.getActiveTasks()
     return {
       schedulerRunning: this.scheduler.isRunning(),
       lockOwner: this.lock?.isOwner() ?? true,
       activeTasks: activeTasks.length,
-      scheduledCount: this.scheduler.list().length,
+      scheduledCount: this.countScheduled(),
     }
   }
 }

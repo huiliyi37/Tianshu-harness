@@ -1,3 +1,5 @@
+import type { ProviderConfig } from '../config/schema.js'
+
 export type CacheType = 'exact-prefix' | 'explicit-breakpoint' | 'partial-prefix' | 'block-kv' | 'none'
 
 export interface AttentionProfile {
@@ -60,6 +62,9 @@ const PROFILES: Record<string, Omit<ProviderProfile, 'contextWindow'>> = {
   },
   anthropic: { cacheType: 'explicit-breakpoint', persistent: false, minCacheTokens: 4096, ttlSeconds: 300 },
   openai: { cacheType: 'partial-prefix', persistent: false, minCacheTokens: 1024, cacheGranularity: 128, ttlSeconds: 600 },
+  // xAI 前缀缓存从 messages 头部精确匹配（官方 How It Works），配合 x-grok-conv-id 粘性
+  // 路由可跨轮命中 → 按 persistent exact-prefix 走 cache-preserving 压缩档，别把前缀重写掉。
+  grok: { cacheType: 'exact-prefix', persistent: true, minCacheTokens: 64 },
   codex: { cacheType: 'partial-prefix', persistent: false, minCacheTokens: 1024, cacheGranularity: 128, ttlSeconds: 600 },
   google: { cacheType: 'explicit-breakpoint', persistent: false, minCacheTokens: 4096, ttlSeconds: 3600 },
   qwen: { cacheType: 'explicit-breakpoint', persistent: false, minCacheTokens: 1024, ttlSeconds: 300 },
@@ -101,9 +106,19 @@ const PROFILES: Record<string, Omit<ProviderProfile, 'contextWindow'>> = {
 /**
  * Cache-strategy defaults for a provider, without a context window.
  * Use this when only cache metadata is needed (e.g. provider registry).
+ *
+ * `protocol` only matters for custom provider names with no PROFILES entry:
+ * a Responses-API endpoint has the same server-side automatic prefix caching
+ * as the OpenAI entry, so it inherits that profile instead of the 'none'
+ * fallback (which would drive the most aggressive compaction ladder). The
+ * name-specific entry always wins.
  */
-export function getProviderCacheDefaults(provider: string): Omit<ProviderProfile, 'contextWindow'> {
-  return PROFILES[provider] ?? { cacheType: 'none' as CacheType, persistent: false, minCacheTokens: 0 }
+export function getProviderCacheDefaults(
+  provider: string,
+  protocol?: ProviderConfig['protocol'],
+): Omit<ProviderProfile, 'contextWindow'> {
+  const entry = PROFILES[provider] ?? (protocol === 'openai-responses' ? PROFILES.openai : undefined)
+  return entry ?? { cacheType: 'none' as CacheType, persistent: false, minCacheTokens: 0 }
 }
 
 /**
@@ -112,6 +127,10 @@ export function getProviderCacheDefaults(provider: string): Omit<ProviderProfile
  * inherit premature compaction tiers whenever a caller forgot to plumb the
  * window through.
  */
-export function getProviderProfile(provider: string, contextWindow: number): ProviderProfile {
-  return { ...getProviderCacheDefaults(provider), contextWindow }
+export function getProviderProfile(
+  provider: string,
+  contextWindow: number,
+  protocol?: ProviderConfig['protocol'],
+): ProviderProfile {
+  return { ...getProviderCacheDefaults(provider, protocol), contextWindow }
 }

@@ -5,6 +5,7 @@ import { createProviderClient, resolveApiKey, type RuntimeParams } from '../fact
 import { resolveCapabilities } from '../provider.js'
 import { OpenAIClient } from '../openai-client.js'
 import { AnthropicClient } from '../anthropic-client.js'
+import { ResponsesClient } from '../responses-client.js'
 import { ApiKeyAuth } from '../../auth/api-key.js'
 import { cloneProviderPreset } from '../../config/provider-presets.js'
 import type { ProviderConfig } from '../../config/schema.js'
@@ -55,6 +56,58 @@ describe('createProviderClient', () => {
     const capabilities = resolveCapabilities('deepseek')
     const client = createProviderClient(deepseekProvider, capabilities, runtimeParams)
     assert.ok(client)
+  })
+
+  it('grok：x-grok-conv-id + max_completion_tokens + 档位词汇映射（max→xhigh / off→low）', async () => {
+    const provider = cloneProviderPreset('grok')
+    const capabilities = resolveCapabilities('grok', provider.capabilities, provider.models[0]?.capabilities)
+    const client = createProviderClient(provider, capabilities, {
+      ...runtimeParams,
+      model: 'grok-4.6',
+      sessionId: 'sess-grok-1',
+      reasoningEffort: 'high',
+    })
+    const captured: { url?: string; headers?: Record<string, string>; body?: Record<string, unknown> } = {}
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      captured.url = String(url)
+      captured.headers = (init?.headers ?? {}) as Record<string, string>
+      captured.body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          controller.close()
+        },
+      })
+      return new Response(stream as unknown as ReadableStream, { status: 200 })
+    }) as unknown as typeof fetch
+
+    const callbacks = {
+      onTextDelta: () => {},
+      onThinkingDelta: () => {},
+      onContentBlock: () => {},
+      onStopReason: () => {},
+      onError: (error: Error) => { throw error },
+    }
+    const request = { model: 'grok-4.6', messages: [{ role: 'user' as const, content: 'hi' }], max_tokens: 1024 }
+    try {
+      await client.stream(request, callbacks)
+      assert.equal(captured.url, 'https://api.x.ai/v1/chat/completions')
+      assert.equal(captured.headers?.['x-grok-conv-id'], 'sess-grok-1', '会话 id 必须走官方粘性路由头')
+      assert.equal(captured.body?.max_completion_tokens, 1024, 'xAI 已弃用 max_tokens')
+      assert.equal('max_tokens' in (captured.body ?? {}), false)
+      assert.equal(captured.body?.reasoning_effort, 'high', '模型默认档原样透传')
+
+      client.setReasoningEffort?.('max')
+      await client.stream(request, callbacks)
+      assert.equal(captured.body?.reasoning_effort, 'xhigh', 'max 必须映射到 xAI 的 xhigh')
+
+      client.setReasoningEffort?.('off')
+      await client.stream(request, callbacks)
+      assert.equal(captured.body?.reasoning_effort, 'low', 'xAI 推理不可关闭，off 落到最低档 low')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   it('creates a client for a kimi provider with well-known defaults', () => {
@@ -210,6 +263,26 @@ describe('createProviderClient', () => {
     })
     assert.ok(client)
   })
+  it('creates ResponsesClient for a custom provider declaring protocol openai-responses (issue #239)', () => {
+    const responsesProvider: ProviderConfig = {
+      name: 'my-responses-relay',
+      baseUrl: 'https://relay.example.com/v1',
+      protocol: 'openai-responses',
+      capabilities: {},
+      thinking: 'enabled',
+      maxTokens: 64000,
+      models: [{ id: 'gpt-5.6-sol', contextWindow: 400000, maxTokens: 128000 }],
+      unsupported: [],
+    }
+    const caps = resolveCapabilities('my-responses-relay')
+    const client = createProviderClient(responsesProvider, caps, {
+      ...runtimeParams,
+      model: 'gpt-5.6-sol',
+    })
+
+    assert.ok(client instanceof ResponsesClient)
+  })
+
   it('creates AnthropicClient for a custom provider declaring protocol anthropic', () => {
     const anthropicProvider: ProviderConfig = {
       name: 'my-claude-proxy',

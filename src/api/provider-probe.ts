@@ -37,7 +37,7 @@ export function isVisionCapableId(rawId: string, table: readonly ModelAliasEntry
 export interface ProbeOptions {
   baseUrl: string
   apiKey?: string
-  protocol?: 'openai' | 'anthropic'
+  protocol?: 'openai' | 'anthropic' | 'openai-responses'
   /** Provider/preset name — selects the endpoint-path mapping (unknown → OpenAI-compatible default). */
   providerName?: string
   /** Per-request timeout. Default 15s — cold endpoints should not hang onboarding. */
@@ -404,6 +404,104 @@ async function probeOpenAICompletion(options: ProbeOptions, model: string, visio
   }
 }
 
+/** 从 Responses API 的 SSE 流文本中重建助手回答（issue #239）。
+ *  事件面比 chat/completions 宽：增量走 response.output_text.delta，整段可能只在
+ *  output_item.done / response.completed 里出现——两条都收，兼容只发其中一种的网关。 */
+function extractResponsesSseText(bodyText: string): string {
+  let text = ''
+  for (const line of bodyText.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (payload === '[DONE]') continue
+    try {
+      const parsed = JSON.parse(payload) as Record<string, unknown>
+      const type = parsed.type as string | undefined
+      if (type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
+        text += parsed.delta
+      } else if (type === 'response.output_item.done') {
+        const item = parsed.item as Record<string, unknown> | undefined
+        if (item?.type === 'message') {
+          for (const part of (item.content as Array<Record<string, unknown>> | undefined) ?? []) {
+            if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
+          }
+        }
+      } else if (type === 'response.completed') {
+        const resp = parsed.response as Record<string, unknown> | undefined
+        for (const item of (resp?.output as Array<Record<string, unknown>> | undefined) ?? []) {
+          if (item.type !== 'message') continue
+          for (const part of (item.content as Array<Record<string, unknown>> | undefined) ?? []) {
+            if (part.type === 'output_text' && typeof part.text === 'string') text += part.text
+          }
+        }
+      }
+    } catch { /* 非 JSON 数据行——忽略 */ }
+  }
+  return text.trim()
+}
+
+/** Responses 协议最小补全探测（issue #239）：POST /responses，解析 response.* 事件。
+ *  与 OpenAI 探测同职：验证流式活性 + 端点真的会对话；视觉档走 input_image 真测。 */
+async function probeResponsesCompletion(
+  options: ProbeOptions,
+  model: string,
+  vision: boolean,
+): Promise<CompletionProbeOutcome> {
+  const url = resolveProbeEndpoints(options.baseUrl, options.providerName).responsesUrl
+  const startedAt = Date.now()
+  const content: unknown = vision
+    ? [
+        { type: 'input_image', image_url: VISION_PROBE_IMAGE_DATA_URI },
+        { type: 'input_text', text: VISION_PROBE_PROMPT },
+      ]
+    : [{ type: 'input_text', text: 'hi' }]
+  try {
+    const response = await fetchWithProbeTimeout(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders(options.apiKey, probeIdentityHeaders(options)) },
+      body: JSON.stringify({
+        model,
+        input: [{ type: 'message', role: 'user', content }],
+        // 64 同 OpenAI 探测：过小的预算会把 reasoning 型模型的输出全吃在思考通道。
+        max_output_tokens: vision ? VISION_PROBE_MAX_TOKENS : 64,
+        stream: true,
+      }),
+    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+
+    const latencyMs = Date.now() - startedAt
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '')
+      return { ok: false, hints: {}, latencyMs, error: classifyHttpError(response.status, bodyText, options.baseUrl) }
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    const bodyText = await readCappedText(response)
+    if (!contentType.includes('text/event-stream') && !bodyText.includes('data:')) {
+      return {
+        ok: false,
+        hints: {},
+        latencyMs,
+        error: 'Endpoint answered but not with an SSE stream — it may not support streaming, or the base URL is wrong (missing "/v1"?).',
+      }
+    }
+    const answer = extractResponsesSseText(bodyText)
+    if (vision && answer.length === 0) {
+      return {
+        ok: false,
+        hints: {},
+        latencyMs,
+        error: 'Vision probe returned an SSE stream but no answer text — image understanding was not demonstrated.',
+      }
+    }
+    return { ok: true, hints: {}, latencyMs, answer }
+  } catch (error) {
+    const reason = error instanceof Error && error.name === 'AbortError'
+      ? `completion probe timed out after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`
+      : (error instanceof Error ? error.message : String(error))
+    return { ok: false, hints: {}, latencyMs: Date.now() - startedAt, error: reason }
+  }
+}
+
 async function probeAnthropicCompletion(options: ProbeOptions, model: string): Promise<CompletionProbeOutcome> {
   const url = `${normalizeBaseUrl(options.baseUrl)}/v1/messages`
   const startedAt = Date.now()
@@ -493,11 +591,13 @@ export async function probeProvider(options: ProbeOptions): Promise<ProbeReport>
     return report
   }
 
-  // 视觉真测仅对 OpenAI 兼容协议生效（anthropic 探测保持纯文本最小请求）。
+  // 视觉真测对 OpenAI 兼容与 Responses 协议生效（anthropic 探测保持纯文本最小请求）。
   const vision = wantVision && options.protocol !== 'anthropic' && isVisionCapableId(model)
   const outcome = options.protocol === 'anthropic'
     ? await probeAnthropicCompletion(options, model)
-    : await probeOpenAICompletion(options, model, vision)
+    : options.protocol === 'openai-responses'
+      ? await probeResponsesCompletion(options, model, vision)
+      : await probeOpenAICompletion(options, model, vision)
   report.probedModel = model
   if (vision) report.visionTested = true
   report.completionOk = outcome.ok

@@ -316,3 +316,12 @@ test('resolveProviderWire: catalog 条目 wire 比 host 规则更具体，逐字
   assert.equal(wire?.userAgent, 'KimiCLI/1.0', '条目 UA 优先')
   assert.equal(wire?.sessionHeader, 'x-opencode-session', '条目未声明的字段由 host 规则补齐')
 })
+
+test('grok wire: max_completion_tokens + x-grok-conv-id 粘性路由', () => {
+  const wire = resolveProviderWire('grok', 'https://api.x.ai/v1')
+  assert.equal(wire?.useMaxCompletionTokens, true, 'xAI 已弃用 max_tokens')
+  assert.equal(wire?.sessionHeader, 'x-grok-conv-id', '官方建议用会话 id 钉服务器提升缓存命中')
+  const entry = getCatalogEntry('grok')
+  assert.equal(entry?.label, 'Grok (xAI)')
+  assert.ok((entry?.notes ?? []).some(n => n.includes('xhigh')))
+})

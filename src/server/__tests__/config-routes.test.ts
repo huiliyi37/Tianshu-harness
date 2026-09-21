@@ -927,6 +927,57 @@ describe('POST /config/providers/tunables', () => {
     assert.equal(unknownProvider.status, 400)
   })
 
+  it('effortFormat tunable 写入 capabilities 子键、列表回显、null 删除', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    await createCustomProvider(router)
+
+    const set = await router('POST', '/config/providers/tunables', {
+      providerName: 'my-spark',
+      fields: { effortFormat: 'reasoning_effort' },
+    }, AUTH)
+    assert.equal(set.status, 200, JSON.stringify(set.body))
+    let list = await router('GET', '/config/providers', {}, AUTH)
+    let providers = (list.body as { providers: { name: string; effortFormat?: string; effortSupported?: boolean; models: { id: string; effortSupported?: boolean }[] }[] }).providers
+    assert.equal(providers.find(p => p.name === 'my-spark')?.effortFormat, 'reasoning_effort')
+    // 声明生效的闭环：同一列表里 provider 级与模型级 effortSupported 都从 false 翻真，
+    // 桌面档位带随之解禁（Part 1 的诚实化判据与 Part 2 的声明入口必须同源）。
+    assert.equal(providers.find(p => p.name === 'my-spark')?.effortSupported, true)
+    assert.equal(providers.find(p => p.name === 'my-spark')?.models.find(m => m.id === 'm1')?.effortSupported, true)
+
+    const clear = await router('POST', '/config/providers/tunables', {
+      providerName: 'my-spark',
+      fields: { effortFormat: null },
+    }, AUTH)
+    assert.equal(clear.status, 200)
+    list = await router('GET', '/config/providers', {}, AUTH)
+    providers = (list.body as { providers: { name: string; effortFormat?: string; effortSupported?: boolean; models: { id: string; effortSupported?: boolean }[] }[] }).providers
+    assert.equal(providers.find(p => p.name === 'my-spark')?.effortFormat, undefined, 'null = 删声明恢复推导')
+    assert.equal(providers.find(p => p.name === 'my-spark')?.effortSupported, false, '删声明后 provider 级支持态回落')
+    assert.equal(providers.find(p => p.name === 'my-spark')?.models.find(m => m.id === 'm1')?.effortSupported, false, '删声明后模型级支持态回落')
+  })
+
+  it('effortFormat 非法值 400；capabilities 可随 /custom 创建落库', async () => {
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    writeConfig(home, {})
+    const created = await router('POST', '/config/providers/custom', {
+      providerName: 'my-effort',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-test',
+      model: { id: 'm1', contextWindow: 128000, maxTokens: 32000 },
+      capabilities: { effortFormat: 'reasoning_effort' },
+    }, AUTH)
+    assert.equal(created.status, 200, JSON.stringify(created.body))
+    const list = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (list.body as { providers: { name: string; effortFormat?: string }[] }).providers
+    assert.equal(providers.find(p => p.name === 'my-effort')?.effortFormat, 'reasoning_effort')
+
+    const bad = await router('POST', '/config/providers/tunables', {
+      providerName: 'my-effort',
+      fields: { effortFormat: 'bogus' },
+    }, AUTH)
+    assert.equal(bad.status, 400)
+  })
+
   it('rejects unauthorized requests', async () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
     const res = await router('POST', '/config/providers/tunables', { providerName: 'deepseek', fields: { slowThinking: true } }, {})
@@ -970,6 +1021,42 @@ describe('GET /config/providers — unconfigured 预设透传 keyUrl（获取 AP
     if (byKey.has('ollama')) {
       assert.equal(byKey.get('ollama')?.keyUrl, undefined)
     }
+  })
+
+  it('grok 预设桌面端闭环：unconfigured 卡片 → setup 克隆 → 档位契约就绪', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+
+    // 1) 未配置时出现在桌面预设列表：keyUrl 直链 + 模型预览（否则新用户不知道去哪拿 Key）
+    const list1 = await router('GET', '/config/providers', {}, AUTH)
+    const unconfigured = (list1.body as { unconfigured: { key: string; keyUrl?: string; modelIds?: string[] }[] }).unconfigured
+    const grokCard = unconfigured.find(u => u.key === 'grok')
+    assert.ok(grokCard, 'grok 必须作为未配置预设出现在桌面端列表')
+    assert.equal(grokCard.keyUrl, 'https://console.x.ai/team/default/api-keys')
+    assert.deepEqual(grokCard.modelIds, ['grok-4.6'])
+
+    // 2) 桌面向导保存（预设名 + key）→ setupProvider 克隆预设落库
+    const setupRes = await router('POST', '/config/providers', { providerName: 'grok', apiKey: 'sk-test' }, AUTH)
+    assert.equal(setupRes.status, 200, JSON.stringify(setupRes.body))
+
+    // 3) 档位契约：provider 与模型都 effortSupported=true（桌面档位带不禁用）；
+    //    模型默认档 high，请求侧 effortCap 再把 off→low / max→xhigh 映射成 xAI 词汇。
+    const list2 = await router('GET', '/config/providers', {}, AUTH)
+    const grok = (list2.body as {
+      providers: {
+        name: string
+        baseUrl: string
+        effortSupported?: boolean
+        models: { id: string; reasoningEffort?: string; effortSupported?: boolean; contextWindow: number }[]
+      }[]
+    }).providers.find(p => p.name === 'grok')
+    assert.ok(grok, 'setup 后 grok provider 必须在列表里')
+    assert.equal(grok.baseUrl, 'https://api.x.ai/v1')
+    assert.equal(grok.effortSupported, true, '桌面档位带依赖该标记放行')
+    const model = grok.models.find(m => m.id === 'grok-4.6')
+    assert.equal(model?.effortSupported, true)
+    assert.equal(model?.reasoningEffort, 'high')
+    assert.equal(model?.contextWindow, 500_000)
   })
 })
 
@@ -1048,6 +1135,74 @@ describe('POST /config/providers — models 批量回填（「每行一个」/ �
     const providers = (get.body as { providers: { name: string; models: { id: string }[] }[] }).providers
     const glm = providers.find((p) => p.name === 'glm')
     assert.ok(!glm?.models.some((m) => m.id === 'would-partially-save'), 'rejected batch must not persist anything')
+  })
+
+  it('modelsMode=append：并入既有清单，连续批量保存不清空上一批', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    await router('POST', '/config/providers', {
+      providerName: 'deepseek',
+      models: [{ id: 'append-a', contextWindow: 64_000, maxTokens: 8_000 }],
+    }, AUTH)
+    const second = await router('POST', '/config/providers', {
+      providerName: 'deepseek',
+      models: [{ id: 'append-b', contextWindow: 64_000, maxTokens: 8_000 }],
+      modelsMode: 'append',
+    }, AUTH)
+    assert.equal(second.status, 200)
+
+    const get = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (get.body as { providers: { name: string; models: { id: string }[] }[] }).providers
+    const ids = providers.find((p) => p.name === 'deepseek')?.models.map((m) => m.id) ?? []
+    assert.ok(ids.includes('append-a'), 'append 模式必须保留上一批（替换语义会只剩 append-b）')
+    assert.ok(ids.includes('append-b'), 'append 模式必须落库本批')
+  })
+
+  it('modelsMode 非法值整单 400，不落盘', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers', {
+      providerName: 'deepseek',
+      models: [{ id: 'mode-bad', contextWindow: 64_000, maxTokens: 8_000 }],
+      modelsMode: 'merge',
+    }, AUTH)
+    assert.equal(res.status, 400)
+    assert.match((res.body as { error: string }).error, /Invalid modelsMode/)
+
+    const get = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (get.body as { providers: { name: string; models: { id: string }[] }[] }).providers
+    const ids = providers.find((p) => p.name === 'deepseek')?.models.map((m) => m.id) ?? []
+    assert.ok(!ids.includes('mode-bad'), '非法 modelsMode 不得落盘')
+  })
+
+  it('models 带 effortSupported：自定义 openai → false、responses → true、已知预设 → true', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const plain = await router('POST', '/config/providers/custom', {
+      providerName: 'effort-plain',
+      baseUrl: 'https://e-plain.example.com/v1',
+      force: true,
+      models: [{ id: 'm-plain', contextWindow: 64_000, maxTokens: 8_000 }],
+    }, AUTH)
+    assert.equal(plain.status, 200, JSON.stringify(plain.body))
+    const resp = await router('POST', '/config/providers/custom', {
+      providerName: 'effort-resp',
+      baseUrl: 'https://e-resp.example.com/v1',
+      force: true,
+      protocol: 'openai-responses',
+      models: [{ id: 'm-resp', contextWindow: 64_000, maxTokens: 8_000 }],
+    }, AUTH)
+    assert.equal(resp.status, 200, JSON.stringify(resp.body))
+
+    const get = await router('GET', '/config/providers', {}, AUTH)
+    const providers = (get.body as { providers: { name: string; models: { id: string; effortSupported?: boolean }[] }[] }).providers
+    const modelFlag = (name: string, id: string) =>
+      providers.find(p => p.name === name)?.models.find(m => m.id === id)?.effortSupported
+    assert.equal(modelFlag('effort-plain', 'm-plain'), false, '自定义 openai provider 默认无档位通道')
+    assert.equal(modelFlag('effort-resp', 'm-resp'), true, 'responses 协议直接写 reasoning.effort')
+    const deepseekModels = providers.find(p => p.name === 'deepseek')?.models ?? []
+    assert.ok(deepseekModels.length > 0, 'deepseek 预设应在列表里')
+    assert.ok(deepseekModels.every(m => m.effortSupported !== false), '已知预设 deepseek 继承 reasoning_effort')
   })
 })
 

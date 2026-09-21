@@ -1,6 +1,7 @@
 import { OpenAIClient } from './openai-client.js'
 import { CodexClient } from './codex-client.js'
 import { AnthropicClient } from './anthropic-client.js'
+import { ResponsesClient } from './responses-client.js'
 import { proRegistry } from './pro-registry.js'
 import type { StreamClient } from './stream-client.js'
 import type { ProviderCapabilities } from './provider.js'
@@ -105,7 +106,8 @@ export function resolveCredentialKey(cred: CredentialSlots): string {
  * Create a streaming API client for the given provider.
  *
  * Dispatch order: pro-registry factory → Codex OAuth (Responses API) →
- * provider.protocol ('anthropic' → AnthropicClient, else OpenAI-compatible).
+ * provider.protocol ('anthropic' → AnthropicClient,
+ * 'openai-responses' → ResponsesClient, else OpenAI-compatible).
  */
 
 export function createProviderClient(
@@ -137,6 +139,34 @@ export function createProviderClient(
       auth: params.auth,
       maxRetries: provider.maxRetries,
       retry: provider.retry,
+    })
+  }
+
+  // OpenAI Responses API for API-key endpoints (protocol 'openai-responses',
+  // issue #239): /v1/responses with Bearer auth. Codex OAuth keeps its own
+  // client above; the two converge in a later wave.
+  if (provider.protocol === 'openai-responses') {
+    return new ResponsesClient({
+      // Same normalization as the OpenAI branch: users paste full request URLs
+      // (`…/v1/responses`) or trailing slashes; without stripping, the send path
+      // would append a second `/responses` (404).
+      baseUrl: normalizeBaseUrl(provider.baseUrl),
+      apiKey: params.apiKey,
+      model: params.model,
+      maxTokens: params.maxTokens,
+      auth: params.auth,
+      reasoningEffort: params.reasoningEffort,
+      effortCap: capabilities.effortCap,
+      temperature: provider.temperature,
+      thinking: provider.thinking as 'enabled' | 'disabled' | undefined,
+      userAgent: wire?.userAgent,
+      thinkingStallTimeoutMs: provider.thinkingStallTimeoutMs ?? wire?.thinkingStallTimeoutMs,
+      firstByteTimeoutMs: provider.firstByteTimeoutMs,
+      requestTimeoutMs: provider.requestTimeoutMs,
+      maxRetries: provider.maxRetries,
+      retry: provider.retry,
+      proxy: provider.proxy,
+      providerName: provider.name,
     })
   }
 
@@ -214,7 +244,7 @@ export function createProviderClient(
     // deepseek-native prefix-cache strategy (GLM/longcat share the cache
     // strategy but have independent reasoning — they must NOT get this).
     preservedThinkingProtocol: capabilities.preservedThinkingProtocol ?? false,
-    providerProfile: getProviderProfile(provider.name, modelContextWindow(provider, params.model)),
+    providerProfile: getProviderProfile(provider.name, modelContextWindow(provider, params.model), provider.protocol),
     wireContext: params.wireContext,
     unsupported: provider.unsupported.length > 0
       ? provider.unsupported

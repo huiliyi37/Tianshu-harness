@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mapDeepSeekUsage, resolveCapabilities } from '../provider.js'
+import { mapDeepSeekUsage, resolveCapabilities, resolveEffortSupported } from '../provider.js'
 
 describe('DeepSeek provider usage mapping', () => {
   it('maps native DeepSeek cache counters into standard usage fields', () => {
@@ -184,5 +184,53 @@ describe('preservedThinkingProtocol — DeepSeek wire-protocol family', () => {
     assert.equal(caps.preservedThinkingProtocol, true)
     const off = resolveCapabilities('deepseek', { preservedThinkingProtocol: false })
     assert.equal(off.preservedThinkingProtocol, false)
+  })
+})
+
+describe('resolveEffortSupported — 会话内调档是否真能上线', () => {
+  it('未知 provider 默认无档位通道（effortFormat none）→ false', () => {
+    assert.equal(resolveEffortSupported('my-relay', { protocol: 'openai', thinking: 'enabled' }), false)
+  })
+
+  it('provider 级 / 模型级 capability 声明都能把通道打开', () => {
+    assert.equal(resolveEffortSupported(
+      'my-relay', { protocol: 'openai', thinking: 'enabled', capabilities: { effortFormat: 'reasoning_effort' } },
+    ), true)
+    assert.equal(resolveEffortSupported(
+      'my-relay', { protocol: 'openai', thinking: 'enabled' }, { effortFormat: 'reasoning_effort' },
+    ), true)
+  })
+
+  it('已知预设（deepseek）继承 reasoning_effort 通道', () => {
+    assert.equal(resolveEffortSupported('deepseek', { protocol: 'openai', thinking: 'enabled' }), true)
+  })
+
+  it('openai-responses 协议直接写 reasoning.effort，自定义 provider 也支持', () => {
+    assert.equal(resolveEffortSupported('my-relay', { protocol: 'openai-responses', thinking: 'enabled' }), true)
+  })
+
+  it('anthropic 协议与 thinking disabled 都算不支持（前者预算固定，后者不发该字段）', () => {
+    assert.equal(resolveEffortSupported('my-claude', { protocol: 'anthropic', thinking: 'enabled' }), false)
+    assert.equal(resolveEffortSupported('deepseek', { protocol: 'openai', thinking: 'disabled' }), false)
+  })
+})
+
+describe('Grok (xAI) — reasoning_effort 透传', () => {
+  it('能力位：thinkingBlock none + effortFormat reasoning_effort + off/max 映射', () => {
+    const caps = resolveCapabilities('grok')
+    assert.equal(caps.supportsThinking, true)
+    assert.equal(caps.thinkingBlockType, 'none')
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { off: 'low', max: 'xhigh' })
+    assert.ok(caps.stripParams.includes('frequency_penalty'), 'xAI 推理模型拒收 frequency_penalty')
+    assert.ok(caps.stripParams.includes('presence_penalty'), 'xAI 推理模型拒收 presence_penalty')
+    assert.ok(caps.stripParams.includes('stop'), 'xAI 推理模型拒收 stop')
+    assert.equal(resolveEffortSupported('grok', { protocol: 'openai', thinking: 'enabled' }), true)
+  })
+
+  it('provider 级 capabilities 覆盖不破坏档位映射', () => {
+    const caps = resolveCapabilities('grok', { cacheControl: false, stripParams: [] })
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { off: 'low', max: 'xhigh' })
   })
 })

@@ -16,6 +16,9 @@ export interface EndpointPaths {
   models: string
   /** Path appended to the base URL for POST minimal completion. */
   chat: string
+  /** Path appended to the base URL for POST Responses API completion
+   *  (protocol 'openai-responses', issue #239). */
+  responses: string
   /** Path appended to the base URL for POST image generation (issue #8). */
   images: string
 }
@@ -24,6 +27,7 @@ export interface EndpointPaths {
 export const DEFAULT_ENDPOINT_PATHS: EndpointPaths = {
   models: '/models',
   chat: '/chat/completions',
+  responses: '/responses',
   images: '/images/generations',
 }
 
@@ -46,6 +50,7 @@ const STRIPPABLE_SUFFIXES = [
   '/images/generations',
   '/chat/completions',
   '/completions',
+  '/responses',
   '/messages',
   '/models',
   '/embeddings',
@@ -68,6 +73,8 @@ export interface ResolvedProbeEndpoints {
   base: string
   modelsUrl: string
   chatUrl: string
+  /** Responses API endpoint — used by the 'openai-responses' onboarding probe. */
+  responsesUrl: string
   /** Image-generation endpoint — used by the image-gen onboarding probe (issue #8). */
   imagesUrl: string
 }
@@ -88,6 +95,7 @@ export function resolveProbeEndpoints(baseUrl: string, providerName?: string): R
     base,
     modelsUrl: `${base}${prefix}${paths.models}`,
     chatUrl: `${base}${prefix}${paths.chat}`,
+    responsesUrl: `${base}${prefix}${paths.responses}`,
     imagesUrl: `${base}${prefix}${paths.images}`,
   }
 }

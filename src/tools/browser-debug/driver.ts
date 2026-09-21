@@ -46,6 +46,44 @@ export interface ScreenshotOptions {
   element?: string
 }
 
+/** 实时帧流配置。帧率由页面**绘制**驱动——静态页不产帧（方案探针实测），
+ *  所以连接瞬间另有 captureFrame() 补首帧，否则用户看到黑屏。 */
+export interface ScreencastOptions {
+  format?: 'jpeg' | 'png'
+  /** jpeg 质量 0-100，默认 60。 */
+  quality?: number
+  maxWidth?: number
+  maxHeight?: number
+  /** 每 N 帧采样一次，默认 1。 */
+  everyNthFrame?: number
+}
+
+/** 一帧实时画面。 */
+export interface ScreencastFrame {
+  /** base64 图像数据（不含 `data:` 前缀）。 */
+  data: string
+  width: number
+  height: number
+  /** 单调递增帧号——前端据此丢弃过期帧（背压）。 */
+  seq: number
+}
+
+/** 反向输入事件（面板 → CDP Input 域）。坐标是视口 CSS 像素。 */
+export interface BrowserInputEvent {
+  type: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel' | 'keyDown' | 'keyUp' | 'char'
+  x?: number
+  y?: number
+  button?: 'left' | 'right' | 'middle' | 'none'
+  clickCount?: number
+  deltaX?: number
+  deltaY?: number
+  key?: string
+  code?: string
+  text?: string
+  /** CDP modifiers 位掩码：1=Alt 2=Ctrl 4=Meta 8=Shift。 */
+  modifiers?: number
+}
+
 export interface BrowserDebugDriver {
   goto(url: string, signal?: AbortSignal): Promise<void>
   evaluate(expression: string): Promise<string>
@@ -79,6 +117,16 @@ export interface BrowserDebugDriver {
   pageUrls(): string[]
   bringToFront(): Promise<void>
   close(): Promise<void>
+  /**
+   * 实时帧流能力——**可选**：仅 Chromium 系 driver 提供，测试桩/假 driver 可不实现
+   * （调用方先做能力探测再使用）。启动后每次页面绘制回调一帧。
+   */
+  startScreencast?(opts: ScreencastOptions, onFrame: (frame: ScreencastFrame) => void): Promise<void>
+  stopScreencast?(): Promise<void>
+  /** 主动取一张当前画面——用于连接瞬间补首帧（静态页不产帧）。 */
+  captureFrame?(opts?: ScreencastOptions): Promise<ScreencastFrame | null>
+  /** 反向注入鼠标/键盘事件。 */
+  dispatchInput?(evt: BrowserInputEvent): Promise<void>
 }
 
 /** Viewport bounds. The lower bound keeps a resize from producing a degenerate
@@ -87,6 +135,18 @@ export interface BrowserDebugDriver {
 export const MIN_VIEWPORT = 240
 export const MAX_VIEWPORT = 3840
 export const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const
+
+/**
+ * 防渲染节流开关。被遮挡/最小化/后台的窗口会被 Chromium 降频甚至停绘，screencast
+ * 随之停帧——对内嵌实时视图的现场表现就是「画面卡住不刷新」。这几个开关让不可见
+ * 窗口保持全速渲染。（2026-09-21 探针实测本机 headed/headless 均能收帧；此组参数
+ * 用于消除「窗口被遮挡即停帧」这一现场风险。）
+ */
+const ANTI_THROTTLE_ARGS = [
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
+]
 
 export interface DriverLaunchOptions {
   headless: boolean
@@ -142,6 +202,12 @@ interface PwPage {
   bringToFront(): Promise<void>
   on(event: string, handler: (arg: never) => void): void
 }
+/** Playwright CDPSession 的最小面——只声明本模块用到的三件事。 */
+interface PwCDPSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>
+  on(event: string, handler: (arg: never) => void): void
+  detach(): Promise<void>
+}
 interface PwContext {
   pages(): PwPage[]
   newPage(): Promise<PwPage>
@@ -150,6 +216,7 @@ interface PwContext {
   addCookies(cookies: unknown[]): Promise<void>
   clearCookies(): Promise<void>
   on(event: string, handler: (arg: never) => void): void
+  newCDPSession(page: PwPage): Promise<PwCDPSession>
 }
 interface PwBrowser {
   contexts(): PwContext[]
@@ -312,6 +379,36 @@ function buildDriver(
   pageUrls: () => string[],
   closeFn: () => Promise<void>,
 ): BrowserDebugDriver {
+  // ── 实时帧流（可选能力）────────────────────────────────────────────────
+  // 一个 driver 同时只跑一条 screencast；CDP session 惰性建立并绑定 active page，
+  // page 变化（OAuth 弹窗接管）时下次 start 重新绑定。
+  let cdp: PwCDPSession | null = null
+  let cdpPage: PwPage | null = null
+  let frameSeq = 0
+  let frameSink: ((frame: ScreencastFrame) => void) | null = null
+
+  const detachCdp = async (): Promise<void> => {
+    const cur = cdp
+    cdp = null
+    cdpPage = null
+    if (!cur) return
+    try {
+      await cur.detach()
+    } catch {
+      /* 已断开——detach 失败不影响后续重建 */
+    }
+  }
+
+  /** 绑定到当前 active page；page 换了就重建（旧 session 先 detach）。 */
+  const ensureCdp = async (): Promise<PwCDPSession> => {
+    const page = getPage()
+    if (cdp && cdpPage === page) return cdp
+    await detachCdp()
+    cdp = await context.newCDPSession(page)
+    cdpPage = page
+    return cdp
+  }
+
   return {
     goto: async (url, signal) => {
       const page = getPage()
@@ -476,6 +573,75 @@ function buildDriver(
     pageUrls,
     bringToFront: () => getPage().bringToFront(),
     close: closeFn,
+    startScreencast: async (opts, onFrame) => {
+      const session = await ensureCdp()
+      frameSink = onFrame
+      session.on('Page.screencastFrame', ((params: {
+        data?: string
+        sessionId?: number
+        metadata?: { deviceWidth?: number; deviceHeight?: number }
+      }) => {
+        frameSeq += 1
+        const frame: ScreencastFrame = {
+          data: params.data ?? '',
+          width: params.metadata?.deviceWidth ?? 0,
+          height: params.metadata?.deviceHeight ?? 0,
+          seq: frameSeq,
+        }
+        try {
+          frameSink?.(frame)
+        } catch {
+          /* 订阅方抛错不得打断推流 */
+        }
+        // ack 必须回：CDP 收到 ack 前不推下一帧，漏 ack 的表现是「画面冻住」。
+        if (params.sessionId != null) {
+          void session.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {})
+        }
+      }) as never)
+      await session.send('Page.startScreencast', {
+        format: opts.format ?? 'jpeg',
+        quality: opts.quality ?? 60,
+        maxWidth: opts.maxWidth ?? DEFAULT_VIEWPORT.width,
+        maxHeight: opts.maxHeight ?? DEFAULT_VIEWPORT.height,
+        everyNthFrame: opts.everyNthFrame ?? 1,
+      })
+    },
+    stopScreencast: async () => {
+      frameSink = null
+      if (cdp) {
+        try {
+          await cdp.send('Page.stopScreencast')
+        } catch {
+          /* 未在推流时 stop 会抛——忽略 */
+        }
+      }
+      await detachCdp()
+    },
+    captureFrame: async (opts) => {
+      const session = await ensureCdp()
+      try {
+        const res = (await session.send('Page.captureScreenshot', {
+          format: opts?.format ?? 'jpeg',
+          quality: opts?.quality ?? 60,
+        })) as { data?: string } | undefined
+        if (!res?.data) return null
+        const size = getPage().viewportSize()
+        frameSeq += 1
+        return { data: res.data, width: size?.width ?? 0, height: size?.height ?? 0, seq: frameSeq }
+      } catch {
+        return null
+      }
+    },
+    dispatchInput: async (evt) => {
+      const session = await ensureCdp()
+      const params: Record<string, unknown> = {}
+      for (const k of ['x', 'y', 'button', 'clickCount', 'deltaX', 'deltaY', 'key', 'code', 'text', 'modifiers'] as const) {
+        const v = evt[k]
+        if (v != null) params[k] = v
+      }
+      const method = evt.type.startsWith('mouse') ? 'Input.dispatchMouseEvent' : 'Input.dispatchKeyEvent'
+      await session.send(method, { type: evt.type, ...params })
+    },
   }
 }
 
@@ -488,6 +654,7 @@ export const playwrightDriverFactory: BrowserDebugDriverFactory = async (opts) =
     context = await mod.chromium.launchPersistentContext(opts.userDataDir, {
       headless: opts.headless,
       viewport: opts.viewport ?? DEFAULT_VIEWPORT,
+      args: ANTI_THROTTLE_ARGS,
     })
   } catch (err) {
     if (isBrowserMissingError(err)) {

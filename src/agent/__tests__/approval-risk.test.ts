@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { bashGitBypassesScope, isDestructiveGitAction, hasOutOfWorkspaceWriteTarget } from '../approval-risk.js'
-import { assessToolRisk, DANGEROUS_BASH_PATTERNS, BASH_WRITE_PATTERNS, bashCommandMayWrite, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval, CONFIDENCE_THRESHOLDS, RISKY_WRITE_PATTERNS, DESTRUCTIVE_EXTENDED_PATTERNS } from '../approval-risk.js'
+import { bashGitBypassesScope, isDestructiveGitAction, hasOutOfWorkspaceWriteTarget, matchesDangerousBash } from '../approval-risk.js'
+import { assessToolRisk, DANGEROUS_BASH_PATTERNS, BASH_WRITE_PATTERNS, bashCommandMayWrite, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval, CONFIDENCE_THRESHOLDS, RISKY_WRITE_PATTERNS, DESTRUCTIVE_EXTENDED_PATTERNS, AVAILABILITY_HAZARD_PATTERNS } from '../approval-risk.js'
 import type { ContextClaim } from '../../context/claims.js'
 import type { Sensorium } from '../sensorium.js'
 
@@ -867,5 +867,72 @@ describe('obfuscated bash commands are judged on normalized view', () => {
     assert.equal(assessToolRisk('bash', { command: 'grep -rn "TODO" src/' }).level, 'none')
     assert.equal(assessToolRisk('bash', { command: 'cat package.json | wc -l' }).level, 'none')
     assert.equal(isSafeWriteOnly('mkdir -p build && touch build/.keep'), true)
+  })
+})
+
+/**
+ * 可用性危害类（issue #235）——shell 执行的原生 GUI 输入注入。
+ *
+ * 与「破坏数据/系统」是两个威胁模型：这些命令不删任何东西，但它们抢占前台
+ * 并合成键鼠事件，让操作者失去本机控制权。此前整类不在判定范围内，静默放行
+ * （manual 档不审批；auto-safe 档连 assessToolRisk 都判 none）。
+ *
+ * 判据用「注入原语 + 调用/执行器上下文」，不是单纯出现关键词——`grep -rn
+ * "SetForegroundWindow" src/`、`cat windows-driver.ts` 这类只读文本操作必须
+ * 保持免审，否则每次翻自己源码都在弹审批。
+ */
+describe('可用性危害 —— GUI 输入注入进审批门', () => {
+  const hazards: string[] = [
+    // ── Windows：P/Invoke 到 user32 + SendInput 族 ──
+    'powershell -NoProfile -Command "Add-Type -TypeDefinition \'[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);\'; [RivetInput]::SetForegroundWindow($fh)"',
+    'powershell -c "[System.Windows.Forms.SendKeys]::SendWait(\'^v\')"',
+    'pwsh -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'{ENTER}\')"',
+    'powershell -c "$sig = \'[DllImport(\\"user32.dll\\")] public static extern uint SendInput(uint n, INPUT[] p, int cb);\'; [Win32]::SendInput(1, $inputs, $size)"',
+    'powershell -c "[RivetInput]::SetCursorPos(100, 200)"',
+    'powershell -c "[Microsoft.VisualBasic.Interaction]::AppActivate(\'Notepad\')"',
+    // ── macOS：osascript 合成键鼠（System Events / CGEvent）──
+    'osascript -e \'tell application "System Events" to keystroke "v" using command down\'',
+    'osascript -e \'tell application "System Events" to key code 36\'',
+    'osascript -l JavaScript -e \'ObjC.import("CoreGraphics"); $.CGEventPost($.kCGHIDEventTap, ev)\'',
+    // ── 解释器 + GUI 自动化库 ──
+    'python3 -c "import ctypes; ctypes.windll.user32.mouse_event(2,0,0,0,0)"',
+    'python -c "import pyautogui; pyautogui.click(10,20)"',
+    'xdotool key ctrl+v',
+    // ── 归一化视图才认得出的拼接形态：引号插进函数名中部 ──
+    'powershell -c "[RivetInput]::mouse_"event"(2,0,0,0,0)"',
+  ]
+
+  for (const cmd of hazards) {
+    it(`需审批：${cmd.slice(0, 60)}…`, () => {
+      assert.equal(matchesDangerousBash(cmd), true, `manual 档应审批：${cmd}`)
+      // auto-safe 档的闸门是 assessToolRisk 的 high —— 此前该载荷判 none
+      assert.equal(assessToolRisk('bash', { command: cmd }).level, 'high', `auto-safe 档应 high：${cmd}`)
+      assert.equal(isSafeWriteOnly(cmd), false, `不得按安全写放行：${cmd}`)
+    })
+  }
+
+  const benign: string[] = [
+    // 读自己的源码：只出现关键词，没有调用形态
+    'grep -rn "SetForegroundWindow" src/pro/computer-use/',
+    'rg user32 src/',
+    'cat src/pro/computer-use/windows-driver.ts',
+    'head -50 src/pro/computer-use/macos-driver.ts',
+    'sed -n "1,50p" src/pro/computer-use/windows-driver.ts',
+    "echo \"SendKeys\" 只是文本",
+    'git log --oneline -20',
+    'npm test',
+    'ls docs/known-issues/',
+  ]
+
+  for (const cmd of benign) {
+    it(`保持免审：${cmd.slice(0, 60)}…`, () => {
+      assert.equal(matchesDangerousBash(cmd), false, `不应误报：${cmd}`)
+      assert.equal(assessToolRisk('bash', { command: cmd }).level, 'none', `不应升级风险：${cmd}`)
+    })
+  }
+
+  it('注入签名表独立可测（导出，供上层分类器复用）', () => {
+    assert.ok(AVAILABILITY_HAZARD_PATTERNS.length >= 8)
+    assert.ok(AVAILABILITY_HAZARD_PATTERNS.every(p => p instanceof RegExp))
   })
 })

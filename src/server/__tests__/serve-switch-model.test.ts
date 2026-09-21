@@ -330,6 +330,24 @@ test('listAllModels: keyless loopback provider 保留（ollama 形态）', () =>
   assert.ok(models.some(m => m.provider === 'ollama' && m.id === 'm-local'), '本地无密钥端点照常列出')
 })
 
+test('listAllModels: effortSupported 按协议/能力判定（选择器据此禁用假调档）', () => {
+  // keyless loopback：绕过 providerHasUsableAuth 的凭据过滤，让条目真的进列表。
+  const plain = {
+    name: 'custom-plain', baseUrl: 'http://127.0.0.1:11434/v1', protocol: 'openai',
+    capabilities: {}, models: [{ id: 'm-plain', contextWindow: 128_000, maxTokens: 4096 }],
+    thinking: 'enabled', maxTokens: 64_000, unsupported: [],
+  } as ProviderConfig
+  const responses = {
+    ...plain, name: 'custom-resp', protocol: 'openai-responses',
+    models: [{ id: 'm-resp', contextWindow: 128_000, maxTokens: 4096 }],
+  } as ProviderConfig
+  const ctx = ctxWith({ deepseek: deepseekProvider('sk-live'), 'custom-plain': plain, 'custom-resp': responses })
+  const models = listAllModelsWithReload(ctx, () => ctx)
+  assert.equal(models.find(m => m.provider === 'custom-plain')?.effortSupported, false)
+  assert.equal(models.find(m => m.provider === 'custom-resp')?.effortSupported, true)
+  assert.equal(models.find(m => m.provider === 'deepseek')?.effortSupported, true)
+})
+
 test('listAllModels: env key 注入后 provider 出现', () => {
   process.env.RIVET_TEST_ENV_KEY_PROV = 'sk-env'
   try {

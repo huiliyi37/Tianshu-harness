@@ -277,7 +277,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
     compact: input.compact,
     cwd: input.cwd,
     blockPolicy,
-    providerProfile: getProviderProfile(provider.name, model.contextWindow),
+    providerProfile: getProviderProfile(provider.name, model.contextWindow, provider.protocol),
     providerName: provider.name,
     wireContext: input.wireContext,
     // CLI meridian 接线（2026-09-06）：透传持久 SQLite 增量图——消除写工具收尾

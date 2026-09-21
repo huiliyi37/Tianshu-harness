@@ -62,6 +62,7 @@ const MODEL_SYNONYMS: Record<string, string> = {
   'sf-glm': 'zai-org/GLM-5.2',
   'sf-kimi': 'moonshotai/Kimi-K2.7-Code',
   'sf-qwen': 'Qwen/Qwen3.6-27B',
+  'grok': 'grok-4.6',
   'sol': 'gpt-5.6-sol',
   'terra': 'gpt-5.6-terra',
   'luna': 'gpt-5.6-luna',

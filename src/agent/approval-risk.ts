@@ -42,6 +42,41 @@ const GLOBAL_INSTALL_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\b(?:brew|cargo)\s+install\b/,
 ]
 
+/**
+ * 可用性危害（availability hazard）——不破坏数据、却夺走操作者对本机控制权的
+ * 命令形态：抢占前台 + 合成键鼠事件（issue #235：agent 用 shell 跑 PowerShell
+ * P/Invoke user32，运行时用户键鼠被反复夺取，且没有审批、没有中断入口）。
+ *
+ * 威胁模型与「破坏数据/系统」是两回事，所以单列一张表：用户面对的是「是否允许
+ * 它占用我的键鼠」而不是「是否允许它删文件」——决策理由必须不同（见 assessToolRisk）。
+ *
+ * 判据是「注入原语 + 调用形态 / 解释器上下文」，不是裸关键词——读自己的源码
+ * （`grep -rn "SetForegroundWindow" src/`、`cat windows-driver.ts`）里出现同样的词
+ * 但没有任何执行语义，必须保持免审。函数名一律要求后跟 `(` 或 PowerShell 静态
+ * 调用 `::`；GUi 注入库（pyautogui/pynput…）与 xdotool 这类工具的唯一用途就是
+ * 模拟输入，单独出现即成判据。
+ *
+ * 误报方向刻意偏严（多一次审批），但两个高频形态被显式排除：翻源码的 grep/cat、
+ * 以及 computer_use 工具自身生成的脚本（不经 bash 工具，不进本判定）。
+ */
+export const AVAILABILITY_HAZARD_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
+  // ── Windows：P/Invoke 声明 user32（合成输入 / 前台抢占的必经形态）──
+  /\bDllImport\s*\([^)\n]*\buser32/i,
+  // 注入函数调用形态（要求左括号，避免裸关键词误报）
+  /\b(?:SetForegroundWindow|SetCursorPos|BringWindowToTop|mouse_event|keybd_event|SendInput|BlockInput)\s*\(/i,
+  /\bSendKeys\b[^\n]*(?:\(|::)/i,
+  /\bAppActivate\s*\(/i,
+  // 解释器 + GUI 注入能力：ctypes 直调 Win32、以及纯粹的输入模拟库
+  /\b(?:pyautogui|pynput|pywinauto|AutoIt|AutoHotkey)\b/i,
+  /\bctypes\b[^\n]*\b(?:windll|user32)\b/i,
+  // ── macOS：osascript 合成键鼠 / CGEvent 底层合成 ──
+  /\bosascript\b[^\n]*\b(?:keystroke|key\s*code)\b/i,
+  /\bosascript\b[^\n]*\bSystem\s+Events\b[^\n]*\b(?:click|perform\s+action|set\s+value)\b/i,
+  /\bCGEventPost\s*\(/i,
+  // ── 通用输入注入工具（Linux 宿主同样适用）──
+  /\bxdotool\b/i,
+]
+
 // Destructive commands — uses shared pattern list
 export const DANGEROUS_BASH_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   // rm 递归+强制：合并形态（-rf/-fr）与拆分形态（rm -r -f / --recursive --force，顺序任意）同门禁。
@@ -81,6 +116,7 @@ export const DANGEROUS_BASH_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\bxargs\b.*\brm\b/,                                        // mass deletion via xargs pipe
   /\bbase64\b[^\n]*\|\s*(?:\S*\/)?(?:sh|bash|zsh|fish)\b/,             // obfuscated execution via base64 decode
   ...GLOBAL_INSTALL_PATTERNS,                                  // global package installs — environment-level mutation
+  ...AVAILABILITY_HAZARD_PATTERNS,                             // GUI 输入注入——危害用户可用性（issue #235）
 ]
 
 /**
@@ -356,7 +392,16 @@ export function assessToolRisk(
   // Destructive commands — uses shared pattern list
   if (toolName === 'bash') {
     const cmd = typeof input.command === 'string' ? input.command : ''
+    // 可用性危害单列（issue #235）：威胁模型是「夺走操作者对本机的控制权」，
+    // 不是「破坏数据」——auto-safe 档此前对该载荷判 none（静默放行），
+    // 单列后 high 同时覆盖 manual 档（matchesDangerousBash）与 auto-safe 档（此处）。
+    if (AVAILABILITY_HAZARD_PATTERNS.some(pattern => testBoth(pattern, cmd))) {
+      reasons.push('GUI 输入注入：抢占前台 / 合成键鼠事件——执行期间操作者失去本机控制权')
+      level = 'high'
+    }
     for (const pattern of DANGEROUS_BASH_PATTERNS) {
+      // 可用性危害已单独报因（措辞不同），不重复贴 "destructive" 标签
+      if (AVAILABILITY_HAZARD_PATTERNS.includes(pattern)) continue
       if (testBoth(pattern, cmd)) {
         // Distinguish force push for clearer reason
         if (pattern === FORCE_PUSH_PATTERN) {

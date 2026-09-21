@@ -21,7 +21,7 @@ import { loadConfig } from '../config/manager.js'
 import { modelConfigSchema, type ModelConfig } from '../config/schema.js'
 import {
   addProviderKey,
-  addProviderKeyModel,
+  addProviderKeyModels,
   listProviderKeys,
   removeProviderKey,
   removeProviderKeyModel,
@@ -172,7 +172,8 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
       const parsed = parseModels(raw)
       if ('error' in parsed) return { status: 400, body: { error: parsed.error } }
       try {
-        for (const entry of parsed.models) addProviderKeyModel(name, keyId, entry)
+        // 整单校验 + 一次落盘：中途冲突不得留下半批（见 provider-key-store 注释）。
+        addProviderKeyModels(name, keyId, parsed.models)
         return { status: 200, body: { ok: true, added: parsed.models.map(m => m.id), keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }

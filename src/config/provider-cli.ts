@@ -11,7 +11,7 @@ import { probeProvider, aliasTableWithProbeInfos, type ProbeReport } from '../ap
 import { normalizeBaseUrl } from '../api/endpoint-map.js'
 import { matchModelIds, type ModelMatchResult } from '../api/model-id-matcher.js'
 import type { ModelAliasMetadata } from '../api/model-aliases.js'
-import type { ModelConfig, ProviderCapabilitiesConfig } from './schema.js'
+import { PROVIDER_PROTOCOL_VALUES, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderProtocol } from './schema.js'
 import { contractModels } from './contract-models.js'
 
 export interface ProviderCliIO {
@@ -149,7 +149,7 @@ async function cmdAdd(args: string[], io: ProviderCliIO): Promise<void> {
   const name = args[1]
   const rawBaseUrl = readFlag(args, '--base-url')
   if (!name || !rawBaseUrl) {
-    err(io, 'Usage: rivet provider add <name> --base-url <url> [--api-key KEY|--api-key-env ENV] [--protocol anthropic] [--no-probe] [--force] [--default]')
+    err(io, 'Usage: rivet provider add <name> --base-url <url> [--api-key KEY|--api-key-env ENV] [--protocol openai|anthropic|openai-responses] [--no-probe] [--force] [--default]')
     exit(io, 1)
     return
   }
@@ -158,12 +158,12 @@ async function cmdAdd(args: string[], io: ProviderCliIO): Promise<void> {
   const apiKey = readFlag(args, '--api-key')
   const apiKeyEnv = readFlag(args, '--api-key-env')
   const protocolRaw = readFlag(args, '--protocol')
-  if (protocolRaw !== undefined && protocolRaw !== 'openai' && protocolRaw !== 'anthropic') {
-    err(io, `Invalid --protocol "${protocolRaw}" (expected openai or anthropic)`)
+  if (protocolRaw !== undefined && !(PROVIDER_PROTOCOL_VALUES as readonly string[]).includes(protocolRaw)) {
+    err(io, `Invalid --protocol "${protocolRaw}" (expected ${PROVIDER_PROTOCOL_VALUES.join(' | ')})`)
     exit(io, 1)
     return
   }
-  const protocol = protocolRaw as 'openai' | 'anthropic' | undefined
+  const protocol = protocolRaw as ProviderProtocol | undefined
   const noProbe = hasFlag(args, '--no-probe')
   const key = apiKey ?? (apiKeyEnv ? process.env[apiKeyEnv] : undefined)
 

@@ -256,6 +256,31 @@ export function addProviderKeyModel(providerName: string, keyId: string, model: 
   saveConfig(cfg)
 }
 
+/**
+ * key 级批量新增：先整单校验、再一次落盘。任一项冲突（与既有池重复 / 批内重复）
+ * 整批不写——逐项 saveConfig 会在中途冲突时留下半批落盘：UI 收到 400 以为没保存，
+ * 重试又永远卡在第一项冲突上，后面的新模型再也进不去（连续保存存不上）。
+ */
+export function addProviderKeyModels(providerName: string, keyId: string, models: ModelConfig[]): void {
+  const cfg = loadConfig()
+  const provider = requireProvider(cfg, providerName)
+  const key = requireKey(provider, keyId)
+  const existing = new Set(key.models.map(m => m.id))
+  const conflicts = new Set<string>()
+  const seen = new Set<string>()
+  for (const model of models) {
+    if (existing.has(model.id) || seen.has(model.id)) conflicts.add(model.id)
+    seen.add(model.id)
+  }
+  if (conflicts.size > 0) {
+    const ids = [...conflicts].map(id => `"${id}"`).join(', ')
+    throw new Error(`Model ${ids} already exists under key "${keyId}"`)
+  }
+  key.models = [...key.models, ...models]
+  provider.userSaved = true
+  saveConfig(cfg)
+}
+
 /** 覆盖该 key 名下的同 id 模型（UI 编辑 ctx/max/视觉标记用）；不存在则新增。 */
 export function upsertProviderKeyModel(providerName: string, keyId: string, model: ModelConfig): void {
   const cfg = loadConfig()

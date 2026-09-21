@@ -15,7 +15,10 @@ import {
   defaultDriverFactory,
   type BrowserDebugDriver,
   type BrowserDebugDriverFactory,
+  type BrowserInputEvent,
   type DriverEvents,
+  type ScreencastFrame,
+  type ScreencastOptions,
 } from './driver.js'
 
 export const DEFAULT_SESSION_KEY = '__default__'
@@ -43,6 +46,9 @@ export class BrowserDebugSession {
   readonly connectUrl?: string
   readonly userDataDir?: string
   private outputSink: OutputSink | null = null
+  /** 实时帧流订阅者；每次订阅/退订按引用计数决定是否起停 screencast。 */
+  private frameSubscribers = new Set<(frame: ScreencastFrame) => void>()
+  private screencastActive = false
 
   private constructor(
     sessionKey: string,
@@ -69,6 +75,67 @@ export class BrowserDebugSession {
     } catch {
       /* ignore */
     }
+  }
+
+  // ── 实时帧流（供内嵌浏览器视图订阅）────────────────────────────────────
+  // 多订阅者共享**一条** screencast；引用计数归零即停播——面板关掉之后不该让
+  // 浏览器继续无谓地编码帧。
+
+  /** 订阅实时画面，返回幂等退订函数。driver 无帧流能力时返回 no-op 退订。 */
+  async subscribeFrames(
+    onFrame: (frame: ScreencastFrame) => void,
+    opts?: ScreencastOptions,
+  ): Promise<() => void> {
+    if (typeof this.driver.startScreencast !== 'function') {
+      return () => {}
+    }
+    this.frameSubscribers.add(onFrame)
+    if (!this.screencastActive) {
+      this.screencastActive = true
+      try {
+        await this.driver.startScreencast(opts ?? {}, (frame) => {
+          for (const cb of this.frameSubscribers) {
+            try {
+              cb(frame)
+            } catch {
+              /* 单个订阅者抛错不影响其余 */
+            }
+          }
+        })
+      } catch (err) {
+        this.screencastActive = false
+        this.frameSubscribers.delete(onFrame)
+        throw err
+      }
+    }
+    let unsubscribed = false
+    return () => {
+      if (unsubscribed) return
+      unsubscribed = true
+      this.frameSubscribers.delete(onFrame)
+      if (this.frameSubscribers.size === 0 && this.screencastActive) {
+        this.screencastActive = false
+        void this.driver.stopScreencast?.().catch(() => {})
+      }
+    }
+  }
+
+  /** 是否正在推流。 */
+  get streaming(): boolean {
+    return this.screencastActive
+  }
+
+  /** 取一张当前画面（连接瞬间补首帧，避免静态页黑屏）。无能力时返回 null。 */
+  async captureFrame(opts?: ScreencastOptions): Promise<ScreencastFrame | null> {
+    if (typeof this.driver.captureFrame !== 'function') return null
+    return await this.driver.captureFrame(opts).catch(() => null)
+  }
+
+  /** 反向注入输入事件。返回是否被驱动接受（无能力时 false）。 */
+  async dispatchInput(evt: BrowserInputEvent): Promise<boolean> {
+    if (typeof this.driver.dispatchInput !== 'function') return false
+    await this.driver.dispatchInput(evt)
+    return true
   }
 
   static async open(opts: OpenSessionOptions): Promise<BrowserDebugSession> {
@@ -117,6 +184,10 @@ export class BrowserDebugSession {
     } finally {
       this.log.clear()
       this.outputSink = null
+      // 关会话即断流：清空订阅者并复位推流标记，否则复用的 sessionKey 会误判
+      // 「已经在推流」而不再启动 screencast。
+      this.frameSubscribers.clear()
+      this.screencastActive = false
     }
   }
 }
@@ -183,6 +254,11 @@ export async function getOrCreateSession(opts: {
 
 export function getSession(sessionKey: string = DEFAULT_SESSION_KEY): BrowserDebugSession | null {
   return sessions.get(sessionKey) ?? null
+}
+
+/** 当前活跃会话的 sessionKey 列表——供实时视图列举「可以看哪个浏览器」。 */
+export function listSessionKeys(): string[] {
+  return [...sessions.keys()]
 }
 
 export async function closeSession(sessionKey: string = DEFAULT_SESSION_KEY): Promise<void> {

@@ -314,6 +314,39 @@ describe('multi-key server contract', () => {
     assert.equal(missing.status, 400)
   })
 
+  it('批量新增整单校验：含冲突项时整批不落盘（no partial write）', async () => {
+    writeConfig(home, {
+      [RELAY]: {
+        name: RELAY,
+        baseUrl: 'http://127.0.0.1:1/v1',
+        keys: [{ id: 'k2', models: [{ id: 'existing' }] }],
+        models: [],
+      },
+    }, RELAY)
+    router = createRouter(buildConfigRoutes(TOKEN)) as Router
+
+    const mixed = await router('POST', `/config/providers/${RELAY}/keys/k2/models`, {
+      models: [{ id: 'existing' }, { id: 'brand-new' }],
+    }, AUTH)
+    assert.equal(mixed.status, 400)
+    assert.match(String((mixed.body as { error: string }).error), /already exists/)
+    assert.deepEqual(
+      loadConfig().provider.providers[RELAY]!.keys![0]!.models.map(m => m.id),
+      ['existing'],
+      '冲突批次不得部分落盘 brand-new',
+    )
+
+    const intraDup = await router('POST', `/config/providers/${RELAY}/keys/k2/models`, {
+      models: [{ id: 'twice' }, { id: 'twice' }],
+    }, AUTH)
+    assert.equal(intraDup.status, 400)
+    assert.deepEqual(
+      loadConfig().provider.providers[RELAY]!.keys![0]!.models.map(m => m.id),
+      ['existing'],
+      '批内重复同样整批拒绝、零落盘',
+    )
+  })
+
   it('upserts and deletes a model within the addressed key only', async () => {
     writeConfig(home, {
       [RELAY]: {

@@ -629,6 +629,19 @@ export class TuiApp {
   /** 消息队列（W4a：streaming 时 Enter 入队，turn 边界 drain 注入） */
   readonly steerBuffer = new SteerBuffer()
   /**
+   * issue #238 同族（TUI 侧）——run 进行中提交、但插话通道送不出去的附件。
+   *
+   * SteerBuffer 的 drain 契约是 string（工具边界注入的只能是文本），图片没有注入
+   * 路径：此前这条路径会把图片静默丢掉（气泡渲染了图、模型从未收到、无提示）。
+   * 现在暂存到这里，随下一条 prompt 一并发出，并即时告知用户去向。
+   */
+  private deferredImages: string[] = []
+
+  /** 测试断言用：暂存待随下一条 prompt 发送的附件数。 */
+  getDeferredImagesCount(): number {
+    return this.deferredImages.length
+  }
+  /**
    * /queue 显式排队 lane：简单 FIFO（不走 steer 的优先级/意图分类）。
    * busy/idle 都可入队；不进 steer 队列（不参与 turn 边界 drain），
    * 只在下一次 idle 提交时随 steer 残留一并归并进新 prompt 前部（见 handleInputSubmit）。
@@ -1719,6 +1732,9 @@ export class TuiApp {
       const delivered = this.workerSteer?.(target, trimmed) ?? false
       if (!delivered) {
         this.commitStatic(color('⚠ 该子代理已结束或不支持直达，消息未送达', this.theme.warning))
+      } else if (images?.length) {
+        // 直达通道同样只承载文本（workerSteer 入参是 string）——附件不静默吞掉。
+        this.commitStatic(color(`⚠ ${images.length} 张图片未随直达消息发送（子代理通道仅支持文本）`, this.theme.warning))
       }
       this.renderLive()
       return
@@ -1744,6 +1760,12 @@ export class TuiApp {
     if (this.agentBusy && trimmed) {
       await this.awaitUserCommit(trimmed, images)
       this.steerBuffer.push(trimmed)
+      // 插话只走文本：图片暂存到下一轮随 prompt 发出，并明确告知去向。此前这里是
+      // 静默丢弃——气泡里图已经显示出来了，用户以为模型看到了，实际从未收到。
+      if (images?.length) {
+        this.deferredImages.push(...images)
+        this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（插话通道仅能传文本）`, this.theme.muted))
+      }
       this.renderLive()
       return
     }
@@ -1793,7 +1815,13 @@ export class TuiApp {
     // Reset turn timer for the new turn
     this.state.turnStartMs = Date.now()
     this.streamRenderController.lastActivityMs = Date.now()
-    this.onSubmitCallback?.(submitText, images)
+    // 上一 run 期间暂存的附件（插话送不出去的图片）随本次 prompt 一次性发出：
+    // 顺序按时间序——暂存在前、本次提交的图在后（与文本归并同序）。
+    const outgoingImages = this.deferredImages.length > 0
+      ? [...this.deferredImages, ...(images ?? [])]
+      : images
+    if (this.deferredImages.length > 0) this.deferredImages = []
+    this.onSubmitCallback?.(submitText, outgoingImages)
   }
 
   /** Contract 预览按键：Enter 确认 / e 返回编辑 / Esc 取消。返回是否已消费。 */
@@ -4491,6 +4519,12 @@ export class TuiApp {
   submitText(text: string, images?: string[]): void {
     // 入口先规范化图片数组，气泡/渲染/回调看到的是同一份。
     images = normalizeSubmitImages(images)
+    // 暂存附件（run 期间插话送不出去的图）与 handleInputSubmit 走同一条出口：
+    // 否则 slash/workflow 路径会让它们滞留到下一次打字提交（附件必达不变量）。
+    if (this.deferredImages.length > 0) {
+      images = normalizeSubmitImages([...this.deferredImages, ...(images ?? [])])
+      this.deferredImages = []
+    }
     // 带图提交是异步原子单元（转码完成后「气泡+图片」一起落 scrollback），
     // agent 必须等它落地后再启动，保证图片先于 assistant 输出。
     const pending = this.commitUserPrompt(text, images)
@@ -4973,6 +5007,7 @@ export class TuiApp {
   clearScreen(): void {
     process.stdout.write('\x1B[2J\x1B[H')
     this.live.reset()
+    this.resetLiveHighWater()
     this.renderLive()
   }
 
@@ -6327,6 +6362,15 @@ export class TuiApp {
   private liveRowsHighWater = 0
 
   /**
+   * 会话边界重置高水位：/clear（整屏重绘）与 /resume 切换会话（对齐
+   * tianshu-public 的 newSession/switchSession 重置点）。旧会话的峰值预留位
+   * 对新会话无意义，不重置则上一次长回合的空白永久残留。
+   */
+  resetLiveHighWater(): void {
+    this.liveRowsHighWater = 0
+  }
+
+  /**
    * @file 节点 exists 诊断（按输入值缓存——同值不重复 existsSync）。
    * 返回第一个不存在的 @file:/@folder: 引用值；无引用或均存在时 null。
    */
@@ -6828,11 +6872,10 @@ export class TuiApp {
         ascii: useAsciiGlyphs(),
       })
       if (taskLines.length > 0) {
-        lines.push({ text: '' })
         // 面板行走 clampLine（与其余 chrome 同口径）：满列行会在 CJK 终端折行，
-        // rowsForLine 少算导致旧帧残留被提交进 scrollback。
+        // rowsForLine 少算导致旧帧残留被提交进 scrollback。上下不夹空行
+        //（对齐 tianshu-public——空行只会被定高视口的垫行吸收，徒增 chrome 高度）。
         for (const taskLine of taskLines) lines.push({ text: this.clampLine(taskLine) })
-        lines.push({ text: '' })
       }
     }
 

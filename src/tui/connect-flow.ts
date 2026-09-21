@@ -19,7 +19,7 @@
  */
 
 import type { SetupProviderOptions } from '../config/manager.js'
-import type { ModelConfig, ProviderAdvancedConfig } from '../config/schema.js'
+import type { ModelConfig, ProviderAdvancedConfig, ProviderProtocol } from '../config/schema.js'
 import { PROVIDER_PRESETS, providerPresetKeys, isProviderPresetKey, type ProviderPresetKey, type ProviderPreset } from '../config/provider-presets.js'
 import { matchModelIds, type ModelMatchResult } from '../api/model-id-matcher.js'
 import { aliasTableWithProbeInfos, isVisionCapableId, VISION_PROBE_GROUND_TRUTH, type ProbeReport } from '../api/provider-probe.js'
@@ -106,7 +106,7 @@ export type ConnectCommit =
       baseUrl: string
       /** Empty for local endpoints (Ollama/vLLM) that need no auth. */
       apiKey?: string
-      protocol: 'openai' | 'anthropic'
+      protocol: ProviderProtocol
       /** Multi-model; partial entries are normalized by registerProvider. */
       models: Array<Partial<ModelConfig> & { id: string }>
       makeDefault: boolean
@@ -123,7 +123,7 @@ export type ConnectStepResult =
   | { kind: 'next'; view: ConnectView }
   | { kind: 'error'; message: string; view: ConnectView }
   /** Async probe request — the TUI runs probeProvider and calls applyProbe/probeFailed. */
-  | { kind: 'probe'; baseUrl: string; apiKey?: string; protocol: 'openai' | 'anthropic'; probeModel?: string; providerName?: string }
+  | { kind: 'probe'; baseUrl: string; apiKey?: string; protocol: ProviderProtocol; probeModel?: string; providerName?: string }
   | { kind: 'commit'; commit: ConnectCommit; summary: string }
 
 type Phase =
@@ -186,7 +186,7 @@ interface Collected {
   billingMode?: string
   baseUrl?: string
   /** Wire protocol for the DIY/custom path (defaults to openai-compatible). */
-  protocol?: 'openai' | 'anthropic'
+  protocol?: ProviderProtocol
   /** Set when the entered URL was normalized (request-path tail stripped) at collection. */
   urlNormalized?: boolean
   apiKey?: string
@@ -1120,11 +1120,12 @@ export class ConnectFlow {
         return {
           kind: 'choice',
           title: '选择 API 协议',
-          subtitle: '大多数中转/网关是 OpenAI 兼容协议；Anthropic 原生端点选第二项',
+          subtitle: '大多数中转/网关是 OpenAI 兼容协议；Anthropic 原生端点选第二项；只有 /v1/responses 的端点选第三项',
           stepLabel: this.diyStepLabel(1),
           options: [
             { id: 'openai', label: 'OpenAI 兼容（/v1/chat/completions）', recommended: true },
             { id: 'anthropic', label: 'Anthropic 原生（/v1/messages）' },
+            { id: 'openai-responses', label: 'OpenAI Responses（/v1/responses）' },
           ],
         }
       case 'diy-url':
@@ -1133,7 +1134,9 @@ export class ConnectFlow {
           title: '输入服务商 API 地址',
           subtitle: this.collected.protocol === 'anthropic'
             ? '例如 https://api.anthropic.com（协议：Anthropic 原生）'
-            : '例如 https://api.deepseek.com/v1（可粘贴）',
+            : this.collected.protocol === 'openai-responses'
+              ? '例如 https://api.openai.com/v1（协议：Responses；可粘贴完整 /v1/responses 地址）'
+              : '例如 https://api.deepseek.com/v1（可粘贴）',
           stepLabel: this.diyStepLabel(2),
           placeholder: 'https://',
         }
@@ -1514,7 +1517,7 @@ export class ConnectFlow {
       return { kind: 'error', message: `未知选项：${id}`, view: this.view() }
     }
     if (this.phase === 'diy-protocol') {
-      if (id !== 'openai' && id !== 'anthropic') {
+      if (id !== 'openai' && id !== 'anthropic' && id !== 'openai-responses') {
         return { kind: 'error', message: `未知选项：${id}`, view: this.view() }
       }
       this.collected.protocol = id

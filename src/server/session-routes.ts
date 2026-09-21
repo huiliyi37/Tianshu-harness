@@ -11,6 +11,9 @@
  *   GET    /sessions/:id                               one record
  *   POST   /sessions/:id/prompt                        start a run
  *   POST   /sessions/:id/steer                         queue mid-run guidance (T3)
+ *   POST   /sessions/:id/fork                          copy the conversation into a new session (P1-1)
+ *   POST   /sessions/:id/snapshot/export               build a redacted shareable snapshot (P1-4)
+ *   POST   /sessions/:id/snapshot/import               validate a local snapshot file (P1-4)
  *   POST   /sessions/:id/abort                         abort
  *   GET    /sessions/:id/events?since=N                replay tail (B3)
  *   GET    /sessions/:id/files?q=&limit=                @file mention picker (D2)
@@ -36,6 +39,7 @@ import { allowedCorsOrigin } from './cors.js'
 import type { SseConnectionRegistry } from './sse-registry.js'
 import { SseStream } from './sse-stream.js'
 import type { RuntimeSessionManager } from './session-manager.js'
+import { buildSessionSnapshot, isImportableSnapshot } from './session-snapshot.js'
 import type { Artifact } from '../artifact/types.js'
 import type { SessionRegistry } from '../agent/session-registry.js'
 import type { ApprovalMode } from '../agent/loop-types.js'
@@ -48,6 +52,12 @@ import { isSessionWorkspaceMode, type SessionWorkspaceMode } from './workspace.j
 import { computeUsageCost, findModelPricing } from '../utils/pricing.js'
 import { getRollbackPreview, rollbackToCheckpoint, makeOwnershipGuard } from '../agent/checkpoint.js'
 import { listProjectFiles, rankFiles, listDirEntries } from './file-list.js'
+import {
+  MAX_DOCUMENTS,
+  MAX_DOCUMENT_BYTES,
+  MAX_IMAGES,
+  MAX_IMAGE_BYTES,
+} from './attachment-limits.js'
 import { listPrs, getPrDetail, isGhAvailable, getPrDiff, submitPrReview, listPrChecks, getCheckRunLog, mergePr, type PrReviewInput } from './gh-cli.js'
 import { pushFixToPrBranch } from './pr-fix-push.js'
 import { resolveAppPromptInput } from '../tui/slash-commands.js'
@@ -91,18 +101,12 @@ type SessionRouteDependencies = {
   sseRegistry?: SseConnectionRegistry
 }
 
-/** Vision upload guards — provider-safe formats and a per-image byte ceiling. */
-const MAX_IMAGES = 4
-/** Document attachment guards (word/excel/pdf — extracted server-side). */
-const MAX_DOCUMENTS = 4
-const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+/** Vision／文档附件上限（MAX_IMAGES / MAX_DOCUMENTS / MAX_IMAGE_BYTES /
+ *  MAX_DOCUMENT_BYTES）统一由 attachment-limits.ts 提供——队列归并的配额
+ *  治理读同一来源。 */
 
 /** Cap on a single CI check log payload returned to the desktop (tail-kept). */
 const MAX_CHECK_LOG_CHARS = 200_000
-/** Per-image decoded byte cap — 与 TUI（image-attach.ts）、桌面端压缩出口
- *  （image-compress.ts MAX_OUTPUT_BYTES）、read_file 工具统一 10MB；
- *  DeepSeek 官方 base64 内联上限 32MiB，10MB 在安全区内。 */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const ACCEPTED_IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,.+$/i
 
 /** Decoded byte size of a `data:...;base64,<payload>` URL (without decoding it). */
@@ -305,6 +309,9 @@ async function sendReplayTimeSliced(
     }
   }
 }
+
+/** 导入快照的体积上限：快照是纯文本对话（无工具面），5MB 已远超正常分享件。 */
+const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 
 export function buildSessionRoutes(
   manager: RuntimeSessionManager,
@@ -1005,23 +1012,51 @@ export function buildSessionRoutes(
     // desktop knows to use /prompt instead. Bearer-gated.
     // Phase 2 — body 也可为 { laneId }：把 queue lane 里仍 queued 的条目升级为
     // steer（立即参与本轮 mid-turn 注入）。
+    // #238 — 插话通道只注入文本（SteerBuffer → tool_result），图片/文档没有注入
+    // 路径：body 带附件即 400，含附件的 lane 条目升级即 409——与前端禁用「立即
+    // 引导」同门，不让附件在升级路径上静默消失。
     'POST /sessions/:id/steer': withAuth((body, params) => {
-      const data = (body ?? {}) as { text?: string; laneId?: string }
+      const data = (body ?? {}) as { text?: string; laneId?: string; images?: unknown; documents?: unknown }
       const laneId = typeof data.laneId === 'string' && data.laneId.trim() ? data.laneId.trim() : undefined
       const text = typeof data.text === 'string' && data.text.trim() ? data.text.trim() : undefined
       if (!laneId && !text) {
         return { status: 400, body: { error: 'Missing or empty "text" field (or provide "laneId" to upgrade a queued entry)' } }
       }
+      // 只拒真带附件的请求：空数组（images: []）等价于"无附件"，不该被 fail-closed
+      // 文案误导（R4，2026-09-21 独立反证审查）。
+      const hasAttachments =
+        (Array.isArray(data.images) && data.images.length > 0) ||
+        (Array.isArray(data.documents) && data.documents.length > 0)
+      if (hasAttachments) {
+        return {
+          status: 400,
+          body: {
+            error: 'Attachments cannot be injected mid-run; queue the message instead — queued attachments are sent with the next turn',
+            code: 'attachments_not_steerable',
+          },
+        }
+      }
       const result = laneId
         ? manager.steer(params!.id!, { laneId })
         : manager.steer(params!.id!, text!)
       if (result === 'not_found') return { status: 404, body: { error: 'Session not found' } }
-      if (result === 'lane_not_found') return { status: 404, body: { error: 'Queue lane entry not found' } }
+      if (result === 'lane_not_found') {
+        return { status: 404, body: { error: 'Queue lane entry not found', code: 'lane_not_found' } }
+      }
       if (result === 'idle') {
-        return { status: 409, body: { error: 'Session is not running; use /prompt to start a turn' } }
+        return { status: 409, body: { error: 'Session is not running; use /prompt to start a turn', code: 'idle' } }
       }
       if (result === 'lane_not_queued') {
-        return { status: 409, body: { error: 'Queue lane entry is no longer queued (steered/retracted/merged)' } }
+        return { status: 409, body: { error: 'Queue lane entry is no longer queued (steered/retracted/merged)', code: 'lane_not_queued' } }
+      }
+      if (result === 'lane_has_attachments') {
+        return {
+          status: 409,
+          body: {
+            error: 'Queue lane entry carries attachments and cannot be steered mid-run; it will be sent with the next turn',
+            code: 'lane_has_attachments',
+          },
+        }
       }
       return { status: 200, body: { queued: true } }
     }, apiToken),
@@ -1029,15 +1064,54 @@ export function buildSessionRoutes(
     // Phase 2 queue lane — busy 期间排队跟进消息（不注入本轮）：下次 prompt 时
     // 归并进消息前部，或经 /steer { laneId } 升级、/queue/retract 撤回。
     // 与 /steer 同门槛：idle → 409。Bearer-gated。
-    'POST /sessions/:id/queue': withAuth((body, params) => {
-      const data = (body ?? {}) as { text?: string }
+    // #238 — 排队消息与 /prompt 同构地携带附件：图片按 MAX_IMAGES/字节上限校验后
+    // 存在 lane 条目上，文档走同一条 extractDocumentsToText 管线抽取成正文（run 是
+    // 同步入口，归并路径不能 await，故抽取必须发生在入队时）。排队总量也受单轮
+    // 上限约束——超限在此显式 400，不留到归并时静默截断。
+    'POST /sessions/:id/queue': withAuth(async (body, params) => {
+      const data = (body ?? {}) as { text?: string; images?: unknown; documents?: unknown }
       if (!data.text || typeof data.text !== 'string' || !data.text.trim()) {
         return { status: 400, body: { error: 'Missing or empty "text" field' } }
       }
-      const result = manager.queue(params!.id!, data.text.trim())
+      const imagesCheck = validateImagesPayload(data.images)
+      if (imagesCheck.error) {
+        return { status: 400, body: { error: imagesCheck.error } }
+      }
+      const docsCheck = validateDocumentsPayload(data.documents)
+      if (docsCheck.error) {
+        return { status: 400, body: { error: docsCheck.error } }
+      }
+      const id = params!.id!
+      const images = imagesCheck.images
+      const documents = docsCheck.documents
+      // 文档抽取必须发生在入队前（run 是同步入口，归并路径不能 await）——而它同时
+      // 是配额判定的 TOCTOU 窗口，故权威判定放在 manager.queue（同步块）里；此处
+      // 不做前置校验，避免"路由放行、manager 拒绝"两套语义。
+      let attachmentText: string | undefined
+      if (documents && documents.length > 0) {
+        attachmentText = (await extractDocumentsToText(documents)) ?? undefined
+      }
+      const result = manager.queue(id, data.text.trim(), {
+        ...(images?.length ? { images } : {}),
+        ...(attachmentText ? { attachmentText } : {}),
+        ...(documents?.length ? { documentNames: documents.map((d) => d.name) } : {}),
+      })
       if (result === 'not_found') return { status: 404, body: { error: 'Session not found' } }
       if (result === 'idle') {
-        return { status: 409, body: { error: 'Session is not running; use /prompt to start a turn' } }
+        return { status: 409, body: { error: 'Session is not running; use /prompt to start a turn', code: 'idle' } }
+      }
+      if (result === 'image_budget' || result === 'document_budget') {
+        // 文案在失败路径现算：配额是 lane 当前占用，失败瞬间读一次即够。
+        const usage = manager.queuedAttachmentUsage(id) ?? { images: 0, documents: 0 }
+        return result === 'image_budget'
+          ? {
+              status: 400,
+              body: { error: `排队中已有 ${usage.images} 张图片，单轮上限 ${MAX_IMAGES}`, code: 'queue_image_budget' },
+            }
+          : {
+              status: 400,
+              body: { error: `排队中已有 ${usage.documents} 个文档，单轮上限 ${MAX_DOCUMENTS}`, code: 'queue_document_budget' },
+            }
       }
       return { status: 200, body: { queued: true, laneId: result.laneId } }
     }, apiToken),
@@ -1869,6 +1943,99 @@ export function buildSessionRoutes(
         return { status: 409, body: { error: 'Session is running or index out of range' } }
       }
       return { status: 200, body: { ok: true, ...manager.getSession(params!.id!) } }
+    }, apiToken),
+
+    // ── P1-1 fork: copy the conversation into a NEW session (source untouched) ──
+    // 与 rewind 的区别：rewind 截断原会话；fork 从切点复制出一个新会话（事件流
+    // 前缀 + OAI 转录前缀 + 血缘字段），桌面端 ForkDialog 消费它。源会话日志不动。
+    'POST /sessions/:id/fork': withAuth(async (body, params) => {
+      const data = (body ?? {}) as {
+        messageIndex?: number
+        destination?: string
+        title?: string
+        source?: string
+      }
+      // messageIndex 省略 = header fork（切到最新 user 事件）；给了就必须是非负整数。
+      if (
+        data.messageIndex !== undefined &&
+        (typeof data.messageIndex !== 'number' || !Number.isInteger(data.messageIndex) || data.messageIndex < 0)
+      ) {
+        return { status: 400, body: { error: 'Invalid "messageIndex"' } }
+      }
+      if (
+        data.destination !== undefined &&
+        data.destination !== 'local' &&
+        data.destination !== 'same-worktree' &&
+        data.destination !== 'new-worktree'
+      ) {
+        return { status: 400, body: { error: 'Invalid "destination" (local | same-worktree | new-worktree)' } }
+      }
+      if (data.title !== undefined && typeof data.title !== 'string') {
+        return { status: 400, body: { error: 'Invalid "title" (string expected)' } }
+      }
+      const result = await manager.forkSession(params!.id!, {
+        ...(data.messageIndex !== undefined ? { messageIndex: data.messageIndex } : {}),
+        ...(data.destination !== undefined ? { destination: data.destination } : {}),
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.source === 'header' || data.source === 'message' ? { source: data.source } : {}),
+      })
+      if (result.ok) return { status: 200, body: { session: result.record } }
+      switch (result.reason) {
+        case 'not_found':
+          return { status: 404, body: { error: 'Session not found' } }
+        case 'running':
+          return { status: 409, body: { error: 'Session is running — stop it before forking' } }
+        case 'invalid_message_index':
+          return { status: 400, body: { error: 'messageIndex does not point at a user message' } }
+        case 'same_worktree_unavailable':
+          return { status: 409, body: { error: 'Source session has no worktree to fork into' } }
+        case 'worktree_failed':
+          return { status: 409, body: { error: 'Failed to create worktree for fork', detail: result.detail } }
+      }
+    }, apiToken),
+
+    // ── P1-4: redacted read-only snapshot export/import（回流自 3.14alpha）──
+    // 分享用快照：脱敏 + 无工具面（不含工具参数/命令/输出/原始文件）+ 可被对方
+    // 导入回灌。与桌面既有的「导出会话」（保真备份、不脱敏）是**两条路**，别合并。
+    'POST /sessions/:id/snapshot/export': withAuth(async (body, params) => {
+      const id = params!.id!
+      const record = manager.getSession(id)
+      if (!record) return { status: 404, body: { error: 'Session not found' } }
+      const data = (body ?? {}) as { includeReasoning?: boolean; includeFileChanges?: boolean }
+      const events = manager.getEvents(id, 0)?.events ?? []
+      const { snapshot, findings } = await buildSessionSnapshot(record, events, {
+        includeReasoning: data.includeReasoning === true,
+        includeFileChanges: data.includeFileChanges === true,
+      })
+      return { status: 200, body: { snapshot, findings } }
+    }, apiToken),
+
+    'POST /sessions/:id/snapshot/import': withAuth((body, params) => {
+      const record = manager.getSession(params!.id!)
+      if (!record) return { status: 404, body: { error: 'Session not found' } }
+      const { path } = (body ?? {}) as { path?: unknown }
+      if (typeof path !== 'string' || !path.trim()) {
+        return { status: 400, body: { error: 'Missing "path"' } }
+      }
+      // 只读校验：确认是文件、体积可控、是合法 JSON、版本与形状对得上（形状覆盖
+      // 消费端真正会读的字段，见 isImportableSnapshot）——四条都过了才把内容交回
+      // 前端预览。快照导入**不改会话状态**（回灌由用户在 composer 里显式发出），
+      // 所以这里没有任何写路径。
+      let stat: ReturnType<typeof statSync>
+      try { stat = statSync(path) } catch { return { status: 400, body: { error: 'Snapshot file not found or unreadable' } } }
+      if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) {
+        return { status: 400, body: { error: 'Snapshot file invalid or too large' } }
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(readFileSync(path, 'utf8'))
+      } catch {
+        return { status: 400, body: { error: 'Snapshot file is not valid JSON' } }
+      }
+      if (!isImportableSnapshot(parsed)) {
+        return { status: 400, body: { error: 'Unsupported snapshot version or shape' } }
+      }
+      return { status: 200, body: { snapshot: parsed } }
     }, apiToken),
 
     // ── Precise rewind: preview the agent-edited files a per-message code

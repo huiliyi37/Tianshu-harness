@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { startServer } from './index.js'
 import { loadProModule, resolvePresetLabel } from '../api/pro-registry.js'
+import { resolveEffortSupported } from '../api/provider.js'
 import { desktopDir, desktopSessionsDir } from '../config/paths.js'
 import { serverLogger } from './logger.js'
 import { createRoutes, type ServerState } from './routes.js'
@@ -408,6 +409,8 @@ export function listAllModels(ctx: ServeContext): {
   description?: string
   keyId?: string
   keyLabel?: string
+  /** 会话内调档能否真正上线（桌面 EffortMenu / TUI 选择器据此禁用假动作）。 */
+  effortSupported: boolean
 }[] {
   const out: {
     id: string
@@ -418,6 +421,7 @@ export function listAllModels(ctx: ServeContext): {
     description?: string
     keyId?: string
     keyLabel?: string
+    effortSupported: boolean
   }[] = []
   for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
     // 只列可用 provider——无 key 云端 / 未认证 oauth 的预设模型不进 picker。
@@ -437,13 +441,22 @@ export function listAllModels(ctx: ServeContext): {
             description: m.description,
             keyId: key.id,
             ...(key.label ? { keyLabel: key.label } : {}),
+            effortSupported: resolveEffortSupported(provName, prov, m.capabilities),
           })
         }
       }
       continue
     }
     for (const m of contractModels(prov)) {
-      out.push({ id: m.id, alias: m.id, provider: provName, providerLabel, contextWindow: m.contextWindow, description: m.description })
+      out.push({
+        id: m.id,
+        alias: m.id,
+        provider: provName,
+        providerLabel,
+        contextWindow: m.contextWindow,
+        description: m.description,
+        effortSupported: resolveEffortSupported(provName, prov, m.capabilities),
+      })
     }
   }
   return out

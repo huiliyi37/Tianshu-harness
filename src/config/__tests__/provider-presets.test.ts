@@ -2,12 +2,14 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { providerSchema, modelConfigSchema } from '../schema.js'
 import { PROVIDER_PRESETS, cloneProviderPreset, providerPresetKeys } from '../provider-presets.js'
+import { resolveCapabilities, resolveEffortSupported } from '../../api/provider.js'
+import { MODEL_ALIAS_TABLE } from '../../api/model-aliases.js'
 import { DEFAULT_CONFIG } from '../default.js'
 import { migratePresetModelBackfill } from '../preset-model-backfill.js'
 
 describe('provider presets', () => {
   it('contains required built-in provider modes', () => {
-    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'opencode-go', 'opencode-go-anthropic', 'openrouter', 'relay', 'siliconflow', 'volc', 'zhipu-vision'].sort())
+    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'grok', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'opencode-go', 'opencode-go-anthropic', 'openrouter', 'relay', 'siliconflow', 'volc', 'zhipu-vision'].sort())
   })
 
   it('ollama is the only keyless preset (local, no auth)', () => {
@@ -53,6 +55,33 @@ describe('provider presets', () => {
     assert.equal(parsed.success, true)
     assert.equal(parsed.data?.deprecated, true)
     assert.equal(parsed.data?.deprecationNote, '2026-xx-xx 下线；建议切到替代档')
+  })
+
+  it('grok 预设：grok-4.6 规格 + 推理档透传（off→low / max→xhigh）', () => {
+    const grok = cloneProviderPreset('grok')
+    assert.equal(grok.name, 'grok')
+    assert.equal(grok.baseUrl, 'https://api.x.ai/v1')
+    assert.equal(grok.apiKeyEnv, 'XAI_API_KEY')
+    const model = grok.models.find(m => m.id === 'grok-4.6')
+    assert.ok(model, 'grok-4.6 must be in the preset fleet')
+    assert.equal(model.contextWindow, 500_000, '官方 500K 上下文')
+    assert.equal(model.maxTokens, 128_000, 'max_completion_tokens 未设时官方默认 128k')
+    assert.equal(model.supportsVision, true, '文本+图片输入')
+    assert.equal(model.reasoningEffort, 'high', 'xAI reasoning_effort 默认 high')
+    assert.deepEqual(model.pricing, { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 })
+
+    // 推理档透传：reasoning_effort 通道 + 词汇映射（xAI 无 off/max，且推理不可关闭）
+    const caps = resolveCapabilities('grok', grok.capabilities, model.capabilities)
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { off: 'low', max: 'xhigh' })
+    assert.equal(resolveEffortSupported('grok', grok), true, '桌面档位带必须放行（否则静默丢弃）')
+
+    // 探测/批量导入链路：preset fleet 自动进别名表，grok-4.6 带 500K 元数据，短名 grok 可归一。
+    const alias = MODEL_ALIAS_TABLE.find(e => e.canonicalId === 'grok-4.6')
+    assert.ok(alias, 'grok-4.6 必须在别名表里（否则探测回填 128K 默认值）')
+    assert.equal(alias.metadata.contextWindow, 500_000)
+    assert.equal(alias.metadata.reasoningEffort, 'high')
+    assert.ok(alias.aliases.includes('grok'), '短名 grok 应归一为 grok-4.6')
   })
 
   it('codex preset uses OAuth and gpt-5.6-sol', () => {

@@ -1,7 +1,7 @@
 import type { ModelConfig, ProviderConfig } from './schema.js'
 import { isLoopbackBaseUrl } from './local-endpoint.js'
 
-export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'siliconflow' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
+export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'grok' | 'siliconflow' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
 
 /** 一种计费模式对应一个官方 Base URL（如百炼的按量计费 / token plan）。 */
 export interface ProviderBillingMode {
@@ -568,6 +568,44 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           tier: 'cheap',
           supportsVision: true,
           pricing: { input: 1, output: 6, cacheRead: 0.5, cacheWrite: 1 },
+        },
+      ],
+      unsupported: [],
+    },
+  },
+  grok: {
+    key: 'grok',
+    label: 'Grok (xAI)',
+    description: 'xAI Grok 官方 API：grok-4.6 旗舰，500K 上下文、图片输入；推理档 low/medium/high/xhigh（不可关闭，off 按 low 发送）',
+    defaultModelId: 'grok-4.6',
+    keyUrl: 'https://console.x.ai/team/default/api-keys',
+    provider: {
+      name: 'grok',
+      apiKeyEnv: 'XAI_API_KEY',
+      baseUrl: 'https://api.x.ai/v1',
+      protocol: 'openai',
+      capabilities: {
+        cacheControl: false,
+        // xAI 推理模型拒收 presence/frequency penalty 与 stop（官方文档）；其余为各家
+        // OpenAI 兼容端点的常规剥离项。
+        stripParams: ['frequency_penalty', 'presence_penalty', 'stop', 'top_k', 'metadata', 'service_tier', 'cache_control'],
+        toolJsonBug: false,
+        // 服务端自动 exact-prefix 缓存，无需客户端断点（x-grok-conv-id 走 wire 做粘性路由）。
+        prefixCache: 'deepseek-native',
+        prefixCompletion: false,
+      },
+      thinking: 'enabled',
+      maxTokens: 128_000,
+      models: [
+        {
+          id: 'grok-4.6',
+          description: '旗舰：500K 上下文，推理 low/medium/high/xhigh，图片输入',
+          contextWindow: 500_000,
+          maxTokens: 128_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+          supportsVision: true,
+          pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
         },
       ],
       unsupported: [],

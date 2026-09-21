@@ -20,6 +20,8 @@ export const TUNABLE_FIELD_KEYS = [
   'thinkingStallTimeoutMs',
   'maxRetries',
   'retry',
+  /** 推理档位通道声明（写入 capabilities.effortFormat，见 applyEffortFormatTunable）。 */
+  'effortFormat',
 ] as const
 
 /**
@@ -36,6 +38,12 @@ export function applyProviderTunables(provider: ProviderConfig, fields: Record<s
   for (const [key, value] of Object.entries(fields)) {
     if (!(TUNABLE_FIELD_KEYS as readonly string[]).includes(key)) {
       throw new Error(`Unknown tunable field "${key}". Allowed: ${TUNABLE_FIELD_KEYS.join(', ')}`)
+    }
+    // effortFormat 是 capabilities 的嵌套子键而非顶层字段：单独应用（null = 删子键，
+    // 回到按 provider 名推导的默认通道），不能走下面的顶层删键/查 shape 分支。
+    if (key === 'effortFormat') {
+      applyEffortFormatTunable(provider, value)
+      continue
     }
     if (value === undefined || value === null) {
       delete (provider as unknown as Record<string, unknown>)[key]
@@ -92,6 +100,26 @@ function mergeNestedTunable(existing: unknown, patch: unknown): Record<string, u
     base[subKey] = subValue
   }
   return base
+}
+
+/**
+ * 档位通道声明：唯一允许在 tunables 里写 capabilities 子键的字段。用户侧语义是
+ * 「该端点接受 reasoning_effort」（多数中转未声明时默认 none，档位会被静默丢弃）；
+ * null/undefined = 删除声明、恢复按 provider 名推导。
+ */
+function applyEffortFormatTunable(provider: ProviderConfig, value: unknown): void {
+  const caps = (provider.capabilities ?? {}) as Record<string, unknown>
+  if (value === undefined || value === null) {
+    delete caps.effortFormat
+  } else {
+    if (value !== 'reasoning_effort' && value !== 'output_config' && value !== 'none') {
+      throw new Error(
+        `Invalid value for "effortFormat": ${String(value)} (expected 'reasoning_effort', 'output_config' or 'none')`,
+      )
+    }
+    caps.effortFormat = value
+  }
+  provider.capabilities = caps as ProviderConfig['capabilities']
 }
 
 /** 纯对象判定（排除 null 与数组）——递归合并只对对象下钻。 */

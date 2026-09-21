@@ -161,6 +161,11 @@ export const providerKeySchema = z.object({
 /** 由 providerKeySchema 推出的 key 类型——provider-keys.ts 纯函数模块消费。 */
 export type ProviderKeyConfig = z.infer<typeof providerKeySchema>
 
+/** Wire-protocol union — runtime list + TS type in one place so the zod enum,
+ *  route validation and CLI parsing can never drift apart. */
+export const PROVIDER_PROTOCOL_VALUES = ['openai', 'anthropic', 'openai-responses'] as const
+export type ProviderProtocol = (typeof PROVIDER_PROTOCOL_VALUES)[number]
+
 export const providerBaseSchema = z.object({
   name: z.string(),
   apiKey: z.string().nullable().optional().transform(value => value ?? undefined),
@@ -170,10 +175,13 @@ export const providerBaseSchema = z.object({
   keyRef: z.string().nullable().optional().transform(value => value ?? undefined),
   baseUrl: z.string().url(),
   /** Wire protocol of the endpoint. 'openai' = chat/completions-compatible;
-   *  'anthropic' = /v1/messages with cache_control breakpoints. Factory dispatch
-   *  is driven ONLY by this field — provider names and capability heuristics are
-   *  not consulted. A provider NAMED 'anthropic' defaults to protocol 'anthropic'. */
-  protocol: z.enum(['openai', 'anthropic']).default('openai'),
+   *  'anthropic' = /v1/messages with cache_control breakpoints;
+   *  'openai-responses' = OpenAI Responses API (POST /v1/responses) — for
+   *  API-key endpoints that only speak the Responses format (issue #239).
+   *  Factory dispatch is driven ONLY by this field — provider names and
+   *  capability heuristics are not consulted. A provider NAMED 'anthropic'
+   *  defaults to protocol 'anthropic'. */
+  protocol: z.enum(PROVIDER_PROTOCOL_VALUES).default('openai'),
   auth: authConfigSchema.nullable().optional(),
   capabilities: providerCapabilitiesSchema,
   fallback: z.array(z.string()).optional(),

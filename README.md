@@ -45,7 +45,7 @@ Application / TUI / IDE / Desktop
               ↓
    Tianshu Cognitive Runtime      ← 状态 · 目标 · 证据 · 控制 · 回放
               ↓
-       Foundation Models          ← DeepSeek · GLM · Claude · Codex · MiniMax · MiMo …
+       Foundation Models          ← DeepSeek · GLM · Claude · Codex · Grok · MiniMax · MiMo …
 ```
 
 - **稳定交付，不虚报完成** —— 这是核心。任务契约（TaskContract）钉住全局目标，交付门禁要求「完成」必须带运行时证据（测试、diff、验证命令），收敛检测独立判断认知轨迹是否还在推进——模型说完成 ≠ 运行时确认完成。
@@ -199,6 +199,7 @@ tianshu --goal "修复所有类型错误" --budget 50  # 无头目标自主模�
 | Claude | API key（通过 `cc-switch` 代理） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（视觉）, glm-5.2 |
 | Codex (GPT-5.6) | OAuth PKCE（ChatGPT 订阅） | gpt-5.6-sol |
+| Grok (xAI) | API key | grok-4.6 (500K ctx, 视觉, 推理档 low/medium/high/xhigh) |
 | MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
 | MiMo | API key | mimo-v2.5-pro |
 

@@ -11,6 +11,39 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { errorContext, serverLogger } from './logger.js'
+// issue #236：任务字段模型 / 状态机 / 补丁已沿职责切到 scheduled-task-model.ts
+// （本文件越过 800 行红线后按结构 gate 要求拆分）。下面 re-export 保持既有
+// `from './cron-scheduler.js'` 的消费方（路由 / 工具 / 测试 / TUI）零改动。
+import {
+  REVIEW_POLICIES,
+  SCHEDULED_TASK_STATUSES,
+  applyTaskPatch,
+  isFiringStatus,
+  normalizeRetry,
+  normalizeReviewPolicy,
+  normalizeTaskStatus,
+  resolveTaskStatus,
+  withTaskStatus,
+} from './scheduled-task-model.js'
+import type {
+  ReviewPolicy,
+  ScheduledTaskPatch,
+  ScheduledTaskRetry,
+  ScheduledTaskStatus,
+} from './scheduled-task-model.js'
+
+export {
+  REVIEW_POLICIES,
+  SCHEDULED_TASK_STATUSES,
+  applyTaskPatch,
+  isFiringStatus,
+  normalizeRetry,
+  normalizeReviewPolicy,
+  normalizeTaskStatus,
+  resolveTaskStatus,
+  withTaskStatus,
+}
+export type { ReviewPolicy, ScheduledTaskPatch, ScheduledTaskRetry, ScheduledTaskStatus }
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -32,25 +65,6 @@ export interface CronTrigger {
   spec: string
 }
 
-/** Bounded automatic retry for a failed/timed_out run of a scheduled task. */
-export interface ScheduledTaskRetry {
-  /** Total attempts including the first (>= 1). */
-  maxAttempts: number
-  /** Base delay before a retry; grows linearly per attempt. */
-  backoffMs: number
-}
-
-/**
- * 任务级审查策略（付费版 v1 · T2，对标 Antigravity Review Policy）：
- * - always-review：每次运行的敏感动作都走人工审批（默认，与历史行为一致）
- * - first-runs：前 FIRST_RUNS_TRUST_THRESHOLD 次运行人工审批，之后自动转 auto-proceed
- *   （信任是挣来的）
- * - auto-proceed：无人值守——审批请求 fail-closed 中止本次运行，绝不挂起等人
- */
-export type ReviewPolicy = 'always-review' | 'first-runs' | 'auto-proceed'
-
-export const REVIEW_POLICIES: readonly ReviewPolicy[] = ['always-review', 'first-runs', 'auto-proceed']
-
 /** first-runs 策略下需要人工审批的前 N 次运行。 */
 export const FIRST_RUNS_TRUST_THRESHOLD = 3
 
@@ -64,7 +78,13 @@ export interface ScheduledTask {
   createdAt: string
   lastTriggeredAt?: string
   triggerCount: number
-  /** When false, the task is retained but never fired (paused). Default true. */
+  /**
+   * 生命周期状态（issue #236）。缺省 = 由 `enabled` 派生（旧持久化数据）；
+   * 详见 resolveTaskStatus。写入路径始终与 enabled 同步。
+   */
+  status?: ScheduledTaskStatus
+  /** When false, the task is retained but never fired (paused). Default true.
+   *  兼容镜像：新写入以 status 为准并同步本字段（enabled = status === 'active'）。 */
   enabled?: boolean
   /** Optional failure retry policy applied to each fired run. */
   retry?: ScheduledTaskRetry
@@ -345,7 +365,7 @@ export class CronScheduler {
     const normalized = normalizeScheduledTask(task)
     if (!normalized) throw new Error(`Invalid scheduled task: ${task.id}`)
     validateTriggerOrThrow(normalized.trigger)
-    if (normalized.trigger.type === 'oneshot') {
+    if (normalized.trigger.type === 'oneshot' && isFiringStatus(resolveTaskStatus(normalized))) {
       const ts = new Date(normalized.trigger.spec).getTime()
       if (!isNaN(ts) && ts < Date.now()) {
         void this.fireTask(normalized, normalized.triggerCount)
@@ -364,16 +384,49 @@ export class CronScheduler {
     return true
   }
 
-  /** Pause (enabled=false) or resume (true) a task without removing it. */
+  /**
+   * 暂停（enabled=false）/ 恢复（true）。历史入口，语义映射到状态机：
+   * false → 'paused'，true → 'active'（含从 'stopped' 归档态重新启用，
+   * 见 issue #236 状态迁移 4）。
+   */
   setEnabled(id: string, enabled: boolean): boolean {
+    return this.setStatus(id, enabled ? 'active' : 'paused')
+  }
+
+  /**
+   * 状态迁移（issue #236）：active ⇄ paused（暂停/恢复）、active|paused → stopped
+   * （停止/归档，定义与运行历史保留）、stopped → active（重新启用）。
+   * `stopped` 与删除的区别：`remove()` 物理移除定义，其运行历史入口随之失联；
+   * `stopped` 只改状态，定义仍在 `list()` 里、历史仍可按 scheduledTaskId 查。
+   */
+  setStatus(id: string, status: ScheduledTaskStatus): boolean {
+    const normalized = normalizeTaskStatus(status)
+    if (!normalized) return false
     let found = false
     this.table = this.table.map(t => {
       if (t.id !== id) return t
       found = true
-      return { ...cloneTask(t), enabled }
+      return withTaskStatus(cloneTask(t), normalized)
     })
     if (found) this.persist()
     return found
+  }
+
+  /**
+   * 原地更新（issue #236）——不再需要「删除旧任务 + 新建任务」来调整 prompt /
+   * trigger / 审查策略 / 允许工具。缺席字段不动，可选项显式 `null` 清除。
+   * 不变式：id / createdAt / triggerCount / lastTriggeredAt / cwd / status 全部保留，
+   * 所以调整定义不会丢失运行历史计数与生命周期状态。
+   * trigger 非法时抛错（与创建同口径，由路由转 400）；任务不存在返回 null。
+   */
+  update(id: string, patch: ScheduledTaskPatch): ScheduledTask | null {
+    const current = this.table.find(t => t.id === id)
+    if (!current) return null
+    const next = applyTaskPatch(cloneTask(current), patch)
+    validateTriggerOrThrow(next.trigger)
+    this.table = this.table.map(t => (t.id === id ? next : t))
+    this.persist()
+    return cloneTask(next)
   }
 
   list(): ScheduleTable {
@@ -400,7 +453,7 @@ export class CronScheduler {
    */
   runNow(id: string): boolean {
     const task = this.table.find(t => t.id === id)
-    if (!task || task.enabled === false) return false
+    if (!task || !isFiringStatus(resolveTaskStatus(task))) return false
     const updated: ScheduledTask = {
       ...cloneTask(task),
       lastTriggeredAt: new Date().toISOString(),
@@ -427,7 +480,7 @@ export class CronScheduler {
     let fired = 0
     for (const task of [...this.table]) {
       if (task.trigger.type !== triggerType) continue
-      if (task.enabled === false) continue
+      if (!isFiringStatus(resolveTaskStatus(task))) continue
       // spec 匹配：省略=全匹配；给 spec 时——事件 spec 空的任务（任意）总是 fire，
       // 非空的需 spec 全等或事件 spec 是给定路径的前缀（监听父目录覆盖子路径）。
       if (specMatch?.spec !== undefined && task.trigger.spec) {
@@ -494,8 +547,8 @@ export class CronScheduler {
       let changed = false
 
       for (const task of this.table) {
-        if (task.enabled === false) {
-          // paused — retain but never fire
+        if (!isFiringStatus(resolveTaskStatus(task))) {
+          // paused / stopped — retain but never fire
           nextTable.push(task)
           continue
         }
@@ -604,23 +657,6 @@ export function createScheduledTask(
   }
 }
 
-/** Sanitize a review policy; returns undefined for absent/invalid input. */
-export function normalizeReviewPolicy(value: unknown): ReviewPolicy | undefined {
-  return REVIEW_POLICIES.includes(value as ReviewPolicy) ? (value as ReviewPolicy) : undefined
-}
-
-/** Sanitize a retry policy; returns undefined for absent/invalid input. */
-export function normalizeRetry(retry: unknown): ScheduledTaskRetry | undefined {
-  if (!retry || typeof retry !== 'object') return undefined
-  const r = retry as Partial<ScheduledTaskRetry>
-  const maxAttempts = Number(r.maxAttempts)
-  const backoffMs = Number(r.backoffMs)
-  if (!Number.isFinite(maxAttempts) || maxAttempts < 2) return undefined
-  const safeBackoff = Number.isFinite(backoffMs) && backoffMs >= 0 ? backoffMs : 0
-  // Cap to keep the scheduler bounded.
-  return { maxAttempts: Math.min(Math.floor(maxAttempts), 10), backoffMs: Math.min(safeBackoff, 60 * 60 * 1000) }
-}
-
 /** Trigger 校验（cron 表达式 / interval 正整数 / oneshot ISO / startup/app-open 可空）。
  *  导出供 schedule 工具与 scheduler 内部共用同一校验口径。 */
 export function validateTriggerOrThrow(trigger: CronTrigger): void {
@@ -661,6 +697,11 @@ function normalizeScheduledTask(value: unknown): ScheduledTask | null {
     : []
   const createdAt = typeof task.createdAt === 'string' ? task.createdAt : new Date().toISOString()
   const triggerCount = typeof task.triggerCount === 'number' && Number.isFinite(task.triggerCount) ? task.triggerCount : 0
+  // 状态归一（issue #236）：显式 status 优先，否则由旧 enabled 派生。两者一旦
+  // 有一方存在就同时写出，使 in-memory 模型与落盘文件都保持
+  // `status ⇄ enabled` 同步——旧数据在下次写入时无损自愈。
+  const status = normalizeTaskStatus(task.status)
+    ?? (typeof task.enabled === 'boolean' ? (task.enabled ? 'active' : 'paused') : undefined)
   const normalized: ScheduledTask = {
     id: task.id,
     prompt: task.prompt,
@@ -672,7 +713,7 @@ function normalizeScheduledTask(value: unknown): ScheduledTask | null {
     ...(typeof task.agentId === 'string' ? { agentId: task.agentId } : {}),
     ...(typeof task.cwd === 'string' && task.cwd ? { cwd: task.cwd } : {}),
     ...(typeof task.lastTriggeredAt === 'string' ? { lastTriggeredAt: task.lastTriggeredAt } : {}),
-    ...(typeof task.enabled === 'boolean' ? { enabled: task.enabled } : {}),
+    ...(status ? { status, enabled: status === 'active' } : {}),
     ...(normalizeRetry(task.retry) ? { retry: normalizeRetry(task.retry)! } : {}),
     ...(normalizeReviewPolicy(task.reviewPolicy) ? { reviewPolicy: normalizeReviewPolicy(task.reviewPolicy)! } : {}),
   }

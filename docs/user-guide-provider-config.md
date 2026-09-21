@@ -413,8 +413,40 @@ curl https://opencode.ai/zen/go/v1/messages \
 
 - `protocol: 'openai'` → `OpenAIClient` → 请求 `/v1/chat/completions`
 - `protocol: 'anthropic'` → `AnthropicClient` → 请求 `/v1/messages`
+- `protocol: 'openai-responses'` → `ResponsesClient` → 请求 `/v1/responses`（OpenAI Responses API；用于只提供该版式的官方 / 中转端点，issue #239）
 
 预设 `opencode-go-anthropic` 显式写了 `protocol: "anthropic"`。手工配置时把 `name` 设为 `"anthropic"` 同样有效（schema 对名为 anthropic 的条目默认 protocol 为 anthropic），但显式 `protocol` 字段更不容易误配。
+
+Responses 协议接入示例（API Key 端点）：
+
+```json
+{
+  "provider": {
+    "providers": {
+      "my-responses": {
+        "name": "my-responses",
+        "apiKeyEnv": "MY_RESPONSES_KEY",
+        "baseUrl": "https://api.openai.com/v1",
+        "protocol": "openai-responses",
+        "capabilities": {
+          "cacheControl": false,
+          "stripParams": [],
+          "toolJsonBug": false,
+          "prefixCache": "none",
+          "prefixCompletion": false
+        },
+        "thinking": "enabled",
+        "maxTokens": 128000,
+        "models": [
+          { "id": "gpt-5.6-sol", "contextWindow": 400000, "maxTokens": 128000, "reasoningEffort": "high" }
+        ]
+      }
+    }
+  }
+}
+```
+
+`baseUrl` 可粘贴完整 `/v1/responses` 地址（入库前自动归一化）；模型档位写在 `models[].reasoningEffort`，会映射为请求体的 `reasoning.effort`。
 
 ---
 
@@ -469,6 +501,38 @@ rivet config login codex   # 打开浏览器完成 OAuth 授权（TUI 会话内�
 2. 完成 ChatGPT OAuth 登录
 3. Token 自动保存到 `~/.rivet/auth/codex.json`
 4. 每 55 分钟自动刷新 Token
+
+### Grok (xAI)
+
+**推荐场景**：需要长上下文（500K）+ 强推理 + 图片输入，且希望按任务调推理深度的场景。
+
+```bash
+rivet config setup grok --key-env XAI_API_KEY
+# 或在 TUI / 桌面端「添加供应商」里选 Grok，粘贴 console.x.ai 的 API Key
+```
+
+| 项 | 值 |
+|----|----|
+| Base URL | `https://api.x.ai/v1`（OpenAI Chat Completions 兼容） |
+| 环境变量 | `XAI_API_KEY` |
+| 模型 | `grok-4.6`：500K 上下文，文本+图片输入，最大可见输出 128K |
+| 定价 | 输入 $2 / 输出 $6 每 1M（缓存命中 $0.50；≥200K prompt 时官方费率翻倍） |
+| 推理档 | `reasoning_effort`：`low` / `medium` / `high`（默认）/ `xhigh` |
+
+推理档位映射（天枢内部 `off|low|medium|high|max` → xAI）：
+
+- `low/medium/high` 原样透传；
+- `max` → `xhigh`（xAI 的最高档词汇）；
+- `off` → `low`：**xAI 明确推理不可关闭**，`off` 只能落到最低档；界面仍可选，但请求发的是 `low`。
+
+前缀缓存：xAI 从 messages 头部做 exact-prefix 缓存，天枢会自动带上 `x-grok-conv-id`（会话 id）
+把同一会话粘到同一台服务器，并把 `prompt_tokens_details.cached_tokens` 计入缓存命中账本。
+
+注意事项：
+
+- `presence_penalty` / `frequency_penalty` / `stop` 在 xAI 推理模型上会被拒绝（400），天枢已默认剥离；
+- `max_tokens` 在 xAI 已弃用，请求统一走 `max_completion_tokens`（未设置时官方默认 128K）；
+- 图片输入直接可用（`supportsVision: true`），可作主会话模型或识图桥的备选。
 
 ---
 

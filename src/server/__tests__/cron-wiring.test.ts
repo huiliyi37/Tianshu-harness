@@ -161,6 +161,36 @@ describe('CronWiring', () => {
     await wiring.stop()
   })
 
+  it('scheduledCount 只数会真正触发的任务（暂停 / 停止不计入）', async () => {
+    const { registry, scheduler, lock } = setup()
+    cleanup = () => {
+      scheduler.stop()
+      rmSync(TEST_SCHEDULE_PATH, { force: true })
+      rmSync(TEST_TASKS_DIR, { recursive: true, force: true })
+      rmSync(TEST_LOCK_PATH, { force: true })
+    }
+
+    const active = createScheduledTask('active', { type: 'interval', spec: '60000' })
+    const paused = createScheduledTask('paused', { type: 'interval', spec: '60000' })
+    const stopped = createScheduledTask('stopped', { type: 'interval', spec: '60000' })
+    scheduler.add(active)
+    scheduler.add(paused)
+    scheduler.add(stopped)
+    scheduler.setEnabled(paused.id, false)
+    scheduler.setStatus(stopped.id, 'stopped')
+
+    const wiring = new CronWiring({ scheduler, registry, lock })
+    await wiring.start()
+
+    const status = await wiring.getStatus()
+    // 定义一条不少，但「计划任务」口径只含会触发的：否则归档一堆任务后
+    // 状态条数字虚高，观察者无法区分「还在跑」与「已归档」。
+    assert.equal(scheduler.list().length, 3)
+    assert.equal(status.scheduledCount, 1)
+
+    await wiring.stop()
+  })
+
   it('recoverStaleTasks is called on start', async () => {
     const { registry, scheduler } = setup()
     cleanup = () => {

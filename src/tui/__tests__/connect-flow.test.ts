@@ -901,7 +901,7 @@ test('B3: custom entry asks the wire protocol first (step 1 / 9)', () => {
   assert.equal(view.kind, 'choice')
   assert.match(view.title, /协议/)
   assert.equal(view.stepLabel, '步骤 1 / 9')
-  assert.deepEqual(view.options?.map(o => o.id), ['openai', 'anthropic'])
+  assert.deepEqual(view.options?.map(o => o.id), ['openai', 'anthropic', 'openai-responses'])
   assert.equal(flow.submitChoice('ghost').kind, 'error')
   assert.equal(flow.submitChoice('openai').kind, 'next')
   assert.equal(flow.view().stepLabel, '步骤 2 / 9')

@@ -1486,7 +1486,7 @@ async function executeToolUseInner(
             : toolAbort.signal
           // Zen 相位下未注册工具（幻觉调用）不晋升，但把 registry 的裸
           // Unknown tool 报错变成可行动的 zen_unlock 指引，避免死路重试。
-          const execution = deps.config.toolRegistry.execute(tu.name, { ...params, approvalMode, abortSignal: composedSignal })
+          const execution = deps.config.toolRegistry.execute(tu.name, { ...params, approvalMode, approvalGrantedAt: shouldAsk ? Date.now() : undefined, abortSignal: composedSignal })
           const zenGuardedExecution = execution.catch(err => {
             const zenHint = deps.getZenUnregisteredHint?.(tu.name)
             if (zenHint) {

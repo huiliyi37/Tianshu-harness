@@ -12,8 +12,34 @@ export const ALLOWED_CORS_ORIGINS: ReadonlySet<string> = new Set([
   'http://localhost:5273',
 ])
 
+/**
+ * 开发用追加口：`RIVET_DEV_CORS_ORIGINS`（逗号分隔）。
+ *
+ * 存在的理由：白名单里写死了 vite 的默认端口 5273，于是「另起一个端口的 dev」
+ * 会被 CORS 全拒——想避开正在运行的桌面端就只能改源码。未设置该变量时行为与
+ * 从前完全一致（fail-closed 不变）；设置后才额外反射所列来源，且仍要求完整
+ * 匹配（不接受通配，避免把 token 交给任意站点）。
+ */
+export function extraAllowedCorsOrigins(
+  env: Record<string, string | undefined> = process.env,
+): ReadonlySet<string> {
+  const raw = env.RIVET_DEV_CORS_ORIGINS?.trim()
+  if (!raw) return new Set()
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  )
+}
+
 /** 请求 Origin 在白名单内则返回原值（反射），否则 undefined（不下发 CORS 头）。 */
-export function allowedCorsOrigin(reqHeaders: Record<string, string>): string | undefined {
+export function allowedCorsOrigin(
+  reqHeaders: Record<string, string>,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
   const origin = reqHeaders['origin']
-  return origin && ALLOWED_CORS_ORIGINS.has(origin) ? origin : undefined
+  if (!origin) return undefined
+  if (ALLOWED_CORS_ORIGINS.has(origin)) return origin
+  return extraAllowedCorsOrigins(env).has(origin) ? origin : undefined
 }

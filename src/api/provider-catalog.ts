@@ -169,6 +169,18 @@ const CATALOG_META: Record<string, CatalogMeta> = {
       'Ephemeral cache (5 min TTL)',
     ],
   },
+  grok: {
+    label: 'Grok (xAI)',
+    // Chat Completions 侧：max_tokens 已弃用 → max_completion_tokens（未设默认 128k 可见输出）；
+    // x-grok-conv-id 把同一会话钉到同一台服务器，缓存命中率才稳（官方明确建议）。
+    wire: { useMaxCompletionTokens: true, sessionHeader: 'x-grok-conv-id' },
+    notes: [
+      'grok-4.6: 500K context, text+image input, $2/$6 per 1M (cached $0.50)',
+      'Reasoning: reasoning_effort low|medium|high(default)|xhigh; cannot be disabled (off → low)',
+      'Prompt cache: exact-prefix; route with x-grok-conv-id, cached_tokens billed at reduced rate',
+      'presence/frequency penalty and stop are rejected on reasoning models',
+    ],
+  },
   codex: {
     label: 'Codex',
     notes: [

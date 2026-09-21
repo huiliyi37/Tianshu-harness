@@ -5,7 +5,7 @@ import { isProjectTrusted, stripUntrustedProjectKeys, notifyUntrustedOnce, findS
 import { z } from 'zod'
 import { resolveProfileName, resolveProfileOverlay, resolveHookDisabledEnv } from './profile.js'
 import { unBakeProfileOverlay } from './profile-persist.js'
-import { configSchema, reviewConfigSchema, workersSchema, councilConfigSchema, editorSchema, mirrorsSchema, prDefaultsSchema, envSchema, uiSchema, permissionsSchema, networkSchema, fetchSchema, searchSchema, modelConfigSchema, type Config, type ProviderConfig, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderAdvancedConfig, type ReviewConfig, type WorkersConfig, type CouncilConfig, type EditorConfig, type MirrorsConfig, type PrDefaultsConfig, type UiConfig } from './schema.js'
+import { configSchema, reviewConfigSchema, workersSchema, councilConfigSchema, editorSchema, mirrorsSchema, prDefaultsSchema, envSchema, uiSchema, permissionsSchema, networkSchema, fetchSchema, searchSchema, modelConfigSchema, type Config, type ProviderConfig, type ProviderProtocol, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderAdvancedConfig, type ReviewConfig, type WorkersConfig, type CouncilConfig, type EditorConfig, type MirrorsConfig, type PrDefaultsConfig, type UiConfig } from './schema.js'
 import { DEFAULT_CONFIG } from './default.js'
 import { userConfigPath } from './paths.js'
 import { findPresetModel, isProviderPresetKey, type ProviderPresetKey } from './provider-presets.js'
@@ -1912,6 +1912,9 @@ export interface SetupProviderOptions {
   model?: ModelConfig
   /** 批量模型回填（免密钥 preset 探测路径）——每项走与 model 相同的合并语义。 */
   models?: Array<Partial<ModelConfig> & { id: string }>
+  /** models 的落库语义：'replace'（缺省）= 勾选即最终清单（首配/向导，预设模板不混入）；
+   *  'append' = 并入既有清单（设置页「批量添加」，不清空之前保存的模型）。 */
+  modelsMode?: 'replace' | 'append'
   makeDefault?: boolean
   allowProFallback?: boolean
   /** Advanced knobs (timeout/retry/temperature/proxy) — undefined = untouched. */
@@ -2070,22 +2073,42 @@ export function setupProvider(options: SetupProviderOptions): void {
     else next.models.unshift(model)
   }
   if (options.models) {
-    // models 是用户在探测列表的勾选快照——整组替换，不与预设模板/旧配置 merge。
-    // 此前逐条 merge（键 id OR alias）有两个实际缺陷：① 只勾一个模型也会把预设
-    // 全量模板带进配置（kimi 落 5 条）；② alias 键在历史数据不一致时去重失效，
-    // 同 id 落两行（k3 ×2）。alias 已废弃，merge 键只剩 id；替换语义下无需 merge。
-    const merged: ModelConfig[] = []
+    // 批内按 id 去重（alias 已废弃，merge 键只剩 id）。
+    const batch: ModelConfig[] = []
     const seen = new Set<string>()
     for (const raw of options.models) {
       const model = clampModelTokens(modelConfigSchema.parse(raw))
       if (seen.has(model.id)) continue
       seen.add(model.id)
-      // 同 id 且上层（preset/current）已有条目：保留用户本轮传入的值，但缺省
-      // 字段由既有条目补齐（探测回填骨架不带 pricing/tier 等，直接用会丢元数据）。
-      const existing = next.models.find(item => item.id === model.id)
-      merged.push(existing ? mergeModelUpdate(existing, model) : model)
+      batch.push(model)
     }
-    next.models = merged
+    if (options.modelsMode === 'append') {
+      // 设置页「批量添加」：并入既有清单——同 id 字段合并且位置不动，新 id 追加尾部。
+      // 此前复用首配的整组替换语义，导致「先加 A 再加 B」的第二次保存把 A 清掉
+      // （连续批量保存永远只剩最后一批），用户侧表现为模型存不上。
+      const indexById = new Map(next.models.map((m, i) => [m.id, i]))
+      const appended: ModelConfig[] = []
+      for (const model of batch) {
+        const index = indexById.get(model.id)
+        if (index !== undefined) {
+          next.models[index] = mergeModelUpdate(next.models[index]!, model)
+        } else {
+          indexById.set(model.id, next.models.length + appended.length)
+          appended.push(model)
+        }
+      }
+      next.models = [...next.models, ...appended]
+    } else {
+      // 首配/向导：勾选即最终清单——不与预设模板/旧配置 merge（否则只勾一个模型
+      // 也会把预设全量模板带进配置，kimi 曾落 5 条）。同 id 已有条目仍按字段合并
+      // （探测回填骨架不带 pricing/tier 等，直接用会丢元数据）。
+      const merged: ModelConfig[] = []
+      for (const model of batch) {
+        const existing = next.models.find(item => item.id === model.id)
+        merged.push(existing ? mergeModelUpdate(existing, model) : model)
+      }
+      next.models = merged
+    }
   }
   cfg.provider.providers[options.providerName] = next
   next.userSaved = true
@@ -2105,7 +2128,7 @@ export interface RegisterProviderOptions {
   /** Env var name holding the API key. */
   apiKeyEnv?: string
   /** Wire protocol of the endpoint. Default 'openai'. */
-  protocol?: 'openai' | 'anthropic'
+  protocol?: ProviderProtocol
   /** Capability overrides; omitted fields fall through to catalog defaults. */
   capabilities?: ProviderCapabilitiesConfig
   /** Model list — may be empty (probe-filled later) or multi-model. Each entry

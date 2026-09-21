@@ -18,6 +18,13 @@ describe('normalizeBaseUrl', () => {
     assert.equal(normalizeBaseUrl('https://host.com/embeddings'), 'https://host.com')
   })
 
+  // issue #239：Responses 协议 onboarding 时用户最常粘贴完整 /v1/responses。
+  // 不剥尾巴，发送路径会拼成 …/responses/responses（404）。
+  it('strips a pasted responses tail', () => {
+    assert.equal(normalizeBaseUrl('https://api.openai.com/v1/responses'), 'https://api.openai.com/v1')
+    assert.equal(normalizeBaseUrl('https://host.com/responses'), 'https://host.com')
+  })
+
   // issue #8：用户注册生图 provider 时，最自然的动作是从 provider 文档复制完整请求
   // URL（如 SiliconFlow 的 …/v1/images/generations）粘进 base URL 字段。若不剥这个
   // 尾巴，后续拼接会得到 …/images/generations/models → 404，而报错只说 "path may be
@@ -37,6 +44,13 @@ describe('resolveProbeEndpoints', () => {
   it('version-in-base: appends default paths directly', () => {
     const r = resolveProbeEndpoints('https://api.openai.com/v1')
     assert.equal(r.modelsUrl, 'https://api.openai.com/v1/models')
+    assert.equal(r.chatUrl, 'https://api.openai.com/v1/chat/completions')
+    assert.equal(r.responsesUrl, 'https://api.openai.com/v1/responses')
+  })
+
+  it('responses URL shares the same base normalization (issue #239)', () => {
+    const r = resolveProbeEndpoints('https://api.openai.com/v1/responses')
+    assert.equal(r.responsesUrl, 'https://api.openai.com/v1/responses')
     assert.equal(r.chatUrl, 'https://api.openai.com/v1/chat/completions')
   })
 

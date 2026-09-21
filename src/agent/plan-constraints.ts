@@ -22,7 +22,7 @@
  * 渲染器必须自己保证产出 ≤ 上限，否则又是一次「截断了但看起来完整」。
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { validatePathSafe } from '../tools/path-validate.js'
 import { listPlansSync } from '../plan/plan-store.js'

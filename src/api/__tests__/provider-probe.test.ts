@@ -60,6 +60,49 @@ describe('probeProvider', () => {
     server = undefined
   })
 
+  it('openai-responses protocol probes POST /responses and parses output_text deltas (issue #239)', async () => {
+    let responsesBody: Record<string, unknown> | undefined
+    server = await startServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'gpt-5.6-sol' }] }))
+        return
+      }
+      if (req.url === '/v1/responses') {
+        let raw = ''
+        req.on('data', (c) => { raw += c })
+        req.on('end', () => {
+          responsesBody = JSON.parse(raw) as Record<string, unknown>
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.end(sse([
+            JSON.stringify({ type: 'response.reasoning_summary_text.delta', delta: 'thinking...' }),
+            JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }),
+            JSON.stringify({ type: 'response.completed', response: { usage: { input_tokens: 3, output_tokens: 1 } } }),
+          ]))
+        })
+        return
+      }
+      res.writeHead(404).end()
+    })
+
+    const report = await probeProvider({
+      baseUrl: server.baseUrl,
+      apiKey: 'sk-test',
+      protocol: 'openai-responses',
+      providerName: 'my-relay',
+    })
+    assert.equal(report.modelsOk, true)
+    assert.equal(report.completionOk, true)
+    assert.equal(responsesBody?.model, 'gpt-5.6-sol')
+    assert.deepEqual(responsesBody?.input, [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    ])
+    assert.equal(responsesBody?.max_output_tokens, 64)
+    assert.equal(responsesBody?.stream, true)
+    await server.close()
+    server = undefined
+  })
+
   // 覆盖缺口回归：探测请求此前只带认证头，打 OpenCode Go 的 chat 端点会因缺
   // x-opencode-session 被 400——连接测试要么假失败，要么在只测 /models 时假通过。
   it('探测请求带出站身份头（会话头 + 专属 UA），不再只有认证头', async () => {

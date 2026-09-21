@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DANGEROUS_BASH_PATTERNS, INJECTION_PATTERNS, matchesDangerousBash } from '../agent/approval-risk.js'
+import { maybeYieldForUserActivity } from './bash-yield.js'
 import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
@@ -989,6 +990,12 @@ export const BASH_TOOL: Tool = {
     isTypecheckCommand(String(params?.input?.command ?? '')) ? TYPECHECK_CALLER_BUDGET_MS : 120_000,
 
   async execute(params: ToolCallParams) {
+    // issue #235 Wave 2 —「用户接管即让出」：命中可用性危害签名（合成键鼠 / 前台抢占）
+    // 的命令，在用户刚操作过键鼠时不执行——这类命令一旦开跑就持续抢输入，中途没有
+    // 检查点，用户唯一恢复路径是杀进程。未命中签名的命令不触发探测（零开销）；「用户刚点过批准」也不算「正在用本机」（批准豁免窗见 bash-yield.ts）。
+    const yieldResult = await maybeYieldForUserActivity({ command: String(params.input.command ?? ''), approvalGrantedAt: params.approvalGrantedAt })
+    if (yieldResult) return yieldResult
+
     const first = await executeBashMaybeSerialized(params)
 
     // learn mode / 全自动档：a boundary denial should teach, not block. Grant the

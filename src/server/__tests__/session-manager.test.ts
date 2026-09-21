@@ -1371,7 +1371,10 @@ test('PlusMenu（多 key）：三段式记录只标对应 key；两段式记录�
 // a976167f 新建会话模型优先级：显式 input.model > 项目配置默认 provider 首模型
 // > 注入的 defaultModelId。该特性此前无测试覆盖——上方 listModels 测试正因
 // 优先级改动在本机真实配置下静默失效。
+// agent.defaultModel 进入优先级链后，本机全局配置的 defaultModel 会经
+// loadConfig 合并渗进断言——withIsolatedHome 隔离（同 workspaceMode 用例）。
 test('PlusMenu: createSession model precedence — project config beats injected default, explicit input beats project', async () => {
+  withIsolatedHome(() => {
   const projectDir = mkdtempSync(join(tmpdir(), 'rivet-plus-proj-'))
   // 信任门预存债收口：项目层 provider 键未授信即剥离（project-trust.ts）。
   // 本用例测优先级不测信任——显式授信后按原意图断言。
@@ -1414,6 +1417,95 @@ test('PlusMenu: createSession model precedence — project config beats injected
     // 显式 input.model（新建会话对话框同路径）> 项目配置
     const s2 = manager.createSession({ model: 'model-a' })
     assert.equal(manager.getSession(s2.id)!.model, 'model-a')
+  } finally {
+    if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = prevTrust
+    rmSync(projectDir, { recursive: true, force: true })
+  }
+  })
+})
+
+// agent.defaultModel（设置页「默认模型」）进入优先级链：显式 input.model >
+// agent.defaultModel > 默认 provider 首模型 > 注入的 defaultModelId。
+// 此前桌面新会话不消费 agent.defaultModel——设置页钉的默认模型对桌面形同虚设。
+test('PlusMenu: createSession honors agent.defaultModel between explicit input and provider pool head', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'rivet-plus-proj-'))
+  const prevTrust = process.env.RIVET_TRUST_PROJECT
+  process.env.RIVET_TRUST_PROJECT = '1'
+  try {
+    writeFileSync(join(projectDir, '.rivet-config.json'), JSON.stringify({
+      provider: {
+        default: 'p',
+        providers: {
+          p: {
+            name: 'p',
+            baseUrl: 'https://example.com/v1',
+            models: [
+              { id: 'proj-model', contextWindow: 128000, maxTokens: 8192 },
+              { id: 'pinned-model', contextWindow: 128000, maxTokens: 8192 },
+            ],
+          },
+        },
+      },
+      agent: { defaultModel: 'p:pinned-model' },
+    }, null, 2))
+
+    const models: ModelOption[] = [
+      { id: 'proj-model', alias: 'Proj Model', provider: 'p', contextWindow: 128000 },
+      { id: 'pinned-model', alias: 'Pinned Model', provider: 'p', contextWindow: 128000 },
+      { id: 'model-a', alias: 'Model A', provider: 'p', contextWindow: 128000 },
+    ]
+    const manager = new RuntimeSessionManager({
+      createAgent: () => new PlusFakeAgent(),
+      defaultCwd: projectDir,
+      listModels: () => models,
+      defaultModelId: 'model-a',
+    })
+
+    // agent.defaultModel > 默认 provider 首模型（proj-model）
+    const s1 = manager.createSession({})
+    assert.equal(manager.getSession(s1.id)!.model, 'p:pinned-model')
+
+    // 显式 input.model > agent.defaultModel
+    const s2 = manager.createSession({ model: 'model-a' })
+    assert.equal(manager.getSession(s2.id)!.model, 'model-a')
+  } finally {
+    if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = prevTrust
+    rmSync(projectDir, { recursive: true, force: true })
+  }
+})
+
+// 无效 agent.defaultModel 引用（手改配置）：静默回落默认 provider 首模型，
+// 不把坏 ref 写进会话记录。
+test('PlusMenu: createSession falls back to provider pool head on invalid agent.defaultModel ref', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'rivet-plus-proj-'))
+  const prevTrust = process.env.RIVET_TRUST_PROJECT
+  process.env.RIVET_TRUST_PROJECT = '1'
+  try {
+    writeFileSync(join(projectDir, '.rivet-config.json'), JSON.stringify({
+      provider: {
+        default: 'p',
+        providers: {
+          p: {
+            name: 'p',
+            baseUrl: 'https://example.com/v1',
+            models: [{ id: 'proj-model', contextWindow: 128000, maxTokens: 8192 }],
+          },
+        },
+      },
+      agent: { defaultModel: 'p:ghost-model' },
+    }, null, 2))
+
+    const manager = new RuntimeSessionManager({
+      createAgent: () => new PlusFakeAgent(),
+      defaultCwd: projectDir,
+      listModels: () => [{ id: 'proj-model', alias: 'Proj Model', provider: 'p', contextWindow: 128000 }],
+      defaultModelId: 'model-a',
+    })
+
+    const s1 = manager.createSession({})
+    assert.equal(manager.getSession(s1.id)!.model, 'proj-model')
   } finally {
     if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
     else process.env.RIVET_TRUST_PROJECT = prevTrust

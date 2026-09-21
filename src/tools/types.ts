@@ -189,6 +189,14 @@ export interface ToolCallParams {
    *  读取（bash 沙箱拒绝的首触即授）；bare string 而非类型导入——tools 层
    *  不反向依赖 agent 层类型（sandbox-profile 同先例）。 */
   approvalMode?: string
+  /** 交互式批准的时刻（unix ms）——由 tool-pipeline 以
+   *  `approvalGrantedAt: shouldAsk ? Date.now() : undefined` 注入：**到达工具执行点且
+   *  shouldAsk 为真**就表示这次调用真的弹过审批并被用户批准（拒绝路径提前 return，
+   *  headless 非写工具也走拒绝），自动放行（allowlist / sensorium / yolo）与无审批档
+   *  缺席。bash 的「用户接管即让出」护栏据此豁免「批准动作本身」那一次键鼠事件
+   *  （issue #235）：批准是显式授权，不是「用户正在用本机」，两者不能共用同一个
+   *  1200ms 判据——否则用户批准 → 命令被跳过 → 让重试 → 再批准。 */
+  approvalGrantedAt?: number
   onOutput?: (chunk: string) => void
   /** Register a file written internally by a tool (e.g. ast-edit via writeFileAtomicAsync).
    *  Ensures evidence/filesModified and cerebellar gate are aware of the write. */

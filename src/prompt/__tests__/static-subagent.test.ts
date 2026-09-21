@@ -47,8 +47,12 @@ import type { ToolDefinition } from '../../api/types.js'
  *  ⚠ hash 按 **dev 提示词**重算——公开仓 PR 给的 2d22e0d8… 是公开仓那份提示词的 hash，
  *  dev 提示词在本笔前已迭代多轮，照抄必红。改它等于所有会话前缀缓存冷启动一次，
  *  这是本次变更的已知代价，不是意外。
+ *  2026-09-21 **有意变更**（收编 issue #235 Wave 4）：桌面自动化分工段补一条——需要合成
+ *  键鼠 / 抢占前台时走 computer_use，不要用 shell 脚本自造注入（那条路绕过逐应用授权模型；
+ *  命中注入签名的命令要过审批门，用户刚在操作时还会被「让出」跳过）。同前几笔：改 hash
+ *  即所有会话前缀缓存冷启动一次，这是本笔的已知代价，不是意外。
  */
-const MAIN_PROMPT_SHA256 = '88ef625b8013b06554d5d049697afc38627e1a47708dcf78c75dd8c009af43bd'
+const MAIN_PROMPT_SHA256 = '24a7bda34fc71ac16b17511fb59f94338cc8e437e52361a9186cd77977f099cd'
 
 function tool(name: string): ToolDefinition {
   return { name, description: '', input_schema: { type: 'object', properties: {} } } as ToolDefinition

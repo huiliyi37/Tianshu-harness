@@ -22,7 +22,7 @@
  * 逃生舱：PACK_NATIVE_SKIP_ABI_CHECK=1 跳过（仅限明确知道自己在干什么的场景）。
  */
 
-import { existsSync, mkdirSync, copyFileSync, statSync, openSync, readSync, closeSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, copyFileSync, statSync, openSync, readSync, closeSync, rmSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -217,8 +217,20 @@ function crossPackNative(targetArch, targetPlatform) {
   const targetNodeVersion = resolveTargetNodeVersion()
   const pkgDir = join(repoRoot, 'node_modules', 'better-sqlite3')
   const buildRel = join(pkgDir, 'build', 'Release', 'better_sqlite3.node')
-  const piName = process.platform === 'win32' ? 'prebuild-install.cmd' : 'prebuild-install'
-  const piBin = join(repoRoot, 'node_modules', '.bin', piName)
+  // ⚠ 不能在 Windows 上无 shell 地 spawn .cmd：Node 修 CVE-2024-27980 之后，
+  // execFileSync('...\.bin\prebuild-install.cmd', ...) 直接抛 EINVAL（2026-09-18 实测
+  // 复现；同源缺陷亦见于 desktop/scripts/sign-runtime-integrity.js 的 tsx.cmd）。
+  // 本机因原生二进制已缓存、未走到本分支而潜伏——干净构建机必踩。
+  // 改为「当前 node 解释器 + 包的 JS 入口」，跨平台一致。
+  const piPkgDir = join(repoRoot, 'node_modules', 'prebuild-install')
+  let piBin = join(piPkgDir, 'bin.js')
+  try {
+    const piPkg = JSON.parse(readFileSync(join(piPkgDir, 'package.json'), 'utf8'))
+    const rel = typeof piPkg.bin === 'string' ? piPkg.bin : piPkg.bin?.['prebuild-install']
+    if (rel) piBin = join(piPkgDir, rel)
+  } catch {
+    // 读不到 package.json 时退回默认入口（prebuild-install 的 bin 为 bin.js）
+  }
 
   if (!existsSync(piBin)) {
     console.error(
@@ -235,8 +247,8 @@ function crossPackNative(targetArch, targetPlatform) {
       `[pack-native] 跨架构：prebuild-install --arch ${targetArch} --platform ${targetPlatform} --target ${targetNodeVersion}`,
     )
     execFileSync(
-      piBin,
-      ['--arch', targetArch, '--platform', targetPlatform, '--target', targetNodeVersion, '--runtime', 'node'],
+      process.execPath,
+      [piBin, '--arch', targetArch, '--platform', targetPlatform, '--target', targetNodeVersion, '--runtime', 'node'],
       { cwd: pkgDir, stdio: 'inherit' },
     )
     if (!existsSync(buildRel)) {

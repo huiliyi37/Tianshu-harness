@@ -25,6 +25,7 @@ export const SETTINGS_INTENT_SCHEMA = [
   { key: 'fontWeight', label: '字重', values: ['normal', 'medium', 'bold'] },
   { key: 'uiDensity', label: '界面密度', values: ['compact', 'cozy', 'spacious'] },
   { key: 'uiScale', label: '界面缩放', values: ['0.8', '0.9', '1', '1.1', '1.25', '1.5'] },
+  { key: 'readingWidth', label: '正文列宽', values: ['auto', 'autoWide', 'compact', 'standard', 'wide'] },
 ] as const satisfies ReadonlyArray<{ key: string; label: string; values: readonly string[] }>
 
 const SCHEMA_JSON = JSON.stringify(SETTINGS_INTENT_SCHEMA)

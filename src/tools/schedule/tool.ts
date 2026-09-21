@@ -19,7 +19,7 @@
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { Tool } from '../types.js'
-import { getActiveScheduler, validateTriggerOrThrow, type CronTriggerType } from '../../server/cron-scheduler.js'
+import { getActiveScheduler, resolveTaskStatus, validateTriggerOrThrow, type CronTriggerType } from '../../server/cron-scheduler.js'
 
 const triggerSchema = z.object({
   type: z.enum(['interval', 'cron', 'oneshot', 'startup', 'app-open']),
@@ -116,7 +116,7 @@ export const SCHEDULE_CREATE_TOOL: Tool = {
 export const SCHEDULE_LIST_TOOL: Tool = {
   definition: {
     name: 'schedule_list',
-    description: '列出全部定时自动化任务（cron/interval/oneshot/startup/app-open）。逐条给出任务 id、触发器、prompt 摘要、启用状态与已触发次数。',
+    description: '列出全部定时自动化任务（cron/interval/oneshot/startup/app-open）。逐条给出任务 id、触发器、prompt 摘要、生命周期状态（active/paused/stopped）与已触发次数。',
     input_schema: { type: 'object', properties: {} },
   },
   async execute() {
@@ -127,9 +127,12 @@ export const SCHEDULE_LIST_TOOL: Tool = {
       return { content: '当前没有定时任务。用 schedule_create 新建一个。' }
     }
     const lines = tasks.map(t => {
-      const enabled = t.enabled === false ? ' [paused]' : ''
+      // 三态直显（issue #236）——stopped 与 paused 都保留定义，但语义不同：
+      // 前者是归档终态，后者可恢复；不能都压成 [paused]。
+      const status = resolveTaskStatus(t)
+      const state = status === 'active' ? '' : ` [${status}]`
       const summary = t.prompt.length > 60 ? `${t.prompt.slice(0, 57)}…` : t.prompt
-      return `- ${t.id} · ${t.trigger.type}${t.trigger.spec ? ` "${t.trigger.spec}"` : ''} · fires=${t.triggerCount}${enabled}\n  ${summary}`
+      return `- ${t.id} · ${t.trigger.type}${t.trigger.spec ? ` "${t.trigger.spec}"` : ''} · fires=${t.triggerCount}${state}\n  ${summary}`
     })
     return {
       content: `共 ${tasks.length} 个定时任务：\n${lines.join('\n')}`,

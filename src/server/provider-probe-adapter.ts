@@ -9,7 +9,7 @@
 import { probeProvider, aliasTableWithProbeInfos, type ProbeReport } from '../api/provider-probe.js'
 import { matchModelIds } from '../api/model-id-matcher.js'
 import { toModelDescriptors } from '../config/provider-cli.js'
-import type { ModelConfig } from '../config/schema.js'
+import type { ModelConfig, ProviderProtocol } from '../config/schema.js'
 
 export interface TestKeyResult {
   /** true = 端点连通 + models 可拉取（keyless 下无鉴权端点同样成立）；false = 探测失败。 */
@@ -53,7 +53,7 @@ function mapError(report: ProbeReport): TestKeyResult {
 export async function probeForTestKey(opts: {
   baseUrl: string
   apiKey?: string
-  protocol?: 'openai' | 'anthropic'
+  protocol?: ProviderProtocol
   providerName?: string
 }): Promise<TestKeyResult> {
   const keyless = !opts.apiKey

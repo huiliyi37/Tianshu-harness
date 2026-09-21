@@ -30,10 +30,12 @@ describe('shouldAutoGrantSandboxDenial（沙箱拒绝自动授予判定）', () 
     assert.equal(shouldAutoGrantSandboxDenial('0', undefined, true), false)
   })
 
-  it('源码契约：tool-pipeline 每次调用注入 approvalMode（bare string，tools 不反依赖 agent 类型）', () => {
+  it('源码契约：tool-pipeline 每次调用注入 approvalMode + approvalGrantedAt（bare string/number，tools 不反依赖 agent 类型）', () => {
     const pipeline = readFileSync(new URL('../../agent/tool-pipeline.ts', import.meta.url), 'utf8')
-    assert.match(pipeline, /toolRegistry\.execute\(tu\.name, \{ \.\.\.params, approvalMode, abortSignal/)
+    assert.match(pipeline, /toolRegistry\.execute\(tu\.name, \{ \.\.\.params, approvalMode,/)
+    assert.match(pipeline, /approvalGrantedAt: shouldAsk \? Date\.now\(\) : undefined/)
     const types = readFileSync(new URL('../types.ts', import.meta.url), 'utf8')
     assert.match(types, /approvalMode\?: string/)
+    assert.match(types, /approvalGrantedAt\?: number/)
   })
 })

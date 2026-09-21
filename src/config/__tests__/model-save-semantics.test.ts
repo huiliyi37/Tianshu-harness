@@ -38,6 +38,38 @@ describe('model save semantics: id-only, selection-only', () => {
     assert.equal(models[0]!.id, 'k3')
   })
 
+  it('modelsMode=append：连续批量保存并入既有清单，不清空上一批', () => {
+    setupProvider({
+      providerName: 'kimi',
+      preset: 'kimi',
+      models: [{ id: 'k3', contextWindow: 1_000_000, maxTokens: 131072, pricing: { input: 1, output: 2 }, tier: 'strong' }],
+    })
+    setupProvider({
+      providerName: 'kimi',
+      models: [{ id: 'k3-256k', contextWindow: 262_144, maxTokens: 131_072 }],
+      modelsMode: 'append',
+    })
+    setupProvider({
+      providerName: 'kimi',
+      models: [{ id: 'kimi-for-coding', contextWindow: 262_144, maxTokens: 32_768 }],
+      modelsMode: 'append',
+    })
+    // 同 id 再 append：字段合并、位置不变、既有 pricing/tier 不丢。
+    setupProvider({
+      providerName: 'kimi',
+      models: [{ id: 'k3', contextWindow: 900_000, maxTokens: 128_000 }],
+      modelsMode: 'append',
+    })
+
+    const models = loadConfig().provider.providers.kimi!.models
+    assert.deepEqual(models.map(m => m.id), ['k3', 'k3-256k', 'kimi-for-coding'],
+      'append 必须保留前几批；整组替换会让连续保存只剩最后一批')
+    assert.equal(models[0]!.contextWindow, 900_000)
+    assert.equal(models[0]!.maxTokens, 128_000)
+    assert.deepEqual(models[0]!.pricing, { input: 1, output: 2 }, 'append 合并不得丢 pricing')
+    assert.equal(models[0]!.tier, 'strong', 'append 合并不得丢 tier')
+  })
+
   it('setupProvider 落库的模型不含 alias 字段（id-only）', () => {
     setupProvider({
       providerName: 'kimi',

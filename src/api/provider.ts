@@ -1,5 +1,5 @@
 import type { Usage } from './types.js'
-import type { ProviderCapabilitiesConfig } from '../config/schema.js'
+import type { ProviderCapabilitiesConfig, ProviderProtocol } from '../config/schema.js'
 
 /**
  * Describes what a provider supports and how to adapt requests/responses.
@@ -177,6 +177,22 @@ export const WELL_KNOWN_DEFAULTS: Record<string, ProviderCapabilities> = {
     effortFormat: 'reasoning_effort',
     prefixCacheStrategy: 'none',
     supportsResponseFormat: true,
+  },
+  grok: {
+    // xAI grok-4.6：只有 reasoning_effort（low|medium|high(默认)|xhigh），无 thinking 块；
+    // 官方明确「推理不可关闭」——内部 off 只能映射到最低档 low（直接发 off 会被拒），
+    // max 映射到 xAI 的 xhigh。presence/frequency penalty 与 stop 在推理模型上被拒。
+    supportsThinking: true,
+    thinkingBlockType: 'none',
+    effortCap: { off: 'low', max: 'xhigh' },
+    supportsCacheControl: false,
+    stripParams: ['frequency_penalty', 'presence_penalty', 'stop', 'top_k', 'metadata', 'service_tier', 'cache_control'],
+    hasToolJsonInContentBug: false,
+    effortFormat: 'reasoning_effort',
+    // 服务端自动 exact-prefix 缓存；x-grok-conv-id 走 wire（provider-catalog），
+    // 与 deepseek-native 的「无需客户端断点」语义一致。
+    prefixCacheStrategy: 'deepseek-native',
+    supportsResponseFormat: false,
   },
   codex: {
     supportsThinking: true,
@@ -369,4 +385,31 @@ export function resolveCapabilities(
   applyOverrides(base, modelOverrides)
 
   return base
+}
+
+/**
+ * 会话内「推理档位」调档能否真正上线——桌面 EffortMenu / TUI 模型选择器共用判据。
+ *
+ * 不同协议路径不同：
+ *   - openai：OpenAIClient 只在 thinking 分支且 `effortFormat !== 'none'` 时写
+ *     `reasoning_effort`（见 openai-client 的 body 构建）。
+ *   - openai-responses：ResponsesClient 直接写 `reasoning.effort`，不受 effortFormat 门控。
+ *   - anthropic：档位在**建客户端时**换算成 `thinking.budget_tokens`；运行时
+ *     setReasoningEffort 是空实现——会话内调档不生效。
+ * 未声明 capabilities 的自定义 provider 走 DEFAULT_CAPABILITIES（effortFormat 'none'），
+ * 档位会被静默丢弃：消费端必须据此禁用调档，而不是给「设置成功」的假反馈。
+ */
+export function resolveEffortSupported(
+  providerName: string,
+  provider: {
+    protocol?: ProviderProtocol
+    thinking?: 'enabled' | 'disabled'
+    capabilities?: ProviderCapabilitiesConfig
+  },
+  modelCapabilities?: ProviderCapabilitiesConfig,
+): boolean {
+  if (provider.protocol === 'openai-responses') return true
+  if (provider.protocol === 'anthropic') return false
+  if (provider.thinking === 'disabled') return false
+  return resolveCapabilities(providerName, provider.capabilities, modelCapabilities).effortFormat !== 'none'
 }

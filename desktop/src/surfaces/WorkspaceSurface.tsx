@@ -4,11 +4,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { SurfaceSkeleton } from '../components/Skeleton'
 import { qk, useAbortSession, useArtifacts, useCloseSession, useSendPrompt, useSessions, useSetPlanMode, useSetAskMode, useWorkingTree } from '../state/queries'
-import { useUiDispatch, useUiState } from '../state/store'
+import { useUiDispatch, useUiState, type Surface } from '../state/store'
 import { useSessionEvents, useSessionEventsSelector } from '../state/use-session-events'
 import { useJobNotifications } from '../state/use-job-notifications'
 import { answerApproval, commitSessionChanges, createSessionPr, mergeSessionBack, setApprovalMode, setEffort, steerSession } from '../runtime/client'
 import type { ApprovalMode, PlanModeState, AskModeState } from '../runtime/types'
+import { ArrowLeft } from 'lucide-react'
+import { onWindowDragMouseDown } from '../lib/window-drag'
 import { ProjectSidebar } from './ProjectSidebar'
 import { ThreadView } from './ThreadView'
 import { ReviewPanel } from './ReviewPanel'
@@ -77,6 +79,10 @@ export function WorkspaceSurface() {
   const [showDelegation, setShowDelegation] = useState(false)
   const [jobsHidden, setJobsHidden] = useState(false)
   const [sideChatOpen, setSideChatOpen] = useState(false)
+  const settingsBackRef = useRef<Surface>('home')
+  useEffect(() => {
+    if (ui.surface !== 'settings') settingsBackRef.current = ui.surface
+  }, [ui.surface])
 
   const runningJobsCount = Object.values(view.jobs).filter((j) => j.status === 'running').length
   const prevRunningCount = useRef(runningJobsCount)
@@ -346,7 +352,6 @@ export function WorkspaceSurface() {
                  ui.surface === 'hooks' ? <HooksSurface /> :
                  ui.surface === 'automations' ? <AutomationsSurface /> :
                  ui.surface === 'attention' ? <InboxSurface /> :
-                 ui.surface === 'settings' ? <SettingsSurface /> :
                  active ? (
                   <ThreadView
                     key={active.id}
@@ -542,6 +547,66 @@ export function WorkspaceSurface() {
           onClose={() => setShowDelegation(false)}
         />
       )}
+
+      {ui.surface === 'settings' && (
+        <SettingsPage
+          onBack={() => {
+            const back = settingsBackRef.current
+            dispatch({ type: 'setSurface', surface: back === 'settings' ? 'home' : back })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function SettingsPage({ onBack }: { onBack: () => void }) {
+  const { t } = useTranslation(['shell', 'common'])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-settings-open', '')
+    return () => document.documentElement.removeAttribute('data-settings-open')
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      onBack()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onBack])
+
+  return (
+    <div
+      className="settings-page"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('header.pageNames.settings')}
+    >
+      <div
+        className="settings-page-topbar"
+        data-tauri-drag-region
+        onMouseDown={onWindowDragMouseDown}
+      >
+        <button
+          type="button"
+          className="settings-page-back"
+          data-no-drag
+          onClick={onBack}
+        >
+          <ArrowLeft size={16} strokeWidth={1.75} aria-hidden />
+          {t('common:back')}
+        </button>
+        <span className="settings-page-title">{t('header.pageNames.settings')}</span>
+        <span className="settings-page-drag" data-tauri-drag-region aria-hidden />
+      </div>
+      <div className="settings-page-body">
+        <Suspense fallback={<SurfaceSkeleton />}>
+          <SettingsSurface />
+        </Suspense>
+      </div>
     </div>
   )
 }

@@ -293,6 +293,10 @@ body {
   backdrop-filter: blur(var(--sidebar-surface-blur)) saturate(var(--sidebar-surface-saturation));
   -webkit-backdrop-filter: blur(var(--sidebar-surface-blur)) saturate(var(--sidebar-surface-saturation));
   border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+.surface-topbar button, .surface-topbar input, .surface-back {
+  -webkit-app-region: no-drag;
 }
 .surface-back {
   display: flex; align-items: center; gap: var(--space-2);
@@ -7190,10 +7194,11 @@ html[data-theme="nebula"] .plan-panel {
 html[data-titlebar="custom"] .shell { padding-top: 36px; }
 .titlebar {
   position: fixed; top: 0; left: 0; right: 0; height: 36px;
-  z-index: 100;
+  z-index: 10000;
   display: flex; align-items: center; justify-content: space-between;
   background: var(--canvas-bg);
   user-select: none; -webkit-user-select: none;
+  -webkit-app-region: drag;
 }
 .titlebar-left {
   display: flex; align-items: center; gap: var(--space-2);
@@ -7219,11 +7224,16 @@ html[data-titlebar="custom"] .shell { padding-top: 36px; }
   color: var(--text); font-size: var(--text-sm); padding: 2px 8px; outline: none;
   min-width: 200px;
 }
-.titlebar-controls { display: flex; align-self: stretch; }
+.titlebar-controls {
+  display: flex; align-self: stretch;
+  -webkit-app-region: no-drag;
+}
+.titlebar-title, .titlebar-title-input { -webkit-app-region: no-drag; }
 .titlebar-btn {
   width: 46px; height: 100%;
   display: flex; align-items: center; justify-content: center;
   background: transparent; border: none; color: var(--muted); cursor: pointer;
+  -webkit-app-region: no-drag;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .titlebar-btn:hover { background: var(--hover); color: var(--text); }
@@ -7234,9 +7244,92 @@ html[data-titlebar="custom"] .shell { padding-top: 36px; }
 html[data-titlebar="mac"] .shell { padding-top: 34px; }
 .titlebar-mac {
   position: fixed; top: 0; left: 0; right: 0; height: 34px;
-  z-index: 100;
+  z-index: 10000;
   background: var(--canvas-bg);
   user-select: none; -webkit-user-select: none;
+  -webkit-app-region: drag;
+}
+
+/* Settings is a full-window overlay. Keep caption buttons on top (z-index 10000)
+   but let empty chrome fall through to the settings topbar drag strip. */
+html[data-settings-open] .titlebar,
+html[data-settings-open] .titlebar-mac,
+.titlebar.titlebar-overlay {
+  background: transparent;
+  pointer-events: none;
+}
+html[data-settings-open] .titlebar-left,
+.titlebar.titlebar-overlay .titlebar-left { visibility: hidden; }
+html[data-settings-open] .titlebar-controls,
+.titlebar.titlebar-overlay .titlebar-controls {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  min-height: 0;
+}
+.settings-page-topbar {
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  padding-right: 138px;
+  -webkit-app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html[data-titlebar="mac"] .settings-page-topbar {
+  height: 34px;
+  padding-left: 78px;
+  padding-right: 12px;
+}
+.settings-page-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.settings-page-back:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.settings-page-title {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  pointer-events: none;
+}
+.settings-page-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 48px;
+  -webkit-app-region: drag;
+}
+.settings-page-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.settings-page-body .settings-dual {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Maximized: flat chrome is already edge-to-edge — nothing extra needed. */

@@ -72,6 +72,7 @@ import { withAuth } from './route-auth.js'
 import { buildStorageCleanupHandler } from './storage-cleanup-route.js'
 import { buildScratchRoutes } from './scratch-cleanup.js'
 import { isSafeFileName } from '../utils/safe-path.js'
+import { buildSessionSnapshot, isImportableSnapshot } from './session-snapshot.js'
 
 export type ArtifactKind = 'plan' | 'task-list' | 'walkthrough' | 'diff' | 'screenshot' | 'test-result' | 'markdown' | 'html'
 
@@ -877,6 +878,42 @@ export function buildSessionRoutes(
       const rec = manager.getSession(params!.id!)
       if (!rec) return { status: 404, body: { error: 'Session not found' } }
       return { status: 200, body: rec }
+    }, apiToken),
+
+    // P1-4 只读分享快照 —— 导出：从会话转录构建脱敏快照。只读语义（不改会话
+    // 的事件流与转录），工具面一律不进快照，见 session-snapshot.ts。
+    'POST /sessions/:id/snapshot/export': withAuth(async (body, params) => {
+      const rec = manager.getSession(params!.id!)
+      if (!rec) return { status: 404, body: { error: 'Session not found' } }
+      const data = (body ?? {}) as { includeReasoning?: unknown; includeFileChanges?: unknown }
+      const events = manager.getEvents(rec.id, 0)?.events ?? []
+      const { snapshot } = await buildSessionSnapshot(rec, events, {
+        includeReasoning: data.includeReasoning === true,
+        includeFileChanges: data.includeFileChanges === true,
+      })
+      return { status: 200, body: { snapshot } }
+    }, apiToken),
+
+    // P1-4 只读分享快照 —— 导入：读外部快照文件，校验形状与版本。导入件来自
+    // 不受控的第三方文件（对方手写 / 旧版本 / 被编辑过），脏数据一律 400 挡在
+    // 服务端，不交回前端（消费端渲染期才炸的抛点躲在工作区 ErrorBoundary 后面）。
+    'POST /sessions/:id/snapshot/import': withAuth(async (body, params) => {
+      const rec = manager.getSession(params!.id!)
+      if (!rec) return { status: 404, body: { error: 'Session not found' } }
+      const data = (body ?? {}) as { path?: unknown }
+      if (typeof data.path !== 'string' || !data.path.trim()) {
+        return { status: 400, body: { error: 'Missing "path" field' } }
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(readFileSync(data.path, 'utf8'))
+      } catch {
+        return { status: 400, body: { error: 'Snapshot file is unreadable or not valid JSON' } }
+      }
+      if (!isImportableSnapshot(parsed)) {
+        return { status: 400, body: { error: 'Invalid snapshot shape or unsupported version' } }
+      }
+      return { status: 200, body: { snapshot: parsed } }
     }, apiToken),
 
     // /handoff（桌面 plus 面板入口）——登记归档任务后发起交接 run：

@@ -780,6 +780,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '设为 0 关闭计划约束自动注入（D8 L2），resolvePlanConstraints 恒返回 []',
   },
   {
+    name: 'RIVET_PLAN_EXECUTE_TIMEOUT_MS',
+    defaultHint: '',
+    files: ['tools/plan-task.ts'],
+    description: '',
+  },
+  {
     name: 'RIVET_PLAN_MODE_SUGGEST',
     defaultHint: '',
     files: ['agent/plan-mode-advisor.ts', 'agent/__tests__/plan-mode-advisor.test.ts'],

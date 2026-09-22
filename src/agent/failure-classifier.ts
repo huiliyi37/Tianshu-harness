@@ -61,6 +61,13 @@ export function isReadProbeInvocation(toolName: string): boolean {
 
 const NOT_FOUND_PATTERN = /ENOENT|File not found|no such file or directory|does not exist|Path not found/i
 
+/** 无歧义的 HTTP 原因短语——单独出现即可判定，不含裸数字。 */
+const API_ERROR_REASON_PHRASE_RE = /rate limit|Too Many Requests|Bad Gateway|Internal Server Error|Service Unavailable|Gateway Time-?out/i
+/** 状态码**必须带 HTTP 语义上下文**才计入：`HTTP 502` / `HTTP/1.1 502` /
+ *  `API error (HTTP 502)` / `status: 502` / `status code 503` / `502 Bad Gateway`。
+ *  裸 `502` 一律不算——见 classifyFailure 规则 7 的说明。 */
+const API_ERROR_STATUS_CONTEXT_RE = /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:429|500|502|503)\b|\bAPI error\b[^\n]{0,60}?\b(?:429|500|502|503)\b|\bstatus(?:\s*code)?\s*[:=]?\s*(?:429|500|502|503)\b|\b(?:429|500|502|503)\s+(?:Too Many Requests|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)\b/i
+
 /** 结构化短路的每类别规范建议——与 classifyFailure 各分支文案对齐。
  *  工具自报 errorKind 时置信度 1.0（工具比正则更知道自己为何失败）。 */
 const CANONICAL: Record<FailureClass, { suggestion: string; retryable: boolean }> = {
@@ -163,8 +170,22 @@ export function classifyFailure(
     return { class: 'timeout', suggestion: 'Transient network error. Retry may succeed.', confidence: 0.85, retryable: true }
   }
 
-  // 7. API error — HTTP status codes (NEW, after timeout to avoid double-match on network errors)
-  if (/429|500|502|503|rate limit|Too Many Requests|Bad Gateway|Internal Server Error|Service Unavailable/i.test(errorText)) {
+  // 7. API error — HTTP 语义上下文（不是裸数字）。
+  //
+  // 2026-09-22 修正：原实现是 `/429|500|502|503|.../`——**裸三位数字、无锚点**，
+  // 会命中文本里任何位置。实测 7 个真实工具输出有 6 个被误判成 api_error：
+  // 测试计数 `ℹ tests 1500`、npm 日志名时间戳 `…T05_03_30_502Z-debug-0.log`、
+  // 端口 `:5000`、文件大小 `502 KB`、git hash `5001abc2f`、耗时 `503ms`。
+  // 现场后果：run_tests 在无 test script 的项目上返回「Missing script: test」，
+  // 却被 tool-pipeline 注入 `Diagnosis: Transient API error. Retry after cooldown.`
+  // ——把模型引向「等一会儿重试」而不是「去补 test script」；retryable=true 还会
+  // 喂进 shouldRetryToolFailure 的重试策略，错误 class 亦经 failureJournal 流进
+  // failure_pattern claims。
+  //
+  // 精度优先：漏判会落到 unknown（建议语仍是「仔细读错误输出」），无害；自信而
+  // 错误的诊断会主动误导。可靠通道是结构字段 errorKind（web_fetch 即如此，
+  // confidence 1）——文本正则只是兜底，兜底不该这么容易误触发。
+  if (API_ERROR_REASON_PHRASE_RE.test(errorText) || API_ERROR_STATUS_CONTEXT_RE.test(errorText)) {
     return { class: 'api_error', suggestion: 'Transient API error. Retry after cooldown.', confidence: 0.85, retryable: true }
   }
 

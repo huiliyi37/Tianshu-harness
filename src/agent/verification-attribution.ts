@@ -17,7 +17,7 @@
  * @task B1-4
  */
 
-import type { VerificationMetadata } from '../tools/types.js'
+import type { VerificationFailureKind, VerificationMetadata } from '../tools/types.js'
 import type { OwnershipLedger } from './ownership-ledger.js'
 import type { TaskLedgerEvent } from './task-ledger.js'
 
@@ -83,10 +83,70 @@ function runnerFamily(command: string): string {
 
 function isInvocationFailureMeta(status: TaskLedgerEvent['status'], meta: Record<string, unknown> | undefined): boolean {
   if (status !== 'failed') return false
+  if (asString(meta?.errorClass) === 'timeout' || meta?.timedOut === true) return false
   return asNumber(meta?.exitCode, 1) !== 0
     && asNumber(meta?.passed, 0) === 0
     && asNumber(meta?.failed, 1) === 0
     && asNumber(meta?.skipped, 0) === 0
+}
+
+/** Commands whose runner is expected to print a test summary. Only for these
+ *  does "non-zero exit + no counts at all" indicate the runner never reported.
+ *  Deliberately narrow: bare `npm test` is excluded because the underlying
+ *  runner is unknown, and a false positive here re-introduces exactly the
+ *  misattribution this guard exists to prevent. */
+const TEST_RUNNER_RE = /(?:^|\s|\/)(?:tsx\s+--test|node\s+--test|jest|vitest|mocha|pytest|ava|tap)\b/
+
+function expectsTestCounts(command: string): boolean {
+  const normalized = normalizeCommand(command)
+  return normalized.startsWith('run_tests') || TEST_RUNNER_RE.test(normalized)
+}
+
+/** Failure classes that are affirmative evidence the command RAN and produced a
+ *  genuine failure. When one of these is present, absent test counts mean the
+ *  verification kind simply does not emit counts (typecheck / lint / build) —
+ *  it must never be read as "the runner crashed, just re-run". */
+const AFFIRMATIVE_CODE_FAILURE_CLASSES = new Set<string>([
+  'type_error',
+  'syntax_error',
+  'assertion',
+  'format_error',
+  'module_resolution',
+  'test_red',
+])
+
+function isAffirmativeCodeFailure(errorClass: string | undefined): boolean {
+  return errorClass !== undefined && AFFIRMATIVE_CODE_FAILURE_CLASSES.has(errorClass)
+}
+
+/** Derive the failure kind from raw ledger facts. Explicit producer stamps win;
+ *  otherwise positive evidence is required before claiming
+ *  `tool_invocation_failure` (see expectsTestCounts). Absence of test counts is
+ *  NOT evidence that nothing executed — typecheck / lint / build never emit them. */
+function deriveFailureKind(
+  command: string,
+  status: TaskLedgerEvent['status'],
+  meta: Record<string, unknown> | undefined,
+): VerificationFailureKind | undefined {
+  const rawKind = asString(meta?.failureKind)
+  const errorClass = asString(meta?.errorClass)
+
+  // Timeout first: it is neither a test failure nor an invocation failure, and
+  // conflating it with either produces actively wrong advice ("just re-run").
+  // `blockedReason` covers producers that classify before the ledger (run_tests).
+  if (rawKind === 'timeout' || meta?.timedOut === true || errorClass === 'timeout'
+    || asString(meta?.blockedReason) === 'timeout') return 'timeout'
+  if (rawKind === 'tool_invocation_failure') return 'tool_invocation_failure'
+  if (rawKind === 'test_failure') return 'test_failure'
+
+  if (isAffirmativeCodeFailure(errorClass)) return 'test_failure'
+  if (!expectsTestCounts(command)) {
+    // This kind of command has no counts to parse. Its failure is real (or at
+    // least unattributable) — never "nothing executed".
+    return status === 'failed' ? 'test_failure' : undefined
+  }
+  if (isInvocationFailureMeta(status, meta)) return 'tool_invocation_failure'
+  return undefined
 }
 
 function eventToVerificationMetadata(event: TaskLedgerEvent): VerificationMetadata {
@@ -99,11 +159,7 @@ function eventToVerificationMetadata(event: TaskLedgerEvent): VerificationMetada
   const snapshotRef = asString(event.meta?.snapshotRef)
   const phaseRaw = asString(event.meta?.verificationPhase)
   const verificationPhase = phaseRaw === 'isolated' || phaseRaw === 'integration' ? phaseRaw : undefined
-  const failureKind = asString(event.meta?.failureKind) === 'tool_invocation_failure' || isInvocationFailureMeta(status, event.meta)
-    ? 'tool_invocation_failure' as const
-    : asString(event.meta?.failureKind) === 'test_failure'
-      ? 'test_failure' as const
-      : undefined
+  const failureKind = deriveFailureKind(command, status, event.meta)
 
   return {
     command,
@@ -213,6 +269,11 @@ export type AttributionClass =
   | 'external_blocked'
   | 'no_test_infra'  // project has no test framework / no test files
   | 'tool_invocation_failure'
+  /** The verification command exceeded its time budget. Distinct from both a
+   *  test failure and an invocation failure: nothing was learned about the
+   *  code, and the underlying process may still be running. Never reported as
+   *  "not a code failure — just re-run". */
+  | 'verification_timeout'
   | 'unattributed_failure'
   | 'unverified'
   /** Phase B (integration) failure: owned diff is correct in isolation but
@@ -310,7 +371,19 @@ export interface VerificationAttribution {
   getAggregateAttribution(results: VerificationMetadata[]): AttributionResult
 }
 
-function isInvocationFailure(result: VerificationMetadata): boolean {
+/** Is this verification a case of "the runner never executed"?
+ *
+ *  Only positive evidence counts. Historical bug (fixed 2026-09-22): this
+ *  inferred non-execution from *absent* test counts, so any failing typecheck /
+ *  lint / build (which never emit counts) was reported to the model as
+ *  "a tool invocation issue — not a code failure", and a 7-minute timeout was
+ *  reported the same way. See docs/analysis/2026-09-22-session-retrospective.md. */
+export function isInvocationFailure(result: VerificationMetadata): boolean {
+  // A timeout is its own class — never "the runner crashed, just re-run".
+  if (result.failureKind === 'timeout') return false
+  // Producer-stamped kinds are authoritative.
+  if (result.failureKind === 'tool_invocation_failure') return true
+  if (result.failureKind === 'test_failure') return false
   return result.status === 'failed'
     && result.exitCode !== 0
     && result.passed === 0
@@ -355,6 +428,19 @@ export function createVerificationAttribution(_opts: {
 
     // Failed — determine attribution
     if (result.status === 'failed') {
+      // Timeout: the command exceeded its budget. Distinct from a crash — the
+      // underlying process may still be running and mutating the workspace, so
+      // the honest advice is "check state first", not "just re-run". Checked
+      // before every other failure attribution so it can never be masked.
+      if (result.failureKind === 'timeout') {
+        return {
+          attribution: 'verification_timeout',
+          isBlocking: true,
+          reason: `Verification timed out: ${result.command}. The command exceeded its time budget and produced no result — the underlying process may still be running and writing files. Inspect the current workspace/test state before rerunning, and do not treat the code as broken on this evidence alone.`,
+          source: result,
+        }
+      }
+
       // Phase B (integration) failure on current HEAD: the owned diff already
       // passed in isolation (Phase A), so this is a concurrent-change conflict,
       // not an owned defect. Advisory only — never blocks delivery.
@@ -425,7 +511,8 @@ export function createVerificationAttribution(_opts: {
 
     const attributions = results.map(r => attribute(r))
 
-    // Priority: owned_failure > tool_invocation_failure > no_test_infra > unattributed_failure > external_blocked > verified
+    // Priority: owned_failure > verification_timeout > tool_invocation_failure
+    //           > no_test_infra > unattributed_failure > external_blocked > verified
     const hasOwnedFailure = attributions.some(a => a.attribution === 'owned_failure')
     if (hasOwnedFailure) {
       const first = attributions.find(a => a.attribution === 'owned_failure')!
@@ -437,8 +524,19 @@ export function createVerificationAttribution(_opts: {
       }
     }
 
-    const hasToolInvocationFailure = attributions.some(a => a.attribution === 'tool_invocation_failure')
-    if (hasToolInvocationFailure) {
+    const hasVerificationTimeout = attributions.some(a => a.attribution === 'verification_timeout')
+    if (hasVerificationTimeout) {
+      const first = attributions.find(a => a.attribution === 'verification_timeout')!
+      return {
+        attribution: 'verification_timeout',
+        isBlocking: true,
+        reason: first.reason,
+        source: first.source,
+      }
+    }
+
+    const hasInvocationFailure = attributions.some(a => a.attribution === 'tool_invocation_failure')
+    if (hasInvocationFailure) {
       const first = attributions.find(a => a.attribution === 'tool_invocation_failure')!
       return {
         attribution: 'tool_invocation_failure',

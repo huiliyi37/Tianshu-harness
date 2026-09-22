@@ -1769,7 +1769,7 @@ function toConfirmPreset(): ConnectFlow {
   return flow
 }
 
-test('advanced: confirm step exposes the optional entry; submenu lists 4 knobs unset', () => {
+test('advanced: confirm step exposes the optional entry; submenu lists 5 knobs unset', () => {
   const flow = toConfirmPreset()
   const confirmView = flow.view()
   assert.ok((confirmView.options ?? []).some(o => o.id === 'advanced' && !o.recommended))
@@ -1781,10 +1781,11 @@ test('advanced: confirm step exposes the optional entry; submenu lists 4 knobs u
   // 步数标签不变——高级设置不是新步骤。
   assert.equal(menu.stepLabel, '步骤 6 / 6')
   const opts = menu.options ?? []
-  assert.deepEqual(opts.map(o => o.id), ['requestTimeoutMs', 'maxRetries', 'temperature', 'proxy', 'done'])
+  assert.deepEqual(opts.map(o => o.id), ['requestTimeoutMs', 'maxBodyBytes', 'maxRetries', 'temperature', 'proxy', 'done'])
   assert.match(opts[0]!.description ?? '', /未设置/)
-  assert.match(opts[3]!.description ?? '', /未设置/)
-  assert.equal(opts[4]!.recommended, true)
+  assert.deepEqual(opts[1]!.description, '未设置（不限制）', '护栏默认关闭，菜单不得显示成已启用')
+  assert.match(opts[4]!.description ?? '', /未设置/)
+  assert.equal(opts[5]!.recommended, true)
 })
 
 test('advanced: values round-trip into the menu and are forwarded to the commit', () => {
@@ -1804,8 +1805,8 @@ test('advanced: values round-trip into the menu and are forwarded to the commit'
 
   const menu = flow.view()
   assert.match(menu.options?.[0]?.description ?? '', /300000 ms/)
-  assert.match(menu.options?.[2]?.description ?? '', /^0$/)
-  assert.match(menu.options?.[3]?.description ?? '', /127\.0\.0\.1:7890/)
+  assert.match(menu.options?.[3]?.description ?? '', /^0$/)
+  assert.match(menu.options?.[4]?.description ?? '', /127\.0\.0\.1:7890/)
 
   assert.equal(flow.submitChoice('done').kind, 'next')
   assert.equal(flow.view().title.match(/确认保存/) !== null, true)
@@ -1826,17 +1827,46 @@ test('advanced: empty input clears a knob and the commit drops the advanced bloc
   flow.submitChoice('advanced')
   flow.submitChoice('maxRetries')
   assert.equal(flow.submitInput('0').kind, 'next')
-  assert.match(flow.view().options?.[1]?.description ?? '', /^0 次$/)
+  assert.match(flow.view().options?.[2]?.description ?? '', /^0 次$/)
   // 再进子步：预填当前值；空回车清除。
   flow.submitChoice('maxRetries')
   assert.equal(flow.takeRestoredInput(), '0')
   assert.equal(flow.submitInput('').kind, 'next')
-  assert.match(flow.view().options?.[1]?.description ?? '', /未设置/)
+  assert.match(flow.view().options?.[2]?.description ?? '', /未设置/)
   flow.submitChoice('done')
   const result = flow.submitChoice('save')
   assert.equal(result.kind, 'commit')
   if (result.kind !== 'commit' || result.commit.mode !== 'preset') return
   assert.equal(result.commit.setup.advanced, undefined)
+})
+
+test('advanced: maxBodyBytes 写入 commit；非法值被拒、空回车恢复不限制', () => {
+  const flow = toConfirmPreset()
+  flow.submitChoice('advanced')
+
+  assert.equal(flow.submitChoice('maxBodyBytes').kind, 'next')
+  assert.equal(flow.view().kind, 'input')
+  assert.equal(flow.takeRestoredInput(), '')
+  assert.equal(flow.submitInput('4194304').kind, 'next')
+  assert.match(flow.view().options?.[1]?.description ?? '', /4194304 字节/)
+
+  // 非法值：0 / 负数都不接受（未配置才是「不限制」，不靠 0 表达）。
+  flow.submitChoice('maxBodyBytes')
+  assert.equal(flow.submitInput('0').kind, 'error')
+  assert.equal(flow.view().kind, 'input', '非法值不得离开输入步')
+
+  // 空回车 = 清除 → 回落到「不限制」。
+  assert.equal(flow.submitInput('').kind, 'next')
+  assert.deepEqual(flow.view().options?.[1]?.description, '未设置（不限制）')
+
+  // 再设一次并提交，确认真的落到 commit（而不是只改菜单文案）。
+  flow.submitChoice('maxBodyBytes')
+  flow.submitInput('8388608')
+  flow.submitChoice('done')
+  const result = flow.submitChoice('save')
+  assert.equal(result.kind, 'commit')
+  if (result.kind !== 'commit' || result.commit.mode !== 'preset') return
+  assert.deepEqual(result.commit.setup.advanced, { maxBodyBytes: 8_388_608 })
 })
 
 test('advanced: invalid inputs are rejected with guidance, staying on the input step', () => {

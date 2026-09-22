@@ -665,6 +665,82 @@ describe('requiresUnconditionalApproval — sandbox boundary', () => {
   })
 })
 
+describe('computer_use 动作风险分级（P0-A）', () => {
+  const risk = (action: string) => assessToolRisk('computer_use', { action }, 'none')
+
+  it('能力探针/本地诊断/纯等待为零风险', () => {
+    for (const action of ['check_permissions', 'diagnose', 'wait']) {
+      const r = risk(action)
+      assert.equal(r.level, 'none', `${action} 应为 none`)
+    }
+  })
+
+  it('读屏类为 low，交互类为 medium——不再整体判 none', () => {
+    for (const action of ['list_apps', 'snapshot', 'find', 'wait_for']) {
+      assert.equal(risk(action).level, 'low', `${action} 应为 low`)
+    }
+    for (const action of [
+      'click', 'double_click', 'right_click', 'scroll', 'drag', 'type',
+      'set_value', 'key', 'focus_app', 'launch_app', 'menu_select', 'paste_text',
+      'navigate', 'read_page', 'tabs',
+    ]) {
+      const r = risk(action)
+      assert.equal(r.level, 'medium', `${action} 应为 medium`)
+      assert.ok(r.reasons.some(reason => reason.includes(`computer_use.${action}`)), `${action} 应带可读理由`)
+    }
+  })
+
+  it('接管面 js_eval / browser_adopt 保持 high', () => {
+    assert.equal(risk('js_eval').level, 'high')
+    assert.equal(risk('browser_adopt').level, 'high')
+  })
+
+  it('未知动作 fail-closed 为 high', () => {
+    const r = risk('definitely_not_an_action')
+    assert.equal(r.level, 'high')
+    assert.ok(r.reasons.some(reason => reason.includes('unknown computer_use action')))
+  })
+
+  it('suggestedAction 与逐应用门一致——低风险也不写「无需审批」', () => {
+    assert.match(risk('snapshot').suggestedAction, /per-app approval/i)
+    assert.match(risk('type').suggestedAction, /per-app approval/i)
+    assert.match(risk('check_permissions').suggestedAction, /no approval required/i)
+    assert.match(risk('diagnose').suggestedAction, /no approval required/i)
+    assert.match(risk('js_eval').suggestedAction, /explicit user approval/i)
+  })
+
+  it('sequence 取所有步骤的最高风险档', () => {
+    const seq = (steps: Array<Record<string, unknown>>) => assessToolRisk('computer_use', { action: 'sequence', steps }, 'none')
+    const low = seq([{ action: 'wait', duration_ms: 1 }, { action: 'click', x: 1, y: 1 }])
+    assert.equal(low.level, 'medium')
+    assert.ok(low.reasons.some(r => r.includes('computer_use.sequence[2].click')))
+    const high = seq([{ action: 'click', x: 1, y: 1 }, { action: 'js_eval', expression: '1' }])
+    assert.equal(high.level, 'high')
+    const empty = seq([])
+    assert.equal(empty.level, 'high')
+    const unknown = seq([{ action: 'nope' }])
+    assert.equal(unknown.level, 'high')
+  })
+
+  it('sequence 的无条件门递归到步骤（js_eval/browser_adopt）', () => {
+    assert.equal(requiresUnconditionalApproval('computer_use', {
+      action: 'sequence',
+      steps: [{ action: 'click', x: 1, y: 1 }, { action: 'js_eval', expression: '1' }],
+    }), true)
+    assert.equal(requiresUnconditionalApproval('computer_use', {
+      action: 'sequence',
+      steps: [{ action: 'wait', duration_ms: 1 }],
+    }), false)
+    assert.equal(requiresUnconditionalApproval('computer_use', { action: 'sequence', steps: [] }), true,
+      '空/畸形 sequence fail closed')
+  })
+
+  it('sequence 纯免审步骤的 suggestedAction 为无需审批', () => {
+    const r = assessToolRisk('computer_use', { action: 'sequence', steps: [{ action: 'wait', duration_ms: 1 }] }, 'none')
+    assert.match(r.suggestedAction, /no approval required/i)
+  })
+})
+
 describe('destructive command families — whole-family coverage (M2)', () => {
   describe('rm with split flags', () => {
     it('catches rm -r -f (split flags hit the same gate as rm -rf)', () => {

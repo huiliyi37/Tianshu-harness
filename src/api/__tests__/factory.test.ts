@@ -483,6 +483,22 @@ describe('createProviderClient', () => {
     assert.equal(config.firstByteTimeoutMs, undefined, 'absent override should stay undefined (size scaling is the floor)')
   })
 
+  it('forwards maxBodyBytes into OpenAIClient config; absent stays undefined (护栏默认关闭)', () => {
+    const capabilities = resolveCapabilities('deepseek')
+    const withLimit = createProviderClient({ ...deepseekProvider, maxBodyBytes: 4_194_304 }, capabilities, runtimeParams)
+    assert.equal(
+      (withLimit as unknown as { config: { maxBodyBytes?: number } }).config.maxBodyBytes,
+      4_194_304,
+      'explicit maxBodyBytes should flow into client config',
+    )
+    const without = createProviderClient(deepseekProvider, capabilities, runtimeParams)
+    assert.equal(
+      (without as unknown as { config: { maxBodyBytes?: number } }).config.maxBodyBytes,
+      undefined,
+      '未配置 = 不限制，交给上游报错文案引导配置',
+    )
+  })
+
   it('slow-thinking provider (deepseek) retries a stalled stream twice then recovers', async () => {
     const capabilities = resolveCapabilities('deepseek')
     const client = createProviderClient(deepseekProvider, capabilities, runtimeParams)

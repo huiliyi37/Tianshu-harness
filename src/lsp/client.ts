@@ -99,8 +99,14 @@ export async function runTypeCheck(cwd: string, filePath: string, timeoutMs = 12
 }
 
 /** tsc 参数。同时用作缓存分桶的 variant，两者共用一个常量才不会漂移——
- *  参数改了而 variant 没改，会让新旧格式的输出互相回放。 */
-const TSC_GATE_ARGS = ['--noEmit', '--pretty', 'false'] as const
+ *  参数改了而 variant 没改，会让新旧格式的输出互相回放。
+ *
+ *  Exported (2026-09-22) so read-only consumers of the shared verdict — 例如
+ *  theta 自检——能按**同一个 variant** 读缓存。指纹与 variant 共同定位缓存
+ *  条目，自建一套参数就等于永远命不中，且会与门禁看到不同的错误集。 */
+export const TSC_GATE_ARGS = ['--noEmit', '--pretty', 'false'] as const
+/** `TSC_GATE_ARGS` 的 variant 串（缓存分桶键的一部分）。 */
+export const TSC_GATE_VARIANT = TSC_GATE_ARGS.join(' ')
 
 /**
  * 经跨进程闸门执行 tsc：源码指纹相同则回放别的会话刚跑完的结果，否则排队串行。
@@ -120,7 +126,7 @@ function runTscShared(
     cwd,
     run: direct,
     // 与 npm script 的人读格式分桶：回放另一种格式的原始输出会让 parseDiagnosticOutput 解析错乱。
-    variant: TSC_GATE_ARGS.join(' '),
+    variant: TSC_GATE_VARIANT,
     // 等待预算给满 tsc 自己的超时，不打折：持锁者跑的是同一份检查，等它出结果
     // 几乎总快于自己重跑一遍（后者要付全额时间，还抢走它的核心让两边都更慢）。
     // 打折的后果实测过——等待者集体超时后并发开跑，负载反而更高。

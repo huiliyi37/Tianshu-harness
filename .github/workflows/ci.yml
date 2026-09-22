@@ -9,6 +9,11 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # contributors 对账要读 PR 列表（gh pr list）；显式申请只读权限，
+    # 不依赖仓库默认 GITHUB_TOKEN 权限档（新仓库默认只有 contents: read）。
+    permissions:
+      contents: read
+      pull-requests: read
     strategy:
       matrix:
         # engines 钉 24.1.0 且 .npmrc engine-strict=true,低于 24 会在 npm ci 直接被拒
@@ -30,6 +35,16 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Contributors ledger check（仅 push main；PR 不因账本漂移提红）
+        # 贡献者名单（CONTRIBUTORS.md）以 GitHub PR 列表为数据源，只增不删。
+        # 只在 push main 上判红：外部 PR 本身就是待收编对象，不能让它们一提就红；
+        # 漂移在下一次 main 推送时兜住。修复在 dev 主仓跑：
+        #   npx tsx scripts/contributors.ts --write（润色新条目描述）→ 随 dev 提交 → sync。
+        if: github.event_name == 'push'
+        run: npm run contributors:check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Build
         run: npm run build

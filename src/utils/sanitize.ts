@@ -20,9 +20,12 @@
 const nfNormalize = (s: string) => s.normalize('NFC')
 
 /**
- * Maximum safe JSON body size for LLM API requests (bytes).
- * DeepSeek and most OpenAI-compatible APIs reject or truncate bodies above ~4MB.
- * We use a conservative limit with headroom.
+ * 「保守值」参考：DeepSeek 等 OpenAI 兼容网关在约 4MB 以上会拒绝或按字节截断请求体
+ * （截进 `\uXXXX` 就是 "unexpected end of hex escape" 400）。
+ *
+ * 自 issue #251 后续起**不再自动执行**：发送前护栏默认关闭，由 provider 配置
+ * `provider.providers.<name>.maxBodyBytes` 显式启用（见 src/api/request-body-guard.ts）。
+ * 本常量保留作「不知道该填多少」时的建议值（错误文案里也用它做示例）。
  */
 export const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024 // 4 MB
 

@@ -613,6 +613,36 @@ worker 是独立进程、各有自己的桶，跨进程限速不在覆盖范围�
 > 历史提示：在 `retry` 块出现之前，`maxRetries` 会被类别默认值（如 429 的 5）向下夹取——
 > 把它从 10 调到 20 对 429 并不生效。该问题已修复。
 
+## 请求体体积护栏（`maxBodyBytes`）
+
+**默认关闭**：天枢不在发送前限制请求体大小，也不为此做额外量体（零成本直通）。端点真实上限差异很大——官方 DeepSeek 等约 4MB，第三方中转（nginx `client_max_body_size` 默认 1MB）可能更小——替你猜一个值并不合适。
+
+上游对超限请求的处理是**按字节截断 body**：切进一个 `\uXXXX` 转义就返回
+`Failed to parse the request body as JSON … unexpected end of hex escape` 400，或者直接 413。
+遇到这类报错时，天枢的文案会提示你来配置本项。
+
+启用后（`provider.providers.<name>.maxBodyBytes`，单位字节；当前接线于 OpenAI 兼容的
+chat/completions 客户端，anthropic / responses 协议暂未接入）：
+
+| 触发点 | 行为 |
+|---|---|
+| 达到上限的 50% | 状态行 / 桌面提示「接近传输上限」，建议 `/compact` |
+| 超过上限 | 先截断**历史 tool 输出**（保头 2k + 保尾 1k + 体里可见标注）；system 与最近 6 条不动 |
+| 截完仍超限 | 抛可行动错误，点名最大来源（并在体积分散时说明分散情况） |
+
+```json
+{
+  "provider": {
+    "providers": {
+      "deepseek": { "maxBodyBytes": 4194304 }
+    }
+  }
+}
+```
+
+不知道填多少时，可先用 4194304（4MB，保守参考值）起步。清空该字段 = 恢复不限制；
+TUI `/connect` 的「高级设置」里也有这一项（桌面端配置文件同路径）。
+
 ---
 
 ## 配置优先级

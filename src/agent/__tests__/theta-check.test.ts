@@ -1,120 +1,144 @@
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { runThetaCheck, clearThetaCache, trimCapturedOutput } from '../theta-check.js'
+import { runThetaCheck } from '../theta-check.js'
+import {
+  writeCachedTypecheck,
+  computeSourceFingerprint,
+  defaultCacheDir,
+} from '../../lsp/typecheck-cache.js'
+import { TSC_GATE_VARIANT } from '../../lsp/client.js'
+
+// 2026-09-22 契约变更：theta 不再是 tsc 的生产者，而是共享 typecheck 闸门结论的
+// **只读消费者**。旧测试围绕「临时项目里真跑 tsc / 1ms 预算造超时 / 负缓存退避 /
+// 跨进程锁」编写，那些机制已随之删除。见
+// docs/analysis/2026-09-22-session-retrospective.md §5 与设计讨论。
 
 const tempDirs: string[] = []
 
-function makeProject(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'theta-check-test-'))
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'theta-consumer-'))
   tempDirs.push(dir)
   writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({
-    compilerOptions: { strict: true, noEmit: true, skipLibCheck: true },
+    compilerOptions: { strict: true, noEmit: true },
     include: ['*.ts'],
   }))
+  writeFileSync(join(dir, 'valid.ts'), 'export const x: number = 42\n')
+  execFileSync('git', ['init', '-q'], { cwd: dir })
+  execFileSync('git', ['add', '-A'], { cwd: dir })
+  execFileSync('git', [
+    '-c', 'user.email=t@example.com', '-c', 'user.name=t',
+    'commit', '-q', '-m', 'init',
+  ], { cwd: dir })
   return dir
 }
 
+function seedVerdict(
+  dir: string,
+  verdict: { status: number; stdout: string },
+  variant = TSC_GATE_VARIANT,
+): void {
+  const fingerprint = computeSourceFingerprint(dir, variant)
+  assert.ok(fingerprint, 'fixture repo must yield a fingerprint')
+  writeCachedTypecheck(defaultCacheDir(dir), {
+    fingerprint,
+    status: verdict.status,
+    stdout: verdict.stdout,
+    stderr: '',
+    finishedAt: Date.now(),
+    durationMs: 1234,
+  })
+}
+
 afterEach(() => {
-  clearThetaCache()
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!
     try { rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 })
 
-describe('runThetaCheck', () => {
-  it('returns empty errors for a valid TypeScript project', async () => {
-    const dir = makeProject()
-    writeFileSync(join(dir, 'valid.ts'), 'export const x: number = 42\n')
+describe('runThetaCheck — 共享闸门结论的只读消费者', () => {
+  it('无缓存条目时诚实返回 no-fresh-verdict，且不 spawn tsc', async () => {
+    const dir = makeRepo()
+    const start = Date.now()
+    const result = await runThetaCheck(dir, 15_000)
+    const elapsed = Date.now() - start
 
-    const result = await runThetaCheck(dir, 10_000)
-
+    assert.equal(result.outcome, 'no-fresh-verdict')
     assert.deepEqual(result.errors, [])
-    assert.ok(result.durationMs >= 0)
     assert.equal(result.timedOut, false)
+    // 旧实现会在临时项目里真跑 tsc（数百 ms 起）。只读路径必须是常数级。
+    assert.ok(elapsed < 500, `只读路径不得 spawn tsc（耗时 ${elapsed}ms）`)
+  })
+
+  it('回放「无类型错误」的验证期结论 → ok', async () => {
+    const dir = makeRepo()
+    seedVerdict(dir, { status: 0, stdout: '' })
+
+    const result = await runThetaCheck(dir, 15_000)
+
     assert.equal(result.outcome, 'ok')
-  })
-
-  it('returns error file paths for invalid TypeScript', async () => {
-    const dir = makeProject()
-    writeFileSync(join(dir, 'broken.ts'), 'export const x: number = "not a number"\n')
-
-    const result = await runThetaCheck(dir, 10_000)
-
-    assert.ok(result.errors.length > 0)
-    assert.ok(result.errors.some(e => e.endsWith('broken.ts')), `expected broken.ts in ${result.errors.join(', ')}`)
+    assert.deepEqual(result.errors, [])
     assert.equal(result.timedOut, false)
-    assert.equal(result.outcome, 'type_errors')
   })
 
-  it('returns empty errors when no parseable file errors are emitted', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'theta-check-empty-test-'))
+  it('回放有类型错误的结论 → type_errors，并抽出出错文件', async () => {
+    const dir = makeRepo()
+    seedVerdict(dir, {
+      status: 1,
+      stdout: [
+        "broken.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.",
+        '',
+        'Found 1 error in the same file.',
+      ].join('\n'),
+    })
+
+    const result = await runThetaCheck(dir, 15_000)
+
+    assert.equal(result.outcome, 'type_errors')
+    assert.deepEqual(result.errors, ['broken.ts'])
+    assert.equal(result.timedOut, false)
+  })
+
+  it('闸门正持锁时返回 busy——不抢锁、不伪装成绿', async () => {
+    const dir = makeRepo()
+    mkdirSync(join(defaultCacheDir(dir), 'run.lock'), { recursive: true })
+
+    const result = await runThetaCheck(dir, 15_000)
+
+    assert.equal(result.outcome, 'busy')
+    assert.deepEqual(result.errors, [])
+  })
+
+  it('variant 不一致的缓存条目不命中（参数漂移会让两边看到不同错误集）', async () => {
+    const dir = makeRepo()
+    // 用 theta 自己那套旧参数（--skipLibCheck）写条目——它不是门禁的 variant
+    seedVerdict(dir, { status: 0, stdout: '' }, '--noEmit --pretty false --skipLibCheck')
+
+    const result = await runThetaCheck(dir, 15_000)
+
+    assert.equal(result.outcome, 'no-fresh-verdict', 'variant 是缓存桶的一部分，不得跨桶命中')
+  })
+
+  it('非 git 目录无法定指纹 → no-fresh-verdict（不抛错、不阻断主循环）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'theta-nogit-'))
     tempDirs.push(dir)
 
-    const result = await runThetaCheck(dir, 10_000)
+    const result = await runThetaCheck(dir, 15_000)
 
+    assert.equal(result.outcome, 'no-fresh-verdict')
     assert.deepEqual(result.errors, [])
-    assert.ok(result.durationMs >= 0)
-    assert.equal(result.timedOut, false)
-    // tsc 非零退出（缺 tsconfig）——不伪装成 ok
-    assert.equal(result.outcome, 'type_errors')
   })
 
-  it('reports timeout metadata for very short timeouts', async () => {
-    const dir = makeProject()
-    writeFileSync(join(dir, 'valid.ts'), 'export const x: number = 42\n')
+  it('durationMs 不谎报成 tsc 耗时（回放不花时间）', async () => {
+    const dir = makeRepo()
+    seedVerdict(dir, { status: 0, stdout: '' })
 
-    const result = await runThetaCheck(dir, 1)
+    const result = await runThetaCheck(dir, 15_000)
 
-    assert.deepEqual(result.errors, [])
-    assert.equal(result.timedOut, true)
-    assert.equal(result.outcome, 'timeout')
-  })
-
-  it('negative cache: timeout 后 60s 窗口内返回 backoff（不再 spawn）', async () => {
-    const dir = makeProject()
-    writeFileSync(join(dir, 'valid.ts'), 'export const x: number = 42\n')
-
-    // 第一次：极短预算 → timeout
-    const first = await runThetaCheck(dir, 1)
-    assert.equal(first.outcome, 'timeout')
-
-    // 第二次：负缓存窗口内 → backoff，不 spawn（errors 空、非超时、快速返回）
-    const start = Date.now()
-    const second = await runThetaCheck(dir, 10_000)
-    assert.equal(second.outcome, 'backoff', '负缓存窗口内必须返回 backoff')
-    assert.deepEqual(second.errors, [])
-    assert.equal(second.timedOut, false)
-    assert.ok(Date.now() - start < 2000, 'backoff 路径不得 spawn tsc')
-  })
-})
-
-describe('trimCapturedOutput', () => {
-  const line = (i: number) => `src/file${String(i).padStart(4, '0')}.ts(${i + 1},5): error TS2322: `.padEnd(150, 'x')
-
-  it('passes small output through unchanged', () => {
-    assert.equal(trimCapturedOutput('ok'), 'ok')
-    assert.equal(trimCapturedOutput(''), '')
-  })
-
-  it('truncates to ~80KB at a line boundary (no partial diagnostics)', () => {
-    const full = Array.from({ length: 1000 }, (_, i) => line(i)).join('\n')
-    assert.ok(full.length > 100_000, 'fixture must exceed the 100KB threshold')
-
-    const out = trimCapturedOutput(full)
-    assert.ok(out.length <= 80_000, `got ${out.length}`)
-    const lines = out.split('\n')
-    // First and last lines are complete diagnostics — no partial line anywhere
-    const diagRe = /^src\/file\d{4}\.ts\(\d+,\d+\): error TS\d+:/
-    for (const l of lines) assert.match(l, diagRe, `partial line: ${l.slice(0, 60)}`)
-  })
-
-  it('falls back to raw slice when no newline exists after the cut point', () => {
-    const full = 'A'.repeat(100_001) // no newlines at all
-    const out = trimCapturedOutput(full)
-    assert.equal(out, full.slice(full.length - 80_000))
+    assert.equal(result.durationMs, 0, '回放路径不得把它人跑出的耗时记成自己的')
   })
 })

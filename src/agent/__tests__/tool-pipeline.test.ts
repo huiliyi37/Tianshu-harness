@@ -938,12 +938,59 @@ describe('executeToolUse', () => {
       deps, noopCallbacks as any, 1, false,
     )
 
+    // 2026-09-22：meta 不再只记三个计数。typecheck 输出天然不含测试计数，三个 0
+    // 是「没有计数」而非「没跑」，此前下游据此把真实编译错误报成「不是代码问题」。
+    // exitCode 是这里能拿到的最小原始事实（本用例的 harness 桩不做 failure 分类，
+    // 故无 errorClass；真实 TurnHarness 会补上）。
     assert.deepEqual(events.at(-1), {
       type: 'verification',
       command: 'npx tsc --noEmit',
       status: 'failed',
-      meta: { scope: 'full', passed: 0, failed: 0, skipped: 0 },
+      meta: { scope: 'full', passed: 0, failed: 0, skipped: 0, exitCode: 1 },
     })
+  })
+
+  it('records bash verification timeout as a timeout, not a crash', async () => {
+    const events: any[] = []
+    const base = makeDeps()
+    const deps = makeDeps({
+      taskLedger: {
+        record: (event: any) => { events.push(event) },
+      } as any,
+      // 贴近真实 TurnHarness：超时经 classifyFailure 归类为 'timeout'
+      harness: {
+        executeTool: async ({ execute }: any) => {
+          const r = await execute()
+          return { content: r.content, isError: r.isError ?? false, retried: false, errorClass: 'timeout' }
+        },
+      } as any,
+      config: {
+        ...base.config,
+        toolRegistry: {
+          execute: async () => ({
+            content: 'Tool bash timed out after 120s — 底层执行可能仍在后台继续',
+            isError: true,
+          }),
+          get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+          needsApproval: () => false,
+          resolveName: (n: string) => n,
+        },
+      } as any,
+    })
+
+    await executeToolUse(
+      { id: 'tu-ledger-timeout', name: 'bash', input: { command: 'npx tsc --noEmit' } },
+      deps, noopCallbacks as any, 1, false,
+    )
+
+    const last = events.at(-1)
+    assert.equal(last.type, 'verification')
+    assert.equal(last.meta.errorClass, 'timeout', 'timeout must reach the ledger as a raw fact')
+    assert.equal(last.meta.timedOut, true)
+    assert.equal(last.meta.exitCode, 1)
+    assert.equal(last.meta.passed, 0)
+    // 若无 errorClass（旧 harness / 仅文案可辨），仍须由文案兜底识别为超时
+    assert.match('Tool bash timed out after 120s', /timed out after \d+s/)
   })
 
   const noopCallbacks = {
@@ -1773,6 +1820,98 @@ describe('executeToolUse', () => {
     assert.equal(executed, true)
     assert.equal((result.toolResult as any).is_error, false)
   })
+
+  it('P0-A: auto-safe 下未授权 app 的 computer_use 动作必须弹审批（逐应用 fail-closed）', async () => {
+    // 旧行为：auto-safe（桌面端默认档）只看风险等级，risk=none/low 直接执行，
+    // needsApproval 只在 manual 档被消费——未授权 app 的 snapshot/click 静默执行。
+    // 新不变量：supervised/default 两档都必须先过逐应用授权。
+    for (const input of [
+      { action: 'snapshot', app: 'Notes' },
+      { action: 'click', app: 'Notes', ref: 1 },
+      { action: 'list_apps' },
+    ]) {
+      let approvalCalls = 0
+      let executed = false
+      const deps = makeDeps({
+        config: {
+          ...makeDeps().config,
+          approvalMode: 'auto-safe',
+          permissions: { allow: [] },
+          toolRegistry: {
+            execute: async () => { executed = true; return { content: 'ran', isError: false } },
+            get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+            needsApproval: () => true,
+            resolveName: (n: string) => n,
+          },
+        } as any,
+      })
+      const callbacks = { ...noopCallbacks, onApprovalRequired: async () => { approvalCalls++; return false } }
+
+      const result = await executeToolUse(
+        { id: `tu-cu-gate-${input.action}`, name: 'computer_use', input },
+        deps, callbacks as any, 1, false,
+      )
+
+      assert.equal(approvalCalls, 1, `${input.action} must prompt in auto-safe when app is not granted`)
+      assert.equal(executed, false, `denied ${input.action} must not execute`)
+      assert.equal((result.toolResult as any).is_error, true)
+    }
+  })
+
+  it('P0-A: auto-safe 下已授权 app（needsApproval=false）免审批，且 permissions.allow 不能替代应用级 grant', async () => {
+    // granted：needsApproval=false → 免审执行
+    let executedGranted = false
+    const grantedDeps = makeDeps({
+      config: {
+        ...makeDeps().config,
+        approvalMode: 'auto-safe',
+        permissions: { allow: [] },
+        toolRegistry: {
+          execute: async () => { executedGranted = true; return { content: 'ran', isError: false } },
+          get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+          needsApproval: () => false,
+          resolveName: (n: string) => n,
+        },
+      } as any,
+    })
+    let grantedApprovals = 0
+    const grantedResult = await executeToolUse(
+      { id: 'tu-cu-granted', name: 'computer_use', input: { action: 'click', app: 'Notes', ref: 2 } },
+      grantedDeps,
+      { ...noopCallbacks, onApprovalRequired: async () => { grantedApprovals++; return false } } as any,
+      1, false,
+    )
+    assert.equal(grantedApprovals, 0, 'granted app must not prompt')
+    assert.equal(executedGranted, true)
+    assert.equal((grantedResult.toolResult as any).is_error, false)
+
+    // allow 规则 + 未授权 app：仍必须弹——应用级 grant 才是唯一豁免路径
+    let executedAllowlisted = false
+    const allowlistedDeps = makeDeps({
+      config: {
+        ...makeDeps().config,
+        approvalMode: 'auto-safe',
+        permissions: { allow: [{ tool: 'computer_use' }] },
+        toolRegistry: {
+          execute: async () => { executedAllowlisted = true; return { content: 'ran', isError: false } },
+          get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+          needsApproval: () => true,
+          resolveName: (n: string) => n,
+        },
+      } as any,
+    })
+    let allowlistedApprovals = 0
+    const allowlistedResult = await executeToolUse(
+      { id: 'tu-cu-allowlisted', name: 'computer_use', input: { action: 'snapshot', app: 'Notes' } },
+      allowlistedDeps,
+      { ...noopCallbacks, onApprovalRequired: async () => { allowlistedApprovals++; return false } } as any,
+      1, false,
+    )
+    assert.equal(allowlistedApprovals, 1, 'allow rule must not waive the per-app grant')
+    assert.equal(executedAllowlisted, false)
+    assert.equal((allowlistedResult.toolResult as any).is_error, true)
+  })
+
 
   it('out-of-workspace write_file forces an approval prompt even in auto-safe, and records a grant on approval', async () => {
     _resetGrantsForTest()

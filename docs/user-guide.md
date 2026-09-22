@@ -10,24 +10,24 @@ related: [guides/installation.md, user-guide-provider-config.md, user-guide-sand
 # 天枢（Tianshu Harness）用户手册
 
 > 面向用户的完整使用手册：命令、配置、特性细节与排查。安装与各平台注意事项见 [安装与平台说明](guides/installation.md)；理念与架构见 [CVM 理念文档](reference/cvm-cognitive-runtime.md) 与 [架构总览](architecture-overview.md)。
-> 本项目最初的开发代号为 **Rivet**；为保持向后兼容，已安装的 CLI 命令名仍为 `rivet`。
+> 本项目最初的开发代号为 **Rivet**；主命令现为 `tianshu`，`rivet` 保留为兼容别名（同一入口）。数据目录（`~/.rivet`）与环境变量前缀（`RIVET_*`）沿用历史名，未随命令更名。
 
 ## 安装与配置
 
 ```bash
-npm install -g tianshu-tui
-rivet
+npm install -g tianshu-harness
+tianshu
 ```
 
-首次运行会先进入主界面，再自动打开 `/connect` 向导——在那里选择服务商并完成认证。桌面端从 [GitHub Releases](https://github.com/huiliyi37/Tianshu-Tui/releases/latest) 下载（macOS `.dmg` · Windows `.exe` · Linux `.AppImage`），也可在 Settings → Provider 管理配置。
+首次运行会先进入主界面，再自动打开 `/connect` 向导——在那里选择服务商并完成认证。桌面端从 [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) 下载（macOS `.dmg` · Windows `.exe` · Linux `.AppImage`），也可在 Settings → Provider 管理配置。
 
 要求 Node.js ≥ 24。一键脚本、源码构建、Android/Termux、Shell 补全、各平台注意事项与自动更新见 [安装与平台说明](guides/installation.md)。
 
 ## 启动与基本用法
 
 ```bash
-rivet                                # 交互式 TUI
-rivet -p "修复 typo"                  # 单次执行（headless）
+tianshu                              # 交互式 TUI
+tianshu -p "修复 typo"                  # 单次执行（headless）
 # 源码构建则为：node dist/cli/entry.js
 ```
 
@@ -38,10 +38,10 @@ rivet -p "修复 typo"                  # 单次执行（headless）
 ### 无界面模式（脚本集成）
 
 ```bash
-rivet -p "解释 src/agent/loop.ts"       # 单次提示，文本输出，无 TUI
-rivet -p "列出所有 TODO 注释" --json    # JSON 输出，便于脚本处理
-rivet --stream-json -p "重构这个模块"  # NDJSON 事件流：text_delta/tool_use/tool_result/turn_complete…（CI 集成首选，输出内置脱敏）
-rivet --goal "修复所有类型错误" --budget 50   # 无头目标自主模式，最多跑 50 轮（默认 100）
+tianshu -p "解释 src/agent/loop.ts"       # 单次提示，文本输出，无 TUI
+tianshu -p "列出所有 TODO 注释" --json    # JSON 输出，便于脚本处理
+tianshu --stream-json -p "重构这个模块"  # NDJSON 事件流：text_delta/tool_use/tool_result/turn_complete…（CI 集成首选，输出内置脱敏）
+tianshu --goal "修复所有类型错误" --budget 50   # 无头目标自主模式，最多跑 50 轮（默认 100）
 ```
 
 ### 命令行参数
@@ -59,20 +59,20 @@ rivet --goal "修复所有类型错误" --budget 50   # 无头目标自主模式
 | `--resume <id\|前缀>` `-r <id\|前缀>` | 恢复指定会话（短前缀即可） |
 | `--resume` `-r`（裸） | 启动后打开会话选择器 |
 | `--new` | 强制开新会话 |
-| `--list` · `rivet sessions` | 打印会话列表后退出 |
+| `--list` · `tianshu sessions` | 打印会话列表后退出 |
 | `--dangerously-skip-permissions` | 单次会话全自动（跳过所有审批；沙箱仍开） |
 | `--screen-reader` | 读屏模式（动态段整体不渲染、周期重绘停转） |
 | `--skip-welcome` | 跳过欢迎屏 |
 | `--stream-events <path>` | 把本次 run 镜像为 NDJSON `SessionEvent` 写入文件（TUI 与 `-p`/`--goal` 均支持；无头下与 `--stream-json` 同源、同一份脱敏口径。事件按行追加，可 `tail -f` / `jq` 消费；run 期间实时增长） |
 
-子命令：`rivet config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`rivet serve`（启动 sidecar HTTP/SSE）、`rivet sessions`（列会话）、`rivet logs`（日志落点）、`rivet browser status` / `rivet browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）。
+子命令：`tianshu config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`tianshu serve`（启动 sidecar HTTP/SSE）、`tianshu sessions`（列会话）、`tianshu logs`（日志落点）、`tianshu browser status` / `tianshu browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）。
 
 ### 事件流文件（`--stream-events`）
 
 把本次 run 镜像成与桌面端 `attach` 同一 schema 的 `SessionEvent`，逐行 NDJSON 落成文件；TUI 与无头（`-p` / `--goal`）都支持：
 
 ```bash
-rivet -p "修复 typo" --stream-events run.jsonl            # 可与 --stream-json 同时开：一条写 stdout、一条写文件
+tianshu -p "修复 typo" --stream-events run.jsonl            # 可与 --stream-json 同时开：一条写 stdout、一条写文件
 tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 ```
 
@@ -103,7 +103,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 - **resume 缓存继承** —— 会话冻结快照落盘（每个 user 边界 + shutdown），resume 时读回喂给新引擎，避免从字节 0 全 miss；无快照/坏文件/服务商缓存过期时才退化全量重建。
 - **诊断** —— `/debug cache` 显示命中率、未命中原因分析、每回合缓存历史。
 
-实战命中率：各家模型长会话稳态均在 98–99%。这不是"每次都命中"——缓存会在某些边界碎裂（见下）。真实工程会话的逐请求日志（5 个会话、2,001 请求、6.45 亿 input tokens、账单从 ¥880 压到 ¥20）与复算命令见 [指标观测 harness](reference/observability-harness.md)。
+实战命中率：长会话稳态实测在 **95–99%** 区间，主样本（412 请求、116.2M input）实测 **99.6%**；冷启动的短会话会更低。这不是"每次都命中"——缓存会在某些边界碎裂（见下）。真实工程会话的逐请求日志（5 个会话、2,001 请求、6.45 亿 input tokens、账单从 ¥880 压到 ¥20）与复算命令见 [指标观测 harness](reference/observability-harness.md)。
 
 #### 缓存碎裂与排查
 
@@ -114,7 +114,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 - **字节级差异** —— 消息内容含时间戳、随机 ID 等不稳定字节
 - **跨边界重写** —— `/compact`（仅 `turn===0` 重写历史）、`/cd` 切项目（新 user 边界断尾）
 
-排查：① `rivet logs`（或 TUI 里 `/logs`）直接打出本会话的数据根与 `cache-log.jsonl` / `sensorium.jsonl` 路径；② 打开会话 `.jsonl` 搜 `cache_read_input_tokens` 看各轮命中；③ 需要全量遥测时设 `RIVET_DEBUG_TELEMETRY=1`（或任意非空值）后查 `sensorium.jsonl`；④ `npm exec -- tsx scripts/verify-cache-hit-rate.ts` 模拟多轮对话验证。路径总览见本文「会话数据与日志排查」。
+排查：① `tianshu logs`（或 TUI 里 `/logs`）直接打出本会话的数据根与 `cache-log.jsonl` / `sensorium.jsonl` 路径；② 打开会话 `.jsonl` 搜 `cache_read_input_tokens` 看各轮命中；③ 需要全量遥测时设 `RIVET_DEBUG_TELEMETRY=1`（或任意非空值）后查 `sensorium.jsonl`；④ `npm exec -- tsx scripts/verify-cache-hit-rate.ts` 模拟多轮对话验证。路径总览见本文「会话数据与日志排查」。
 
 ### API 成本控制
 
@@ -202,12 +202,12 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 
 ### 工具集与 preset
 
-天枢内置 51 个工具，按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目/用户 `runtime.domains.<域>.toolPreset` 按域覆盖 > 星域内置默认档（太一域→taiyi）> 默认 `minimal`）：
+天枢内置 51 个工具（full 档口径），按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目 `runtime.domains.<域>.toolPreset` > 用户配置 `tools.preset` > 用户 `runtime.domains.<域>.toolPreset` > 星域内置默认档（太一域→taiyi）> 兜底档：**非 lean 为 `frontend`，lean 下为 `minimal`**）：
 
 | Preset | 工具数 | 说明 |
 |--------|--------|------|
-| **minimal**（默认） | 30 | 日常开发全能力——读写/检索/bash/git 史实侦察（`git_scout`）/测试/委托/web/计划/todo/memory，省 token、保 prefix cache |
-| **frontend** | 31 | minimal + `browser_debug`（UI 渲染验证闭环；有需要显式开启） |
+| **frontend**（非 lean 默认） | 31 | minimal + `browser_debug`（UI 渲染验证闭环）——未做任何配置时的兜底档 |
+| **minimal**（lean 默认） | 30 | 日常开发全能力——读写/检索/bash/git 史实侦察（`git_scout`）/测试/委托/web/计划/todo/memory，省 token、保 prefix cache |
 | **full** | 51 | 全集，含 `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 办公工具族等进阶能力 |
 | **taiyi** | 14 | 最小评测档——高频核心 + 交付闭环，去编排/浏览器/网络/视觉等重工具；太一星域钉定时自动落此档 |
 
@@ -228,7 +228,7 @@ RIVET_TOOL_PRESET=full rivet          # 本次会话用 full
 /cancel-goal   # 提前停止
 ```
 
-设定目标后自主多轮执行，直到完成或 `/cancel-goal`。GoalTracker 与回合循环、doom-loop 检测、交付门禁集成；goal 模式下放宽 doom-loop 阈值以允许更深探索。无头用法：`rivet --goal "<task>" --budget 50`。
+设定目标后自主多轮执行，直到完成或 `/cancel-goal`。GoalTracker 与回合循环、doom-loop 检测、交付门禁集成；goal 模式下放宽 doom-loop 阈值以允许更深探索。无头用法：`tianshu --goal "<task>" --budget 50`。
 
 ### Plan Mode（计划模式）
 
@@ -285,9 +285,9 @@ Plan Mode 内置星域委派——复杂计划自动调用 `delegate_task` 从�
 - **状态恢复** —— 侧栏、待办、活动计划一并恢复
 
 ```bash
-rivet --continue                 # 恢复当前 cwd 最近会话
-rivet --resume abc123            # 恢复指定会话（短前缀即可）
-rivet --resume                   # 启动后打开会话选择器
+tianshu --continue                 # 恢复当前 cwd 最近会话
+tianshu --resume abc123            # 恢复指定会话（短前缀即可）
+tianshu --resume                   # 启动后打开会话选择器
 ```
 
 ### Council（多视角审查）
@@ -365,10 +365,10 @@ triggers: [deploy, 部署, release]
 把外部工具服务器——文档搜索、数据库、API——直接接入 agent 的工具流水线，启动时自动发现，工具以 `mcp__<serverId>__<toolName>` 形式出现。
 
 ```bash
-rivet config mcp add-stdio <server-id> npx -y <package> [args...]   # 本地进程
-rivet config mcp add-sse <server-id> http://localhost:3001/sse      # 远程/网络
-rivet config mcp add-preset context7                               # 常用预设
-rivet config mcp list                                              # 列出 + 状态
+tianshu config mcp add-stdio <server-id> npx -y <package> [args...]   # 本地进程
+tianshu config mcp add-sse <server-id> http://localhost:3001/sse      # 远程/网络
+tianshu config mcp add-preset context7                               # 常用预设
+tianshu config mcp list                                              # 列出 + 状态
 ```
 
 会话内：`/mcp`（状态）、`/debug mcp`（诊断）。MCP 工具与内置工具遵循同一审批模式。
@@ -378,7 +378,7 @@ rivet config mcp list                                              # 列出 + �
 [tianshu-mcp](https://github.com/lanlan0811/tianshu-mcp) 是面向天枢的编排型 MCP server——天枢做总指挥，经它把「项目开发 → 验收 → 失败返修 → 再验收」闭环派给外部 AI-Agent（Codex / ZCode / TraeWork）执行：
 
 ```bash
-rivet config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
+tianshu config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 ```
 
 接入后会话内出现 `mcp__tianshu-mcp__run_task` 等 9 个工具：`run_task(projectPath=..., agentId=..., task="任务书", autoVerify=true)` 秒回 taskId，`query_task` 轮询终态与验收报告。GUI 驱动目前仅 Windows 完成真机验证；macOS 可用无头 `codex exec` 路径（`driver=spawn` 用户 profile，复用 `~/.codex` 登录态），配置示例见该仓库 README。
@@ -419,7 +419,7 @@ rivet config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 
 解析链：`RIVET_LEAN` 环境变量（恒优先）→ 域覆盖 → 全局 runtime。桌面端：设置 → 行为 → Lean 资源档 → 按域覆盖（域列表随新增星域自动扩展）。注意：域覆盖在会话装配期生效（启动钉定域时）；运行中 `/domain` 切换不影响已冻结的工具集与 lean（改工具指纹会重建前缀缓存）。
 
-**无需改文件的一键启动**：`/config` → Basics → 「最小集绑定星域」——选中某域（如 changgeng 或 taiyi），保存即自动写入 `defaultDomain` 钉定该域 + 该域的 taiyi 最小工具档覆盖（不含 lean 资源减配）。此后 `rivet` 裸启动即进入该星域的最小集会话；配合「默认模型」字段（`agent.defaultModel`，`provider:modelId` 格式）即可完全免参数启动。清空绑定则恢复默认域（域覆盖配置保留）。桌面端同款项：设置 → 系统 → 「最小集绑定星域」。
+**无需改文件的一键启动**：`/config` → Basics → 「最小集绑定星域」——选中某域（如 changgeng 或 taiyi），保存即自动写入 `defaultDomain` 钉定该域 + 该域的 taiyi 最小工具档覆盖（不含 lean 资源减配）。此后 `tianshu` 裸启动即进入该星域的最小集会话；配合「默认模型」字段（`agent.defaultModel`，`provider:modelId` 格式）即可完全免参数启动。清空绑定则恢复默认域（域覆盖配置保留）。桌面端同款项：设置 → 系统 → 「最小集绑定星域」。
 
 ## 终端 UI（TUI）
 
@@ -482,8 +482,8 @@ TUI 是 CLI 的默认表面。桌面端（Tauri）与 VS Code/Cursor 插件共�
 ```
 
 ```bash
-rivet --dangerously-skip-permissions      # 单次会话全自动
-rivet config set-approval auto-safe       # 持久化默认档位
+tianshu --dangerously-skip-permissions      # 单次会话全自动
+tianshu config set-approval auto-safe       # 持久化默认档位
 ```
 
 - 规则分 `[config]`（持久化）与 `[session]`（本次会话）两层，`deny` 永远优先。
@@ -745,11 +745,11 @@ rivet config set-approval auto-safe       # 持久化默认档位
 
 ```bash
 # 终端（TUI 起不来也能用——不初始化 agent、不读配置、不联网）
-rivet logs                         # 列出本项目最近主会话的全部落点 + 是否已产生 + 门控说明
-rivet logs --session <id>          # 指定会话
-rivet logs --json                  # 结构化输出，可贴进 issue
-rivet logs open                    # 在文件管理器中打开会话目录
-rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来时第一现场）
+tianshu logs                         # 列出本项目最近主会话的全部落点 + 是否已产生 + 门控说明
+tianshu logs --session <id>          # 指定会话
+tianshu logs --json                  # 结构化输出，可贴进 issue
+tianshu logs open                    # 在文件管理器中打开会话目录
+tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不来时第一现场）
 ```
 
 - **TUI**：`/logs`（同上清单）；`/logs open` / `/logs open desktop` 直接打开目录
@@ -769,18 +769,18 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 | `desktop/sidecar-exit.json` | sidecar 退出原因面包屑 | 退出时 |
 | `desktop/sessions/<id>/events.jsonl` | 桌面 UI 事件流（与上面的会话 `.jsonl` 是两份数据） | 桌面非 ephemeral 会话 |
 
-项目内另有 `<cwd>/.rivet/knowledge/`、`artifacts/`、`plans/` 等共享数据；无 `sessionId` 时六维偶尔也会回退写到 `<cwd>/.rivet/sensorium.jsonl`——`rivet logs` 会把实际路径打出来。
+项目内另有 `<cwd>/.rivet/knowledge/`、`artifacts/`、`plans/` 等共享数据；无 `sessionId` 时六维偶尔也会回退写到 `<cwd>/.rivet/sensorium.jsonl`——`tianshu logs` 会把实际路径打出来。
 
 ### 场景速查
 
 | 现象 | 先看 |
 |------|------|
-| 桌面窗口开了但助手不回话 | `rivet logs open desktop`，或 Settings →「打开日志目录」；再看 `desktop/sidecar-exit.json` |
-| 缓存命中率异常 / 成本突然升高 | `rivet logs` → 打开该会话的 `cache-log.jsonl` 与 `.jsonl` 里的 `cache_read_*` |
+| 桌面窗口开了但助手不回话 | `tianshu logs open desktop`，或 Settings →「打开日志目录」；再看 `desktop/sidecar-exit.json` |
+| 缓存命中率异常 / 成本突然升高 | `tianshu logs` → 打开该会话的 `cache-log.jsonl` 与 `.jsonl` 里的 `cache_read_*` |
 | 想复盘六维 / advisory 是否生效 | 确认开了 `RIVET_DEBUG_TELEMETRY`，再读 `sensorium.jsonl` |
-| 上报 bug / 贡献排查 | `rivet logs --json` 整段贴进 issue（不含对话正文，只含路径与体积） |
+| 上报 bug / 贡献排查 | `tianshu logs --json` 整段贴进 issue（不含对话正文，只含路径与体积） |
 
-`RIVET_SESSION_DIR` / `RIVET_DESKTOP_DIR` 可分别搬走会话树与桌面树；生效中的覆盖会出现在 `rivet logs` 输出顶部。
+`RIVET_SESSION_DIR` / `RIVET_DESKTOP_DIR` 可分别搬走会话树与桌面树；生效中的覆盖会出现在 `tianshu logs` 输出顶部。
 
 ## FAQ
 
@@ -792,6 +792,6 @@ rivet logs open desktop            # 打开 sidecar 日志目录（GUI 起不来
 
 **怎么恢复上次会话？** `/sessions` 列出所有会话，`/resume <序号>` 恢复。
 
-**agent 不回话/卡住了怎么办？** 先跑 `/doctor` 做环境健康检查，再 `/logs`（或 `rivet logs`）看本会话日志落点；桌面端在 Settings → 存储位置 →「打开日志目录」直接看 sidecar 日志。更多现场见 [排障与 FAQ](guides/troubleshooting.md)。
+**agent 不回话/卡住了怎么办？** 先跑 `/doctor` 做环境健康检查，再 `/logs`（或 `tianshu logs`）看本会话日志落点；桌面端在 Settings → 存储位置 →「打开日志目录」直接看 sidecar 日志。更多现场见 [排障与 FAQ](guides/troubleshooting.md)。
 
 **429 / 额度不足怎么办？** 桌面端 Insights 面板可查 DeepSeek 余额与欠费状态；降低成本可 `/effort` 降推理深度档，或 `/model` 换 flash 档（如 `deepseek-v4-flash`）。若该服务商频繁 429，可按「重试与速率限制」章节（[Provider 配置手册](user-guide-provider-config.md)）调整重试次数、退避曲线或开启客户端限速。

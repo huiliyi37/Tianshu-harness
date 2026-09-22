@@ -16,7 +16,7 @@ import { diagnoseCacheMiss } from '../prompt/cache-diagnostic.js'
 import type { PromptEngine } from '../prompt/engine.js'
 import type { PressureMonitor } from '../context/pressure-monitor.js'
 import type { SessionContext } from './context.js'
-import { extractTaskState } from './task-state.js'
+import { extractTaskState, extractUserGoal } from './task-state.js'
 import { renderTaskAnchor, type TaskContract } from '../context/task-contract.js'
 import type { TrajectoryEntry } from './trajectory.js'
 import type { CacheAdvisor } from '../cache/advisor.js'
@@ -168,6 +168,10 @@ export interface StructuredHandoffInput {
   turnCount: number
   filesSeen: string[]
   reasoningSnippet: string
+  /** The user's original request (first user turn). Feeds section 1 only.
+   *  Never substitute `taskState.current` here — that is a trajectory label
+   *  ("last tool + target basename"), not user intent. */
+  userGoal?: string
   errorCount: number
   errors: Array<{ turn: number; tool: string; target: string; errorClass: string; summary: string }>
   toolHistory: Array<{ tool: string; target: string; status: HandoffToolStatus }>
@@ -201,7 +205,7 @@ export function buildStructuredHandoff(input: StructuredHandoffInput): string {
     `Turn: ${input.turnCount}`,
     '',
     `## ${STRUCTURED_HANDOFF_SECTIONS[0]}`,
-    taskState.current || '（无明确记录）',
+    input.userGoal || '（无明确记录）',
     '',
     `## ${STRUCTURED_HANDOFF_SECTIONS[1]}`,
   ]
@@ -867,6 +871,7 @@ export class CompactionController {
       turnCount: this.deps.session.getTurnCount(),
       filesSeen: [...filesSeen],
       reasoningSnippet: reasoningParts.join('\n\n---\n\n').slice(-MAX_REASONING_CHARS),
+      userGoal: extractUserGoal(messages),
       errorCount: failures.length,
       errors: failures.slice(0, 5).map(f => ({
         turn: f.turn,
@@ -1638,6 +1643,7 @@ export class CompactionController {
       turnCount,
       filesSeen: [...filesSeen].sort(),
       reasoningSnippet,
+      userGoal: extractUserGoal(messages),
       errorCount: errors.length,
       errors,
       toolHistory,

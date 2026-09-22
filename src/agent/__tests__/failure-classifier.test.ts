@@ -348,3 +348,57 @@ describe('classifyToolFailure（结构优先的工具失败分类）', () => {
     assert.equal(r2.class, 'probe_miss')
   })
 })
+
+// ─── 2026-09-22: api_error 不再吃裸三位数字 ──────────────────────────────────
+// 原 /429|500|502|503/ 会命中文本里任何位置，实测 7 个真实工具输出 6 个误报。
+// 现场证据：run_tests 报「Missing script: test」，因 npm 日志名含时间戳
+// `…T05_03_30_502Z-debug-0.log` 而被注入 `Diagnosis: Transient API error.
+// Retry after cooldown.`——把模型引向「等一会儿重试」而非「补 test script」。
+describe('classifyFailure — api_error 需要 HTTP 语义上下文（不吃裸数字）', () => {
+  // 真实 API 错误文案（取自 src/api 各 client 的构造形状）：仍须识别
+  const genuine: [string, string][] = [
+    ['OpenAI 风格', 'OpenAI API error (HTTP 502): upstream connect error'],
+    ['OpenAI 带 code', 'OpenAI API error (500): internal error'],
+    ['Anthropic 风格', 'Anthropic API error (503): overloaded'],
+    ['Codex 风格', 'Codex API error (429): rate limited'],
+    ['http 前缀', 'GET /models failed with HTTP 503'],
+    ['状态码 + 原因短语', 'server responded 502 Bad Gateway'],
+    ['status 字段', 'request failed, status: 503'],
+    ['纯原因短语', 'Error: rate limit exceeded'],
+  ]
+  for (const [label, text] of genuine) {
+    it(`仍判为 api_error：${label}`, () => {
+      assert.equal(classifyFailure(text).class, 'api_error', text)
+    })
+  }
+
+  // 误报面：这些真实文本里都含 500/502/503/429，但都不是 HTTP 错误
+  const falsePositives: [string, string][] = [
+    ['npm 日志名时间戳', 'npm error A complete log of this run can be found in: /Users/x/.npm/_logs/2026-09-22T05_03_30_502Z-debug-0.log'],
+    ['测试计数 1500', 'ℹ tests 1500\nℹ pass 1499\nℹ fail 1'],
+    ['端口 5000', 'server listening on http://127.0.0.1:5000'],
+    ['文件大小 502 KB', 'wrote 502 KB to dist/bundle.js'],
+    ['git hash', 'commit 5001abc2f'],
+    ['耗时 503ms', 'tool took 503ms'],
+  ]
+  for (const [label, text] of falsePositives) {
+    it(`不再误判为 api_error：${label}`, () => {
+      assert.notEqual(classifyFailure(text).class, 'api_error', text)
+    })
+  }
+
+  it('现场原例：缺 npm script 不得被判成 transient API error', () => {
+    const content = [
+      '退出码：1',
+      '0 通过，0 失败，0 跳过',
+      'npm error Missing script: "test"',
+      'npm error A complete log of this run can be found in: /Users/x/.npm/_logs/2026-09-22T05_03_30_502Z-debug-0.log',
+    ].join('\n')
+    const result = classifyFailure(content)
+    assert.notEqual(result.class, 'api_error')
+    assert.ok(
+      !/Transient API error/.test(result.suggestion),
+      'suggestion 不得把模型引向「等一会儿重试」',
+    )
+  })
+})

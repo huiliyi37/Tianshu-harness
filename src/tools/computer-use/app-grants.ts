@@ -99,3 +99,36 @@ export function revokeApp(app: string, base?: string): boolean {
   writeGrantsFile(path, file)
   return true
 }
+
+/**
+ * Resolve which app an approval-time "always allow" should remember.
+ *
+ * - direct `app` wins (single action / sequence with top-level app);
+ * - a sequence whose EVERY step names the same app → that app（单应用批量
+ *   动作也能一次记住）；
+ * - multi-app / missing / malformed → undefined（不记录，fail closed）。
+ *
+ * Pure so session-manager and tests can consume it without touching disk.
+ */
+export function resolveRememberedComputerUseApp(input: Record<string, unknown> | undefined): string | undefined {
+  const direct = input?.app
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const steps = input?.steps
+  if (!Array.isArray(steps) || steps.length === 0) return undefined
+  let shared: string | null = null
+  let original = ''
+  for (const raw of steps) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+    const app = (raw as Record<string, unknown>).app
+    if (typeof app !== 'string' || !app.trim()) return undefined
+    const name = app.trim()
+    const key = norm(name)
+    if (shared === null) {
+      shared = key
+      original = name
+    } else if (shared !== key) {
+      return undefined
+    }
+  }
+  return original || undefined
+}

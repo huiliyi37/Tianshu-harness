@@ -228,6 +228,11 @@ export const providerBaseSchema = z.object({
    * 消费点：openai-client / anthropic-client 硬顶（OPT-003 波次接入）。
    */
   requestTimeoutMs: z.number().int().positive().optional(),
+  /** 发送前请求体体积护栏上限（字节）。未配置 = 不限制（默认）。配置后超限先截断
+   *  历史 tool 输出，削完仍超限抛可行动错误；达到 50% 给 near-limit 预警。各端点
+   *  真实上限差异大（官方约 4MB、中转可能更小），故不替用户默认猜一个值。上游报
+   *  body 类 400/413 时文案会提示配置本项；消费点见 api/request-body-guard.ts。 */
+  maxBodyBytes: z.number().int().positive().optional(),
   /** Max retry attempts for retryable API errors (0 disables). undefined =
    *  保留客户端内置默认。消费点：openai/anthropic/codex 重试预算。
    *  显式配置即生效：不再被分类器的 per-category 默认值向下夹取（0–20；
@@ -1106,7 +1111,7 @@ export type Config = {
 
 export type ProviderConfig = z.infer<typeof providerSchema>
 /** Optional advanced knobs carried through wizard commits and drafts. */
-export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxRetries' | 'temperature' | 'proxy' | 'retry'>
+export type ProviderAdvancedConfig = Pick<ProviderConfig, 'requestTimeoutMs' | 'maxBodyBytes' | 'maxRetries' | 'temperature' | 'proxy' | 'retry'>
 export type AuthConfig = z.infer<typeof authConfigSchema>
 export type ProviderCapabilitiesConfig = z.infer<typeof providerCapabilitiesSchema>
 export type ModelConfig = z.infer<typeof modelConfigSchema>

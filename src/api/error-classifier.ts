@@ -6,6 +6,7 @@
  */
 
 import { ReasoningRepetitionError } from './reasoning-repetition.js'
+import { RequestInvariantError } from './request-invariant.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -22,6 +23,7 @@ export type ErrorCategory =
   | 'image_strip'
   | 'stream_parse'
   | 'reasoning_repetition'
+  | 'request_invariant'
   | 'unknown'
 
 /** 全部错误类别的运行时清单——config 侧（schema.ts 的 retry.overrides 键枚举）
@@ -29,7 +31,7 @@ export type ErrorCategory =
 export const ERROR_CATEGORIES = [
   'rate_limit', 'overloaded', 'server_error', 'timeout', 'auth_error',
   'client_error', 'context_overflow', 'image_strip', 'stream_parse',
-  'reasoning_repetition', 'unknown',
+  'reasoning_repetition', 'request_invariant', 'unknown',
 ] as const satisfies readonly ErrorCategory[]
 
 // 编译期穷尽检查：类型新增类别而清单漏列时，下面这行报错（无运行时代价）。
@@ -169,7 +171,12 @@ function classifyByStatus(status: number, payloadHadImages?: boolean): Classifie
         retryDelayMs: 0,
         shouldReconnect: false,
         category: 'context_overflow',
-        userMessage: 'Payload too large (413) — the request exceeds the provider limit.',
+        // 发送前护栏默认关闭 → 用户会先吃到这个 413。文案直接给出两条出路：
+        // 临时压缩，或把该 provider 的 maxBodyBytes 配上（超限自动截断历史工具输出）。
+        userMessage:
+          'Payload too large (413) — the request exceeds the provider limit. ' +
+          '可用 /compact 压缩本会话；或在该 provider 配置里设 maxBodyBytes（字节）' +
+          '启用发送前体积护栏（超限时自动截断历史工具输出）。',
         maxRetries: 0,
       }
     }
@@ -320,7 +327,7 @@ function classifyByPattern(error: unknown): ClassifiedError {
     }
   }
 
-  // 请求体护栏（request-body-guard，4MB）在发送前判定超限——确定性失败，
+  // 请求体护栏（request-body-guard，由 provider 配置 maxBodyBytes 启用）在发送前判定超限——确定性失败，
   // 重试只会逐字节重现同一个超限体，白烧两轮 backoff 才把错误还给用户。
   if (name === 'RequestBodyTooLargeError') {
     return {
@@ -434,6 +441,20 @@ function extractPayloadHadImages(error: unknown): boolean | undefined {
  * Priority: status code → error name → message pattern → fallback.
  */
 export function classifyApiError(error: unknown): ClassifiedError {
+  // 请求重建不变式违规：不是网络/上游故障，重试只会重复同一份损坏字节，
+  // 且必须**穿透**故障转移（FallbackStreamClient 只接管五类上游错误）——
+  // 让它落进任何可重试/可接管类别，一次前缀损坏就会变成「悄悄换个 provider
+  // 重发」，比不检查更糟。maxRetries=0 + 独占 category 把两件事都钉死。
+  if (error instanceof RequestInvariantError) {
+    return {
+      retryable: false,
+      retryDelayMs: 0,
+      shouldReconnect: false,
+      category: 'request_invariant',
+      userMessage: error.message,
+      maxRetries: 0,
+    }
+  }
   if (error instanceof ReasoningRepetitionError) {
     return {
       retryable: false, retryDelayMs: 0, shouldReconnect: false,

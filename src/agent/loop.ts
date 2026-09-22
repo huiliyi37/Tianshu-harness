@@ -616,7 +616,7 @@ export class AgentLoop {
     consecutiveTimeouts: 0,
     cooldownUntilTurn: 0,
     suppressedCount: 0,
-    outcomes: { ok: 0, type_errors: 0, timeout: 0, spawn_error: 0, busy: 0, backoff: 0 },
+    outcomes: { ok: 0, type_errors: 0, timeout: 0, spawn_error: 0, busy: 0, backoff: 0, 'no-fresh-verdict': 0 },
   }
   /** Max theta checks per session. Prevents runaway tsc spawning. */
   thetaRequestsThisTurn = 0

@@ -330,7 +330,16 @@ export interface ToolCallParams {
   ) => Promise<{ content: string; isError?: boolean; uiContent?: string; status?: 'ok' | 'rejected' } | null>
 }
 
-export type VerificationFailureKind = 'test_failure' | 'tool_invocation_failure'
+/** Why a verification failed.
+ *  - `test_failure` — the command ran and reported a real failure (assertions,
+ *    type errors, syntax errors). Zero test counts here is normal for
+ *    typecheck / lint / build verifications and does NOT mean nothing ran.
+ *  - `tool_invocation_failure` — the runner never executed / crashed before it
+ *    could report. Stamped by the producer that can prove it (e.g. run_tests).
+ *  - `timeout` — the command exceeded its time budget. Distinct from a crash:
+ *    the underlying process may still be running and mutating the workspace,
+ *    so "just re-run" is wrong advice. */
+export type VerificationFailureKind = 'test_failure' | 'tool_invocation_failure' | 'timeout'
 
 /** Root cause when status is 'blocked'. Absent for passed/failed.
  *  Enables downstream (attribution, gate, deliver_task) to give

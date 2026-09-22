@@ -6,6 +6,7 @@ import {
   measureBodyBytes,
   formatDegradeNotice,
   RequestBodyTooLargeError,
+  formatByteSize,
   GUARD_KEEP_RECENT_MESSAGES,
   GUARD_MIN_TRUNCATABLE_BYTES,
 } from '../request-body-guard.js'
@@ -18,6 +19,11 @@ import {
 //   #5「每次截得不一样」        → 两次调用产出逐字节相同的体（缓存安全）
 //   #6「削不动也硬发」          → 抛 RequestBodyTooLargeError，中文可行动
 //   #7「把 user/assistant 也削」→ 断言只动 tool 角色
+//   #6b「30KB 显示成 0.0MB」     → 体积分档：KB 档不得出现 0.0MB（issue #251）
+//   #6c「没削过也说已截断」      → 无可截内容时文案不得自相矛盾（issue #251）
+//   #6d「只数 content/tool_calls」→ 最大来源按整条消息 JSON 计（issue #251）
+//   #6e「清单解释不了总量」      → 单条占比过低时明说体积分散（issue #251）
+//   #12「默认替用户猜一个上限」  → 未配置 maxBodyBytes 时不量体/不截断（#251 后续）
 
 // 测试用小上限（逻辑与 4MB 同一路径）：16KB 上限 + 40KB 内容，保证「确实超限」
 // 且候选大于 GUARD_MIN_TRUNCATABLE_BYTES（默认 8KB）。
@@ -127,6 +133,77 @@ test('#6 削完仍超限：抛可行动的中文错误并点名最大来源', ()
   )
 })
 
+test('#6b 体积分档：KB 档不再四舍五入成 0.0MB（issue #251）', () => {
+  assert.equal(formatByteSize(0), '0B')
+  assert.equal(formatByteSize(512), '512B')
+  assert.equal(formatByteSize(19_456), '19.0KB')
+  assert.equal(formatByteSize(30 * 1024), '30.0KB')
+  assert.equal(formatByteSize(4.7 * 1024 * 1024), '4.7MB')
+})
+
+test('#6c 无可截内容时不许声称「已截断历史工具输出」（issue #251）', () => {
+  // 全是 user（无 tool 可削）→ 必须说「无可截断」，不许说「已截断」。
+  const noCandidate = baseBody([], [{ role: 'user', content: 'U'.repeat(120 * 1024) }])
+  assert.throws(
+    () => enforceRequestBodyLimit(noCandidate, { limitBytes: LIMIT }),
+    (err: unknown) => {
+      assert.ok(err instanceof RequestBodyTooLargeError)
+      assert.match(err.message, /已无可截断的历史工具输出/)
+      assert.doesNotMatch(err.message, /已截断历史工具输出/)
+      return true
+    },
+  )
+
+  // 真削过历史 tool 还说超限，才允许说「已截断」。
+  const truncated = baseBody(['F'.repeat(40 * 1024)], [{ role: 'user', content: 'G'.repeat(120 * 1024) }])
+  assert.throws(
+    () => enforceRequestBodyLimit(truncated, { limitBytes: LIMIT, keepRecentMessages: 0 }),
+    (err: unknown) => {
+      assert.ok(err instanceof RequestBodyTooLargeError)
+      assert.match(err.message, /已截断历史工具输出仍超限/)
+      return true
+    },
+  )
+})
+
+test('#6d 最大来源按整条消息字节计：reasoning_content 不再漏账（issue #251）', () => {
+  const body = baseBody([], [
+    { role: 'assistant', content: 'ok', reasoning_content: 'R'.repeat(120 * 1024) },
+    { role: 'user', content: 'U'.repeat(60 * 1024) },
+  ])
+  assert.throws(
+    () => enforceRequestBodyLimit(body, { limitBytes: LIMIT }),
+    (err: unknown) => {
+      assert.ok(err instanceof RequestBodyTooLargeError)
+      const [top] = err.contributors
+      assert.equal(top!.messageIndex, 1, '带 120KB reasoning_content 的 assistant 必须是最大来源')
+      assert.ok(top!.bytes > 120 * 1024, `整条消息（含 reasoning_content）应 >120KB，实际 ${top!.bytes}`)
+      assert.match(err.message, /messages\[1\] assistant 12\d\.\dKB/)
+      assert.doesNotMatch(err.message, /0\.0MB/)
+      return true
+    },
+  )
+})
+
+test('#6e 单条最大不足总量一成：明说「体积分散」而不是给一份解释不了的清单（issue #251）', () => {
+  // 复刻 #251 的形状：230+ 条 19KB 消息共 >4MB，单条最大不足 1%。
+  const messages: Record<string, unknown>[] = [{ role: 'system', content: 'sys' }]
+  for (let i = 0; i < 230; i++) {
+    messages.push({ role: i % 2 ? 'user' : 'assistant', content: 'M'.repeat(19 * 1024) })
+  }
+  assert.throws(
+    () => enforceRequestBodyLimit({ model: 'm', messages }, { limitBytes: 4 * 1024 * 1024 }),
+    (err: unknown) => {
+      assert.ok(err instanceof RequestBodyTooLargeError)
+      assert.match(err.message, /请求体 4\.\dMB 超出传输上限 4\.0MB/)
+      assert.match(err.message, /体积分散在多条消息里/)
+      assert.match(err.message, /不足 1%/)
+      assert.doesNotMatch(err.message, /0\.0MB/)
+      return true
+    },
+  )
+})
+
 test('#7 只削 tool：user / assistant 内容一律不动', () => {
   const body = baseBody(
     ['H'.repeat(40 * 1024)],
@@ -175,4 +252,15 @@ test('#11 降级通知文案：两种形态都点名下一步动作', () => {
   assert.match(near, /接近传输上限/)
   assert.match(near, /中转/)
   assert.match(near, /\/compact/)
+})
+
+test('#12 默认不启用护栏：不量体、不截断、原引用直通（issue #251 后续）', () => {
+  // 5MB 的体 + 未配置 maxBodyBytes：必须零成本放行，而不是替用户猜一个上限。
+  const body = baseBody(['M'.repeat(5 * 1024 * 1024)])
+  const out = enforceRequestBodyLimit(body)
+  assert.equal(out.body, body, '未配置上限：原引用直通')
+  assert.equal(out.bytes, 0, '未启用时不做量体（量体要对整段 body 再 stringify 一遍）')
+  assert.equal(out.limitBytes, Number.POSITIVE_INFINITY)
+  assert.deepEqual(out.degraded, [])
+  assert.equal(out.nearLimit, undefined, '未启用护栏不得产生 near-limit 预警')
 })

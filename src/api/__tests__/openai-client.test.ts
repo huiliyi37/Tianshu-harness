@@ -430,6 +430,17 @@ describe('error handling', () => {
     assert.ok(out.includes('请求体被上游判为非法 JSON'), '要补中文结论')
     assert.ok(out.includes('/compact'), '要给出路：压缩本会话')
     assert.ok(out.includes('中转'), '要点到第三方中转的 body 上限这一常见成因')
+    // 护栏默认关闭（issue #251 后续）：触发后必须告诉用户去哪配置发送前护栏。
+    assert.ok(out.includes('maxBodyBytes'), '要给出启用发送前护栏的配置项')
+  })
+
+  it('body-parse 400 的护栏配置指引点名当前 provider', () => {
+    const body = JSON.stringify({ error: { message: 'Failed to parse the request body as JSON' } })
+    const out = parseOpenAIError(400, body, { providerName: 'deepseek', baseUrl: 'https://api.deepseek.com/v1' })
+    assert.ok(
+      out.includes('provider.providers.deepseek.maxBodyBytes'),
+      `配置路径应精确到当前 provider，实得：${out}`,
+    )
   })
 
   it('does not add the body-parse hint to unrelated 400s', () => {

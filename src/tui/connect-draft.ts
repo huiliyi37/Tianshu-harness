@@ -151,6 +151,7 @@ export function readConnectDraft(base?: string): ConnectDraft | undefined {
     const advanced = collected.advanced as Record<string, unknown>
     const cleanAdvanced: ProviderAdvancedConfig = {}
     if (typeof advanced.requestTimeoutMs === 'number') cleanAdvanced.requestTimeoutMs = advanced.requestTimeoutMs
+    if (typeof advanced.maxBodyBytes === 'number') cleanAdvanced.maxBodyBytes = advanced.maxBodyBytes
     if (typeof advanced.maxRetries === 'number') cleanAdvanced.maxRetries = advanced.maxRetries
     if (typeof advanced.temperature === 'number') cleanAdvanced.temperature = advanced.temperature
     if (isString(advanced.proxy)) cleanAdvanced.proxy = advanced.proxy

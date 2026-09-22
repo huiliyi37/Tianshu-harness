@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { loadConfig, saveConfig, registerProvider, setupProvider, updateProviderTunables } from '../manager.js'
@@ -25,11 +25,18 @@ describe('provider advanced config pipeline', () => {
       baseUrl: 'https://api.example.com/v1',
       apiKey: 'sk-x',
       models: [{ id: 'm1' }],
-      advanced: { requestTimeoutMs: 120_000, maxRetries: 0, temperature: 0, proxy: 'http://127.0.0.1:7890' },
+      advanced: {
+        requestTimeoutMs: 120_000,
+        maxBodyBytes: 4_194_304,
+        maxRetries: 0,
+        temperature: 0,
+        proxy: 'http://127.0.0.1:7890',
+      },
     })
     const provider = loadConfig().provider.providers['adv-test']!
     assert.equal(provider.requestTimeoutMs, 120_000)
     // !== undefined guards: 0 is legal and must survive a truthy check.
+    assert.equal(provider.maxBodyBytes, 4_194_304)
     assert.equal(provider.maxRetries, 0)
     assert.equal(provider.temperature, 0)
     assert.equal(provider.proxy, 'http://127.0.0.1:7890')
@@ -43,6 +50,7 @@ describe('provider advanced config pipeline', () => {
     })
     const provider = loadConfig().provider.providers['plain-test']!
     assert.equal(provider.requestTimeoutMs, undefined)
+    assert.equal(provider.maxBodyBytes, undefined, '未配置 = 不限制（护栏默认关闭）')
     assert.equal(provider.maxRetries, undefined)
     assert.equal(provider.temperature, undefined)
     assert.equal(provider.proxy, undefined)
@@ -121,6 +129,16 @@ describe('provider advanced config pipeline', () => {
     assert.equal(loadConfig().provider.providers['ceiling-ok']!.maxRetries, 20)
   })
 
+  it('schema accepts only a positive integer maxBodyBytes; absent = 不限制', () => {
+    const base = { name: 'mb-test', baseUrl: 'https://api.example.com/v1' }
+    assert.equal(providerSchema.parse(base).maxBodyBytes, undefined)
+    assert.equal(providerSchema.parse({ ...base, maxBodyBytes: 4_194_304 }).maxBodyBytes, 4_194_304)
+    for (const bad of [0, -1, 1.5]) {
+      const result = providerSchema.safeParse({ ...base, maxBodyBytes: bad })
+      assert.equal(result.success, false, `maxBodyBytes=${bad} 必须被拒（未配置即不限制，不靠 0 表示）`)
+    }
+  })
+
   it('schema rejects maxRetries 21', () => {
     const result = providerSchema.safeParse({
       name: 'ceiling-over',
@@ -158,6 +176,15 @@ describe('provider advanced config pipeline', () => {
   })
 
   // --- retry through updateProviderTunables (desktop config path, issue #75) ---
+
+  it('sets maxBodyBytes through updateProviderTunables and clears it with null', () => {
+    registerProvider({ providerName: 'tune-mb', baseUrl: 'https://api.example.com/v1', models: [{ id: 'm1' }] })
+    updateProviderTunables('tune-mb', { maxBodyBytes: 4_194_304 })
+    assert.equal(loadConfig().provider.providers['tune-mb']!.maxBodyBytes, 4_194_304)
+    // null = 删键 → 恢复「不限制」（护栏默认关闭），桌面端「清空」按钮走这条路。
+    updateProviderTunables('tune-mb', { maxBodyBytes: null })
+    assert.equal(loadConfig().provider.providers['tune-mb']!.maxBodyBytes, undefined)
+  })
 
   it('sets retry.rateLimit through updateProviderTunables and persists it', () => {
     registerProvider({ providerName: 'tune-retry', baseUrl: 'https://api.example.com/v1', models: [{ id: 'm1' }] })

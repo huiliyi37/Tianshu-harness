@@ -355,8 +355,10 @@ export function renderCommandPalette(data: PaletteData, width: number, height: n
 
   lines.push(formatBorder(width, theme, 'subtle'))
 
+  // 命令面板的触发键是 Ctrl+P（见 src/tui/command-catalog.ts 的 /palette 条目），
+  // 终端里不存在 ⌘ 键——此前写 ⌘ 等于显示一把按不到的键（issue #246 的同类）：
   const title = data.searchText
-    ? `⌘ 命令面板 — "${data.searchText}"`
+    ? `Ctrl+P 命令面板 — "${data.searchText}"`
     : '命令面板'
   lines.push(formatTitleLeft(title, width, theme))
 

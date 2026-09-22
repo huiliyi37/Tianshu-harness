@@ -557,7 +557,11 @@ function buildBlockedVerification(
     skipped: 0,
     durationMs: Date.now() - startTime,
     timestamp: startTime,
-    failureKind: 'tool_invocation_failure',
+    // 超时与「启动失败」不是一回事（2026-09-22）：超时意味着进程可能仍在跑、
+    // 工作区可能还在被写，正确的下一步是「先核实状态」而非「换个命令重跑」。
+    // 此前这里对所有 blockedReason 一律标记 tool_invocation_failure，把 timeout
+    // 也吞了进去——调用方明明已经传了 blockedReason: 'timeout'。
+    failureKind: blockedReason === 'timeout' ? 'timeout' : 'tool_invocation_failure',
     blockedReason,
     userGuidance,
     ...(command.recommendedCommand ? { recommendedCommand: command.recommendedCommand } : {}),

@@ -7,7 +7,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import {
   MACOS_IDLE_JXA_SCRIPT,
   parseMacosIdleSeconds,
@@ -156,8 +156,13 @@ describe('真实探测——不起 mock，脚本必须在本机真能取值', ()
     assert.match(MACOS_IDLE_JXA_SCRIPT, /CGEventSourceSecondsSinceLastEventType/)
   })
 
-  test('pro 的 macos driver 复用同一常量——两处脚本不得再分叉', () => {
-    const driverSrc = readFileSync(new URL('../../pro/computer-use/macos-driver.ts', import.meta.url), 'utf8')
+  // src/pro 是闭源子目录（公开仓经 sync 排除）：完整仓里这条断言必须跑，
+  // 公开仓拿不到 driver 源码则跳过——不跳过就是 ENOENT 恒红，挡掉整条 CI。
+  const DRIVER_SRC = new URL('../../pro/computer-use/macos-driver.ts', import.meta.url)
+  test('pro 的 macos driver 复用同一常量——两处脚本不得再分叉', {
+    skip: existsSync(DRIVER_SRC) ? false : 'src/pro 不入公开仓（闭源），driver 源码缺席；单源语义由上一用例钉住',
+  }, () => {
+    const driverSrc = readFileSync(DRIVER_SRC, 'utf8')
     assert.match(driverSrc, /\bMACOS_IDLE_JXA_SCRIPT\b/, 'driver 必须引用单源常量')
     assert.doesNotMatch(
       driverSrc,

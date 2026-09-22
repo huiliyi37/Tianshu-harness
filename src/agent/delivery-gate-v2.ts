@@ -20,7 +20,7 @@ import { spawnGitSync } from '../tools/spawn-git.js'
 import type { TaskLedger } from './task-ledger.js'
 import type { OwnershipLedger } from './ownership-ledger.js'
 import type { VerificationAttribution, AttributionClass } from './verification-attribution.js'
-import { getEffectiveVerifications, assessImpactedTestCoverage } from './verification-attribution.js'
+import { getEffectiveVerifications, assessImpactedTestCoverage, isInvocationFailure } from './verification-attribution.js'
 import { summarizeOwnershipHealth } from './ownership-health.js'
 import type { VerificationMetadata } from '../tools/types.js'
 
@@ -213,9 +213,10 @@ export function createDeliveryGateV2(opts: {
     toolInvocationFailureCandidates: [] as string[],
   }
 
+  // Single source of truth — the gate used to carry its own copy of this
+  // predicate, which drifted from the attribution module's semantics.
   function isToolInvocationFailure(v: VerificationMetadata): boolean {
-    return v.failureKind === 'tool_invocation_failure'
-      || (v.status === 'failed' && v.exitCode !== 0 && v.passed === 0 && v.failed === 0 && v.skipped === 0)
+    return isInvocationFailure(v)
   }
 
   function verificationDiagnostics(verifications: VerificationMetadata[], supersededFailures: number, staleSnapshotDropped: number): Pick<DeliveryGateResult, 'supersededFailures' | 'staleFailureCandidates' | 'staleSnapshotDropped' | 'toolInvocationFailureCandidates' | 'shortestNextStep'> {
@@ -426,12 +427,31 @@ export function createDeliveryGateV2(opts: {
           attributionClass: 'owned_failure',
         }
 
+      case 'verification_timeout':
+        // Timeout means we learned nothing about the code, and the underlying
+        // process may still be running/mutating the workspace. Non-blocking for
+        // delivery (same safety posture as before) but with honest guidance —
+        // the previous text told the model this was "not a code failure, re-run",
+        // which is wrong on both counts.
+        return {
+          state: 'YELLOW',
+          canDeliver: true,
+          isBlocked: false,
+          reason: `${aggregate.reason}\n\nNothing was verified by this run. Do not assume the code is broken, and do not blindly re-run: confirm the workspace is settled (git status / no orphaned process still writing) before re-verifying with a bounded command. You may still deliver if you have independently verified correctness.`,
+          ownedFileCount: ownedFiles.length,
+          externalFileCount: externalFiles.length,
+          verificationCount: allVerifications.length,
+          ...diagnostics,
+      latestVerificationTotals,
+          attributionClass: 'verification_timeout',
+        }
+
       case 'tool_invocation_failure':
         return {
           state: 'YELLOW',
           canDeliver: true,
           isBlocked: false,
-          reason: `${aggregate.reason}\n\nThis is a tool invocation issue (timeout, crash) — not a code failure. Re-run with the recommended command. You may still deliver if you have independently verified correctness.`,
+          reason: `${aggregate.reason}\n\nThis is a tool invocation issue — the runner did not execute. Re-run with the recommended command. You may still deliver if you have independently verified correctness.`,
           ownedFileCount: ownedFiles.length,
           externalFileCount: externalFiles.length,
           verificationCount: allVerifications.length,

@@ -25,6 +25,26 @@ through the same four-step disposal:
 
 Maintainers run `scripts/dispose-community-pr.sh <PR#>` for steps 3–4 (idempotent).
 
+### Maintainer notes — landing a PR in the dev repo
+
+Keep the audit trail greppable when porting a community PR into dev:
+
+- **Subject**: include the source PR number — recommended form `收编公开仓 PR #123`
+  (the legacy variants `收编 PR #N` / `来源 PR #N` still grep fine). Trace with
+  `git log --grep '收编公开仓 PR #123'`.
+- **Body**: add the original author as `Co-authored-by: Name <email>`. The tracked
+  `commit-msg` hook (installed by `npm install`, see `scripts/git-hooks/`) **blocks**
+  landing commits — subject containing `收编/采纳/回流` plus `PR #N` — that lack this
+  trailer. Bypass with `git commit --no-verify` when there is genuinely no author to
+  credit (or `RIVET_SKIP_HOOKS=1` to disable all hooks).
+- **The two ledgers are reconciled by tooling**, independent of merge state and of the
+  exact subject wording:
+  - contributor list — `npx tsx scripts/contributors.ts --check` (CI enforces this on
+    every push to `main`);
+  - attribution — `bash scripts/credit-contributors.sh --dry-run` backfills a
+    `credit: PR #N` commit for any ported PR that never got one (falls back to the PR
+    author's GitHub noreply identity when the dev commit has no matching trailer).
+
 ## Contribution Zones
 
 ### 🟢 Open Zone — Community Contributions Welcome

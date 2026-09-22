@@ -1,7 +1,7 @@
 {
   "version": "3.24.0",
   "notes": "v3.21.1（性能版 + 体验修复）——CLI 启动路径重写（launcher + V8 编译缓存 + TTY 前子命令快速路由，--version 0.4s→0.1s）、会话工作区体系（issue #147）收口（来源徽标 / 临时会话分组与清理 / 隔离根可配置）、会话列表顺序稳定化。完整清单见 docs/releases/v3.21.1.md。",
-  "pub_date": "2026-09-21T07:28:15.034Z",
+  "pub_date": "2026-09-21T09:20:52.725Z",
   "platforms": {
     "darwin-aarch64": {
       "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.24.0/Tianshu_3.24.0_aarch64.app.tar.gz",

@@ -2013,6 +2013,7 @@ export function setProviderAllowProFallback(providerName: string, allowProFallba
 function applyAdvancedConfig(target: ProviderConfig, advanced?: ProviderAdvancedConfig): void {
   if (!advanced) return
   if (advanced.requestTimeoutMs !== undefined) target.requestTimeoutMs = advanced.requestTimeoutMs
+  if (advanced.maxBodyBytes !== undefined) target.maxBodyBytes = advanced.maxBodyBytes
   if (advanced.maxRetries !== undefined) target.maxRetries = advanced.maxRetries
   if (advanced.temperature !== undefined) target.temperature = advanced.temperature
   if (advanced.proxy !== undefined) target.proxy = advanced.proxy

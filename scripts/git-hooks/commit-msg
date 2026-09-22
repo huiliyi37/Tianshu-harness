@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# commit-msg gate — 收编提交的署名纪律（贡献者对账收口，2026-09-22）。
+#
+# 只拦「看起来在收编某个公开仓 PR」的提交（标题同时含 收编/采纳/回流 与 `PR #<N>`）：
+# 这类提交必须带 `Co-authored-by:` trailer，否则拒绝——署名漏账的主要形态就是
+# 「收编提交没带原作者」，而图谱计不计数完全取决于这个 trailer。
+#
+# 为什么不拦别的提交：普通提交没有署名对象；credit/名单两本账已由工具按 PR 列表
+# 对账（scripts/credit-contributors.sh、scripts/contributors.ts），词形只影响
+# git log 追溯的可读性——推荐统一写「收编公开仓 PR #N」。
+#
+# 绕过：git commit --no-verify（确无署名对象时）；全局关闭：RIVET_SKIP_HOOKS=1。
+set -euo pipefail
+
+if [ "${RIVET_SKIP_HOOKS:-}" = "1" ]; then
+  exit 0
+fi
+
+msg_file="${1:-}"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+# 机器生成的提交（merge/revert/fixup/squash）不适用本规则。
+head -1 "$msg_file" | grep -qE '^(Merge|Revert|fixup!|squash!)' && exit 0
+
+subject="$(head -1 "$msg_file")"
+if printf '%s' "$subject" | grep -qE '收编|采纳|回流' && printf '%s' "$subject" | grep -qE 'PR #[0-9]+'; then
+  if ! grep -qiE '^Co-authored-by: .+<.+>' "$msg_file"; then
+    echo "✗ 收编提交缺 Co-authored-by trailer——原作者的署名/图谱计数会漏账。" >&2
+    echo "  标题：${subject}" >&2
+    echo "  请补一行（提交体末尾）：Co-authored-by: 原作者 <email>" >&2
+    echo "  确无署名对象时：git commit --no-verify" >&2
+    exit 1
+  fi
+fi
+exit 0

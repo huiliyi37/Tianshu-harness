@@ -424,3 +424,48 @@ describe('W1 回归防线 — gate module_unverified', () => {
     assert.equal(result.state, 'GREEN')
   })
 })
+
+// ─── 2026-09-22: 超时不再是「不是代码问题，直接重跑」 ─────────────────────────
+describe('delivery gate — verification_timeout', () => {
+  it('reports a timed-out verification as verification_timeout with honest guidance', () => {
+    const { gate, ledger } = makeGate(['src/tools/git.ts'])
+    ledger.record({
+      type: 'verification',
+      command: 'npm run typecheck',
+      status: 'failed',
+      meta: {
+        scope: 'full', exitCode: 1, passed: 0, failed: 0, skipped: 0,
+        errorClass: 'timeout', timedOut: true,
+      },
+    })
+
+    const result = gate.assess([], ['src/tools/git.ts'])
+    assert.equal(result.state, 'YELLOW')
+    assert.equal(result.canDeliver, true, 'timeout stays non-blocking for delivery')
+    assert.equal(result.attributionClass, 'verification_timeout')
+    // 不得再出现旧的误导文案
+    assert.ok(!result.reason?.includes('not a code failure'), 'must not claim it is not a code failure')
+    assert.match(result.reason ?? '', /timed out/)
+    assert.match(result.reason ?? '', /still be running/, 'must warn the process may still be writing')
+    // 超时不应被登记为 invocation failure 候选
+    assert.deepEqual(result.toolInvocationFailureCandidates, [])
+  })
+
+  it('keeps a run_tests startup failure classified as invocation failure', () => {
+    const { gate, ledger } = makeGate(['src/tools/git.ts'])
+    ledger.record({
+      type: 'verification',
+      command: 'run_tests src/tools/__tests__/git.test.ts',
+      status: 'failed',
+      meta: {
+        scope: 'targeted', exitCode: -1, passed: 0, failed: 0, skipped: 0,
+        failureKind: 'tool_invocation_failure', blockedReason: 'invocation_failure',
+        recommendedCommand: 'tsx --test src/tools/__tests__/git.test.ts',
+      },
+    })
+
+    const result = gate.assess([], ['src/tools/git.ts'])
+    assert.equal(result.attributionClass, undefined, 'invocation failure has no explicit attributionClass')
+    assert.deepEqual(result.toolInvocationFailureCandidates, ['run_tests src/tools/__tests__/git.test.ts'])
+  })
+})

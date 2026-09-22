@@ -1,6 +1,7 @@
 import type { TrajectoryEntry } from './trajectory.js'
 import type { TodoItem } from '../tools/todo-store.js'
 import { detectDependencies, orderPendingByExecutability } from '../tools/todo-deps.js'
+import { oaiMessageText, type OaiMessage } from '../api/oai-types.js'
 
 export interface TaskState {
   completed: string[]
@@ -42,6 +43,40 @@ export function extractTaskState(entries: TrajectoryEntry[], lastModelText: stri
   }
 
   return { completed, current, remaining, decisions }
+}
+
+/**
+ * Extract the user's actual request from the session's first user turn.
+ *
+ * History (fixed 2026-09-22): the structured handoff rendered
+ * `TaskState.current` — a mechanical "last tool + target basename" label —
+ * under the heading "1. 用户核心需求", so every recorded handoff in this repo
+ * claimed the user's core need was e.g. "ask_user_question ask_user_question"
+ * or "grep README.md" (153/153 wrong). `current` describes where the trajectory
+ * stopped; it has no causal relation to what the user asked for.
+ * See docs/analysis/2026-09-22-session-retrospective.md §3.
+ *
+ * Runtime-injected `<system-reminder>` blocks are stripped: they are appended
+ * to user turns by the guardrail channels and are not user intent.
+ */
+const SYSTEM_REMINDER_BLOCK_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g
+const USER_GOAL_MAX_CHARS = 160
+
+export function extractUserGoal(messages: ReadonlyArray<OaiMessage>): string | undefined {
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    const raw = oaiMessageText(message)
+    if (typeof raw !== 'string') continue
+    const cleaned = raw
+      .replace(SYSTEM_REMINDER_BLOCK_RE, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!cleaned) continue
+    return cleaned.length > USER_GOAL_MAX_CHARS
+      ? `${cleaned.slice(0, USER_GOAL_MAX_CHARS)}…`
+      : cleaned
+  }
+  return undefined
 }
 
 /**

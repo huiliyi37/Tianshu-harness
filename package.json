@@ -51,6 +51,7 @@
     "typecheck": "tsx scripts/typecheck-guard.ts",
     "lint": "oxlint src scripts",
     "budgets:check": "tsx scripts/verify-source-budgets.ts",
+    "surfaces:check": "tsx scripts/verify-injection-surfaces.ts",
     "lint:fix": "oxlint src scripts --fix",
     "typecheck:direct": "tsc --noEmit",
     "typecheck:baseline": "tsx scripts/typecheck-baseline.ts",

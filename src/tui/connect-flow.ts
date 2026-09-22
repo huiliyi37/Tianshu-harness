@@ -142,6 +142,7 @@ type Phase =
   | 'confirm'
   | 'advanced-settings'
   | 'advanced-request-timeout'
+  | 'advanced-max-body-bytes'
   | 'advanced-max-retries'
   | 'advanced-temperature'
   | 'advanced-proxy'
@@ -527,7 +528,7 @@ export class ConnectFlow {
       ? (this.advancedReturnPhase === 'capability' ? 'preset-models' : 'diy-models')
       : this.phase
     // 高级设置子菜单同为瞬态——回落确认步（已存旋钮值随 collected.advanced 持久化）。
-    if (phase === 'advanced-settings' || phase === 'advanced-request-timeout' || phase === 'advanced-max-retries' || phase === 'advanced-temperature' || phase === 'advanced-proxy') {
+    if (phase === 'advanced-settings' || phase === 'advanced-request-timeout' || phase === 'advanced-max-body-bytes' || phase === 'advanced-max-retries' || phase === 'advanced-temperature' || phase === 'advanced-proxy') {
       phase = 'confirm'
     }
     // 换型号重探的挑选步是瞬态——回落报告步（恢复后再从报告页进入）。
@@ -1077,6 +1078,7 @@ export class ConnectFlow {
           stepLabel: this.confirmStepLabel(),
           options: [
             { id: 'requestTimeoutMs', label: '请求超时', description: adv.requestTimeoutMs !== undefined ? `${adv.requestTimeoutMs} ms` : '未设置（内置 10 分钟硬顶）' },
+            { id: 'maxBodyBytes', label: '请求体上限', description: adv.maxBodyBytes !== undefined ? `${adv.maxBodyBytes} 字节` : '未设置（不限制）' },
             { id: 'maxRetries', label: '重试次数', description: adv.maxRetries !== undefined ? `${adv.maxRetries} 次` : '未设置（按错误类别默认）' },
             { id: 'temperature', label: '采样温度', description: adv.temperature !== undefined ? String(adv.temperature) : '未设置（思考模式下不生效）' },
             { id: 'proxy', label: 'HTTP 代理', description: adv.proxy ?? '未设置（跟随全局 network.proxy）' },
@@ -1091,6 +1093,14 @@ export class ConnectFlow {
           subtitle: '单次流式请求的总时限（毫秒），替换内置 10 分钟硬顶；回车清空 = 恢复内置',
           stepLabel: this.confirmStepLabel(),
           placeholder: '例如 300000',
+        }
+      case 'advanced-max-body-bytes':
+        return {
+          kind: 'input',
+          title: '高级设置：请求体上限',
+          subtitle: '发送前体积护栏（字节）。超限先截断历史工具输出、仍超限则报可行动错误；留空 = 不限制（默认）',
+          stepLabel: this.confirmStepLabel(),
+          placeholder: '例如 4194304（4MB）',
         }
       case 'advanced-max-retries':
         return {
@@ -1717,6 +1727,7 @@ export class ConnectFlow {
       // 进入单项输入子步——预填当前值，留空回车即清除。
       const target: Record<string, Phase> = {
         requestTimeoutMs: 'advanced-request-timeout',
+        maxBodyBytes: 'advanced-max-body-bytes',
         maxRetries: 'advanced-max-retries',
         temperature: 'advanced-temperature',
         proxy: 'advanced-proxy',
@@ -1828,6 +1839,20 @@ export class ConnectFlow {
             return { kind: 'error', message: '请填写正整数毫秒数，或回车清空恢复内置硬顶。', view: this.view() }
           }
           this.applyAdvancedKnob('requestTimeoutMs', parsed)
+        }
+        this.phase = 'advanced-settings'
+        return { kind: 'next', view: this.view() }
+      }
+
+      case 'advanced-max-body-bytes': {
+        if (value.length === 0) {
+          this.applyAdvancedKnob('maxBodyBytes', undefined)
+        } else {
+          const parsed = Number.parseInt(value, 10)
+          if (!Number.isFinite(parsed) || parsed <= 0) {
+            return { kind: 'error', message: '请填写正整数字节数（如 4194304 = 4MB），或回车清空恢复不限制。', view: this.view() }
+          }
+          this.applyAdvancedKnob('maxBodyBytes', parsed)
         }
         this.phase = 'advanced-settings'
         return { kind: 'next', view: this.view() }

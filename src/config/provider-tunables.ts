@@ -18,6 +18,8 @@ export const TUNABLE_FIELD_KEYS = [
   'slowThinking',
   'firstByteTimeoutMs',
   'thinkingStallTimeoutMs',
+  /** 发送前体积护栏上限（字节）；null = 删键 → 恢复不限制（issue #251 后续）。 */
+  'maxBodyBytes',
   'maxRetries',
   'retry',
   /** 推理档位通道声明（写入 capabilities.effortFormat，见 applyEffortFormatTunable）。 */

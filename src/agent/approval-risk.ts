@@ -329,15 +329,64 @@ export function requiresBashWriteApproval(toolName: string, input: Record<string
  * (yoloBypassesUnconditional); this predicate stays mode-agnostic.
  *
  * In every case the tool's own requiresApproval() already returns true, but
- * that is only consulted in manual mode — the hard-gate promise for the
- * supervised/default modes is enforced in the pipeline.
+ * historically that was only consulted in manual mode. tool-pipeline 现在对
+ * computer_use 的逐应用 needsApproval 做 supervised/default 两档的强制消费
+ * （computerUsePerAppGate），所以这里只负责「任何授权都不能豁免」的接管面；
+ * 普通动作的逐应用 fail-closed 不再依赖调用方记得读工具签名。
  */
 export function requiresUnconditionalApproval(toolName: string, input: Record<string, unknown>): boolean {
   if (toolName === 'request_path_access') return true
   if (toolName !== 'computer_use') return false
   const action = typeof input.action === 'string' ? input.action : ''
-  return action === 'js_eval' || action === 'browser_adopt'
+  if (action === 'js_eval' || action === 'browser_adopt') return true
+  if (action === 'sequence') {
+    const steps = input.steps
+    // 畸形/空 sequence 由 tool 拒绝；审批侧按最严处理（无条件门打开）。
+    if (!Array.isArray(steps) || steps.length === 0) return true
+    return steps.some((raw) => raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+      && requiresUnconditionalApproval('computer_use', raw as Record<string, unknown>))
+  }
+  return false
 }
+
+/**
+ * computer_use 动作风险分级 —— 逐应用授权之外的纵深防御，同时给审批卡/
+ * 遥测一个可读的风险理由。
+ *
+ * 等级上限刻意停在 medium：high 会在 auto-safe 档无条件触发审批，把
+ * 「始终允许」的免审语义打穿（js_eval/browser_adopt 的无条件接管面已由
+ * {@link requiresUnconditionalApproval} 单独置 high）。真正的逐应用
+ * fail-closed 由 tool-pipeline 强制消费 needsApproval 保证；这里只负责
+ * 区分「读屏 / 交互 / 接管」三档并解释风险。
+ */
+const COMPUTER_USE_ACTION_RISK: Record<string, { level: RiskLevel; reason: string }> = {
+  check_permissions: { level: 'none', reason: 'pure local capability probe' },
+  diagnose: { level: 'none', reason: 'local diagnostics / counters' },
+  wait: { level: 'none', reason: 'plain sleep' },
+  list_apps: { level: 'low', reason: 'enumerates running applications' },
+  snapshot: { level: 'low', reason: 'reads the app accessibility tree and screen' },
+  find: { level: 'low', reason: 'filters the app accessibility tree' },
+  wait_for: { level: 'low', reason: 'polls the app accessibility tree' },
+  focus_app: { level: 'medium', reason: 'steals foreground focus' },
+  launch_app: { level: 'medium', reason: 'launches an app and steals foreground focus' },
+  scroll: { level: 'medium', reason: 'synthesizes scroll input' },
+  navigate: { level: 'medium', reason: 'drives the browser to a new URL' },
+  read_page: { level: 'medium', reason: 'reads arbitrary page content' },
+  tabs: { level: 'medium', reason: 'lists or mutates browser tabs' },
+  click: { level: 'medium', reason: 'synthesizes a click in the target app' },
+  double_click: { level: 'medium', reason: 'synthesizes a double click in the target app' },
+  right_click: { level: 'medium', reason: 'synthesizes a right click in the target app' },
+  drag: { level: 'medium', reason: 'synthesizes drag input in the target app' },
+  type: { level: 'medium', reason: 'types arbitrary text into the target app' },
+  set_value: { level: 'medium', reason: 'writes an arbitrary value into a control' },
+  key: { level: 'medium', reason: 'sends key combos that can trigger shortcuts' },
+  menu_select: { level: 'medium', reason: 'invokes a menu command' },
+  paste_text: { level: 'medium', reason: 'pastes arbitrary text into the target app' },
+  js_eval: { level: 'high', reason: "runs arbitrary JS in the user's browser" },
+  browser_adopt: { level: 'high', reason: 'takes over an external DevTools endpoint' },
+}
+
+const RISK_RANK: Record<RiskLevel, number> = { none: 0, low: 1, medium: 2, high: 3 }
 
 /** Confidence thresholds for sensorium-driven adaptive approval. */
 export const CONFIDENCE_THRESHOLDS = {
@@ -367,6 +416,41 @@ export function assessToolRisk(
   if (requiresUnconditionalApproval(toolName, input)) {
     reasons.push('arbitrary JS in the user browser / DevTools endpoint takeover')
     level = 'high'
+  }
+
+  // computer_use 逐动作风险：读屏/交互/接管在审批卡上要有区分度；未知动作
+  // fail-closed。等级上限 medium 的原因见 COMPUTER_USE_ACTION_RISK 注释；
+  // sequence 取所有步骤的最高档（含 js_eval 时无条件门已单独置 high）。
+  if (toolName === 'computer_use') {
+    const action = typeof input.action === 'string' ? input.action : ''
+    const applyRisk = (label: string, riskAction: string): void => {
+      const entry = COMPUTER_USE_ACTION_RISK[riskAction]
+      if (entry) {
+        reasons.push(`${label}: ${entry.reason}`)
+        if (RISK_RANK[entry.level] > RISK_RANK[level]) level = entry.level
+      } else {
+        reasons.push(`${label}: unknown computer_use action "${riskAction}" — fail closed`)
+        level = 'high'
+      }
+    }
+    if (action === 'sequence') {
+      const steps = input.steps
+      if (!Array.isArray(steps) || steps.length === 0) {
+        reasons.push('computer_use.sequence: empty/malformed steps — fail closed')
+        level = 'high'
+      } else {
+        for (let i = 0; i < steps.length; i++) {
+          const raw: unknown = steps[i]
+          const step = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+            ? raw as Record<string, unknown>
+            : {}
+          const stepAction = typeof step.action === 'string' ? step.action : ''
+          applyRisk(`computer_use.sequence[${i + 1}].${stepAction || '?'}`, stepAction)
+        }
+      }
+    } else {
+      applyRisk(`computer_use.${action}`, action)
+    }
   }
 
   // Doom loop check. blocked is short-circuited by the pipeline early-return,
@@ -563,11 +647,24 @@ export function assessToolRisk(
     // based on the combination of risk level + confidence.
   }
 
+  // computer_use 的 suggestedAction 不能复用通用文案：低风险动作（snapshot 等）
+  // 仍受逐应用授权门约束，写「No additional approval required」会与管线行为矛盾。
+  const noApprovalAction = (v: unknown): boolean => v === 'check_permissions' || v === 'wait' || v === 'diagnose'
+  const computerUseNoApproval = toolName === 'computer_use' && (
+    noApprovalAction(input.action)
+    || (input.action === 'sequence' && Array.isArray(input.steps) && input.steps.length > 0
+      && input.steps.every((raw) => raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+        && noApprovalAction((raw as Record<string, unknown>).action)))
+  )
   const suggestedAction = level === 'high'
     ? 'Require explicit user approval before execution.'
-    : level === 'medium'
-      ? 'Show risk context and proceed only in auto-safe/manual modes.'
-      : 'No additional approval required.'
+    : computerUseNoApproval
+      ? 'No approval required for this capability probe.'
+      : toolName === 'computer_use'
+        ? 'Per-app approval: this action prompts unless the target app has an always-allow grant (or the session is YOLO).'
+        : level === 'medium'
+          ? 'Show risk context and proceed only in auto-safe/manual modes.'
+          : 'No additional approval required.'
 
   return { level, reasons, suggestedAction }
 }

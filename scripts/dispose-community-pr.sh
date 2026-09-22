@@ -19,6 +19,8 @@
 #   OWNER    仓库拥有者 login（默认 huiliyi37，署名过滤用）
 #
 # 幂等：已带 sync-merged 且已关闭的 PR 报告后退出；credit commit 按 PR 号查重不重复落账。
+# 自检（2026-09-22 补，fail-closed）：① 必须确认 CONTRIBUTORS.md 真收录了该 PR；
+# ③ 必须确认 credit 提交真的落在本地历史——「跑过一遍」不等于「账落了」。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # ③ 会 cd 到公开仓，故此处先绝对值化
@@ -98,8 +100,14 @@ echo "==> ① 更新 CONTRIBUTORS.md"
 if npx --no-install tsx "$SCRIPT_DIR/contributors.ts" --write; then
   echo "    ✓ 已收录（新条目的「贡献」列是 PR 标题初稿，按需润色）"
 else
-  echo "    ⚠ 自动收录失败（gh 未认证 / 网络不可用）——请手工核对 $PUB_DIR/CONTRIBUTORS.md 是否收录 @${login}"
+  echo "    ⚠ 自动收录失败（gh 未认证 / 网络不可用）——下面自检会兜住"
 fi
+# fail-closed 自检：账本没落到 dev 仓就不许往下走——「跑过一遍但没落账」正是这次要堵的形态。
+if ! grep -q "pull/${PR})" "$SCRIPT_DIR/../CONTRIBUTORS.md"; then
+  echo "✗ CONTRIBUTORS.md 未收录 PR #${PR}——账本没落，终止（修好 gh/网络或手工补录后重跑）" >&2
+  exit 1
+fi
+echo "    ✓ 自检：CONTRIBUTORS.md 已收录 PR #${PR}（记得随 dev 提交一起入库）"
 
 # ── ② 附注 + 标记 + 关闭 ──
 echo "==> ② 附注 + sync-merged 标记 + 关闭"
@@ -113,7 +121,8 @@ gh pr edit "$PR" --repo "$GH_REPO" --add-label sync-merged
 # ── ③ credit commit（Co-authored-by 落账） ──
 echo "==> ③ credit commit"
 cd "$PUB_DIR"
-if git log --format='%B' -50 | grep -qF "PR #${PR} 计入贡献"; then
+# 查重扫全历史（原来只看最近 50 笔——早于窗口的 credit 会被重复补一笔）。
+if git log --format='%s' | grep -qF "credit: PR #${PR} 计入贡献"; then
   echo "    已存在 PR #${PR} 的 credit commit，跳过"
 else
   git commit --allow-empty -m "credit: PR #${PR} 计入贡献——${title}
@@ -124,6 +133,12 @@ GitHub 贡献者图谱按 Co-authored-by trailer 计入。
 Co-authored-by: ${author_line}"
   echo "    credit commit 已创建（Co-authored-by: ${author_line}）"
 fi
+# fail-closed 自检：署名提交必须真的在本地历史里——落空 = 这次处置的目的没达成。
+if ! git log --format='%s' | grep -qF "credit: PR #${PR} 计入贡献"; then
+  echo "✗ PR #${PR} 的 credit 提交未落账——终止（检查 PUB_DIR 可否提交 / 是否被 hook 拦截）" >&2
+  exit 1
+fi
+echo "    ✓ 自检：credit 提交已在 ${PUB_DIR} 本地历史（未 push）"
 
 # ── ④ 推送 ──
 if [[ "$DO_PUSH" == "1" ]]; then

@@ -210,3 +210,37 @@ describe('buildCompactSummary', () => {
     assert.ok(summary.includes('(none)'), 'should show (none) for empty sections')
   })
 })
+
+// ─── 2026-09-22: 第 1 节必须是用户需求，不是轨迹末项标签 ──────────────────────
+// 实测事故：153/153 个 *.handoff.md 的第 1 节写的是 "ask_user_question
+// ask_user_question" / "grep README.md" / "starting" 这类机器标签——它来自
+// TaskState.current（"最后工具 + 目标 basename"），与用户需求无因果关系。
+// 见 docs/analysis/2026-09-22-session-retrospective.md §3。
+describe('buildStructuredHandoff — 用户核心需求来源', () => {
+  const base = {
+    taskState: { current: 'ask_user_question ask_user_question', completed: [], remaining: [], decisions: [] },
+    turnCount: 3, filesSeen: [], reasoningSnippet: '', errorCount: 0, errors: [], toolHistory: [],
+  }
+
+  it('renders the user goal, never the trajectory label', () => {
+    const handoff = buildStructuredHandoff({ ...base, userGoal: '通过 gh 看一下这个 pr 并移植到 dev' })
+    assert.match(handoff, /## 1\. 用户核心需求\n通过 gh 看一下这个 pr 并移植到 dev/)
+    assert.ok(
+      !/## 1\. 用户核心需求\nask_user_question/.test(handoff),
+      'mechanical TaskState.current must not leak into section 1',
+    )
+  })
+
+  it('falls back to a placeholder instead of the trajectory label when no goal is known', () => {
+    const handoff = buildStructuredHandoff(base)
+    assert.match(handoff, /## 1\. 用户核心需求\n（无明确记录）/)
+    // 只约束第 1 节：第 5 节显示轨迹标签是正确的用法（见下一条用例）
+    const section1 = handoff.split('## 2.')[0] ?? ''
+    assert.ok(!section1.includes('ask_user_question'), 'no label leak into section 1 even without a goal')
+  })
+
+  it('keeps the trajectory label in section 5 (current work) — that usage is correct', () => {
+    const handoff = buildStructuredHandoff({ ...base, userGoal: '修一下登录' })
+    assert.match(handoff, /## 5\. 当前工作\nask_user_question ask_user_question/)
+  })
+})

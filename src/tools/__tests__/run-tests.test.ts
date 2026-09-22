@@ -292,14 +292,18 @@ it('works', () => assert.equal(2 + 2, 4))`)
     }
   })
 
-  it('classifies run_tests timeout as tool invocation failure', async () => {
+  it('classifies run_tests timeout as failureKind=timeout, not as a runner crash', async () => {
+    // 2026-09-22：超时曾被归为 tool_invocation_failure，下游据此告诉模型
+    // 「这不是代码失败，换个命令重跑」——但超时意味着进程可能仍在跑并写盘，
+    // 正确的下一步是先核实状态。见 docs/analysis/2026-09-22-session-retrospective.md §4。
     const dir = setupHangingProject()
     try {
       const result = await RUN_TESTS_TOOL.execute(makeParams({ timeout: 50 }, dir))
 
       assert.equal(result.isError, true)
       assert.equal(result.verification!.status, 'blocked')
-      assert.equal(result.verification!.failureKind, 'tool_invocation_failure')
+      assert.equal(result.verification!.failureKind, 'timeout')
+      assert.equal(result.verification!.blockedReason, 'timeout')
       assert.equal(result.verification!.command, 'npm test')
       assert.match(result.content, /超时/)
     } finally {

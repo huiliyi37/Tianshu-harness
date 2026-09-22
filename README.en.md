@@ -218,6 +218,37 @@ tianshu            # or: npm start / node dist/cli/entry.js
 
 You should see the TUI with a `〉` prompt. Type your request and press Enter.
 
+### Your first task
+
+Start with a **read-only** pass so it can learn your project (nothing gets modified):
+
+```
+Read this project and tell me its structure, where the entry points are, and one thing most worth improving
+```
+
+Once you trust its reading, give it a **multi-step task**:
+
+```
+Fix the first failing test in this project and explain the root cause
+```
+
+From there it greps, reads files, edits code and runs tests on its own — every step shows up as a tool call, nothing is just claimed. The default approval tier is **Auto**: low-risk actions run directly, high-risk ones stop and ask (see [Approval & Permissions](#approval--permissions)).
+
+### What to look at afterwards
+
+**① Delivery report** — when the run wraps up, Tianshu calls `deliver_task` and prints a delivery report: gate state (GREEN / YELLOW / RED), which files changed, which verifications ran, and a per-item completion audit. "Done" requires evidence; a finish without evidence gets blocked by the gate.
+
+**② Cockpit** — type `/cockpit` to open it (also reachable from the `Ctrl+P` command palette):
+
+| Panel | What it shows |
+|-------|---------------|
+| `/cockpit verify` | Delivery verification: verified / unverified / failed / blocked, which commands ran, blast radius |
+| `/cockpit advisory` | Runtime advisory ledger: rendered / adopted / ignored, plus per-key adoption rate and lift |
+| `/cockpit model` | Cache hit rate, input/output tokens, per-turn cost |
+| `/cockpit safety` | Risk level and doom-loop detection |
+
+No argument gives the summary view; `/cockpit off` closes it.
+
 ### Headless mode (script integration)
 
 ```bash

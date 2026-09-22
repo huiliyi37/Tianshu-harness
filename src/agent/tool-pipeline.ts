@@ -1197,6 +1197,18 @@ async function executeToolUseInner(
     // net, not prompts. Deny rules and self-kill protection still apply above.
     const yoloBypassesUnconditional = skipAllApproval
 
+    // Per-app fail-closed invariant: computer_use 的逐应用「始终允许」授权是
+    // 它的核心安全边界。旧逻辑只在 manual 档消费 needsApproval，auto-safe
+    // （桌面端默认档）会因风险等级为 none/low 而静默执行未授权应用的
+    // snapshot/click/type —— 工具描述与设置页却承诺逐应用审批（实测复现）。
+    // 这里把它升级为 supervised/default 两档的模式无关不变量：needsApproval=true
+    // 必须弹审批，permissions.allow 与 sensorium 都不能豁免（豁免只有两条：
+    // 应用级 grant 让 needsApproval=false，或用户显式选 YOLO）。auto-accept
+    // 保持历史语义（所有工具整体免审），不在本轮收窄。
+    const computerUsePerAppGate = tu.name === 'computer_use'
+      && needsApproval
+      && (approvalMode === 'manual' || approvalMode === 'auto-safe')
+
     let shouldAsk = (unconditionalApproval && !yoloBypassesUnconditional)
       ? true
       : skipAllApproval
@@ -1207,15 +1219,17 @@ async function executeToolUseInner(
             ? true
             : bashWriteRequiresApproval
               ? true
-              : allowlisted
-                ? false
-                : canAutoApprove
+              : computerUsePerAppGate
+                ? true
+                : allowlisted
                   ? false
-                  : approvalMode === 'manual'
-                    ? needsApproval
-                    : approvalMode === 'auto-safe'
-                      ? isHighRisk
-                      : false
+                  : canAutoApprove
+                    ? false
+                    : approvalMode === 'manual'
+                      ? needsApproval
+                      : approvalMode === 'auto-safe'
+                        ? isHighRisk
+                        : false
 
     // YOLO mode intelligent fallback: auto-grant write access for file-tool
     // paths already covered by a read grant. This eliminates the validatePath →
@@ -1871,11 +1885,27 @@ async function executeToolUseInner(
           // A2: bash commands matching a declared verify command get structured
           // semantics (kind + declared flag) instead of regex-only guesses.
           const declaredKind = classifyDeclaredCommand(cmd, loadDeclaredVerify(deps.cwd))
+          // exitCode / errorClass 是「这条命令到底怎么结束的」的原始事实。
+          // 此前只记 passed/failed/skipped，而这三者在输出不含测试计数时被默认
+          // 成 0（typecheck/lint/build 天然没有计数）——下游据此把「没解析到计数」
+          // 误读成「没跑成」，把真实编译错误与超时都归为 tool_invocation_failure，
+          // 并告诉模型「不是代码问题」。这里补齐原始事实，判定策略统一放读取侧
+          // （verification-attribution）。timeout 尤其要留痕：超时不等于执行停止，
+          // 底层进程可能仍在写盘（见 TOOL_TIMEOUT_RECOVERY_HINT）。
+          const exitCode = harnessResult.isError ? 1 : 0
+          const timedOut = harnessResult.errorClass === 'timeout'
+            || /timed out after \d+s/.test(output)
           deps.taskLedger.record({
             type: 'verification',
             command: cmd.slice(0, 200),
             status: testStatus,
-            meta: { scope: 'full', passed, failed, skipped, ...(declaredKind ? { declared: true, kind: declaredKind } : {}) },
+            meta: {
+              scope: 'full', passed, failed, skipped,
+              exitCode,
+              ...(harnessResult.errorClass ? { errorClass: harnessResult.errorClass } : {}),
+              ...(timedOut ? { timedOut: true } : {}),
+              ...(declaredKind ? { declared: true, kind: declaredKind } : {}),
+            },
           })
           // bash 跑测试/typecheck/lint 也归零 TDD 门禁——否则 agent 用 bash npm test
           // 而非 run_tests 工具时门禁计数器永远不重置，第 4 次编辑必误报拦截。
@@ -1904,6 +1934,10 @@ async function executeToolUseInner(
             m.resolvedCommand = v.command
             m.recommendedCommand = v.command
             if (v.failureKind) m.failureKind = v.failureKind
+            // blockedReason 此前在 ledger 边界被丢弃，导致 run_tests 明明判定
+            // blockedReason: 'timeout'，下游只看到 status failed + 计数全 0，
+            // 又退回「像是崩溃」的推断（2026-09-22）。
+            if (v.blockedReason) m.blockedReason = v.blockedReason
             if (v.targetFiles) m.targetFiles = v.targetFiles
             // VSW: carry snapshot identity + phase so the gate can apply
             // staleness supersession and integration_conflict attribution.

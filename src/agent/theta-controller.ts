@@ -79,8 +79,10 @@ export function createThetaController(
       }
       const timedOut = result.outcome === 'timeout'
       // 退避语义：timeout 推进；ok/type_errors 清零（tsc 真实跑完有了答案）；
-      // busy/backoff/spawn_error 保留原值——抑制或环境失败不推进也不清零，
-      // 免得「假成功」洗掉真实超时的记忆。
+      // 其余保留原值——抑制或环境失败不推进也不清零，免得「假成功」洗掉真实
+      // 超时的记忆。no-fresh-verdict（2026-09-22 新增）属于「没有结论」，不是
+      // 「失败」：theta 现在是闸门结论的只读消费者，本工作树没进过验证期就没有
+      // 结论可回放，这不该被记成一次失败。
       const consecutiveTimeouts = result.outcome === 'timeout'
         ? host.thetaTelemetry.consecutiveTimeouts + 1
         : (result.outcome === 'ok' || result.outcome === 'type_errors')
@@ -90,7 +92,9 @@ export function createThetaController(
         : Math.min(4, consecutiveTimeouts)
       const outcomes = { ...host.thetaTelemetry.outcomes }
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1
-      const suppressed = result.outcome === 'busy' || result.outcome === 'backoff'
+      const suppressed = result.outcome === 'busy'
+        || result.outcome === 'backoff'
+        || result.outcome === 'no-fresh-verdict'
       host.thetaTelemetry = {
         ...host.thetaTelemetry,
         lastDurationMs: result.durationMs,

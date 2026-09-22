@@ -64,6 +64,7 @@ import { resolveAppPromptInput } from '../tui/slash-commands.js'
 import { getPaletteCommands } from '../tui/command-palette.js'
 import { RECOMMENDED_MAX_SKILLS } from '../skills/skill-loader.js'
 import { validatePath } from '../tools/path-validate.js'
+import { convertOfficeToPdf, ConverterUnavailableError, OFFICE_CONVERTIBLE_EXTS } from './file-preview.js'
 import { readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { extname, relative, join, isAbsolute } from 'node:path'
@@ -277,6 +278,21 @@ function planSummary(p: PlanDocument) {
 
 const REPLAY_SLICE_EVENTS = 200
 const REPLAY_SLICE_MS = 4
+
+/** ?raw=1 二进制预览的 MIME 白名单（file-content 路由）。文档三件套 +
+ *  常见图片（FileExplorer 点图片此前也是 utf-8 乱码）。svg 只经 <img>
+ *  上下文渲染（script 不执行），不允许直接浏览。 */
+const RAW_PREVIEW_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+}
 
 async function sendReplayTimeSliced(
   res: import('node:http').ServerResponse,
@@ -1420,7 +1436,11 @@ export function buildSessionRoutes(
     // P2-2 — file content viewer. Reads a file within the session cwd, returns
     // content + language hint. Path is sandboxed via validatePath. Optional
     // ?start=1&end=50 line range to avoid transferring huge files. Bearer-gated.
-    'GET /sessions/:id/file-content': withAuth(async (_body, params) => {
+    // ?raw=1 — binary takeover for office/image preview: same validatePath
+    // sandbox, but serves raw bytes with a real Content-Type (mirrors the
+    // images route below) instead of utf-8 text. Binary cap aligns with the
+    // attachment MAX_DOCUMENT_BYTES (8MB); the text path keeps its 512KB cap.
+    'GET /sessions/:id/file-content': withAuth(async (_body, params, headers, res) => {
       const rec = manager.getSession(params!.id!)
       if (!rec) return { status: 404, body: { error: 'Session not found' } }
       const relPath = typeof params?.path === 'string' ? params.path : ''
@@ -1440,6 +1460,26 @@ export function buildSessionRoutes(
         return { status: 404, body: { error: 'File not found' } }
       }
       if (!stat.isFile()) return { status: 400, body: { error: 'Not a file' } }
+
+      if (params?.raw === '1') {
+        if (!res) return { status: 500, body: { error: 'Response stream is unavailable' } }
+        const rawExt = extname(absPath).slice(1).toLowerCase()
+        const mime = RAW_PREVIEW_MIME[rawExt]
+        if (!mime) return { status: 415, body: { error: `No raw preview for .${rawExt}` } }
+        if (stat.size > MAX_DOCUMENT_BYTES) return { status: 413, body: { error: 'File too large (>8MB)' } }
+        const bytes = readFileSync(absPath)
+        const origin = allowedCorsOrigin(headers ?? {})
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Content-Length': bytes.length,
+          // 文件内容可随磁盘变化，不 immutable；no-cache 让重开预览总是重取。
+          'Cache-Control': 'private, no-cache',
+          ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
+        })
+        res.end(bytes)
+        return { status: 200, handled: true }
+      }
+
       // Cap at 512KB to avoid sending huge files over IPC
       if (stat.size > 512 * 1024) return { status: 413, body: { error: 'File too large (>512KB)' } }
 
@@ -1467,6 +1507,56 @@ export function buildSessionRoutes(
           startLine: start,
           endLine: end,
         },
+      }
+    }, apiToken),
+
+    // Office preview — convert pptx/ppt/odp to PDF bytes via headless soffice
+    // (desktop sidebar PPTX preview, rendered by pdf.js there). Same
+    // validatePath sandbox + binary takeover as file-content?raw=1. Results are
+    // cached (mtime+size keyed) since a soffice run costs 3-15s. 422
+    // converter_unavailable when LibreOffice isn't installed — the frontend
+    // falls back to an "open externally" affordance. Bearer-gated.
+    'GET /sessions/:id/file-preview/pdf': withAuth(async (_body, params, headers, res) => {
+      if (!res) return { status: 500, body: { error: 'Response stream is unavailable' } }
+      const rec = manager.getSession(params!.id!)
+      if (!rec) return { status: 404, body: { error: 'Session not found' } }
+      const relPath = typeof params?.path === 'string' ? params.path : ''
+      if (!relPath) return { status: 400, body: { error: 'Missing "path" query param' } }
+
+      let absPath: string
+      try {
+        absPath = validatePath(rec.cwd, relPath, 'read')
+      } catch {
+        return { status: 403, body: { error: 'Path outside session cwd' } }
+      }
+      const convExt = extname(absPath).slice(1).toLowerCase()
+      if (!OFFICE_CONVERTIBLE_EXTS.has(convExt)) {
+        return { status: 415, body: { error: `Not office-convertible: .${convExt}` } }
+      }
+      try {
+        const stat = statSync(absPath)
+        if (!stat.isFile()) return { status: 400, body: { error: 'Not a file' } }
+        if (stat.size > MAX_DOCUMENT_BYTES) return { status: 413, body: { error: 'File too large (>8MB)' } }
+      } catch {
+        return { status: 404, body: { error: 'File not found' } }
+      }
+
+      try {
+        const bytes = await convertOfficeToPdf(absPath)
+        const origin = allowedCorsOrigin(headers ?? {})
+        res.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Length': bytes.length,
+          'Cache-Control': 'private, no-cache',
+          ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
+        })
+        res.end(bytes)
+        return { status: 200, handled: true }
+      } catch (err) {
+        if (err instanceof ConverterUnavailableError) {
+          return { status: 422, body: { error: 'converter_unavailable', message: err.message } }
+        }
+        return { status: 422, body: { error: 'conversion_failed', message: (err as Error).message } }
       }
     }, apiToken),
 

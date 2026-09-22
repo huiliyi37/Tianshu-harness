@@ -21,7 +21,7 @@ function makeTelemetry(over: Partial<ThetaTelemetryState> = {}): ThetaTelemetryS
     consecutiveTimeouts: 0,
     cooldownUntilTurn: 0,
     suppressedCount: 0,
-    outcomes: { ok: 0, type_errors: 0, timeout: 0, spawn_error: 0, busy: 0, backoff: 0 },
+    outcomes: { ok: 0, type_errors: 0, timeout: 0, spawn_error: 0, busy: 0, backoff: 0, 'no-fresh-verdict': 0 },
     ...over,
   }
 }
@@ -196,5 +196,27 @@ describe('theta-controller: 上限与防重入', () => {
     await settle()
 
     assert.deepEqual(failed, ['src/a.ts', 'src/b.ts'])
+  })
+})
+
+describe('theta-controller: no-fresh-verdict 语义（2026-09-22 只读消费者）', () => {
+  it('no-fresh-verdict 只记抑制，不推进退避、不清零既有退避', async () => {
+    // theta 现在是共享闸门结论的只读消费者：本工作树没进过验证期就没有结论可
+    // 回放。这是「没有结论」，不是「失败」——不得像 timeout 那样推进退避，
+    // 也不得像 ok/type_errors 那样清零（那会洗掉真实超时的记忆）。
+    const host = makeHost({
+      thetaTelemetry: makeTelemetry({ consecutiveTimeouts: 2, cooldownUntilTurn: 0 }),
+    })
+
+    createThetaController(host, syncRunner(result('no-fresh-verdict')))('theta-cycle:retrieval')
+    await settle()
+
+    assert.equal(host.thetaTelemetry.outcomes['no-fresh-verdict'], 1)
+    assert.equal(host.thetaTelemetry.consecutiveTimeouts, 2, 'not a failure — must not advance backoff')
+    // cooldownUntilTurn 是每次从 consecutiveTimeouts 派生的（turnCount + min(4, n)），
+    // 不是保留值：2 未变 ⇒ 派生结果仍是 1+2=3，而不是被这次调用推进到更长。
+    assert.equal(host.thetaTelemetry.cooldownUntilTurn, 3, 'derived from the UNCHANGED timeout count')
+    assert.equal(host.thetaTelemetry.suppressedCount, 1, 'counted as suppressed')
+    assert.equal(host.thetaTelemetry.lastTimedOut, false, 'must never masquerade as a timeout')
   })
 })

@@ -13,8 +13,10 @@ import type { Tool, ToolCallParams, ToolResult } from '../types.js'
 import { isAppGranted } from './app-grants.js'
 import { isComputerUseSupportedPlatform, loadComputerUseImpl } from './bridge.js'
 
-/** 与 pro tool.ts 同一份：能力探针与纯 sleep 免审批。 */
-const NO_APPROVAL_ACTIONS = new Set(['check_permissions', 'wait'])
+/** 与 pro tool.ts 同一份：能力探针、本地诊断与纯 sleep 免审批。 */
+const NO_APPROVAL_ACTIONS = new Set(['check_permissions', 'diagnose', 'wait'])
+/** 不需要 app 目标的动作；sequence 顶层 app 不向 list_apps 等步骤下发。 */
+const APP_OPTIONAL_ACTIONS = new Set(['check_permissions', 'diagnose', 'wait', 'list_apps', 'browser_adopt'])
 /** 任意代码执行 / 端点接管面——授权表永不免审（镜像 pro 侧 ALWAYS_APPROVE_ACTIONS）。 */
 const ALWAYS_APPROVE_ACTIONS = new Set(['js_eval', 'browser_adopt'])
 
@@ -38,8 +40,10 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
 
 操作：
 - check_permissions：报告系统能力/权限状态（无需审批）。
+- diagnose：本地分层诊断（平台/门控/路由开关/TCC/运行计数器），无需审批。
+- sequence(steps, app?, feedback?, continue_on_error?)：按顺序串行执行多个动作（最多 20 步，不可嵌套）。每步是一个动作对象（如 {action:"click", ref:3}）；同应用多步可只在顶层给一次 app，顶层 feedback:false 会下发给未显式声明的步骤。整组只走一次审批（按最严格步骤定档）；默认遇错即停，continue_on_error:true 时继续并汇总失败。适合连续点击/填表/快捷键组合，减少往返。
 - list_apps：列出可见应用。
-- snapshot(app)：返回应用的编号可访问性树 + 保存截图 artifact。如果 UI 自上次快照以来没有变化，返回简短"未变化"提示而非重复整棵树。Electron 应用（QQ、微信、VS Code…）在首次快照后几秒才会填充树——工具会自动预热并重试；超大树可能标记为"部分"（ref 仍然有效；用 find/wait_for 获取更深内容）。绝不要因为一次稀疏快照就断定应用不可见——再拍一次快照或先用 find。
+- snapshot(app)：返回应用的编号可访问性树 + 保存截图 artifact。如果 UI 自上次快照以来没有变化，返回简短"未变化"提示而非重复整棵树。Electron 应用（QQ、微信、VS Code…）在首次快照后几秒才会填充树——工具会自动预热并重试；超大树可能标记为"部分"（ref 仍然有效；用 find/wait_for 获取更深内容）。模型可见截图会叠加 ref 编号（有截图覆盖矩形时）。绝不要因为一次稀疏快照就断定应用不可见——再拍一次快照或先用 find。
 - find(app, query)：快照但仅返回匹配查询的树行（角色/标题/值，不区分大小写）及其祖先链。对大型 UI（浏览器）优于 snapshot——同样的 ref，少得多的输出。
 - wait_for(app, text, gone?, timeout_ms?)：轮询 UI 直到含"text"的树行出现（或 gone:true 时消失）。返回匹配行及可点击的 ref。在触发加载/动画的操作后使用，而不是盲 wait+snapshot 循环。
 - click(app, ref|x,y)：左键点击快照元素 ref（推荐）或坐标。
@@ -62,16 +66,16 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
 - tabs(app, tab_op, tab?, url?)：列出/激活/新建/关闭浏览器标签页（tab 是 list 中的 1-based 索引）。
 - browser_adopt(endpoint)：附加到你用 --remote-debugging-port 启动的 Chrome（需要审批；自治/YOLO 档免审批）。
 
-反馈循环：每次变更操作后工具会重新读取 UI 并附加变化摘要（新增/移除的元素）。UI 变化时 ref 缓存会刷新——diff 中显示的 ref 立即可点击，操作之前的 ref 已失效。如果目标 ref 失效，工具会在恰好一个元素仍匹配相同 role+title 时自动重拍快照并重试；否则刷新缓存并请你重新选择目标。`,
+反馈循环：每次变更操作后工具会重新读取 UI 并附加变化摘要（新增/移除的元素）。UI 变化时 ref 缓存会刷新——diff 中显示的 ref 立即可点击，操作之前的 ref 已失效。如果目标 ref 失效，工具会在恰好一个元素仍匹配相同 role+title 时自动重拍快照并重试；否则刷新缓存并请你重新选择目标。采集带 8s 预算：超时会跳过 diff 并提示重新 snapshot；需要连续低延迟操作时可在单次调用传 feedback:false 关闭该轮反馈。AX 树未变但截图有明显像素变化时，会提示视觉变化并附截图。`,
       input_schema: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['check_permissions', 'list_apps', 'snapshot', 'find', 'wait_for', 'click', 'double_click', 'right_click', 'scroll', 'drag', 'type', 'set_value', 'key', 'wait', 'focus_app', 'launch_app', 'menu_select', 'paste_text', 'navigate', 'read_page', 'js_eval', 'tabs', 'browser_adopt'],
+            enum: ['check_permissions', 'diagnose', 'sequence', 'list_apps', 'snapshot', 'find', 'wait_for', 'click', 'double_click', 'right_click', 'scroll', 'drag', 'type', 'set_value', 'key', 'wait', 'focus_app', 'launch_app', 'menu_select', 'paste_text', 'navigate', 'read_page', 'js_eval', 'tabs', 'browser_adopt'],
             description: '要执行的操作。',
           },
-          app: { type: 'string', description: '目标应用名称（除 list_apps/check_permissions/wait 外所有操作必需）。' },
+          app: { type: 'string', description: '目标应用名称（除 list_apps/check_permissions/diagnose/wait/sequence 外所有操作必需；sequence 的同应用多步可只给顶层 app）。' },
           ref: { type: 'number', description: '目标快照元素 ref（click/scroll/set_value；来自最新快照）。' },
           x: { type: 'number', description: 'X 坐标（屏幕像素），无 ref 时使用。' },
           y: { type: 'number', description: 'Y 坐标（屏幕像素），无 ref 时使用。' },
@@ -90,6 +94,13 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
           to_x: { type: 'number', description: '拖拽终点 X（无 to_ref 时）。' },
           to_y: { type: 'number', description: '拖拽终点 Y（无 to_ref 时）。' },
           duration_ms: { type: 'number', description: '等待时长毫秒数，上限 5000（wait 操作）。' },
+          feedback: { type: 'boolean', description: '变更操作后是否重新读取 UI 并附加 diff（默认 true；连续操作/追低延迟可传 false；sequence 顶层 false 会下发给未显式声明的步骤）。' },
+          steps: {
+            type: 'array',
+            description: 'sequence 的步骤列表：每项是一个动作对象（含 action 及该动作参数），最多 20 步，不可嵌套 sequence。',
+            items: { type: 'object' },
+          },
+          continue_on_error: { type: 'boolean', description: 'sequence：单步失败后是否继续执行后续步骤（默认 false = 遇错即停）。' },
           url: { type: 'string', description: '要打开的 URL（navigate / tabs new）。navigate 也接受 "back"、"forward"、"reload"。' },
           expression: { type: 'string', description: '要在页面中执行的 JavaScript（js_eval 操作）。' },
           tab_op: { type: 'string', enum: ['list', 'activate', 'new', 'close'], description: '标签页操作（tabs 操作；默认 list）。' },
@@ -115,6 +126,32 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
     requiresApproval(params: ToolCallParams): boolean {
       if (real) return real.requiresApproval(params)
       const action = params.input.action as string
+      if (action === 'sequence') {
+        // 与 pro 侧 sequenceRequiresApproval 同语义（parity 测试钉住）：
+        // 空/畸形 → 必审；js_eval/browser_adopt → 必审；纯免审步骤 → 免审；
+        // 其余要求所有需 app 的步骤指向同一个且已授权的 app。
+        const raw = params.input.steps
+        if (!Array.isArray(raw) || raw.length === 0) return true
+        const topApp = typeof params.input.app === 'string' ? params.input.app.trim() : ''
+        let sharedApp: string | null = null
+        for (const item of raw) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return true
+          const step = item as Record<string, unknown>
+          const stepAction = typeof step.action === 'string' ? step.action : ''
+          if (stepAction === 'sequence') return true
+          if (ALWAYS_APPROVE_ACTIONS.has(stepAction)) return true
+          if (NO_APPROVAL_ACTIONS.has(stepAction)) continue
+          const stepApp = typeof step.app === 'string' && step.app.trim()
+            ? step.app.trim()
+            : (APP_OPTIONAL_ACTIONS.has(stepAction) ? '' : topApp)
+          if (!stepApp) return true
+          const norm = stepApp.toLowerCase()
+          if (sharedApp === null) sharedApp = norm
+          else if (sharedApp !== norm) return true
+          if (!isAppGranted(stepApp)) return true
+        }
+        return false
+      }
       if (NO_APPROVAL_ACTIONS.has(action)) return false
       if (ALWAYS_APPROVE_ACTIONS.has(action)) return true
       // list_apps 无单一应用目标——恒门控（会暴露运行中应用清单）。
@@ -128,6 +165,11 @@ export function createComputerUseStubTool(options: ComputerUseStubOptions = {}):
     isEnabled: () => enabled,
     timeoutMs: (params?: ToolCallParams) => {
       const action = params?.input?.action as string | undefined
+      if (action === 'sequence') {
+        const steps = params?.input?.steps
+        const count = Array.isArray(steps) ? steps.length : 0
+        return Math.min(600_000, 60_000 + count * 30_000)
+      }
       return action === 'snapshot' || action === 'find' || action === 'wait_for' ? 90_000 : 60_000
     },
   }

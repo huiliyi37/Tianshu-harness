@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { grantApp, revokeApp, isAppGranted, listGrantedApps } from '../app-grants.js'
+import { grantApp, revokeApp, isAppGranted, listGrantedApps, resolveRememberedComputerUseApp } from '../app-grants.js'
 import { computerUseGrantsPath } from '../../../config/paths.js'
 
 let base: string
@@ -62,4 +62,21 @@ test('blank app names are never granted', () => {
   grantApp('   ', { base })
   assert.deepEqual(listGrantedApps(base), [])
   assert.equal(isAppGranted('', base), false)
+})
+
+test('resolveRememberedComputerUseApp: 顶层 app 优先；单应用 sequence 取 steps；多应用/缺失不记录', () => {
+  assert.equal(resolveRememberedComputerUseApp({ action: 'click', app: 'Safari' }), 'Safari')
+  assert.equal(resolveRememberedComputerUseApp({
+    action: 'sequence',
+    steps: [{ action: 'click', app: 'Safari' }, { action: 'type', app: 'safari' }],
+  }), 'Safari')
+  assert.equal(resolveRememberedComputerUseApp({
+    action: 'sequence',
+    steps: [{ action: 'click', app: 'Safari' }, { action: 'click', app: 'Notes' }],
+  }), undefined, '跨应用不记录')
+  assert.equal(resolveRememberedComputerUseApp({
+    action: 'sequence',
+    steps: [{ action: 'wait', duration_ms: 1 }],
+  }), undefined, '步骤无 app 不记录')
+  assert.equal(resolveRememberedComputerUseApp(undefined), undefined)
 })

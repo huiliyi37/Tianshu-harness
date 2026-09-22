@@ -222,6 +222,8 @@ export function createProviderClient(
     firstByteTimeoutMs: provider.firstByteTimeoutMs,
     // Advanced provider knobs and slow-thinking override are both runtime inputs.
     requestTimeoutMs: provider.requestTimeoutMs,
+    // 发送前体积护栏（未配置 = 不限制）：见 request-body-guard。
+    maxBodyBytes: provider.maxBodyBytes,
     maxRetries: provider.maxRetries,
     retry: provider.retry,
     temperature: provider.temperature,

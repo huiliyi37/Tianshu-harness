@@ -135,6 +135,23 @@ export function computerUseGrantsPath(base?: string): string {
   return join(base ?? rivetHome(), 'computer-use-grants.json')
 }
 
+/**
+ * CDP 浏览器域策略文件 —— 可选；缺省不存在 = 保持现有 allow 行为。
+ * 形态见 src/pro/computer-use/browser-policy.ts（or 环境变量
+ * RIVET_CU_BROWSER_POLICY 覆盖，JSON 同构）。
+ */
+export function computerUseBrowserPolicyPath(base?: string): string {
+  return join(base ?? rivetHome(), 'computer-use-browser-policy.json')
+}
+
+/**
+ * computer_use 动作审计日志（JSONL，仅元数据：action/app/耗时/结果/路由；
+ * 不含输入文本、URL query、截图）。RIVET_CU_JOURNAL=0 可关闭。
+ */
+export function computerUseJournalPath(base?: string): string {
+  return join(base ?? rivetHome(), 'computer-use-journal.jsonl')
+}
+
 /** Directory holding per-cwd last-session pointer files. */
 export function lastSessionPointerDir(): string {
   return join(rivetHome(), 'last-session')

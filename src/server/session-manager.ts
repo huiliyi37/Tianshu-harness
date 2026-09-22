@@ -80,7 +80,7 @@ import { getGitGraph, getWorkingTreeFiles, getFileDiff, getFileAtBase, listGitBr
 import type { WorkingTreeFile } from '../tools/git.js'
 import { SessionJobs, type JobEvent } from '../tools/job-store.js'
 import { parseAskUserQuestions } from '../tools/ask-user-question.js'
-import { grantApp as grantComputerUseApp } from '../tools/computer-use/app-grants.js'
+import { grantApp as grantComputerUseApp, resolveRememberedComputerUseApp } from '../tools/computer-use/app-grants.js'
 import { outOfWorkspaceFilePaths } from '../agent/tool-pipeline.js'
 import { applySandboxPolicyForApprovalMode } from '../tools/sandbox-profile.js'
 import {
@@ -5007,11 +5007,13 @@ export class RuntimeSessionManager {
     // (the tool's requiresApproval consults the same grant store).
     let rememberedApp: string | undefined
     if (approved && remember === true && pend.toolName === 'computer_use') {
-      const app = pend.toolInput?.app
-      if (typeof app === 'string' && app.trim()) {
+      // 单动作取顶层 app；单应用 sequence 从 steps 里解析同一 app；多应用
+      // sequence 返回 undefined（不记录，fail closed）。
+      const app = resolveRememberedComputerUseApp(pend.toolInput)
+      if (app) {
         try {
-          grantComputerUseApp(app.trim())
-          rememberedApp = app.trim()
+          grantComputerUseApp(app)
+          rememberedApp = app
         } catch { /* grant persistence is best-effort — approval still resolves */ }
       }
     }

@@ -10,9 +10,10 @@ import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
-import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS } from '../utils/sanitize.js'
+import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS, MAX_JSON_BODY_BYTES } from '../utils/sanitize.js'
 import { enforceRequestBodyLimit } from './request-body-guard.js'
 import { stableStringify } from './stable-json.js'
+import { RequestInvariantMonitor } from './request-invariant.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { debugLog } from '../utils/debug.js'
 import { repairInvalidJsonEscapes } from './json-escape-repair.js'
@@ -192,6 +193,9 @@ export interface OpenAIClientConfig {
    * 不受影响，谁先到谁生效。
    */
   requestTimeoutMs?: number
+  /** 发送前请求体体积护栏上限（字节）。undefined = 不限制（默认，零开销不量体）。
+   *  配置后超限先截断历史 tool 输出，削完仍超限抛可行动错误。 */
+  maxBodyBytes?: number
   /** Max retry attempts for retryable API errors. undefined = 分类器 per-category
    *  默认（显式值不再被向下夹取）；0 = 禁用重试。thinking 模式仍受内置节流
    *  （slow-thinking 2 次 / 其余 1 次），显式配置覆盖之。 */
@@ -390,6 +394,14 @@ export class OpenAIClient implements StreamClient {
   private prevWireToolsSig: string | null = null
   /** Latest wire divergence (consume-once via consumeWireDivergence). */
   private lastWireDivergence: WireDivergence | null = null
+
+  /**
+   * 请求重建不变式（强制）：同一个 request.messages 数组在同一 client 上两次
+   * 派发之间必须字节一致。刻意**按 client 实例**持有——换成进程单例会让
+   * FallbackStreamClient 的 provider 故障转移（换 client 即换 system 后缀、
+   * 换缓存命名空间）被误判为违规，把一次优雅降级变成硬错误。
+   */
+  private readonly requestInvariant = new RequestInvariantMonitor()
   /** undici ProxyAgent for config.proxy (undefined = no per-provider proxy). */
   private readonly proxyDispatcher: ProxyAgent | undefined
 
@@ -592,7 +604,7 @@ export class OpenAIClient implements StreamClient {
     //
     // 大体积请求（>FULL_SANITIZE_CHARS）一律全量清洗：增量路径会漏掉「历史段被原地
     // 改写」与「client 实例跨数组复用」两处窗口，而漏过的一个控制字符在 wire 上就是
-    // `\u00XX` 转义——正是上游按字节截断 body 时的切口（4MB 护栏只是兜底，源头也得
+    // `\u00XX` 转义——正是上游按字节截断 body 时的切口（maxBodyBytes 护栏只是兜底且默认关闭，源头也得
     // 干净）。全量扫描与本次必做的 JSON.stringify 同阶，1M 字符以上已可忽略。
     const msgArray = body.messages as Array<Record<string, unknown>>
     if (msgArray.length <= this._sanitizedCount || countContentChars(msgArray) > FULL_SANITIZE_CHARS) {
@@ -616,6 +628,12 @@ export class OpenAIClient implements StreamClient {
     // remaining client-side suspects are these transforms. Joined with
     // cacheRead regressions in the cache-log this separates send-layer byte
     // churn from provider-side rendering/落盘 behavior.
+    // 请求重建不变式：断言这一份最终上线字节与「同一个 request 对象上次派发」一致。
+    // 刻意对**所有**请求生效（不止 prefixProbe 的主轮）——侧路复用主请求的
+    // messages 数组、故障转移重放同一 request，这两条路径原先完全没有守护，
+    // 而 2026-07-06 的原地双追加事故正是发生在它们的形状上。
+    this.requestInvariant.observe(request, msgArray, body.tools as unknown[] | undefined)
+
     if (request.prefixProbe) this.recordWireDivergence(msgArray, body.tools as unknown[] | undefined)
 
     await this.sendStream(body, callbacks, signal)
@@ -776,11 +794,12 @@ export class OpenAIClient implements StreamClient {
         if (signal.aborted) lifecycle.abort()
         else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
       }
-      // 请求体体积护栏（4MB）：provider 网关超限时会**按字节截断 body**，切进一个
+      // 请求体体积护栏（可选）：provider 网关超限时会**按字节截断 body**，切进一个
       // `\uXXXX` 转义就报 "unexpected end of hex escape" HTTP 400——用户只看到一句
       // 英文 serde 报错，会话从此发不出去。护栏只截 wire 副本（入参不动）、且确定性
       // （同输入同字节，降级后前缀仍稳定，不会每轮碎缓存）。
-      const guard = enforceRequestBodyLimit(effectiveBody)
+      // 未配置 maxBodyBytes 时不启用（不量体、零额外成本）；上游报错文案会引导配置。
+      const guard = enforceRequestBodyLimit(effectiveBody, { limitBytes: this.config.maxBodyBytes })
       // 降级/逼近上限必须可见（同 issue #94 的剥图教训：wire 层降级静默 = 用户读成
       // 「模型变笨了」）。降级只在"降级集合变化"时上报一次——截断是确定性的，同一段
       // 历史每轮都被同样地截，逐轮上报只会把状态行刷成噪音。
@@ -1632,7 +1651,14 @@ function apiErrorHint(code: string, message: string, provider?: ApiErrorProvider
   // of hex escape"）：这是**我们发出去的体**在上游被按字节切断，不是模型、不是
   // 密钥、也不是余额问题。用户看到的只是一句英文解析错误——给结论 + 出路。
   if (/parse the request body|unexpected end of hex escape|as JSON:|invalid json/i.test(probe)) {
-    return '\n提示：请求体被上游判为非法 JSON（多为对话体量超限被按字节截断）。用 /compact 压缩本会话或新开会话继续；若 baseUrl 走第三方中转，中转常有更小的 body 上限。'
+    const knob = provider?.providerName
+      ? `provider.providers.${provider.providerName}.maxBodyBytes`
+      : 'provider.providers.<name>.maxBodyBytes'
+    return (
+      '\n提示：请求体被上游判为非法 JSON（多为对话体量超限被按字节截断）。用 /compact 压缩本会话或新开会话继续；' +
+      '若 baseUrl 走第三方中转，中转常有更小的 body 上限。发送前体积护栏默认关闭——可在该 provider 配置里设 ' +
+      `${knob}（字节，如 ${MAX_JSON_BODY_BYTES}）启用：超限时自动截断历史工具输出，避免这类 400。`
+    )
   }
   if (!/insufficient[ _-]?(balance|quota)|余额不足|额度不足/i.test(probe)) return ''
 

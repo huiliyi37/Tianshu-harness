@@ -279,6 +279,21 @@ function crossPackNative(targetArch, targetPlatform) {
   )
 }
 
+// ── macOS AXObserver helper（P3-2）────────────────────────────────────
+// 可选：native/build-cu-ax-observer.sh 构建出的 native/ax-observer 拷入
+// dist/native/，随 desktop bundle 一起被 codesign-nested.js 签名。缺失不报错
+// （旧行为 fail-open：resolveAxObserverBinary 找不到就回退 JXA 轮询）。
+const AX_OBSERVER_SOURCE = join(repoRoot, 'native', 'ax-observer')
+function packAxObserver() {
+  if (!existsSync(AX_OBSERVER_SOURCE)) return
+  mkdirSync(TARGET_DIR, { recursive: true })
+  const target = join(TARGET_DIR, 'ax-observer')
+  copyFileSync(AX_OBSERVER_SOURCE, target)
+  const sizeKb = Math.round(statSync(target).size / 1024)
+  console.log(`✅ Packed ax-observer (${sizeKb}KB) → ${target}`)
+}
+packAxObserver()
+
 if (!existsSync(SOURCE)) {
   console.error('⚠ pack-native: better-sqlite3 native binary not found at %s — skipping', SOURCE)
   process.exit(0)

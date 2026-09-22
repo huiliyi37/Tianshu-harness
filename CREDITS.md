@@ -130,3 +130,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #51 feat: 修复会话 Auto 路由并新增星域漂移检测（CLOSED）
 - #35 修复：加固运行时正确性与边界场景（CLOSED）
 - #34 fix(tui): isolate clipboard fallback tests（CLOSED）
+
+## @moyan3691
+
+署名：moyan3691 <326834146+moyan3691@users.noreply.github.com>
+
+- #214 docs: 新增「自带 /mobile 页面」指南与可运行示例（CLOSED）

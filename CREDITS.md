@@ -100,3 +100,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #104 fix(windows): 隐藏 GUI 派生的控制台子进程窗口（Fixes #103）（CLOSED）
 - #97 feat(api): 可配置重试策略 + 可选客户端限速（provider.providers.<name>.retry）（CLOSED）
 - #95 fix(api): implement image_strip auto-recovery — 413/图片拒绝后剥离图片重发一次（CLOSED）
+- #16 fix(tui): guard truncate() against max<=1 negative slice index（CLOSED）

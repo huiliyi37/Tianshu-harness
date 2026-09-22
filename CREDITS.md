@@ -27,3 +27,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #228 fix(web-fetch): 渲染路径用进程内 pin 代理钉住 DNS，关闭 rebinding 窗口（issue #212）（CLOSED）
 - #227 fix(config): 搜索 API key 迁到 secrets-store，config.json 不再落明文（issue #220）（CLOSED）
 - #226 fix(server): project 路由的 cwd 必须在册（issue #221）（CLOSED）
+- #225 fix(tui): live 流式区套用终端文本契约（issue #222）（CLOSED）

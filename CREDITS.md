@@ -103,3 +103,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #16 fix(tui): guard truncate() against max<=1 negative slice index（CLOSED）
 - #15 docs(readme): renumber sections to fix duplicate '### 3.' heading（CLOSED）
 - #13 Feat rivet shell completions（MERGED）
+- #12 feat(completions): add fish and Windows-shell completion scripts（CLOSED）

@@ -25,3 +25,4 @@ Contributors 面板里。
 | **maoqiu77** | maoqiu77 <198698497+maoqiu77@users.noreply.github.com> | #51, #35, #34 |
 | **moyan3691** | moyan3691 <326834146+moyan3691@users.noreply.github.com> | #214, #211 |
 | **nzz0991999-ai** | nzz0991999-ai <224787558+nzz0991999-ai@users.noreply.github.com> | #91 |
+| **qiaodier** | qiaodier <8543606+qiaodier@users.noreply.github.com> | #8 |

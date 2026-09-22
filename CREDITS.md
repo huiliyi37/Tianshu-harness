@@ -143,3 +143,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：nzz0991999-ai <224787558+nzz0991999-ai@users.noreply.github.com>
 
 - #91 fix(worker): 单测改用具名导入 node:events——修复 typecheck 红灯（CLOSED）
+
+## @qiaodier
+
+署名：qiaodier <8543606+qiaodier@users.noreply.github.com>
+
+- #8 Dev qiao（CLOSED）

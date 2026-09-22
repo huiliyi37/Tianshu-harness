@@ -64,3 +64,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 
 - #64 Update website credit to remove developer's namedocs: credit original…（MERGED）
 - #7 feat(website): rewrite with Vue 3 + Vite, replace Next.js version（CLOSED）
+- #3 fix(edit/hash-edit): 写入后 syntaxCheck/diff 异常不再导致工具报错（CLOSED）

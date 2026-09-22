@@ -145,7 +145,7 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/plan-template', description: '计划模板：list 列出 / save <name> 存当前计划为模板 / <name> 套用', argsHint: '[list|save <name>|<name>]' },
   { name: '/prefix-budget', description: '前缀预算归因：各上下文块的字符/token 占比 + 当前档位——查「前缀为什么这么大」' },
   { name: '/sensorium', description: '显示天枢自感知状态（六维遥测快照）' },
-  { name: '/debug', description: '调试信息：prompt 指纹 / 缓存 / 上下文载荷 / MCP 状态', argsHint: '[prompt|fingerprint|cache|context-payload|mcp]' },
+  { name: '/debug', description: '调试信息：prompt 指纹 / 缓存 / 上下文载荷 / MCP 状态 / CVM 拦截台账', argsHint: '[prompt|fingerprint|cache|context-payload|mcp|cvm]' },
   { name: '/workflow', description: 'YAML 工作流编排：list 列出 / <name> 执行 / replay <id> 回放 trace', argsHint: '[list|<name>|replay <id>]' },
   { name: '/diagram', description: '生成 Mermaid 图骨架（architecture / dataflow / sequence / flowchart / comparison / state）', argsHint: '[list|<type>]' },
   { name: '/dream', description: '把本会话的决策蒸馏进项目记忆（跨会话生效）' },

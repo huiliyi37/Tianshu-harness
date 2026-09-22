@@ -74,3 +74,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #24 feat: improve Galaxy and Starflow EP-DP orchestration（CLOSED）
 - #17 feat: starflow 星流五阶段全链路编排 + galaxy 执行流程修复（CLOSED）
 - #14 feat: galaxy 星河集群（MoE 多维派发）与执行流程修复（CLOSED）
+
+## @L4XB
+
+署名：L4XB <103962359+L4XB@users.noreply.github.com>
+
+- #109 fix(browser): pin the chromium install to the embedded playwright-core version（CLOSED）

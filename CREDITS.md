@@ -47,3 +47,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #38 Feature/provider onboarding stack（CLOSED）
 - #36 Test/full suite stability（CLOSED）
 - #33 Fix/security and test wsl2（MERGED）
+- #25 fix(pointer-guard): 拦截 apply-patch 指针交叉 echo 到写入工具（前缀入列 + 渲染补机器 tag）（CLOSED）

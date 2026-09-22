@@ -24,3 +24,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #232 fix(plugins): permissions 声明如实标注为非强制（issue #216）（CLOSED）
 - #231 feat(mcp): MCP 服务器连接级审批门（issue #215）（CLOSED）
 - #229 fix(tools): browser 工具加逐请求防护，重定向/iframe/子资源不再绕过 allowlist（issue #213）（CLOSED）
+- #228 fix(web-fetch): 渲染路径用进程内 pin 代理钉住 DNS，关闭 rebinding 窗口（issue #212）（CLOSED）

@@ -6,27 +6,17 @@
 是本人账号关联邮箱**」——空提交与 `Co-authored-by` 都不计入（依据 GitHub 文档
 *Viewing a project's contributors*：`Merge commits and empty commits aren't counted as
 contributions for this graph`；`including commit co-authors` 仅 GHES 版本成立）。
-因此每位还没有 author 提交的外部贡献者，会在本文件追加一行，并以该贡献者为
-`--author` 提交一次（committer 保持仓库维护者）——这样他的账号才会出现在
-Contributors 面板里。
 
-完整的贡献者名单、人工撰写的贡献描述与 PR 索引见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
+因此对每位还没有出现在 Contributors 名单里的外部贡献者，**按 PR 逐个**在此追加一行，
+每行是一笔由该贡献者作为 `author` 的提交（committer 保持仓库维护者）——一笔提交对应
+他的一个增量。完整名单与人工描述见 [CONTRIBUTORS.md](CONTRIBUTORS.md)，流程说明见
+[EXTERNAL-PRS.md](EXTERNAL-PRS.md)。
 
-| 贡献者 | 署名 | 收编 PR |
-|---|---|---|
-| **EarthxxRhythm** | EarthxxRhythm <68267496+EarthxxRhythm@users.noreply.github.com> | #234, #233, #232, #231, #229, #228, #227, #226, #225, #224, #210 |
-| **Eason412** | Eason412 <250286526+Eason412@users.noreply.github.com> | #32, #31, #29 |
-| **jian-in** | jian-in <267224531+jian-in@users.noreply.github.com> | #201 |
-| **KinoGao** | KinoGao <71637313+KinoGao@users.noreply.github.com> | #26, #24, #17, #14 |
-| **L4XB** | L4XB <103962359+L4XB@users.noreply.github.com> | #109 |
-| **LinHoMo** | LinHoMo <135706031+LinHoMo@users.noreply.github.com> | #143, #142, #141, #126, #108, #107, #104, #97, #95, #16, #15, #13, #12 |
-| **liuwanwan1** | liuwanwan1 <243261597+liuwanwan1@users.noreply.github.com> | #30, #28, #27, #23, #22, #20, #19 |
-| **lumos-tiamo** | lumos-tiamo <156174712+lumos-tiamo@users.noreply.github.com> | #59 |
-| **maoqiu77** | maoqiu77 <198698497+maoqiu77@users.noreply.github.com> | #51, #35, #34 |
-| **moyan3691** | moyan3691 <326834146+moyan3691@users.noreply.github.com> | #214, #211 |
-| **nzz0991999-ai** | nzz0991999-ai <224787558+nzz0991999-ai@users.noreply.github.com> | #91 |
-| **qiaodier** | qiaodier <8543606+qiaodier@users.noreply.github.com> | #8 |
-| **sky-mirrors** | sky-mirrors <118016577+sky-mirrors@users.noreply.github.com> | #209 |
-| **wangxx-yu** | wangxx-yu <270384808+wangxx-yu@users.noreply.github.com> | #6 |
-| **Wanming08** | Wanming08 <152006802+Wanming08@users.noreply.github.com> | #152 |
-| **zzuu080603** | zzuu080603 <225036550+zzuu080603@users.noreply.github.com> | #181, #180, #158, #157, #156, #155, #134, #133, #132, #131, #130, #129, #128, #127, #112, #111, #110, #93, #90, #89, #88, #87, #86, #85, #84, #83, #82, #81, #79, #78 |
+格式：`## @login` 小节 + `- #<PR> <标题>（状态）` 行，由脚本自动追加；已有行不要手工改
+（要调整措辞就改脚本模板后重跑）。
+
+## @EarthxxRhythm
+
+署名：EarthxxRhythm <68267496+EarthxxRhythm@users.noreply.github.com>
+
+- #234 fix(prompt): 未受信项目的 AGENTS.md / .rivet.md 不再注入（issue #218）（CLOSED）

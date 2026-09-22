@@ -46,3 +46,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #154 fix(config)!: 模型 alias 体系废弃——一律按原 ID 保存与展示（CLOSED）
 - #38 Feature/provider onboarding stack（CLOSED）
 - #36 Test/full suite stability（CLOSED）
+- #33 Fix/security and test wsl2（MERGED）

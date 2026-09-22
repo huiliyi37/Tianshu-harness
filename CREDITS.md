@@ -191,3 +191,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #174 test(agent): #173 的端到端表征测试 + #170–#173 前提验证记录（CLOSED）
 - #169 fix(provider): onboarding 时提示 reasoningEffort 无处可去（#153）（CLOSED）
 - #168 fix(pnpm): 补 pnpm-workspace.yaml 构建放行白名单 + 声明幽灵依赖 zod-to-json-schema（#57）（CLOSED）
+- #166 feat(windows): 作业持有者 job-launch.exe —— 让 shell 出生即在作业里（issue #144 本体）（CLOSED）

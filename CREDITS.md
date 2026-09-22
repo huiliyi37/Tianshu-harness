@@ -225,3 +225,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 
 - #18 feat: harden MCP, benchmark, memory, and runtime hooks（MERGED）
 - #11 fix: improve git detection on Windows for non-standard install paths（MERGED）
+
+## @zzuu080603
+
+署名：zzuu080603 <225036550+zzuu080603@users.noreply.github.com>
+
+- #181 fix(agent,tui,server): 审批门与终端渲染升到语义层——命令归一化双视图判定、text 契约汇聚点兜底、标题落盘剥转义（CLOSED）

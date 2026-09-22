@@ -209,3 +209,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #66 fix(api): stop sustained DeepSeek reasoning short-line loops（CLOSED）
 - #65 docs: 新增《为已有服务商添加模型》指南（以接入 DeepSeek 内测模型为例）（MERGED）
 - #50 fix(tui): 排队消息在本轮结束后自动发出，并将 ⏳ 条钉在输入框上（CLOSED）
+- #49 fix(tui): 输入框钉住，不随 slash 等 chrome 开合上跳（CLOSED）

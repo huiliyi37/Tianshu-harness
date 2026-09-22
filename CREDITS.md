@@ -86,3 +86,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：lei454577-web <290313748+lei454577-web@users.noreply.github.com>
 
 - #160 docs: add SolidWorks COM integration notes（MERGED）
+
+## @LinHoMo
+
+署名：LinHoMo <135706031+LinHoMo@users.noreply.github.com>
+
+- #143 chore: 清理悬空 probe:* 脚本、废弃依赖 parquetjs 与一次性脚本残留（CLOSED）

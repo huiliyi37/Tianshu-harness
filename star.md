@@ -1,6 +1,6 @@
 # 天枢（Tianshu Harness）
 
-面向 Foundation Model Agent 的认知运行时（CVM）——稳定交付、证据门禁、不虚报完成。Node.js 24+ / TypeScript strict / T9 纯 ANSI 渲染引擎 / node:test。前缀缓存全模型适用（各家模型长会话稳态 98–99%，DeepSeek V4 另有针对性优化）。
+面向 Foundation Model Agent 的认知运行时（CVM）——稳定交付、证据门禁、不虚报完成。Node.js 24+ / TypeScript strict / T9 纯 ANSI 渲染引擎 / node:test。前缀缓存全模型适用（各家模型长会话稳态 95–99%，DeepSeek V4 另有针对性优化）。
 
 ## 起源
 

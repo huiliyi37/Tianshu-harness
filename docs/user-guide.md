@@ -103,7 +103,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 - **resume 缓存继承** —— 会话冻结快照落盘（每个 user 边界 + shutdown），resume 时读回喂给新引擎，避免从字节 0 全 miss；无快照/坏文件/服务商缓存过期时才退化全量重建。
 - **诊断** —— `/debug cache` 显示命中率、未命中原因分析、每回合缓存历史。
 
-实战命中率：长会话稳态实测在 **95–99%** 区间，主样本（412 请求、116.2M input）实测 **99.6%**；冷启动的短会话会更低。这不是"每次都命中"——缓存会在某些边界碎裂（见下）。真实工程会话的逐请求日志（5 个会话、2,001 请求、6.45 亿 input tokens、账单从 ¥880 压到 ¥20）与复算命令见 [指标观测 harness](reference/observability-harness.md)。
+实战命中率（口径 `cacheRead / input`，cache-inclusive）：长会话稳态实测在 **95–99%** 区间，主样本（412 请求、116.2M input）实测 **99.6%**；冷启动的短会话会更低。这不是"每次都命中"——缓存会在某些边界碎裂（见下）。真实工程会话的逐请求日志（5 个会话、2,001 请求、6.45 亿 input tokens、账单从 ¥880 压到 ¥20）与复算命令见 [指标观测 harness](reference/observability-harness.md)。
 
 #### 缓存碎裂与排查
 

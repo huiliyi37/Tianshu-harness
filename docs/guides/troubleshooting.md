@@ -106,7 +106,7 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 
 ## 8. 缓存命中率掉了 / 成本突然升高
 
-**现象**：GlanceBar 状态栏上的命中率明显低于平时的 98–99% 稳态区间，或单轮成本异常升高。
+**现象**：GlanceBar 状态栏上的命中率明显低于平时的 95–99% 稳态区间，或单轮成本异常升高。
 
 **先看**：
 

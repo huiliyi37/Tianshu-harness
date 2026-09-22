@@ -97,3 +97,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #126 fix(security): 代码审计加固 — SSRF / 路径穿越 / XSS / 权限 / 版本比较（12 findings，11 已修）（CLOSED）
 - #108 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）
 - #107 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）
+- #104 fix(windows): 隐藏 GUI 派生的控制台子进程窗口（Fixes #103）（CLOSED）

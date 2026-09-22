@@ -161,3 +161,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：wangxx-yu <270384808+wangxx-yu@users.noreply.github.com>
 
 - #6 fix: rescue abandoned tool batch after abort to prevent write_file ghost-abort（CLOSED）
+
+## @Wanming08
+
+署名：Wanming08 <152006802+Wanming08@users.noreply.github.com>
+
+- #152 fix(mcp): guard OAuth token requests against SSRF（CLOSED）

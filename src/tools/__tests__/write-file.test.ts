@@ -5,6 +5,13 @@ import { join } from 'path'
 import { WRITE_FILE_TOOL } from '../write-file.js'
 import { __setFileReadMtimeForTests } from '../read-file.js'
 import type { ToolCallParams } from '../types.js'
+import { setTargetConventions } from '../../platform.js'
+
+// 本文件断言的是 LF 形态的文件内容。新建文件的 EOL 由「目标平台约定」决定
+// （src/platform.ts 的 getTargetEol），未初始化时兜底到宿主——Windows 上即 crlf，
+// 于是这些断言恒红。这里显式钉到 POSIX，让用例与宿主解耦
+// （与 platform-conventions.test.ts 同一处置）。
+setTargetConventions('linux', 'auto')
 
 const TEST_DIR = join(process.cwd(), '.test-tmp', 'opencode-write-test')
 

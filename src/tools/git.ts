@@ -6,6 +6,7 @@ import { auditCommitTagScope } from './commit-audit.js'
 import { createWorkspaceGuard } from '../agent/workspace-guard.js'
 import { killProcessTree } from './process-kill.js'
 import { detectSensitiveFile } from './sensitive-file-detector.js'
+import { relativePosix } from '../path-format.js'
 
 const ACTIONS = ['status', 'diff_summary', 'commit', 'log', 'log_graph', 'stash', 'stash_pop'] as const
 type GitAction = (typeof ACTIONS)[number]
@@ -150,7 +151,11 @@ async function runGitSafe(args: string[], cwd: string, abortSignal?: AbortSignal
 
 function normalizeProjectRelativePath(cwd: string, filePath: string): string | null {
   const resolved = resolve(cwd, filePath)
-  const rel = relative(cwd, resolved)
+  // git pathspec 一律用 POSIX 分隔符。反斜杠在 git 眼里是转义字符，于是 win32 上
+  // 拿宿主的 relative() 结果去匹配时，git 会把路径引号包裹并二次转义
+  // （`"a/策略\\涨停.js"`）——非 ASCII 路径断言与桌面端的 diff 解析器都会崩。
+  // 归一同时也让 '..'/绝对路径判据在各平台口径一致（仓库约定见 path-format.ts）。
+  const rel = relativePosix(cwd, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
   return rel
 }
@@ -415,7 +420,13 @@ export async function getFileDiff(cwd: string, path: string, baseRef = 'HEAD'): 
   // whole file as additions via --no-index against /dev/null. This exits 1 when
   // the files differ (the normal case) but prints the diff on stdout, which
   // runGitExitCode preserves. Binary files print "Binary files ... differ".
-  const fallback = await runGitExitCode(['diff', '--no-index', '--', '/dev/null', rel], cwd)
+  // 空设备要按平台取：Windows 上没有 /dev/null——Git Bash 会替你做 MSYS 路径转换，
+  // 但 Node 的 spawn 把参数原样交给原生 git.exe，git 于是把 '/dev/null' 当成目录前缀
+  // 拼成 '/dev/null/<rel>' → "Could not access"，stdout 为空（于是新建文件的 diff
+  // 在 Windows 上恒为空，桌面 Changes tab 直接看不到内容）。
+  // 实测只有裸 'NUL' 可用；os.devNull 在 win32 上给 '\\.\nul'，git 同样不认。
+  const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null'
+  const fallback = await runGitExitCode(['diff', '--no-index', '--', nullDevice, rel], cwd)
   const out = fallback.stdout
   if (out && out.trim()) return normalizeNoIndexHeader(out, rel)
   return tracked.ok ? tracked.output : ''

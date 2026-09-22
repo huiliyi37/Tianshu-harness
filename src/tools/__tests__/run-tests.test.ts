@@ -46,12 +46,23 @@ function setupPythonProject(options: { withTests?: boolean; withFakePytest?: boo
   if (options.withFakePytest) {
     const binDir = join(dir, 'node_modules', '.bin')
     mkdirSync(binDir, { recursive: true })
+    // 假 pytest 用「无扩展名 shim + shebang」，这是 npm 在 POSIX 上的 .bin 形态，
+    // 只有 POSIX 内核认（win32 上 npm 生成的是 .cmd，而产品的 resolveTestSpawn
+    // 刻意把 pytest 当归 real executable 直连 spawn、不走 shell）。
+    // 所以夹具本身是 POSIX 专属，消费它的两条用例在 win32 上跳过——
+    // 真实 Python 项目由 pip 安装 pytest.exe，不经这条路。
     const pytestPath = join(binDir, 'pytest')
     writeFileSync(pytestPath, '#!/usr/bin/env node\nconsole.log("1 passed in 0.01s")\n')
     chmodSync(pytestPath, 0o755)
   }
   return dir
 }
+
+/** 假 pytest 夹具是 POSIX 专属（见 setupPythonProject 的注释）——win32 上显式跳过并说明原因，
+ *  而不是留一条永远红的用例。 */
+const FAKE_PYTEST_SKIP: string | false = process.platform === 'win32'
+  ? 'fake pytest 夹具是 POSIX-only 的无扩展名 .bin shim（win32 上 npm 生成 .cmd，而产品对 pytest 直连 spawn、不走 shell）'
+  : false
 
 function setupHangingProject(): string {
   const dir = makeTestDir('run-tests-hanging-')
@@ -140,6 +151,8 @@ describe('mixed', () => {
       const result = await RUN_TESTS_TOOL.execute(makeParams({ filter }, passingDir))
 
       assert.equal(result.isError, false, `filter 应解析到 src/example.test.ts，实得：${result.content}`)
+      // 命令串一律 POSIX：win32 上 glob 出的反斜杠由 resolveFilterToTestFile 归一。
+      // 断言不随平台变化——对外形态三平台一致，才可复制到任何 shell 执行。
       assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
       assert.equal(result.verification!.scope, 'targeted')
     })
@@ -212,7 +225,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
     }
   })
 
-  it('runs pytest for Python projects with tests directory', async () => {
+  it('runs pytest for Python projects with tests directory', { skip: FAKE_PYTEST_SKIP }, async () => {
     const dir = setupPythonProject({ withTests: true, withFakePytest: true })
     try {
       const result = await RUN_TESTS_TOOL.execute(makeParams({}, dir))
@@ -227,7 +240,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
     }
   })
 
-  it('uses pytest filter directly for Python targeted runs', async () => {
+  it('uses pytest filter directly for Python targeted runs', { skip: FAKE_PYTEST_SKIP }, async () => {
     const dir = setupPythonProject({ withTests: true, withFakePytest: true })
     try {
       const result = await RUN_TESTS_TOOL.execute(makeParams({ filter: 'tests/test_example.py' }, dir))

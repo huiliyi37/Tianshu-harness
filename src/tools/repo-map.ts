@@ -173,9 +173,13 @@ export const REPO_MAP_TOOL: Tool = {
     // If a subdirectory is specified, resolve it relative to cwd
     if (subPath) {
       root = resolve(params.cwd, subPath)
-      // Security: ensure resolved path is within cwd (trailing sep prevents prefix injection)
-      const safeCwd = resolve(params.cwd) + '/'
-      if (!root.startsWith(safeCwd) && root !== resolve(params.cwd)) {
+      // Security: ensure the resolved path stays inside cwd.
+      // 判据必须跨平台：原先拼 `resolve(cwd) + '/'` 再 startsWith——Windows 上
+      // resolve() 出反斜杠（`D:\repo`），`startsWith('D:\repo/')` 恒 false，于是
+      // **任何** path 参数都被判越界（与 meridian-indexer 的 #191 修复同族）。
+      // 改用归一到 POSIX 的 relative：'..' 开头、或本身是绝对/带盘符路径即逃逸。
+      const rel = relativePosix(resolve(params.cwd), root)
+      if (rel !== '' && (rel === '..' || rel.startsWith('../') || /^([a-zA-Z]:|[\\/])/.test(rel))) {
         return { content: '错误：path 必须位于项目目录内', isError: true }
       }
     }

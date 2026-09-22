@@ -184,3 +184,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #194 fix(agent): meridian 快路径的写工具路径未归一——Windows 上 impact hint 静默全灭（CLOSED）
 - #191 fix(repo): meridian 索引器在 Windows 上整体空转——路径前缀守卫用了 POSIX 分隔符（同时是 #189 挂死根因）（MERGED）
 - #190 fix(tools): 收口 bash 超时/中止与 monitor 订阅失败的三处生命周期缺陷（#184 #186 #187）（MERGED）
+- #183 fix(tools): gitignore 匹配器补根锚定与 ** 语义，收窄树外守卫（MERGED）

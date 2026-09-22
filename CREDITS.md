@@ -50,3 +50,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #25 fix(pointer-guard): 拦截 apply-patch 指针交叉 echo 到写入工具（前缀入列 + 渲染补机器 tag）（CLOSED）
 - #5 tui: overlay subtle style overhaul — remove emojis, compact layout, thin borders（CLOSED）
 - #2 fix: 修复 FallbackStreamClient 中死代码导致的 fallback 失效（CLOSED）
+- #1 Wsl兼容问题（CLOSED）

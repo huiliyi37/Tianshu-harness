@@ -218,6 +218,7 @@ tianshu --goal "修复所有类型错误" --budget 50  # 无头目标自主模�
 | [权限与沙箱指南](docs/user-guide-sandbox-permissions.md) | 权限规则、路径授权、沙箱模型、故障排查 |
 | [识图能力手册](docs/user-guide-vision.md) | 视觉通道配置与排查 |
 | [远程访问指南](docs/remote-access.md) | 手机/平板遥控审批的启用与安全边界 |
+| [手机端操作手册](docs/guides/mobile-guide.md) | 手机/平板连接的完整步骤、能力清单、外网（Tailscale）与常见问题 |
 | [排障与 FAQ](docs/guides/troubleshooting.md) | 高频现场速查：卡住、429、缓存异常 |
 
 **理念与架构**

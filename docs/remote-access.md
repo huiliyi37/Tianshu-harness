@@ -2,6 +2,7 @@
 
 > P1 Mobile Remote（2026-09-05）：让 `rivet serve` 可以从局域网/手机访问。
 > 配套调研：`docs/research/mobile-remote-2026-09.md`（本地归档）。
+> 面向使用者的逐步操作手册见 [手机端操作手册](guides/mobile-guide.md)——含开启监听（Windows/macOS）、扫码连接、外网 Tailscale 与常见问题。
 
 `rivet serve` 默认只监听 `127.0.0.1`（本机回环），Token 门控。要把它暴露给同一局域网内的手机/其他设备，需要显式开放监听地址。**默认行为不变**——不设置任何东西时与旧版完全一致。
 

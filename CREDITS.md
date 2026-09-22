@@ -29,3 +29,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #226 fix(server): project 路由的 cwd 必须在册（issue #221）（CLOSED）
 - #225 fix(tui): live 流式区套用终端文本契约（issue #222）（CLOSED）
 - #224 fix(config): scratchDir 必须落在数据根内（issue #223）（CLOSED）
+- #210 fix(server): reject path traversal in skills/install names[] (#207)（CLOSED）

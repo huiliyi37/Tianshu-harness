@@ -207,3 +207,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：yq04 <143403280+yq04@users.noreply.github.com>
 
 - #66 fix(api): stop sustained DeepSeek reasoning short-line loops（CLOSED）
+- #65 docs: 新增《为已有服务商添加模型》指南（以接入 DeepSeek 内测模型为例）（MERGED）

@@ -41,9 +41,14 @@ Keep the audit trail greppable when porting a community PR into dev:
   exact subject wording:
   - contributor list — `npx tsx scripts/contributors.ts --check` (CI enforces this on
     every push to `main`);
-  - attribution — `bash scripts/credit-contributors.sh --dry-run` backfills a
-    `credit: PR #N` commit for any ported PR that never got one (falls back to the PR
-    author's GitHub noreply identity when the dev commit has no matching trailer).
+  - attribution — `bash scripts/credit-contributors.sh --dry-run` runs two passes (also
+    invoked automatically by `scripts/sync-to-public.sh`):
+    1. one `credit: PR #N` commit per ported PR, with a `Co-authored-by` trailer — this is
+       the per-PR record shown on the commit page;
+    2. one **non-empty** `CREDITS.md` entry per contributor who has no authored commit yet,
+       committed with `--author=<contributor>` — this is what makes their account appear in
+       GitHub's repository **Contributors** list (that graph only counts non-empty commits
+       authored by the account's linked email; empty commits and co-authors are not counted).
 
 ## Contribution Zones
 

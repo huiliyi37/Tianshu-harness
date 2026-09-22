@@ -254,3 +254,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #87 fix(lsp): LSP 服务器崩死后恢复——有界重启 + 重开文档（CLOSED）
 - #86 fix(agent): prune 不再删除读不了的 checkpoint——瞬态错误不可逆毁掉回滚点（CLOSED）
 - #85 feat(server): 定时任务记住创建时的工作区——多项目 sidecar 下任务不再跑错目录（CLOSED）
+- #84 fix(tools): 路径授权表按工作区分域——sidecar 多会话下 A 的批准不再泄漏给 B（CLOSED）

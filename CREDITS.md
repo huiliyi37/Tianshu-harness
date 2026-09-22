@@ -20,3 +20,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：EarthxxRhythm <68267496+EarthxxRhythm@users.noreply.github.com>
 
 - #234 fix(prompt): 未受信项目的 AGENTS.md / .rivet.md 不再注入（issue #218）（CLOSED）
+- #233 fix(agent): 不可信来源的工具结果加「数据非指令」结构定界（issue #217）（CLOSED）

@@ -237,3 +237,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #156 fix(serve): 会话释放链统一收割五张会话键控 module store（cron 放大的内存泄漏）（CLOSED）
 - #155 perf(session): 会话列表缓存改为增量 upsert——append 路径不再打掉缓存（每 LLM 轮 38×）（CLOSED）
 - #134 fix(agent): hash_edit/ast_edit/apply_patch 的编辑接入撤销/回溯/LSP 三处名单——写工具记账以 WRITE_TOOL_NAMES 为单一事实源（CLOSED）
+- #133 fix(agent): checkpoint 创建失败不再静默置位——回滚窗丢失对模型与用户可见（CLOSED）

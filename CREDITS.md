@@ -44,3 +44,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：HarriethWiKk <67490182+HarriethWiKk@users.noreply.github.com>
 
 - #154 fix(config)!: 模型 alias 体系废弃——一律按原 ID 保存与展示（CLOSED）
+- #38 Feature/provider onboarding stack（CLOSED）

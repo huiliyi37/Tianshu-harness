@@ -173,3 +173,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：yeshilei-QWQ <89763253+yeshilei-QWQ@users.noreply.github.com>
 
 - #230 fix(ci): 让 main 的 CI 转绿——runner 正则行尾归一 + 跨仓 license/integrity 测试缺文件跳过 + ratchet 账本对齐（CLOSED）
+- #205 feat(serve): 发现外部进程新增的会话——多进程共用一个 home 时免重启即可见（CLOSED）

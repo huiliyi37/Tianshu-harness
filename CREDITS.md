@@ -122,3 +122,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：lumos-tiamo <156174712+lumos-tiamo@users.noreply.github.com>
 
 - #59 cache: add a real, all-in billed-hit-rate regression gate（MERGED）
+
+## @maoqiu77
+
+署名：maoqiu77 <198698497+maoqiu77@users.noreply.github.com>
+
+- #51 feat: 修复会话 Auto 路由并新增星域漂移检测（CLOSED）

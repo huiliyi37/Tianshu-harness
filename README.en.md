@@ -132,6 +132,8 @@ Once the degradations are intercepted layer by layer, models begin to express th
 
 Agent core logic (multi-turn loops, tool pipelines, context compaction) is notoriously hard to test, and most open-source agents ship with thin coverage. This project maintains a near 1:1 test-to-source ratio, and every incident fix ships with a regression test — the ratio has held between 0.93:1 and 0.99:1 as the codebase grew (the table above is a measured snapshot as of 2026-08-28). Full methodology, growth milestones, and reproduction commands: [Engineering Metrics](docs/engineering-metrics.md).
 
+> External read: [From Tool to Partner: How Tianshu-Harness and Cognitive VMs Are Redefining the AI Agent Loop](https://dev.to/tamizuddin/from-tool-to-partner-how-tianshu-harness-and-cognitive-vms-are-redefining-the-ai-agent-loop-50d1) (dev.to · tamizuddin) — an independent systems-engineering take on the Cognitive VM form.
+
 ### Tianshu vs. MiMo-Code vs. Claude Code
 
 > The table reflects each project's publicly documented focus at the time of writing. "—" means the capability is not a publicly highlighted feature, not necessarily that it is absent. Corrections welcome via issue/PR.

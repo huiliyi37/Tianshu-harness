@@ -239,3 +239,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #134 fix(agent): hash_edit/ast_edit/apply_patch 的编辑接入撤销/回溯/LSP 三处名单——写工具记账以 WRITE_TOOL_NAMES 为单一事实源（CLOSED）
 - #133 fix(agent): checkpoint 创建失败不再静默置位——回滚窗丢失对模型与用户可见（CLOSED）
 - #132 fix(agent): /cd 换工作区后按新 cwd 重建 FileHistory/claimStore——撤销不再静默失效、往返 /cd 不再砖化（CLOSED）
+- #131 fix(agent): 回滚成功后 journal 写失败不再把已成功的恢复误报为失败（CLOSED）

@@ -102,3 +102,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #95 fix(api): implement image_strip auto-recovery — 413/图片拒绝后剥离图片重发一次（CLOSED）
 - #16 fix(tui): guard truncate() against max<=1 negative slice index（CLOSED）
 - #15 docs(readme): renumber sections to fix duplicate '### 3.' heading（CLOSED）
+- #13 Feat rivet shell completions（MERGED）

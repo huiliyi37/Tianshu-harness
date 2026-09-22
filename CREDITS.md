@@ -27,3 +27,4 @@ Contributors 面板里。
 | **nzz0991999-ai** | nzz0991999-ai <224787558+nzz0991999-ai@users.noreply.github.com> | #91 |
 | **qiaodier** | qiaodier <8543606+qiaodier@users.noreply.github.com> | #8 |
 | **sky-mirrors** | sky-mirrors <118016577+sky-mirrors@users.noreply.github.com> | #209 |
+| **wangxx-yu** | wangxx-yu <270384808+wangxx-yu@users.noreply.github.com> | #6 |

@@ -51,3 +51,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #5 tui: overlay subtle style overhaul — remove emojis, compact layout, thin borders（CLOSED）
 - #2 fix: 修复 FallbackStreamClient 中死代码导致的 fallback 失效（CLOSED）
 - #1 Wsl兼容问题（CLOSED）
+
+## @jian-in
+
+署名：jian-in <267224531+jian-in@users.noreply.github.com>
+
+- #201 feat(mcp): add health check and circuit breaker for MCP servers（CLOSED）

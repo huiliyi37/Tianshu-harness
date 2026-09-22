@@ -179,3 +179,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #200 fix(agent): import-graph 的两处 Windows 路径缺陷——绝对路径判据与 index 候选（收 #189 的 U 三簇）（CLOSED）
 - #199 fix(hooks): Windows 上按扩展名选解释器——.sh 不再被 cmd「打开」并弹「选取应用」（CLOSED）
 - #197 fix(plan): 计划文档的返回路径归一为 POSIX，不再泄漏 Windows 原生分隔符（CLOSED）
+- #196 test(server): host-policy 的手写 chunked 解码按字节切，不再多吃多字节字符（CLOSED）

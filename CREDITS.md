@@ -21,3 +21,4 @@ Contributors 面板里。
 | **L4XB** | L4XB <103962359+L4XB@users.noreply.github.com> | #109 |
 | **LinHoMo** | LinHoMo <135706031+LinHoMo@users.noreply.github.com> | #143, #142, #141, #126, #108, #107, #104, #97, #95, #16, #15, #13, #12 |
 | **liuwanwan1** | liuwanwan1 <243261597+liuwanwan1@users.noreply.github.com> | #30, #28, #27, #23, #22, #20, #19 |
+| **lumos-tiamo** | lumos-tiamo <156174712+lumos-tiamo@users.noreply.github.com> | #59 |

@@ -71,3 +71,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：KinoGao <71637313+KinoGao@users.noreply.github.com>
 
 - #26 feat: 完善 Galaxy 与 Starflow 的 EP-DP 编排（CLOSED）
+- #24 feat: improve Galaxy and Starflow EP-DP orchestration（CLOSED）

@@ -168,10 +168,11 @@ PR 编号以 \`${CONTRIBUTORS_REPO}\` 为准（该仓库由 \`Tianshu-Tui\` 更�
 
 > 关于署名：外部 PR 经「收编」流程合入时，\`scripts/credit-contributors.sh\` 在公开仓落两本账：
 > ① 每个 PR 一笔 \`credit: PR #N\` 提交（\`Co-authored-by\` trailer，用于提交页归属）；
-> ② 每位还没有 author 提交的外部贡献者在 \`CREDITS.md\` 追加一行，并以他为 \`--author\` 提交一次。
-> ② 是必需的：GitHub 仓库的 Contributors 面板只统计「非空提交 + author 是本人账号关联邮箱」，
-> 空提交与 co-author 都不计入（GHES 才计 co-author）。部分贡献者在早期提交中使用了另一个账号
-> 署名（例如 LinHoMo 的历史提交署名为 \`linskadi\`），亦属同一人，不影响归属。
+> ② 对每位还没有 author 提交的外部贡献者，\`CREDITS.md\` **按 PR 逐个**追加一行，并以他为
+> \`--author\` 各提交一次。② 是必需的：GitHub 仓库的 Contributors 面板只统计「非空提交 +
+> author 是本人账号关联邮箱」，空提交与 co-author 都不计入（GHES 才计 co-author）。
+> 部分贡献者在早期提交中使用了另一个账号署名（例如 LinHoMo 的历史提交署名为 \`linskadi\`），
+> 亦属同一人，不影响归属。流程与理由见 \`EXTERNAL-PRS.md\`。
 >
 > 为什么外部 PR 多为 CLOSED 却已上榜：本仓不允许外部改动直接落到本体代码，绝大多数 PR 先在
 > dev 仓按现状重写（收编）、验证，再经 sync 推到公开仓——PR 本身被 close，代码以另一种形态

@@ -51,8 +51,13 @@ import type { ToolDefinition } from '../../api/types.js'
  *  键鼠 / 抢占前台时走 computer_use，不要用 shell 脚本自造注入（那条路绕过逐应用授权模型；
  *  命中注入签名的命令要过审批门，用户刚在操作时还会被「让出」跳过）。同前几笔：改 hash
  *  即所有会话前缀缓存冷启动一次，这是本笔的已知代价，不是意外。
+ *  2026-09-22 **有意变更**：新增 <output-economy> 段（输出经济纪律）。来源是实测——简单编码
+ *  任务下 75–90% 的输出计费落在 reasoning，加一句"默认短、不复述、不追加未被请求的建议"
+ *  可把该任务输出从 599 → 124 tokens（-79%，5 次均值）。段内显式声明"只约束详略、不豁免
+ *  任何硬性义务"，逐条保住交付四项 / 错误诊断 / 风险与异议 / 证据与验证状态 / 知识问答推导。
+ *  同前几笔：改 hash 即所有会话前缀缓存冷启动一次，这是本笔的已知代价，不是意外。
  */
-const MAIN_PROMPT_SHA256 = '24a7bda34fc71ac16b17511fb59f94338cc8e437e52361a9186cd77977f099cd'
+const MAIN_PROMPT_SHA256 = 'b6ee09f63483a794a8523214b74dc52472ecb95092afdd4009603296a6d4e24d'
 
 function tool(name: string): ToolDefinition {
   return { name, description: '', input_schema: { type: 'object', properties: {} } } as ToolDefinition
@@ -112,7 +117,9 @@ describe('prompt parsing is lossless', () => {
 describe('sub-agent tiers', () => {
   it('read-only worker keeps identity, evidence discipline and security', () => {
     const prompt = buildSubagentSystemPrompt(MAIN_BASE_PROMPT, READ_ONLY_TOOLS)
-    assert.deepEqual(sectionNames(prompt), ['identity', 'beliefs', 'stance', 'rules', 'tool-usage', 'security'])
+    // 2026-09-22: 新增 output-economy（输出经济）——子代理同样向主控输出文本，
+    // 详略纪律对 worker 有效；无需 gate，故出现在只读 worker 的段列表里。
+    assert.deepEqual(sectionNames(prompt), ['identity', 'beliefs', 'stance', 'rules', 'tool-usage', 'security', 'output-economy'])
     // 主控事后补救不了的两条必须在场
     assert.match(prompt, /声称"X 缺少 Y"前/)
     assert.match(prompt, /有损观测纪律/)

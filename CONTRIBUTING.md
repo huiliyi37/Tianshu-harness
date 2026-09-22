@@ -24,6 +24,8 @@ through the same four-step disposal:
    [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 Maintainers run `scripts/dispose-community-pr.sh <PR#>` for steps 3–4 (idempotent).
+The full rationale (why nothing is merged directly here, what "ported" means, and how the
+two credit ledgers work) is documented in [EXTERNAL-PRS.md](EXTERNAL-PRS.md).
 
 ### Maintainer notes — landing a PR in the dev repo
 
@@ -45,10 +47,11 @@ Keep the audit trail greppable when porting a community PR into dev:
     invoked automatically by `scripts/sync-to-public.sh`):
     1. one `credit: PR #N` commit per ported PR, with a `Co-authored-by` trailer — this is
        the per-PR record shown on the commit page;
-    2. one **non-empty** `CREDITS.md` entry per contributor who has no authored commit yet,
-       committed with `--author=<contributor>` — this is what makes their account appear in
-       GitHub's repository **Contributors** list (that graph only counts non-empty commits
-       authored by the account's linked email; empty commits and co-authors are not counted).
+    2. one **non-empty** `CREDITS.md` entry per ported PR, committed with
+       `--author=<PR author>` — one commit per increment. This is what makes the account
+       appear in GitHub's repository **Contributors** list (that graph only counts
+       non-empty commits authored by the account's linked email; empty commits and
+       co-authors are not counted).
 
 ## Contribution Zones
 

@@ -15,3 +15,4 @@ Contributors 面板里。
 | 贡献者 | 署名 | 收编 PR |
 |---|---|---|
 | **EarthxxRhythm** | EarthxxRhythm <68267496+EarthxxRhythm@users.noreply.github.com> | #234, #233, #232, #231, #229, #228, #227, #226, #225, #224, #210 |
+| **Eason412** | Eason412 <250286526+Eason412@users.noreply.github.com> | #32, #31, #29 |

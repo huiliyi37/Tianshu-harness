@@ -149,3 +149,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：qiaodier <8543606+qiaodier@users.noreply.github.com>
 
 - #8 Dev qiao（CLOSED）
+
+## @sky-mirrors
+
+署名：sky-mirrors <118016577+sky-mirrors@users.noreply.github.com>
+
+- #209 perf(prompt): buildOaiRequest 估算/签名链加消息级缓存（#206 建议 1）（CLOSED）

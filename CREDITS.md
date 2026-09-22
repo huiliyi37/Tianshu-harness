@@ -218,3 +218,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #40 fix(tui): AI 输出中排队消息不再自动注入，输入框贴底（排队语义 + 渲染顺序）（CLOSED）
 - #37 fix: 全局安装 postinstall 失败（patch-package）+ 默认星域/模型重启后状态栏不恢复（CLOSED）
 - #4 fix: replace interrupt panic with auto-recovered confirmation on write success（CLOSED）
+
+## @zhengbiaofeng
+
+署名：zhengbiaofeng <37176299+zhengbiaofeng@users.noreply.github.com>
+
+- #18 feat: harden MCP, benchmark, memory, and runtime hooks（MERGED）

@@ -194,3 +194,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #166 feat(windows): 作业持有者 job-launch.exe —— 让 shell 出生即在作业里（issue #144 本体）（CLOSED）
 - #165 docs(known-issues): 开放 issue × main 代码核对表 —— 22 条已落地、2 条建议直接关闭（MERGED）
 - #164 fix(test): 修掉 Windows 上的 D:\\D:\\ 双前缀路径 —— new URL().pathname 改走 fileURLToPath（MERGED）
+- #163 docs(known-issues): 补一套 #144 的复现与验证夹具（Windows 实机跑通，含安全条款与边界）（MERGED）

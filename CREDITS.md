@@ -252,3 +252,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #89 fix(ci): worker-process 测试的 node:events 改静态命名导入——解除 typecheck 全红（CLOSED）
 - #88 fix(agent): undo/rewind 不再把「备份读取失败」当成「文件当时不存在」——撤销反向删除既有文件（CLOSED）
 - #87 fix(lsp): LSP 服务器崩死后恢复——有界重启 + 重开文档（CLOSED）
+- #86 fix(agent): prune 不再删除读不了的 checkpoint——瞬态错误不可逆毁掉回滚点（CLOSED）

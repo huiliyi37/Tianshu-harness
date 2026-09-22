@@ -129,8 +129,6 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 
 CLI 源码 1,078 文件 / 257,623 行，测试 1,361 文件 / **16,471 用例**（node:test，测试 : 源码 ≈ 0.99:1），`tsc` strict + `noUncheckedIndexedAccess`，事故修复必带回归测试。完整口径与复现命令见 [工程质量指标](docs/engineering-metrics.md)。
 
-> 外部解读：[From Tool to Partner: How Tianshu-Harness and Cognitive VMs Are Redefining the AI Agent Loop](https://dev.to/tamizuddin/from-tool-to-partner-how-tianshu-harness-and-cognitive-vms-are-redefining-the-ai-agent-loop-50d1)（dev.to · tamizuddin）——国外开发者从系统工程视角对 CVM 形态的独立解读。
-
 ## ✨ 核心特性
 
 - **证据驱动的交付门禁** —— 完成声明必须带测试 / diff / 验证命令等运行时证据；`deliver_task` 交付门禁 + 提交后审查两级兜底，机械变更自动跳过。[理念](docs/reference/cvm-cognitive-runtime.md)

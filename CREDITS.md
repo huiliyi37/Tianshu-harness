@@ -255,3 +255,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #86 fix(agent): prune 不再删除读不了的 checkpoint——瞬态错误不可逆毁掉回滚点（CLOSED）
 - #85 feat(server): 定时任务记住创建时的工作区——多项目 sidecar 下任务不再跑错目录（CLOSED）
 - #84 fix(tools): 路径授权表按工作区分域——sidecar 多会话下 A 的批准不再泄漏给 B（CLOSED）
+- #83 fix(agent): 运行时 hook 超时后的迟到收尾兜底——孤儿 rejection 不再击穿进程（CLOSED）

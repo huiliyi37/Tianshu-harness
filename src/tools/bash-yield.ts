@@ -86,3 +86,104 @@ export async function maybeYieldForUserActivity(input: YieldCheckInput): Promise
   if (!isUserActive(idleMs, thresholdMs)) return null
   return { isError: true, content: yieldMessage(idleMs, thresholdMs) }
 }
+
+// ── 执行期让出（issue #235 期望行为 1 的另一半）──────────────────────
+//
+// 上面的判定发生在**执行前**。而 issue 现象 1 说的是「自动化**运行期间**操作者的
+// 鼠标/键盘被反复夺取」——命令一旦开跑就没有检查点，长时注入脚本跑到一半用户接管
+// 也不会停。这里补执行期的周期性探测：用户接管即回调，由调用方终止进程树。
+//
+// 覆盖范围与执行前判定**完全一致**（同一份 pattern 表、同一归一化视图）：普通
+// shell 命令连定时器都不建，零开销。
+
+/** 执行期探测间隔默认值（ms）。 */
+export const DEFAULT_YIELD_WATCH_MS = 3_000
+
+/**
+ * 解析执行期探测间隔：`RIVET_CU_YIELD_WATCH_MS`；**0 = 关闭执行期监控**
+ * （执行前判定不受影响，仍由 `RIVET_CU_YIELD_MS` 控制）。非法值回退默认。
+ *
+ * 为什么默认 3s 而非复用 1200ms 的让出阈值：每次探测要起一个 PowerShell 子进程
+ * （实测墙钟 ~234ms），间隔太短会在长时命令上持续占资源。注入类命令多数命短，
+ * 3s 间隔意味着它们通常一次探测都不发生。
+ */
+export function resolveYieldWatchMs(): number {
+  const raw = process.env['RIVET_CU_YIELD_WATCH_MS']
+  if (raw !== undefined) {
+    const n = Number.parseInt(raw, 10)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return DEFAULT_YIELD_WATCH_MS
+}
+
+/** 该命令是否需要执行期监控——与执行前判定同视图（见 matchesAvailabilityHazard）。 */
+export function shouldWatchExecution(command: string): boolean {
+  return matchesAvailabilityHazard(command)
+}
+
+/**
+ * 执行期让出的结果文案——与执行前文案刻意不同：这次命令**已经跑过一部分**，
+ * 必须说清「被终止了」以及「已产生的副作用不会回滚」，否则用户会以为命令压根没执行。
+ */
+export function executionYieldMessage(idleMs: UserIdleMs, watchMs: number, partialOutput: string): string {
+  const idle = idleMs === null ? '未知' : `${idleMs}ms`
+  const head = [
+    `[让出·执行中] 这条命令正在合成系统级键鼠输入（或抢占前台窗口），而你在 ${idle} 前开始操作本机`,
+    `——已在执行途中终止它，把输入控制权还给你（探测间隔 ${watchMs}ms）。`,
+    '',
+    '注意：命令**已经跑过一部分**，已产生的副作用（窗口状态、写入、网络请求）不会自动回滚。',
+    '要继续的话：停手一两秒后重跑本命令；或改用 computer_use 工具（按应用逐项授权，每次注入前有同样的让出检查）。',
+  ].join('\n')
+  return partialOutput ? `${head}\n\n终止前的部分输出:\n${partialOutput.slice(-2000)}` : head
+}
+
+export interface YieldWatchDeps {
+  probe: () => Promise<UserIdleMs>
+  thresholdMs: number
+  intervalMs: number
+  /** 用户接管时回调（调用方负责终止进程树并 settle）。最多调用一次。 */
+  onYield: (idleMs: UserIdleMs) => void
+}
+
+/**
+ * 启动执行期让出监控，返回 `stop()`。
+ *
+ * 用递归 setTimeout 而非 setInterval：**不会重叠探测**——单次探测最坏要等 5s
+ * 超时（`probeUserIdleMs` 的默认 timeout），固定间隔会让慢探测堆叠。
+ *
+ * 语义与执行前判定一致：
+ * - 探测返回 null（无法检测）或抛错 → 不触发，护栏失效不该成为新的失败点；
+ * - 触发即停：回调后不再调度（调用方正在终止进程，继续探测没有意义）；
+ * - `intervalMs <= 0` → 不建任何调度（旋钮关闭路径）。
+ */
+export function startYieldWatch(deps: YieldWatchDeps): () => void {
+  if (deps.intervalMs <= 0) return () => {}
+  let stopped = false
+  let handle: ReturnType<typeof setTimeout> | undefined
+
+  const tick = async (): Promise<void> => {
+    if (stopped) return
+    let idleMs: UserIdleMs = null
+    try {
+      idleMs = await deps.probe()
+    } catch {
+      idleMs = null
+    }
+    if (stopped) return
+    if (isUserActive(idleMs, deps.thresholdMs)) {
+      stopped = true
+      deps.onYield(idleMs)
+      return
+    }
+    handle = setTimeout(() => { void tick() }, deps.intervalMs)
+    // 监控不该把进程钉在事件循环上——命令结束后 stop() 会清；这条是兜底。
+    handle.unref?.()
+  }
+
+  handle = setTimeout(() => { void tick() }, deps.intervalMs)
+  handle.unref?.()
+  return () => {
+    stopped = true
+    if (handle !== undefined) clearTimeout(handle)
+  }
+}

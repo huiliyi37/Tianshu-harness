@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DANGEROUS_BASH_PATTERNS, INJECTION_PATTERNS, matchesDangerousBash } from '../agent/approval-risk.js'
-import { maybeYieldForUserActivity } from './bash-yield.js'
+import { maybeYieldForUserActivity, shouldWatchExecution, startYieldWatch, resolveYieldWatchMs, executionYieldMessage } from './bash-yield.js'
+import { probeUserIdleMs, resolveYieldMs } from '../system/user-idle.js'
 import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
@@ -567,6 +568,11 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     // tail-truncated preview buffer.
     const rawSpool = new BoundedRawSpool()
 
+    // issue #235 执行期让出监控的 stop 句柄。声明放在 finish/onAbort 之前：
+    // signal 已 aborted 时 onAbort() 会在原地立刻执行，若句柄到那时才用 const
+    // 声明就会撞 TDZ。
+    let stopYieldWatch: (() => void) | undefined
+
     child.stdout!.on('data', (data: Buffer) => {
       const text = stdoutDecoder.write(data)
       stdoutRawBytes += data.length
@@ -836,6 +842,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
+      stopYieldWatch?.()
       cleanupAbort()
       // 结果装配兜底：buildResult 内任何异常（如 dist 混构导致的
       // ReferenceError，session 22d00a37）从 child 事件处理器逃逸时不会变成
@@ -861,6 +868,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
+      stopYieldWatch?.()
       cleanupAbort()
       killProcessTree(child, 'SIGTERM')
       forceKillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 3000)
@@ -882,6 +890,41 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     if (signal) {
       if (signal.aborted) onAbort()
       else signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    // issue #235 期望行为 1 的**执行期**半边：命中「可用性危害」签名（合成键鼠 /
+    // 前台抢占）的命令一旦开跑就持续抢输入，执行前判定拦不住「跑到一半用户接管」。
+    // 这里周期性探测用户活动，接管即走与 abort/timeout 同一条 kill 路径终止进程树。
+    // 未命中签名的命令不建调度；RIVET_CU_YIELD_WATCH_MS=0 可整体关闭。
+    const watchMs = shouldWatchExecution(rawCommand) ? resolveYieldWatchMs() : 0
+    if (watchMs > 0) {
+      stopYieldWatch = startYieldWatch({
+        probe: () => probeUserIdleMs(),
+        thresholdMs: resolveYieldMs(),
+        intervalMs: watchMs,
+        onYield: (idleMs) => {
+          if (settled) return
+          settled = true
+          if (timer) clearTimeout(timer)
+          cleanupAbort()
+          stopYieldWatch?.()
+          killProcessTree(child, 'SIGTERM')
+          forceKillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 3000)
+          const stdoutTail = stdoutDecoder.end()
+          const stderrTail = stderrDecoder.end()
+          const finalStdout = stdout + stdoutTail
+          const finalStderr = stderr + stderrTail
+          uiOutput.push(stdoutTail)
+          uiOutput.push(stderrTail)
+          uiOutput.flush()
+          uiOutput.dispose()
+          resolve({
+            content: executionYieldMessage(idleMs, watchMs, finalStdout + (finalStderr ? '\n' + finalStderr : '')),
+            uiContent: '⏸ yielded',
+            isError: false,
+          })
+        },
+      })
     }
 
     timer = setTimeout(() => {

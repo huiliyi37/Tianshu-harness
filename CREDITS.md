@@ -198,3 +198,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #159 fix(windows): taskkill 一律带 /F —— 去掉超时/中止路径上 3 秒的纯空转窗口（CLOSED）
 - #151 fix(windows): 别名调用绕过 windowsHide 守卫——每次刷新 git 上下文闪控制台窗口（#103 残留）（CLOSED）
 - #69 docs(issue-template): Surface 判据引导，减少 TUI/桌面端误标 (#58)（CLOSED）
+- #67 fix(server): disk-evidence self-heal for apply_edit delegation stalls (#61)（CLOSED）

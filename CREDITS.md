@@ -116,3 +116,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #22 feat(runtime): 新增 lean 资源档，降低内存与磁盘占用（CLOSED）
 - #20 降低 DeepSeek API 成本：默认思考档、effort 路由与 flash 压缩（CLOSED）
 - #19 降低 DeepSeek API 成本：默认思考档、effort 路由与 flash 压缩（CLOSED）
+
+## @lumos-tiamo
+
+署名：lumos-tiamo <156174712+lumos-tiamo@users.noreply.github.com>
+
+- #59 cache: add a real, all-in billed-hit-rate regression gate（MERGED）

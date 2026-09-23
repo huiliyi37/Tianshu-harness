@@ -57,3 +57,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：jian-in <267224531+jian-in@users.noreply.github.com>
 
 - #201 feat(mcp): add health check and circuit breaker for MCP servers（CLOSED）
+
+## @jiangsx496
+
+署名：jiangsx496 <298945509+jiangsx496@users.noreply.github.com>
+
+- #64 Update website credit to remove developer's namedocs: credit original…（MERGED）

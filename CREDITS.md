@@ -256,3 +256,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #90 fix(tui): 剪贴板 TIFF→PNG 转换守卫看注入的 platform——修复 ubuntu CI 持续假红（CLOSED）
 - #89 fix(ci): worker-process 测试的 node:events 改静态命名导入——解除 typecheck 全红（CLOSED）
 - #88 fix(agent): undo/rewind 不再把「备份读取失败」当成「文件当时不存在」——撤销反向删除既有文件（CLOSED）
+- #87 fix(lsp): LSP 服务器崩死后恢复——有界重启 + 重开文档（CLOSED）

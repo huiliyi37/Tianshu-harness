@@ -236,3 +236,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：zzuu080603 <225036550+zzuu080603@users.noreply.github.com>
 
 - #181 fix(agent,tui,server): 审批门与终端渲染升到语义层——命令归一化双视图判定、text 契约汇聚点兜底、标题落盘剥转义（CLOSED）
+- #180 fix(server): 路由参数解码后加文件名包含性守卫——skill/plans/groupId/workerId 四处同族路径穿越封堵（CLOSED）

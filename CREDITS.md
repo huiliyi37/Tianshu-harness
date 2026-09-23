@@ -192,3 +192,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #183 fix(tools): gitignore 匹配器补根锚定与 ** 语义，收窄树外守卫（MERGED）
 - #182 fix(model): 模型名匹配接入别名表——失配不再位置性回退到 models[0]（CLOSED）
 - #177 test(runner): 非零退出的批点名——修掉「fail 0 却 exit 1」在日志里零线索的盲区（CLOSED）
+- #175 test: 去掉两处依赖墙上时钟精确下界的断言（CI 时序抖动）（CLOSED）

@@ -175,3 +175,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #257 feat(bash): 执行期让出——命中注入签名的命令跑到一半用户接管即终止（issue #235）（OPEN）
 - #256 fix: Windows 跨平台语义的五处产品缺陷 + 测试平台假设收口（issue #189）（OPEN）
 - #255 feat(tui): /debug cvm —— CVM 拦截台账的查询入口（issue #249）（OPEN）
+- #254 docs: 修正 Cockpit 入口说明的三处错误（issue #245）（OPEN）

@@ -206,3 +206,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #67 fix(server): disk-evidence self-heal for apply_edit delegation stalls (#61)（CLOSED）
 - #53 chore: .gitignore 加 .env/.env.*/!.env.example 防护（安全：API key 永不进 git）（MERGED）
 - #52 feat: add Windows one-click installer for Tianshu desktop（CLOSED）
+
+## @yq04
+
+署名：yq04 <143403280+yq04@users.noreply.github.com>
+
+- #66 fix(api): stop sustained DeepSeek reasoning short-line loops（CLOSED）

@@ -217,3 +217,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #49 fix(tui): 输入框钉住，不随 slash 等 chrome 开合上跳（CLOSED）
 - #46 fix(tui): 命令面板视窗跟随选中项；首屏 ctrl+p 与斜杠命令同色（CLOSED）
 - #45 feat(tui): slash 提示分层——空 query 只展示核心命令层，继续输入即过滤全量（CLOSED）
+- #43 fix(tui): 跨 run 陈旧 todo 清单不再复活显示——「◇ 任务 (5/5) 不更新」的根因与修复（CLOSED）

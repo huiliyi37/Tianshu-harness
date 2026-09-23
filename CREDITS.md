@@ -255,3 +255,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #93 fix(ci): 修复 ubuntu Test 层 30+ 存量红——napi 缺装/注册表失同步/过期测试/清理竞态（CLOSED）
 - #90 fix(tui): 剪贴板 TIFF→PNG 转换守卫看注入的 platform——修复 ubuntu CI 持续假红（CLOSED）
 - #89 fix(ci): worker-process 测试的 node:events 改静态命名导入——解除 typecheck 全红（CLOSED）
+- #88 fix(agent): undo/rewind 不再把「备份读取失败」当成「文件当时不存在」——撤销反向删除既有文件（CLOSED）

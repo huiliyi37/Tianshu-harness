@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { renderCockpit } from '../cockpit.js'
 import type { CockpitSnapshot, Panel } from '../../cockpit/types.js'
-import { PANEL_LABELS } from '../../cockpit/types.js'
+import { resolveCockpitLang, panelLabel } from '../../cockpit/labels.js'
 import { getTheme } from '../../theme.js'
 
 const theme = getTheme()
@@ -23,7 +23,7 @@ function fixture(): CockpitSnapshot {
     model: {
       name: 'MODEL-X', cacheHitRate: 0.5, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0,
       cost: 0.01, perTurnHitRate: null, recentTurnHitRate: null, prewarmHits: 0, prewarmMisses: 0, prewarmHitRate: 0,
-      physarumShadow: {} as never, speculation: null, cacheDiagnostic: null, reasoningEffort: 'medium', starDomain: 'Auto(天枢)',
+      physarumShadow: {} as never, speculation: null, cacheDiagnostic: null, reasoningEffort: 'medium', starDomain: 'Auto(Tianshu)',
     },
     mcp: { servers: [{ serverId: 'SRV-A', status: 'connected', toolCount: 3 }], totalTools: 3, connectedServers: 1 },
     advisory: {
@@ -39,7 +39,7 @@ function fixture(): CockpitSnapshot {
 
 describe('renderCockpit panel focus (G4)', () => {
   it('summary 显示全部面板节', () => {
-    const lines = renderCockpit(fixture(), 80, 30, theme, 'summary')
+    const lines = renderCockpit(fixture(), 80, 30, theme, 'summary', 'en')
     const text = lines.map(stripAnsi).join('\n')
     assert.ok(text.includes('Safety'))
     assert.ok(text.includes('Verify'))
@@ -48,7 +48,7 @@ describe('renderCockpit panel focus (G4)', () => {
   })
 
   it('指定单面板仅显示该节（聚焦视图）', () => {
-    const lines = renderCockpit(fixture(), 80, 30, theme, 'safety')
+    const lines = renderCockpit(fixture(), 80, 30, theme, 'safety', 'en')
     const text = lines.map(stripAnsi).join('\n')
     assert.ok(text.includes('SAFE-ACTION'), 'safety 节存在')
     assert.ok(!text.includes('MODEL-X'), 'model 节被隐藏')
@@ -56,14 +56,14 @@ describe('renderCockpit panel focus (G4)', () => {
 
   it('panel rail 高亮当前面板', () => {
     const panel: Panel = 'model'
-    const lines = renderCockpit(fixture(), 80, 30, theme, panel)
+    const lines = renderCockpit(fixture(), 80, 30, theme, panel, 'en')
     const text = lines.map(stripAnsi).join('\n')
     // 当前面板用 [Label] 方括号包裹
-    assert.ok(text.includes(`[${PANEL_LABELS[panel]}]`), 'rail 高亮当前面板')
+    assert.ok(text.includes(`[${panelLabel(panel, 'en')}]`), 'rail 高亮当前面板')
   })
 
   it('advisory 聚焦视图展开 per-key 效能与 status 通道', () => {
-    const lines = renderCockpit(fixture(), 80, 30, theme, 'advisory')
+    const lines = renderCockpit(fixture(), 80, 30, theme, 'advisory', 'en')
     const text = lines.map(stripAnsi).join('\n')
     assert.ok(text.includes('Advisory'), 'advisory 节存在')
     assert.ok(text.includes('heldOut:1'), '账本累计含 heldOut')
@@ -75,15 +75,69 @@ describe('renderCockpit panel focus (G4)', () => {
   })
 
   it('summary 视图只给 advisory 一行概览,不展开 per-key', () => {
-    const lines = renderCockpit(fixture(), 80, 30, theme, 'summary')
+    const lines = renderCockpit(fixture(), 80, 30, theme, 'summary', 'en')
     const text = lines.map(stripAnsi).join('\n')
     assert.ok(text.includes('Advisory'), 'advisory 概览行存在')
     assert.ok(!text.includes('ADV-KEY'), 'per-key 不在 summary 展开')
   })
 
   it('footer 在单面板模式提示回到 summary', () => {
-    const lines = renderCockpit(fixture(), 80, 30, theme, 'trace')
+    const lines = renderCockpit(fixture(), 80, 30, theme, 'trace', 'en')
     const text = lines.map(stripAnsi).join('\n')
     assert.ok(text.includes('summary'), 'footer 引导 /cockpit summary')
+  })
+})
+
+describe('renderCockpit 语言切换', () => {
+  it('zh：面板名与字段标签全中文', () => {
+    const text = renderCockpit(fixture(), 80, 30, theme, 'summary', 'zh').map(stripAnsi).join('\n')
+    assert.ok(text.includes('运行时仪表盘'), '标题中文')
+    assert.ok(text.includes('安全'), 'safety 面板名中文')
+    assert.ok(text.includes('验证'), 'verify 面板名中文')
+    assert.ok(text.includes('缓存:'), 'model 字段标签中文')
+    assert.ok(text.includes('空转:'), 'safety 字段标签中文')
+    assert.ok(text.includes('回合:'), 'context 字段标签中文')
+  })
+
+  it('zh 与 en 的 rail 面板集合一致（只是译名不同）', () => {
+    const panels: Panel[] = ['summary', 'trace', 'verify', 'context', 'safety', 'model', 'mcp', 'advisory']
+    for (const p of panels) {
+      assert.ok(panelLabel(p, 'zh').length > 0, `${p} zh 译名非空`)
+      assert.ok(panelLabel(p, 'en').length > 0, `${p} en 译名非空`)
+    }
+  })
+
+  it('en：整屏无中文残留（文案统一，不留混排）', () => {
+    // 聚焦 advisory 是中文残留最容易漏的地方（静音 / status 通道 / per-key 三计数）
+    for (const p of ['summary', 'advisory', 'model', 'context', 'safety', 'verify', 'mcp', 'trace'] as Panel[]) {
+      const text = renderCockpit(fixture(), 100, 40, theme, p, 'en').map(stripAnsi).join('\n')
+      assert.doesNotMatch(text, /[\u4e00-\u9fa5]/, `${p} 面板 en 下不应出现中文`)
+    }
+  })
+
+  it('zh：整屏无英文面板标签残留', () => {
+    const text = renderCockpit(fixture(), 100, 40, theme, 'summary', 'zh').map(stripAnsi).join('\n')
+    assert.ok(!text.includes('Safety'), 'en 面板标签不应出现在 zh')
+    assert.ok(!text.includes('Advisory'), 'en 面板标签不应出现在 zh')
+  })
+})
+
+describe('resolveCockpitLang', () => {
+  it('未设置 RIVET_LANG 时默认 zh', () => {
+    assert.equal(resolveCockpitLang({}), 'zh')
+  })
+
+  it('接受 en / zh 及地区前缀，大小写不敏感', () => {
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'en' }), 'en')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'EN' }), 'en')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'en-US' }), 'en')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'zh' }), 'zh')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'zh-CN' }), 'zh')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: ' zh ' }), 'zh')
+  })
+
+  it('无法识别的值回退 zh（fail-safe，不抛错）', () => {
+    assert.equal(resolveCockpitLang({ RIVET_LANG: 'fr' }), 'zh')
+    assert.equal(resolveCockpitLang({ RIVET_LANG: '' }), 'zh')
   })
 })

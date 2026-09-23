@@ -3,9 +3,10 @@
  *
  * Resolution: `RIVET_LEAN=1|0` (env wins) → `runtime.lean` in project then user config.
  * Expansions (only when caller has not set an explicit value) live in the
- * respective resolvers: tool preset → minimal, prompt profile → lean,
- * maxWorkers → 1, embeddings off, Meridian startup backfill off, tighter
- * session pool, constellation/companion/dream hooks off.
+ * respective resolvers: prompt profile → lean, maxWorkers → 1, embeddings off,
+ * Meridian startup backfill off, tighter session pool, constellation/companion/
+ * dream hooks off.
+ * （tools aspect 已退出：2026-09-23 起装配默认档恒为 minimal，lean 与否同值。）
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -131,9 +132,9 @@ export function isRuntimeLean(configLean?: boolean, cwd?: string): boolean {
 /** Per-aspect lean knobs selectable via `RIVET_LEAN_ASPECT=tools,prompt,…`.
  *  Resolution order: `RIVET_LEAN` (global master switch, wins) →
  *  `RIVET_LEAN_ASPECT` (explicit aspect list) → original config/env chain.
- *  Semantics stay with the caller: tool/prompt presets treat lean as a
- *  fallback ("explicit setting wins"), embeddings/meridian/pool treat it as a
- *  hard off. */
+ *  Semantics stay with the caller: prompt preset treats lean as a fallback
+ *  ("explicit setting wins"), embeddings/meridian/pool treat it as a hard off.
+ *  tools 已退出（2026-09-23：装配默认档恒 minimal，aspect 列出 tools 是 no-op）。 */
 export type LeanAspect = 'tools' | 'prompt' | 'embeddings' | 'meridian' | 'pool'
 
 export function isRuntimeLeanAspect(

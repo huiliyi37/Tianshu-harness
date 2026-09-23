@@ -48,9 +48,15 @@ describe('resolveTestSpawn — Windows .cmd runner handling', () => {
     assert.equal(node.shell, false)
     assert.equal(node.command, 'node')
 
+    // pytest 直连是刻意的，不是漏改：pip/conda 装的是 Scripts\pytest.exe（distlib
+    // launcher），libuv 搜 PATH 时补 .exe 命中。反过来若为了支持 npm 风格
+    // node_modules/.bin/pytest.cmd 而开 shell，filter 就会进 cmd.exe 命令行——而
+    // run-tests.ts 的 safeFilter 只剥 ` $ \ ; " ' |，& < > ^ ( ) 仍在，等于用罕见
+    // 形态换一个注入面。真要支持那种形态，应做成「探测到 .cmd 才 shell」的窄分支。
     const pytest = resolveTestSpawn('pytest', ['-q'], CWD, win())
     assert.equal(pytest.shell, false)
     assert.equal(pytest.command, 'pytest')
+    assert.deepEqual(pytest.args, ['-q']) // 直连路径不改写 args（无引号包装、无消毒）
   })
 
   it('Windows shell mode quotes args that contain spaces', () => {

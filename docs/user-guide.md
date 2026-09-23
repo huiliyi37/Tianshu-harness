@@ -202,12 +202,12 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 
 ### 工具集与 preset
 
-天枢内置 51 个工具（full 档口径），按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目 `runtime.domains.<域>.toolPreset` > 用户配置 `tools.preset` > 用户 `runtime.domains.<域>.toolPreset` > 星域内置默认档（太一域→taiyi）> 兜底档：**非 lean 为 `frontend`，lean 下为 `minimal`**）：
+天枢内置 51 个工具（full 档口径），按 preset 分档装配（解析优先级：`RIVET_TOOL_PRESET` 环境变量 > 项目 `.rivet-config.json` 的 `tools.preset` > 项目 `runtime.domains.<域>.toolPreset` > 用户配置 `tools.preset` > 用户 `runtime.domains.<域>.toolPreset` > 星域内置默认档（太一域→taiyi）> 兜底档：**`minimal`**（2026-09-23 起；此前非 lean 为 `frontend`）：
 
 | Preset | 工具数 | 说明 |
 |--------|--------|------|
-| **frontend**（非 lean 默认） | 31 | minimal + `browser_debug`（UI 渲染验证闭环）——未做任何配置时的兜底档 |
-| **minimal**（lean 默认） | 30 | 日常开发全能力——读写/检索/bash/git 史实侦察（`git_scout`）/测试/委托/web/计划/todo/memory，省 token、保 prefix cache |
+| **minimal**（默认） | 30 | 日常开发全能力——读写/检索/bash/git 史实侦察（`git_scout`）/测试/委托/web/计划/todo/memory，省 token、保 prefix cache——未做任何配置时的兜底档 |
+| **frontend** | 31 | minimal + `browser_debug`（UI 渲染验证闭环） |
 | **full** | 51 | 全集，含 `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 办公工具族等进阶能力 |
 | **taiyi** | 14 | 最小评测档——高频核心 + 交付闭环，去编排/浏览器/网络/视觉等重工具；太一星域钉定时自动落此档 |
 
@@ -278,7 +278,7 @@ Plan Mode 内置星域委派——复杂计划自动调用 `delegate_task` 从�
 
 **恢复 `--continue` / `--resume` / `/resume`** —— 恢复已有会话时：
 
-- **交接自动注入** —— 上一会话的 `<id>.handoff.md` 经 `prev-session-handoff` appendix 自动喂给新会话，新会话零上下文也能接着干
+- **交接文档** —— 上一会话的 `<id>.handoff.md` 落在会话目录，新会话可直接读取；**`<prev-session-handoff>` 自动注入默认关闭**（并行会话下「最近更新的另一个会话」这条选取规则不安全，会把可能已被并行会话超越的陈旧交接当上下文；仅供显式实验 `RIVET_PREV_HANDOFF=1`）
 - **冻结前缀继承** —— 冻结快照随会话落盘（每个 user 边界 + shutdown），resume 时读回喂给新引擎，**不再从字节 0 全 miss**；只在下一个 user 边界断尾。无快照/坏文件/服务商缓存过期才退化全量重建
 - **写证据修复** —— resume 前跑 preflight，补全被中断丢失的 orphan tool result（用磁盘探测合成写证据），避免模型盲重写已落地的文件
 - **模型亲和** —— resume 换回原会话模型（per-model 缓存命名空间）；显式 `--model/--provider` 优先；原模型不可用走 `agent.resumeFallbackModel` 兜底
@@ -434,7 +434,7 @@ tianshu config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 | **@mention 补全** | 输入 `@file:` / `@folder:` / `@symbol:` 触发路径补全（走 `git ls-files`，支持带空格的 `@file:"a b.ts"` 引用形）。直接粘贴图片自动转 base64 内联（macOS/Linux/Windows 三级降级）。 |
 | **倒带 Rewind** | 双击 `ESC`（间隔 <400ms）打开消息历史，选任一过往用户消息倒带到该点；可选「仅对话 / 仅代码改动 / 两者」三种恢复粒度，代码动作附带精确的文件影响预览。详见本文「Rewind（倒带回退）」。 |
 | **命令面板** | `Ctrl+P` 打开，模糊搜索所有 slash 命令与 surface 动作（开关侧栏、切主题、进 Cockpit 等），↑/↓ 选中、Enter 执行，再按 `Ctrl+P` 关闭。原 `Ctrl+Esc` 在 Windows 被系统「开始菜单」抢占、在传统转义序列下与 Esc 同码不可区分，已换绑。 |
-| **Cockpit 驾驶舱** | `Ctrl+P` → 选 Cockpit，或 `/cockpit <panel>` 进入。8 面板全屏视图：summary / trace / verify / context / safety / model / mcp / advisory，←/→/Tab 切换聚焦，实时展示 doom-loop 等级、验证交付状态、缓存与投机预读统计、MCP 连接、advisory 提醒等。 |
+| **Cockpit 驾驶舱** | `Ctrl+P` → 选 Cockpit，或 `/cockpit <panel>` 进入。8 面板全屏视图：summary / trace / verify / context / safety / model / mcp / advisory，←/→/Tab 切换聚焦，实时展示 doom-loop 等级、验证交付状态、缓存与投机预读统计、MCP 连接、advisory 提醒等。面板文案中英双语，默认中文，`RIVET_LANG=en` 切英文。 |
 | **多智能体面板** | `/tasks` 打开全屏 worker 详情（融合 live 视图 + JSONL 转录，含 Contract/Activity/Result/Transcript 分段与诚实标签）；宽终端（≥100 列）下 `Ctrl+]` 切出右侧抽屉，实时展示舰队树、团队波次 DAG、todo、token 仪表。 |
 | **主题与无障碍** | `/theme [name|list]` 切换色彩主题；`auto` 主题用 OSC 11 探测终端背景色自动适配明暗。truecolor / 256 色 / 16 色三轨自动降级。`/vim` 切换 vim 键绑定；`ui.reducedMotion: true` 把 spinner 与徽章动画静态化（无障碍）。读屏用户用 `--screen-reader`（或 `ui.screenReader: true`）：动态段整体不渲染、周期重绘停转，活动的开始与等待批准改为静态行播报——`reducedMotion` 只冻结字形，救不了每 120ms 被复读一遍。 |
 | **欢迎页「定盘星」** | 立体 TIANSHU 字标 + 使命行星光扫过 + 进入提示区（交接提醒 / 缓存提示）。`RIVET_WELCOME_LOGO=pixel` 切点阵字标（窄屏 <58 列自动降档），`RIVET_WELCOME_ANIM=0` 关扫光，`--skip-welcome` 跳过整页。 |
@@ -697,6 +697,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | 变量 | 作用 |
 |------|------|
 | `RIVET_ASCII_UI=1` | 强制纯 ASCII UI（降级终端） |
+| `RIVET_LANG` | Cockpit 面板语言：默认 `zh`；`en` 切英文（接受 `zh-CN` / `en-US` 等前缀，无法识别时回退 `zh`） |
 | `RIVET_IMAGES` | 终端内联图片：默认自动检测；`0`/`off` 关闭；`kitty`/`iterm2` 强制协议 |
 | `RIVET_HYPERLINKS=1` | 开启 OSC 8 超链接渲染 |
 | `RIVET_NOTIFY_BELL=1` | 完成时响终端铃 |

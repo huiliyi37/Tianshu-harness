@@ -65,16 +65,35 @@ if (files.length === 0) {
   process.exit(1)
 }
 
+// 测试隔离：把 rivetHome() 钉到本次运行的临时目录。
+//
+// 此前测试直接吃开发者真实 home（~/.rivet / %LOCALAPPDATA%\.rivet）：测试往里灌
+// 授权、checkpoint、会话、许可证状态等真实数据（污染用户目录），而一旦该目录
+// 不可写（沙箱 / CI / 只读 home），写入被各处 best-effort catch 静默吞掉，断言
+// 看到的是空状态——同一类假红实测横跨 8 个文件 50 条（path-grants / checkpoint /
+// checkpoint-isolation / coordinator-session-resume / tool-preserve 等），看起来
+// 像被测代码坏了，实际只是「观测面没写进去」。
+//
+// rivetHome() 的优先级是 RIVET_HOME > 平台默认（src/config/paths.ts），所以钉
+// RIVET_HOME 即可覆盖后者；HOME 刻意**不动**——defaultRivetHome() 派生的路径断言
+// （workspace-config / pro-license 等）继续按真实 $HOME 语义跑，行为不变。
+const ISOLATED_RIVET_HOME = join(PROJECT_TMP, 'rivet-home')
+
 const testEnv = {
   ...process.env,
   TMPDIR: PROJECT_TMP,
   TMP: PROJECT_TMP,
   TEMP: PROJECT_TMP,
+  RIVET_HOME: ISOLATED_RIVET_HOME,
   // When the fallback in-repo temp dir is in use, stop git repo discovery
   // from walking up out of it into the real repo (test fixtures created via
   // mkdtemp expect "not a git repo"). Harmless for the OS temp dir case.
   GIT_CEILING_DIRECTORIES: PROJECT_TMP,
 }
+
+// 每次运行从干净目录起步：上一轮的 grants/checkpoint 索引会改变下一轮的起点
+// （例如「未记住的授权不得从磁盘复活」这类断言会被上一轮残留直接证伪）。
+rmSync(ISOLATED_RIVET_HOME, { recursive: true, force: true })
 
 // 超时上限是防「电脑卡死」的关键：Node 不设 --test-timeout 就是 Infinity，任一测试
 // 卡住整个批次进程就永久挂着，被遗弃的整跑会一直占 CPU 直到手动清理。曾攒下 4 个

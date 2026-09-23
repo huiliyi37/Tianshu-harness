@@ -116,6 +116,18 @@ export class RequestInvariantMonitor {
   }
 
   /**
+   * 该 request 的 messages 数组是否**已经派发过**（本 client 实例内）。
+   *
+   * 调用方在 `observe()` **之前**读它，用来判断「本次是不是同一份历史的再次派发」。
+   * 用途：任何会**改变同一数组 wire 字节**的决策（如 reasoning_echo 自愈的粘性
+   * 开关）都必须在再次派发时保持原样——否则会撞上本监控的硬门禁（2026-07-06
+   * 事故类：侧路复用主请求数组 / 故障转移重放同一 request）。
+   */
+  hasObserved(request: Pick<OaiChatRequest, 'messages'>): boolean {
+    return this.byIdentity.has(request.messages)
+  }
+
+  /**
    * 观察一次派发。`wireMessages` 必须是**变换之后**最终上线的消息数组
    * （reasoning 剥离 / system 后缀 / 清洗都已应用），`tools` 同理。
    *

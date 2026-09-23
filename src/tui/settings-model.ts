@@ -147,8 +147,8 @@ export const APPROVAL_OPTIONS: readonly SettingsOption[] = [
 ]
 
 export const TOOL_PRESET_OPTIONS: readonly SettingsOption[] = [
-  { id: 'minimal', label: 'minimal — 30 个工具（省 token）' },
-  { id: 'frontend', label: 'frontend — 31 个，含 browser_debug（默认）' },
+  { id: 'minimal', label: 'minimal — 30 个工具，省 token（默认）' },
+  { id: 'frontend', label: 'frontend — 31 个，含 browser_debug' },
   { id: 'full', label: 'full — 51 个全集，含 computer_use / 办公工具' },
   { id: 'taiyi', label: 'taiyi — 14 个最小集（评测档；太一域钉定默认此档）' },
 ]

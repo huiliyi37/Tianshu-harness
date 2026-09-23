@@ -13,6 +13,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    # contents: write 供 Release 发布。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -50,16 +53,49 @@ jobs:
         working-directory: desktop
         run: node scripts/fetch-node-runtime.js
 
+      # ── Windows 代码签名 ────────────────────────────────────────────────
+      # Tauri 只从 tauri.conf.json 的 bundle.windows.signCommand 取签名命令
+      # （见 desktop/scripts/win-codesign.mjs 的文件头）；它**不读**
+      # WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD —— 那套 secret 曾被
+      # 导出过，但从未签上任何东西（"配了证书"与"没配"产物一样）。
+      #
+      # 仓库变量 WINDOWS_SIGNING=azure 时走 Azure Artifact Signing：
+      #   vars:    AZURE_SIGNING_ENDPOINT / AZURE_SIGNING_ACCOUNT / AZURE_SIGNING_PROFILE
+      #   secrets: AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID
+      #            （App Registration 需被授予「Artifact Signing Certificate Profile Signer」角色；
+      #             CLI 只支持 client secret 认证，故不用 OIDC 联邦凭证。）
+      # 未配置时构建照旧，但包装器会打印"未签名"告警——未签名是显式选择，不是默认静默。
+      - name: 安装签名 CLI（artifact-signing-cli）
+        if: ${{ vars.WINDOWS_SIGNING == 'azure' }}
+        run: |
+          # 版本固定：供应链纪律，升级须显式改这一行（见 DISTRIBUTION.md）
+          cargo install artifact-signing-cli --version 0.11.0 --locked
+          artifact-signing-cli --version
+
       - name: Build Tauri app (Windows)
         working-directory: desktop
         run: npx tauri build
         env:
-          # 未配置签名证书时构建未签名安装包；配置 secrets 后自动签名。
+          # updater 的 minisign 私钥（tauri-plugin-updater，与 Authenticode 是两回事）
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Windows 代码签名（可选）
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TIANSHU_SIGN_CMD: ${{ vars.WINDOWS_SIGNING == 'azure' && format('artifact-signing-cli -e {0} -a {1} -c {2} -d Tianshu', vars.AZURE_SIGNING_ENDPOINT, vars.AZURE_SIGNING_ACCOUNT, vars.AZURE_SIGNING_PROFILE) || '' }}
+          TIANSHU_ALLOW_UNSIGNED: ${{ vars.WINDOWS_SIGNING != 'azure' && '1' || '' }}
+          # artifact-signing-cli 的认证（仅签名时需要；未配置时为空串，包装器已跳过签名）
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      # 验签闸门：签名失败与签名成功在产物上看不出区别（都是几个 exe），
+      # 所以"签上了"必须由机器核对——含时间戳（无时间戳的签名在证书过期当天失效）。
+      - name: 验签闸门（Authenticode）
+        working-directory: desktop
+        run: >-
+          node scripts/verify-windows-signature.mjs
+          --require-signed=${{ vars.WINDOWS_SIGNING == 'azure' }}
+          "src-tauri/target/release/bundle/nsis/*-setup.exe"
+          "src-tauri/target/release/bundle/msi/*.msi"
+          "src-tauri/target/release/*.exe"
 
       - name: Upload installer + signature
         uses: actions/upload-artifact@v4

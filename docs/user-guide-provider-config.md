@@ -552,6 +552,7 @@ rivet config setup grok --key-env XAI_API_KEY
 | `stream_parse` | SSE 解析失败 | 2 | 1000ms |
 | `unknown` | 兜底 | 2 | 2000ms |
 | `image_strip` | 413 / 图片处理失败 | 1（只剥离一次） | 0 |
+| `tls_intercept` | TLS 证书校验失败（`UNABLE_TO_VERIFY_LEAF_SIGNATURE` / `SELF_SIGNED_CERT_IN_CHAIN` 等）：本机检出加密连接扫描根证书 → 本地中间人；未检出 → 多为服务端证书链不完整 | 0（本地中间人，同一张证书重试必然复现）/ 1（未检出，给服务端半截链一次自愈机会） | 2000ms |
 | `auth_error` / `client_error` / `context_overflow` | 401/403/404/其他 4xx | 0（不重试） | — |
 
 未配置时的等待 = 上表固定值 + 0–50% 抖动；服务端返回 `Retry-After` 响应头时以服务端为准

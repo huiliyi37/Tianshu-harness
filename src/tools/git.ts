@@ -1,7 +1,8 @@
 import { spawnGit } from './spawn-git.js'
 import { readFile as fsReadFile, stat as fsStat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import type { Tool, ToolCallParams } from './types.js'
+import { relativePosix } from '../path-format.js'
 import { auditCommitTagScope } from './commit-audit.js'
 import { createWorkspaceGuard } from '../agent/workspace-guard.js'
 import { killProcessTree } from './process-kill.js'
@@ -150,7 +151,11 @@ async function runGitSafe(args: string[], cwd: string, abortSignal?: AbortSignal
 
 function normalizeProjectRelativePath(cwd: string, filePath: string): string | null {
   const resolved = resolve(cwd, filePath)
-  const rel = relative(cwd, resolved)
+  // git pathspec 一律用 POSIX 分隔符：反斜杠在 git 眼里是转义字符，win32 上拿宿主
+  // relative() 的结果去匹配会被 git 引号包裹并二次转义（`"a/策略\\涨停.js"`），非 ASCII
+  // 路径与桌面端 diff 解析器一并失准。归一后 '..'/绝对路径判据在各平台也口径一致
+  // （仓库约定见 path-format.ts）。跨盘符时 relative() 给绝对路径，isAbsolute 仍拦得住。
+  const rel = relativePosix(cwd, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
   return rel
 }
@@ -399,6 +404,18 @@ function safeBaseRef(ref: string): string {
 }
 
 /**
+ * 平台空设备路径，供 `git diff --no-index` 渲染未跟踪文件的整文件 diff。
+ * POSIX 是 `/dev/null`；Windows 上必须用裸 `NUL`——Git Bash 会替 shell 做 MSYS
+ * 路径转换，但 Node 的 spawn 把参数原样交给原生 git.exe，git 会把 `/dev/null`
+ * 当目录前缀拼成 `/dev/null/<rel>` → "Could not access"、stdout 为空。
+ * `os.devNull` 在 win32 上给 `\\.\nul`，git 同样不认。
+ * 抽成纯函数是为了让这个 win32 分支可在任意宿主上单测。
+ */
+export function nullDeviceFor(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'NUL' : '/dev/null'
+}
+
+/**
  * Fetch the unified diff of a single file relative to `baseRef` (default
  * HEAD), for on-demand rendering in the desktop "changes" tab. Empty string =
  * no textual diff (binary file, or untracked with no base to diff against).
@@ -412,10 +429,11 @@ export async function getFileDiff(cwd: string, path: string, baseRef = 'HEAD'): 
   const tracked = await runGitSafe(['diff', base, '--', rel], cwd)
   if (tracked.ok && tracked.output.trim()) return tracked.output
   // New / untracked file: not in HEAD, so `git diff HEAD` is empty. Render the
-  // whole file as additions via --no-index against /dev/null. This exits 1 when
-  // the files differ (the normal case) but prints the diff on stdout, which
-  // runGitExitCode preserves. Binary files print "Binary files ... differ".
-  const fallback = await runGitExitCode(['diff', '--no-index', '--', '/dev/null', rel], cwd)
+  // whole file as additions via --no-index against the platform null device
+  // (see nullDeviceFor). This exits 1 when the files differ (the normal case)
+  // but prints the diff on stdout, which runGitExitCode preserves. Binary files
+  // print "Binary files ... differ".
+  const fallback = await runGitExitCode(['diff', '--no-index', '--', nullDeviceFor(), rel], cwd)
   const out = fallback.stdout
   if (out && out.trim()) return normalizeNoIndexHeader(out, rel)
   return tracked.ok ? tracked.output : ''
@@ -441,10 +459,12 @@ export async function getFileAtBase(
 }
 
 /**
- * `git diff --no-index /dev/null file` emits headers referencing the literal
- * paths ("/dev/null" and the file path without a/ b/ prefixes). Rewrite the
+ * `git diff --no-index <null-device> file` emits headers referencing the literal
+ * paths (the null device, and the file path without a/ b/ prefixes). Rewrite the
  * `+++` header to the conventional `b/<rel>` form so the desktop diff parser
  * (which strips a leading `b/`) anchors line comments on the right file path.
+ * `--- ` is normalized to POSIX `/dev/null` regardless of which null device the
+ * platform actually passed — consumers key on that single spelling.
  */
 function normalizeNoIndexHeader(diff: string, rel: string): string {
   return diff

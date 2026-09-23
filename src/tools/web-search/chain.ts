@@ -13,6 +13,14 @@ export interface ChainResult {
   results: SearchResult[]
   /** Per-backend failures/empties accumulated while walking the chain. */
   errors: BackendError[]
+  /**
+   * 链序第一个被判跑题的非空批次。
+   *
+   * 它不参与胜出判定（`results` 仍为空），只作**低置信兜底**：全部后端都无相关
+   * 结果时，tool 层用它降级返回并附显式低相关标注——避免单后端配置下把「后端
+   * 降级返回泛结果」直接变成「什么都搜不到」。仅当有后端返回过跑题内容时存在。
+   */
+  offTopicFallback?: { backend: string; results: SearchResult[] }
 }
 
 /**
@@ -24,7 +32,9 @@ export interface ChainResult {
  * "Off-topic" is the silently-wrong case: HTTP 200, a full block of parsed
  * results, and none of them about the query (see `relevance.ts`). It must fall
  * through like an empty result — otherwise the chain hands unrelated content to
- * the model as if it were an answer.
+ * the model as if it were an answer. The first such batch is retained on
+ * `offTopicFallback` so the caller can **downgrade** (label) rather than
+ * discard it when no backend produced anything relevant.
  */
 export async function runBackendChain(
   backends: readonly SearchBackend[],
@@ -33,6 +43,7 @@ export async function runBackendChain(
   timeoutMs: number,
 ): Promise<ChainResult> {
   const errors: BackendError[] = []
+  let offTopicFallback: { backend: string; results: SearchResult[] } | undefined
 
   for (const backend of backends) {
     if (!backend.isAvailable()) continue
@@ -44,6 +55,8 @@ export async function runBackendChain(
       if (results.length > 0) {
         if (looksOffTopic(query, results)) {
           errors.push({ backend: backend.name, message: OFF_TOPIC_ERROR })
+          // 链序优先：只保留第一个跑题批次，后续批次不得覆盖它。
+          offTopicFallback ??= { backend: backend.name, results }
           continue
         }
         return { backend: backend.name, results, errors }
@@ -56,7 +69,12 @@ export async function runBackendChain(
     }
   }
 
-  return { backend: null, results: [], errors }
+  return {
+    backend: null,
+    results: [],
+    errors,
+    ...(offTopicFallback ? { offTopicFallback } : {}),
+  }
 }
 
 function describeError(err: unknown, timeoutMs: number): string {

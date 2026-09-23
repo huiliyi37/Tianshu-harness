@@ -1124,6 +1124,38 @@ describe('/permission', () => {
     assert.ok(entries[0]!.includes('已切换至 自动'), entries[0])
   })
 
+  // ── maxTurns 联动单点（2026-09-22 复查补漏）────────────────────────────
+  // 此前只有 /permission unattended、/yes、Shift+Tab 面板接线，三条用户可触达路径漏了：
+  // supervise/auto 分支完全不碰 maxTurns（从全自动 0 降不下来）、/permission mode 同、
+  // /config 面板 onApprovalChange 同。下面把"降档必须收回**配置值**"钉死。
+
+  it('/permission supervise|auto 从全自动降档收回配置轮次（此前 0 收不回 / 200 抹配置）', async () => {
+    const cfg = { ...DEFAULT_CONFIG, agent: { ...DEFAULT_CONFIG.agent, maxTurns: 500 } } as Config
+    const cases: Array<{ sub: string; expectMode: string }> = [
+      { sub: 'supervise', expectMode: 'manual' },
+      { sub: 'auto', expectMode: 'auto-safe' },
+      { sub: 'mode', expectMode: 'auto-safe' }, // /permission mode auto-safe（高级兼容入口）
+    ]
+    for (const { sub, expectMode } of cases) {
+      const agent = { ...makeCtx().agent, config: { ...makeCtx().agent.config, maxTurns: 0 } } as any // 0 = 当前在 yolo
+      let mode: string | null = null
+      agent.setApprovalMode = (m: string) => { mode = m }
+      const parts = sub === 'mode' ? ['/permission', 'mode', 'auto-safe'] : ['/permission', sub]
+      const handled = await handleSlashCommand(makeCtx({ parts, agent, config: cfg, setAutoSafe: () => {}, pushStatic: () => {} }))
+      assert.equal(handled, true, `${sub} 应被处理`)
+      assert.equal(mode, expectMode, `${sub} 档位映射`)
+      assert.equal(agent.config.maxTurns, 500,
+        `${sub}: 降档必须收回配置值 500（写死 200 抹配置；不碰则仍是 0 无限轮）`)
+    }
+  })
+
+  it('/config 面板改审批档同样联动 maxTurns（源码契约：onApprovalChange 内）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../slash-commands.ts', import.meta.url), 'utf8')
+    assert.match(src, /onApprovalChange: \(mode: string\) => \{[\s\S]{0,400}?ctx\.agent\.config\.maxTurns = resolveMaxTurns\(mode,/,
+      '面板改档只改 mode 不改预算 = 用户看着面板改了、会话仍按旧预算跑')
+  })
+
   it('quick-switch to auto with checkpoint interval', async () => {
     let mode: string | null = null
     const entries: string[] = []
@@ -1606,6 +1638,8 @@ describe('/yolo 与 /yes 覆盖版共享 handler（handleYoloToggle）', () => {
         commitStatic: (t: string) => calls.push(`commitStatic:${t}`),
         setStreamingState: (v: boolean) => calls.push(`setStreamingState:${v}`),
       },
+      // 非免审批档恢复用的配置值（独立于 agent.config.maxTurns 的运行值）。
+      configuredMaxTurns: 200,
       persistDefault: (m: string) => {
         if (state.persistError) throw state.persistError
         state.persisted = m

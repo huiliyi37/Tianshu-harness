@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execSync } from 'node:child_process'
-import { GIT_TOOL, getWorkingTreeFiles, getFileDiff, getFileAtBase } from '../git.js'
+import { GIT_TOOL, getWorkingTreeFiles, getFileDiff, getFileAtBase, nullDeviceFor } from '../git.js'
 
 // 测试 repo 必须建在系统 tmpdir（仓库外）且路径每次唯一（mkdtemp）。
 // 曾用工作树内固定路径（.git-test-tmp）：多会话并发跑测试时，一个进程的
@@ -309,6 +309,16 @@ describe('getWorkingTreeFiles / getFileDiff (desktop changes tab)', () => {
     assert.ok(fresh, 'untracked file should be listed')
     assert.equal(fresh!.status, 'untracked')
     assert.equal(fresh!.additions, 3)
+  })
+
+  it('selects the platform null device for the --no-index base', () => {
+    // Windows 上原生 git.exe 既不认 '/dev/null'（Node spawn 不做 MSYS 路径转换，
+    // git 会把空设备当目录前缀拼成 '/dev/null/<rel>'），也不认 os.devNull 给的
+    // '\\.\nul'，只有裸 NUL 可用；POSIX 侧保持 /dev/null。抽成纯函数就是为了让
+    // 这个真机跑不到的分支能在任意宿主上被钉住。
+    assert.equal(nullDeviceFor('win32'), 'NUL')
+    assert.equal(nullDeviceFor('darwin'), '/dev/null')
+    assert.equal(nullDeviceFor('linux'), '/dev/null')
   })
 
   it('still diffs a tracked modified file against HEAD', async () => {

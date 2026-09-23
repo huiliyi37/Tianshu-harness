@@ -231,6 +231,16 @@ const CATALOG_META: Record<string, CatalogMeta> = {
       '不支持 cache_control breakpoint（非 Anthropic 协议）',
     ],
   },
+  stepfun: {
+    label: '阶跃星辰 (StepFun)',
+    notes: [
+      '官方开放平台：OpenAI 兼容端点（api.stepfun.com/v1），另有 /v1/messages 的 Anthropic 协议端点',
+      'Thinking: reasoning_effort 三档 low/medium/high（无 max —— 项目的 max 自动降 high）',
+      '服务端隐式 exact-prefix 提示缓存（缓存命中 0.35 元 / 1M tokens）',
+      '原生多模态：文本 + 图片 + 视频输入',
+      '官方按量计费，非订阅制',
+    ],
+  },
   openrouter: {
     label: 'OpenRouter',
     notes: [

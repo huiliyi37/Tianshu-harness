@@ -30,7 +30,8 @@ import { summarizeRepairTelemetry } from './repair-pipeline.js'
 import type { InterventionLevel } from './prediction-error.js'
 import { assessToolRisk, CONFIDENCE_THRESHOLDS, hasOutOfWorkspaceWriteTarget, isDestructiveGitAction, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval } from './approval-risk.js'
 import type { Sensorium } from './sensorium.js'
-import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied, learnBashPrefix, learnFileApproval } from './permissions.js'
+import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied, learnBashPrefix, learnFileApproval, extractBashPrefix } from './permissions.js'
+import { appendBashAllowPrefix } from '../config/bash-permissions.js'
 import { isSelfDestructiveKill, selfProcessTree } from './self-preservation.js'
 import { isSandboxActive, sandboxCoversCommand } from '../tools/sandbox-profile.js'
 import { applyApprovalEdit, type ApprovalResult } from './approval-edit.js'
@@ -1314,6 +1315,13 @@ async function executeToolUseInner(
       // Thermocline 2: learn bash command prefix into session allowlist after approval
       if (tu.name === 'bash' && typeof tu.input.command === 'string') {
         learnBashPrefix(tu.input.command, deps.config.permissions)
+        // 「永久记住」（审批卡勾选）：同一份前缀写进 config.permissions.bash.allowlist，
+        // 跨会话生效——会话级 overlay 只活在当次会话，而自动化任务每次触发都是新会话，
+        // 不落盘等于每次都白放行（见 config/bash-permissions.ts 注释）。落盘失败不阻断
+        // 本次已批准的执行（overlay 已学到，本次照常免审）。
+        if (resolved.remember === true) {
+          try { appendBashAllowPrefix(extractBashPrefix(tu.input.command)) } catch { /* 落盘失败不阻断执行 */ }
+        }
      }
       // Learn a file-scoped approval so subsequent identical edits to the same
       // file don't re-prompt (a key driver of the "approve → edit → approve

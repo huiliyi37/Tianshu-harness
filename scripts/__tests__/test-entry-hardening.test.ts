@@ -142,3 +142,39 @@ describe('测试入口挂死与假绿护栏', () => {
     }
   })
 })
+
+/**
+ * 测试隔离：runner 必须把 rivetHome() 钉到本次运行的临时目录（2026-09-23）。
+ *
+ * 此前测试直接吃开发者真实 home：往 ~/.rivet 灌授权 / checkpoint / 会话 / 许可证
+ * 等真实数据；一旦该目录不可写（沙箱 / CI / 只读 home），写入被各处 best-effort
+ * catch 静默吞掉、断言看到空状态——同一类假红实测横跨 8 个文件 50 条
+ * （path-grants / checkpoint / checkpoint-isolation / coordinator-session-resume…），
+ * 形状上与被测代码坏了无法区分。rivetHome() 的优先级是 RIVET_HOME > 平台默认，
+ * 因此钉 RIVET_HOME 即可；HOME 刻意不动（defaultRivetHome() 派生的路径断言按真实
+ * $HOME 语义继续跑）。删掉这行会让那 50 条在受限环境里再次假红。
+ */
+describe('runner 测试隔离（RIVET_HOME）', () => {
+  const runner = readFileSync(join(repoRoot, 'scripts', 'run-node-tests.ts'), 'utf8')
+
+  test('run-node-tests.ts 给子进程钉 RIVET_HOME，且每轮从干净目录起步', () => {
+    assert.match(
+      runner,
+      /RIVET_HOME:\s*ISOLATED_RIVET_HOME/,
+      'runner 必须把 RIVET_HOME 指向本次运行的临时目录，否则测试会写进开发者真实 ~/.rivet',
+    )
+    assert.match(
+      runner,
+      /rmSync\(ISOLATED_RIVET_HOME,\s*\{\s*recursive:\s*true,\s*force:\s*true\s*\}\)/,
+      '每轮必须清掉上一轮的 grants/checkpoint 残留（否则「不得从磁盘复活」类断言被旧数据证伪）',
+    )
+    assert.doesNotMatch(
+      runner,
+      /(?<!RIVET_)HOME:\s*\S/,
+      '不要连 HOME 一起改：defaultRivetHome() 派生的路径断言（workspace-config / pro-license）按真实 $HOME 语义跑',
+    )
+  })
+  // desktop 侧刻意不钉：实测 desktop/src 全量不引用 rivetHome()（只有 locale 文案
+  // 提到 RIVET_HOME），加了既无被测对象、又给桌面套件引入未验证的环境差异。
+  // 哪天桌面测试开始读写 rivetHome()，这里再加对应断言。
+})

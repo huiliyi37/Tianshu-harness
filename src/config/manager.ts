@@ -13,7 +13,7 @@ import { cloneResolvedPreset, resolvePreset } from '../api/pro-registry.js'
 import { normalizeBaseUrl } from '../api/endpoint-map.js'
 import { backfillPresetModelFields, migratePresetModelBackfill } from './preset-model-backfill.js'
 import { migrateProviderToKeys, keyRefFor, defaultKeyOf, keyRefReferrers } from './provider-keys.js'
-import { injectProviderKeys, stripProviderKeys, writeProviderKeysFile } from './provider-keys-store.js'
+import { injectProviderKeys, stripProviderKeys, writeProviderKeysFile, providerKeysPath } from './provider-keys-store.js'
 import { assertDefaultModelRef } from './contract-models.js'
 import { migrateDeepseekVisionExpRetirement } from './preset-model-retirement.js'
 import { writeSecret, readSecret, deleteSecret } from './secrets-store.js'
@@ -651,7 +651,11 @@ export function saveConfig(config: Config): void {
   // 而绝不出现「config.json 说没有池、keys 文件也没写成」的双丢窗口——池仍在内存
   // 与下次 loadConfig 的迁移路径里，一次重试即可恢复。
   writeFileAtomicSync(configPath, JSON.stringify(toWrite, null, 2) + '\n')
-  if (Object.keys(keysFile.providers).length > 0) writeProviderKeysFile(keysFile)
+  // 池文件不能只在非空时写：最后一个带池 provider 被删时旧文件会整份残留，
+  // 同名 provider 重建时 injectProviderKeys 会把旧池（含模型与 keyRef）复活——
+  // 「已删除」的凭据悄悄回活。文件已存在则必须重写清掉（不存在则不新建，
+  // 从未用过池的用户目录保持无文件）。
+  if (Object.keys(keysFile.providers).length > 0 || existsSync(providerKeysPath())) writeProviderKeysFile(keysFile)
 }
 
 /** 把「删除内置预设」的墓碑（providers[name]=null）写进用户层 config.json。
@@ -726,6 +730,8 @@ export interface RemoveProviderResult {
   defaultModelCleared: boolean
   /** 是否已从 secrets.json 删除对应密钥。 */
   secretDeleted: boolean
+  /** keys[] 池槽位回收的密钥数（<name>:<keyId> 形态，顶层 keyRef 之外的部分）。 */
+  keySecretsDeleted: number
   /** 其他 provider 仍引用同一 keyRef 时列出——密钥因此保留。 */
   keyRefSharedWith: string[]
 }
@@ -758,16 +764,30 @@ export function removeProvider(name: string, options?: { keepSecret?: boolean })
   if (name in DEFAULT_CONFIG.provider.providers) writeProviderTombstone(name)
 
   // 一个 key 对应一个模型组：条目删除即整组删除，密钥随之清除（否则成孤儿）。
-  // 仍被其他 provider 引用的 keyRef 保留——手改配置共享 keyRef 的场景合法存在。
+  // 顶层槽位与 keys[] 池槽位的 keyRef 全部回收；引用判据用 keyRefReferrers
+  // 全仓扫描（顶层槽 + 所有 key 槽），与 removeProviderKey/clearApiKey 同一
+  // 判据——此前这里只扫其他 provider 的顶层 keyRef，池槽位共享会被误判成
+  // 无人引用而误删；池槽位自身的 secret（<name>:<keyId>）则整批漏删成孤儿。
+  // 注意 cfg 已过 saveConfig——本 provider 的引用已移除，剩下的引用方都是外部的。
   let secretDeleted = false
-  const keyRefSharedWith = keyRef
-    ? Object.entries(cfg.provider.providers).filter(([, p]) => p.keyRef === keyRef).map(([n]) => n)
-    : []
-  if (keyRef && !options?.keepSecret && keyRefSharedWith.length === 0 && readSecret(keyRef) !== undefined) {
-    deleteSecret(keyRef)
-    secretDeleted = true
+  let keySecretsDeleted = 0
+  const refsToCheck = new Set<string>()
+  if (keyRef) refsToCheck.add(keyRef)
+  for (const key of entry.keys ?? []) {
+    if (key.keyRef) refsToCheck.add(key.keyRef)
   }
-  return { name, modelCount, keyRef, defaultModelCleared, secretDeleted, keyRefSharedWith }
+  const keyRefSharedWith: string[] = []
+  for (const ref of refsToCheck) {
+    const referrers = keyRefReferrers(cfg, ref)
+    keyRefSharedWith.push(...referrers)
+    if (options?.keepSecret || referrers.length > 0) continue
+    if (readSecret(ref) !== undefined) {
+      deleteSecret(ref)
+      if (ref === keyRef) secretDeleted = true
+      else keySecretsDeleted++
+    }
+  }
+  return { name, modelCount, keyRef, defaultModelCleared, secretDeleted, keySecretsDeleted, keyRefSharedWith }
 }
 
 export function setDefaultProvider(name: string): void {
@@ -1233,7 +1253,8 @@ const TOOL_PRESETS = new Set(['minimal', 'frontend', 'full', 'taiyi'])
 
 /** Snapshot of the tool preset for the desktop/TUI settings UI. */
 export function getToolPresetConfig(): ToolPresetConfigSnapshot {
-  return { preset: loadConfig().tools.preset ?? 'frontend' }
+  // 回退口径与 resolveToolPreset 的装配默认一致（2026-09-23 起为 minimal）。
+  return { preset: loadConfig().tools.preset ?? 'minimal' }
 }
 
 /**
@@ -1252,7 +1273,7 @@ export function setToolPresetConfig(input: { preset?: unknown }): ToolPresetConf
   saveConfig(cfg)
   // 长驻进程（desktop sidecar）内 memo 必须失效，否则新会话拿到旧档位。
   invalidateToolPreset()
-  return { preset: cfg.tools.preset ?? 'frontend' }
+  return { preset: cfg.tools.preset ?? 'minimal' }
 }
 
 // --- Runtime lean (resource profile) ---

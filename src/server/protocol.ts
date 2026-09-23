@@ -45,10 +45,18 @@ export type PlanModeState = 'off' | 'planning'
  */
 export type AskModeState = 'off' | 'asking'
 
-// `turn_complete` data 的可选 additive 字段：`continuationReason`
-// （中间 turn 之后系统注入提醒并自动续轮的原因，如
-// 'obligation-verification'）。desktop 用它区分「给用户的消息」与
-// 「给系统提醒的自检回复」；旧 sidecar 不携带时行为不变。
+// `turn_complete` data 的可选 additive 字段：
+//  · `continuationReason`（中间 turn 之后系统注入提醒并自动续轮的原因，如
+//    'obligation-verification'）。desktop 用它区分「给用户的消息」与
+//    「给系统提醒的自检回复」；旧 sidecar 不携带时行为不变。
+//  · `aborted: true`（2026-09-23）——中断 / 看门狗中止收尾的**补发**快照。
+//    被打断的 run 走不到 natural-finish，其 usage 只能由 onAbort 路径补一条
+//    isFinal=false 的累计快照；否则桌面端输入框的缓存命中率永远停在上一个
+//    跑完的 run 上（实测有会话 29 条 turn_complete 全是 isFinal=false）。
+//  · `contextTokens: number`（2026-09-23）——本轮结束时的上下文实时占用
+//    （getEstimatedTokens = getRealOccupancy，与会话记录 enrichment 同源）。
+//    记录侧只在下拉/push 时现算，长 run 中途环形图百分比最多落后 30s；带上
+//    它之后桌面端百分比与缓存计数同频。旧客户端忽略该字段。
 export type SessionEventType =
   | 'user'
   | 'text_delta'

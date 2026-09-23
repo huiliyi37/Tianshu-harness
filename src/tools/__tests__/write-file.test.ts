@@ -1,10 +1,18 @@
-import { describe, it, beforeEach } from 'node:test'
+import { after, describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync, mkdirSync, rmSync, existsSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { WRITE_FILE_TOOL } from '../write-file.js'
 import { __setFileReadMtimeForTests } from '../read-file.js'
 import type { ToolCallParams } from '../types.js'
+import { setTargetConventions } from '../../platform.js'
+
+// 本文件断言的是 LF 形态的文件内容。新建文件的 EOL 由「目标平台约定」决定
+// （src/platform.ts 的 getTargetEol），未初始化时兜底到宿主——Windows 上即 crlf，
+// 这些断言便恒红。文件级钉到 POSIX 让用例与宿主解耦；退出时恢复宿主默认，避免
+// 同一进程里的兄弟测试文件被污染（与 platform-conventions.test.ts 同纪律）。
+setTargetConventions('linux', 'auto')
+after(() => setTargetConventions('auto', 'auto'))
 
 const TEST_DIR = join(process.cwd(), '.test-tmp', 'opencode-write-test')
 

@@ -7,6 +7,15 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import type { SpeechEngine } from './speech-routes.js'
 
+/**
+ * JS 脚本后缀（.js/.mjs/.cjs）。这类 binPath 需要解释器，不能当裸可执行文件
+ * spawn——POSIX 靠 shebang 能跑，Windows 会落到文件关联/EFTYPE。命中时统一经
+ * `process.execPath` 解释执行，于是「用 JS 包装脚本当 binPath」在两个平台都成立，
+ * 也不必依赖可执行位（Windows 上 chmod 无效）。真实的 whisper-cli 二进制没有此后缀，
+ * 不受影响。
+ */
+const JS_SCRIPT_RE = /\.(?:[cm]?js)$/i
+
 export interface WhisperEngineOptions {
   /** whisper-cli 可执行文件路径。 */
   binPath: string
@@ -40,7 +49,13 @@ export function createWhisperEngine(opts: WhisperEngineOptions): SpeechEngine {
           const prompt = LANG_PROMPTS[o.lang]
           if (prompt !== undefined) args.push('--prompt', prompt)
         }
-        const child = spawn(opts.binPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+        // JS 脚本要经解释器执行（见 JS_SCRIPT_RE）。先把「跑什么」定下来，再走
+        // 单一 spawn 调用点——两个分支各调一次 spawn 会让返回类型收窄成 never，
+        // 后续 .stderr/.on 全部失型。
+        const isJsScript = JS_SCRIPT_RE.test(opts.binPath)
+        const cmd = isJsScript ? process.execPath : opts.binPath
+        const cmdArgs = isJsScript ? [opts.binPath, ...args] : args
+        const child = spawn(cmd, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
         let stderr = ''
         child.stderr.on('data', (d: Buffer) => {
           stderr += d.toString()

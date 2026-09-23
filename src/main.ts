@@ -61,6 +61,7 @@ import {
   shiftTabPlanToggleHint,
 } from './agent/plan-mode.js'
 import type { ApprovalMode } from './agent/loop-types.js'
+import { resolveMaxTurns } from './agent/turn-budget-policy.js'
 import { TIER_HINT, TIER_TO_WIRE, formatPermissionLabel, formatTierLabel } from './agent/approval-vocabulary.js'
 import { readFileSync, statSync } from 'node:fs'
 import { join as pathJoin } from 'node:path'
@@ -1523,9 +1524,9 @@ async function main() {
       // YOLO = 完全权限（免审批 + 全盘无沙箱，2026-09-07 语义）；沙箱仅显式 RIVET_SANDBOX=1。
       applySandboxPolicyForApprovalMode(mode)
       // YOLO 联动无限轮次：真正全自动，不被 maxTurns 截断。
-      // 其他模式恢复默认 200 轮预算。
-      const yoloMaxTurns = mode === 'dangerously-skip-permissions' ? 0 : 200
-      ctx!.agent.config.maxTurns = yoloMaxTurns
+      // 其它模式恢复**配置里**的轮次预算（策略单点 agent/turn-budget-policy.ts）——
+      // 此前写死 200：用户配的 agent.maxTurns: 500 在面板切一次档就被抹平。
+      ctx!.agent.config.maxTurns = resolveMaxTurns(mode, ctx!.config.agent.maxTurns)
       try {
         persistApprovalDefault(mode)
       } catch (err) {
@@ -1907,8 +1908,10 @@ async function main() {
     const setSessionApproval = (mode: ApprovalMode) => {
       agent.setApprovalMode(mode)
       app!.setApprovalMode(mode)
-      // YOLO 联动无限轮次（与 /yes、权限面板一致）
-      agent.config.maxTurns = mode === 'dangerously-skip-permissions' ? 0 : 200
+      // YOLO 联动无限轮次（与 /yes、权限面板一致）。策略单点
+      // agent/turn-budget-policy.ts：恢复时读**配置值**而不是写死 200
+      // （用户配的 agent.maxTurns: 500 不再被一次档位切换静默抹平）。
+      agent.config.maxTurns = resolveMaxTurns(mode, loadRivetConfig().agent.maxTurns)
     }
     const current = agent.config.approvalMode ?? 'auto-safe'
     const decision = nextShiftTabPlanToggle({

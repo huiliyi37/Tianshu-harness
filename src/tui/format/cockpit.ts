@@ -3,12 +3,16 @@
  *
  * 消费 buildCockpitSnapshot() 的 CockpitSnapshot 数据，渲染纯 ANSI 仪表盘 overlay。
  * 采用统一面板骨架（overlay-frame），配色统一走主题（不再硬编码十六进制）。
+ * 全部可见文案走 cockpit/labels.ts（zh/en 双语，RIVET_LANG 切换）——渲染器本身不再
+ * 持有任何语言字面量，加语言只改文案表。
  */
 
 import { color } from '../engine/ansi.js'
 import type { RivetTheme } from '../theme.js'
 import type { CockpitSnapshot, PanelStatus, Panel } from '../cockpit/types.js'
-import { PANELS, PANEL_LABELS } from '../cockpit/types.js'
+import { PANELS } from '../cockpit/types.js'
+import type { CockpitLang } from '../cockpit/labels.js'
+import { cockpitText, panelLabel, resolveCockpitLang } from '../cockpit/labels.js'
 import {
   frameTop,
   frameBottom,
@@ -35,7 +39,15 @@ function formatBar(value: number, max: number, width: number, theme: RivetTheme)
   return color('█'.repeat(filled), barColor) + color('░'.repeat(empty), theme.dim)
 }
 
-export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: number, theme: RivetTheme, panel: Panel = 'summary'): string[] {
+export function renderCockpit(
+  snapshot: CockpitSnapshot,
+  width: number,
+  height: number,
+  theme: RivetTheme,
+  panel: Panel = 'summary',
+  lang: CockpitLang = resolveCockpitLang(),
+): string[] {
+  const L = cockpitText(lang)
   const w = Math.max(20, width - 4) // inner content width
   const contentRows = Math.max(3, height - 4) // top + title + footer + bottom
   // panel === 'summary'（或缺省）渲染全部；指定单面板时仅渲染该节（聚焦视图）。
@@ -45,13 +57,13 @@ export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: 
 
   // Panel rail — 显示可切换的子面板，当前面板高亮（←/→/Tab 或 /cockpit <panel> 切换）。
   const rail = PANELS.map(p => p === panel
-    ? color(`[${PANEL_LABELS[p]}]`, theme.primary, { bold: true })
-    : color(` ${PANEL_LABELS[p]} `, theme.dim)).join('')
+    ? color(`[${panelLabel(p, lang)}]`, theme.primary, { bold: true })
+    : color(` ${panelLabel(p, lang)} `, theme.dim)).join('')
   body.push(` ${rail}`)
 
   if (show('safety')) {
     body.push('')
-    body.push(` ${statusGlyph(snapshot.panelStatuses.safety, theme)} ${color('Safety', theme.secondary, { bold: true })}  ${color(snapshot.safety.riskLevel, theme.muted)}  doom:${snapshot.safety.doomLoopLevel}`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.safety, theme)} ${color(L.panels.safety, theme.secondary, { bold: true })}  ${color(snapshot.safety.riskLevel, theme.muted)}  ${L.safety.doom}:${snapshot.safety.doomLoopLevel}`)
     if (snapshot.safety.suggestedAction) {
       body.push(`    ${color(snapshot.safety.suggestedAction, theme.muted)}`)
     }
@@ -59,7 +71,7 @@ export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: 
 
   if (show('verify')) {
     body.push('')
-    body.push(` ${statusGlyph(snapshot.panelStatuses.verify, theme)} ${color('Verify', theme.secondary, { bold: true })}  ${snapshot.verification.deliveryStatus}  read:${snapshot.verification.filesRead} mod:${snapshot.verification.filesModified}`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.verify, theme)} ${color(L.panels.verify, theme.secondary, { bold: true })}  ${snapshot.verification.deliveryStatus}  ${L.verify.read}:${snapshot.verification.filesRead} ${L.verify.mod}:${snapshot.verification.filesModified}`)
     for (const run of snapshot.verification.runs.slice(0, 3)) {
       body.push(`    ${run.tool}: ${run.summary} ${run.status}`)
     }
@@ -70,57 +82,58 @@ export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: 
     const ctx = snapshot.context
     const ratio = ctx.maxTokens > 0 ? ctx.estimatedTokens / ctx.maxTokens : 0
     const bar = formatBar(ctx.estimatedTokens, ctx.maxTokens, Math.min(w, 40), theme)
-    body.push(` ${statusGlyph(snapshot.panelStatuses.context, theme)} ${color('Context', theme.secondary, { bold: true })}  ${Math.round(ratio * 100)}%  ${ctx.estimatedTokens}/${ctx.maxTokens} tokens  rounds:${ctx.rounds}`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.context, theme)} ${color(L.panels.context, theme.secondary, { bold: true })}  ${Math.round(ratio * 100)}%  ${ctx.estimatedTokens}/${ctx.maxTokens} tokens  ${L.context.rounds}:${ctx.rounds}`)
     body.push(`    ${bar}`)
     if (ctx.brokenRounds > 0) {
-      body.push(`    ${color(`⚠ ${ctx.brokenRounds} broken rounds`, theme.warning)}`)
+      body.push(`    ${color(`⚠ ${ctx.brokenRounds} ${L.context.brokenRounds}`, theme.warning)}`)
     }
   }
 
   if (show('model')) {
     body.push('')
     const m = snapshot.model
-    body.push(` ${statusGlyph(snapshot.panelStatuses.model, theme)} ${color('Model', theme.secondary, { bold: true })}  ${m.name}  cache:${Math.round(m.cacheHitRate * 100)}%  ${m.inputTokens.toLocaleString()}↓ ${m.outputTokens.toLocaleString()}↑  ¥${m.cost.toFixed(4)}`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.model, theme)} ${color(L.panels.model, theme.secondary, { bold: true })}  ${m.name}  ${L.model.cache}:${Math.round(m.cacheHitRate * 100)}%  ${m.inputTokens.toLocaleString()}↓ ${m.outputTokens.toLocaleString()}↑  ¥${m.cost.toFixed(4)}`)
     if (m.reasoningEffort) {
-      body.push(`    reasoning: ${m.reasoningEffort}  prewarm: ${Math.round(m.prewarmHitRate * 100)}%`)
+      body.push(`    ${L.model.reasoning}: ${m.reasoningEffort}  ${L.model.prewarm}: ${Math.round(m.prewarmHitRate * 100)}%`)
     }
     if (m.speculation) {
       const active = Object.entries(m.speculation).filter(([, s]) => s.enqueued > 0 || s.hits > 0)
       if (active.length > 0) {
         const parts = active.map(([source, s]) => `${source}:${s.hits}/${s.enqueued}`)
-        body.push(`    投机预读 (hits/enqueued): ${parts.join('  ')}`)
+        body.push(`    ${L.model.speculative}: ${parts.join('  ')}`)
       }
     }
-    body.push(`    ✦ 星域: ${color(m.starDomain, theme.secondary)}`)
+    body.push(`    ✦ ${L.model.domain}: ${color(m.starDomain, theme.secondary)}`)
   }
 
   if (show('mcp') && snapshot.mcp.servers.length > 0) {
     body.push('')
-    body.push(` ${statusGlyph(snapshot.panelStatuses.mcp, theme)} ${color('MCP', theme.secondary, { bold: true })}  tools:${snapshot.mcp.totalTools}  connected:${snapshot.mcp.connectedServers}/${snapshot.mcp.servers.length}`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.mcp, theme)} ${color(L.panels.mcp, theme.secondary, { bold: true })}  ${L.mcp.tools}:${snapshot.mcp.totalTools}  ${L.mcp.connected}:${snapshot.mcp.connectedServers}/${snapshot.mcp.servers.length}`)
     for (const srv of snapshot.mcp.servers.slice(0, 4)) {
       const g = srv.status === 'connected' ? color('✓', theme.success) : srv.status === 'error' ? color('✗', theme.error) : color('○', theme.warning)
-      body.push(`    ${g} ${srv.serverId}  ${srv.toolCount} tools`)
+      body.push(`    ${g} ${srv.serverId}  ${srv.toolCount} ${L.mcp.tools}`)
     }
   }
 
   if (show('advisory') && (panel === 'advisory' || snapshot.advisory.rendered > 0 || snapshot.advisory.silenced.length > 0)) {
     body.push('')
     const adv = snapshot.advisory
-    body.push(` ${statusGlyph(snapshot.panelStatuses.advisory, theme)} ${color('Advisory', theme.secondary, { bold: true })}  rendered:${adv.rendered} dropped:${adv.dropped} adopted:${adv.adopted} ignored:${adv.ignored} heldOut:${adv.heldOut}${adv.pendingWatch > 0 ? `  pending:${adv.pendingWatch}` : ''}`)
+    const A = L.advisory
+    body.push(` ${statusGlyph(snapshot.panelStatuses.advisory, theme)} ${color(L.panels.advisory, theme.secondary, { bold: true })}  ${A.rendered}:${adv.rendered} ${A.dropped}:${adv.dropped} ${A.adopted}:${adv.adopted} ${A.ignored}:${adv.ignored} ${A.heldOut}:${adv.heldOut}${adv.pendingWatch > 0 ? `  ${A.pending}:${adv.pendingWatch}` : ''}`)
     if (adv.silenced.length > 0) {
-      const parts = adv.silenced.slice(0, 4).map(s => `${s.key}(${s.reason === 'lift' ? 'lift' : 'hab'}:${s.remaining})`)
-      body.push(`    ${color(`⊘ 静音 ${parts.join(' ')}`, theme.warning)}`)
+      const parts = adv.silenced.slice(0, 4).map(s => `${s.key}(${s.reason === 'lift' ? A.liftReason : A.habituationReason}:${s.remaining})`)
+      body.push(`    ${color(`⊘ ${A.silenced} ${parts.join(' ')}`, theme.warning)}`)
     }
     // 聚焦视图才展开 per-key 效能与 status 通道（summary 只给一行概览）
     if (panel === 'advisory') {
       for (const k of adv.keys) {
         const rate = k.adoptionRate !== null ? `${Math.round(k.adoptionRate * 100)}%` : '—'
         const lift = k.lift !== null ? (k.lift >= 0 ? `+${k.lift.toFixed(2)}` : k.lift.toFixed(2)) : '—'
-        const streak = k.ignoredStreak > 0 ? color(` streak:${k.ignoredStreak}`, theme.warning) : ''
-        body.push(`    ${k.key}  ${k.delivered}投 ${k.adopted}纳 ${k.ignored}忽  采纳:${rate} lift:${lift}${streak}`)
+        const streak = k.ignoredStreak > 0 ? color(` ${A.streak}:${k.ignoredStreak}`, theme.warning) : ''
+        body.push(`    ${k.key}  ${k.delivered}${A.sent} ${k.adopted}${A.adoptedShort} ${k.ignored}${A.ignoredShort}  ${A.adoptRate}:${rate} ${A.liftReason}:${lift}${streak}`)
       }
       if (adv.statusNotices.length > 0) {
-        body.push(`    ${color('status 通道:', theme.muted)}`)
+        body.push(`    ${color(`${A.statusLane}:`, theme.muted)}`)
         for (const notice of adv.statusNotices.slice(-5)) {
           body.push(`      ${color(notice.length > w - 8 ? notice.slice(0, w - 9) + '…' : notice, theme.dim)}`)
         }
@@ -130,7 +143,7 @@ export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: 
 
   if (show('trace') && snapshot.trace.events.length > 0) {
     body.push('')
-    body.push(` ${statusGlyph(snapshot.panelStatuses.trace, theme)} ${color('Trace', theme.secondary, { bold: true })}  ${snapshot.trace.totalEvents} events`)
+    body.push(` ${statusGlyph(snapshot.panelStatuses.trace, theme)} ${color(L.panels.trace, theme.secondary, { bold: true })}  ${snapshot.trace.totalEvents} ${L.trace.events}`)
     for (const evt of snapshot.trace.events.slice(-5)) {
       const g = evt.status === 'failed' ? color('✗', theme.error) : evt.status === 'completed' ? color('✓', theme.success) : color('·', theme.muted)
       body.push(`    ${g} t${evt.turn} ${evt.kind}/${evt.name} ${evt.durationMs}ms`)
@@ -138,12 +151,12 @@ export function renderCockpit(snapshot: CockpitSnapshot, width: number, height: 
   }
 
   const footer = panel === 'summary'
-    ? '←/→ 切换面板   ·   q 关闭'
-    : `${PANEL_LABELS[panel]}   ·   ←/→ 切换面板   ·   /cockpit summary 看全部   ·   q 关闭`
+    ? L.frame.footerAll
+    : L.frame.footerFocus.replace('{label}', panelLabel(panel, lang))
 
   const lines: string[] = [
     frameTop(width, theme, 'subtle'),
-    frameTitle('运行时仪表盘', width, theme),
+    frameTitle(L.frame.title, width, theme),
   ]
   for (let i = 0; i < contentRows; i++) lines.push(frameLine(body[i] ?? '', width, theme))
   lines.push(frameFooter(footer, width, theme, 'subtle'))

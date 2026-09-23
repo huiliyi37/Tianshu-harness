@@ -24,6 +24,7 @@ import type { OaiChatRequest, OaiUserMessage } from './oai-types.js'
 import type { ContentBlock, Usage } from './types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
+import { resolveWireEffort } from './provider.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { acquireRateLimitSlot } from './rate-limiter.js'
@@ -178,8 +179,9 @@ export class ResponsesClient implements StreamClient {
 
   private resolveEffort(requestEffort: string | undefined): string | undefined {
     const raw = requestEffort ?? this.reasoningEffort
-    if (!raw) return undefined
-    return this.config.effortCap?.[raw] ?? raw
+    // 与 OpenAIClient 同一口径：内部档位 'off' 无映射时**不写该字段**——responses
+    // 端点的 reasoning.effort 同样不认 'off'（issue #258 的同族漏点）。
+    return resolveWireEffort(raw, this.config.effortCap)
   }
 
   /** Internal OaiChatRequest → Responses request body. */

@@ -15,7 +15,7 @@
  * 子模块化原因：config-routes.ts 是点名巨石（source-budgets ceiling），按接缝外提。
  * 每个变更路由都回带 `keys`（全量池）——客户端据此重渲染，不必再发一次 GET。
  */
-import type { RouteHandler } from './index.js'
+import { decodeRouteParam, type RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { loadConfig } from '../config/manager.js'
 import { modelConfigSchema, type ModelConfig } from '../config/schema.js'
@@ -39,7 +39,8 @@ function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
   }
 }
 
-/** keyId 可能含特殊字符（路径中为 percent-encoded 形式）。 */
+/** keyId/modelId 可能含特殊字符（路径中为 percent-encoded 形式）。
+ *  name 走 decodeRouteParam（index.ts 的 fail-open 版）——与 provider 级路由一致。 */
 function decodeParam(value: string | undefined): string | undefined {
   return value ? decodeURIComponent(value) : undefined
 }
@@ -56,14 +57,19 @@ function parseModels(raw: unknown[]): { models: ModelConfig[] } | { error: strin
   return { models }
 }
 
-export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteHandler> {
+export function buildProviderKeyRoutes(apiToken?: string, onChanged?: () => void): Record<string, RouteHandler> {
+  // provider/模型/密钥写盘成功后的快照刷新通知（serve 侧据此原地重建启动快照）。
+  // 与 provider 级路由同一约定：通知必须 fail-open，绝不让已落盘的写失败。
+  const notify = (): void => {
+    try { onChanged?.() } catch { /* best-effort */ }
+  }
   return {
     // 新增 key：先用新 key + provider 的 baseUrl/protocol 探测 /models（零 token，
     // 与桌面「测试连接」同核心），探测不通过不落库——避免把无效凭据写进配置后
     // 请求端才以 401 暴露。models 必须由前端勾选后显式传入；缺省空列表，
     // 不把探测到的全部 descriptors 直接落盘。
     'POST /config/providers/:name/keys': withAuth(async (body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       const { apiKey, label, models } = (body ?? {}) as { apiKey?: unknown; label?: unknown; models?: unknown }
       if (typeof apiKey !== 'string' || apiKey.trim() === '') {
@@ -98,6 +104,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
           ...(typeof label === 'string' && label.trim() ? { label: label.trim() } : {}),
           models: parsed.models,
         })
+        notify()
         return { status: 200, body: { ok: true, key: result, keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -105,11 +112,12 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
     }, apiToken),
 
     'DELETE /config/providers/:name/keys/:keyId': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       const keyId = decodeParam(params?.keyId)
       if (!name || !keyId) return { status: 400, body: { error: 'provider name and keyId are required' } }
       try {
         const result = removeProviderKey(name, keyId)
+        notify()
         return { status: 200, body: { ok: true, ...result, keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -119,7 +127,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
     // 更新指定 key 的凭证：给 apiKey 时先探测（同新增语义），apiKeyEnv 只改引用
     // （env 值在服务端进程里，无法探测有效性）。
     'PUT /config/providers/:name/keys/:keyId/key': withAuth(async (body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       const keyId = decodeParam(params?.keyId)
       if (!name || !keyId) return { status: 400, body: { error: 'provider name and keyId are required' } }
       const { apiKey, apiKeyEnv, label } = (body ?? {}) as { apiKey?: unknown; apiKeyEnv?: unknown; label?: unknown }
@@ -156,6 +164,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
           ...(typeof apiKeyEnv === 'string' ? { apiKeyEnv: apiKeyEnv.trim() } : {}),
           ...(typeof label === 'string' ? (label.trim() ? { label: label.trim() } : { labelClear: true }) : {}),
         })
+        notify()
         return { status: 200, body: { ok: true, key, keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -163,7 +172,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
     }, apiToken),
 
     'POST /config/providers/:name/keys/:keyId/models': withAuth((body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       const keyId = decodeParam(params?.keyId)
       if (!name || !keyId) return { status: 400, body: { error: 'provider name and keyId are required' } }
       const { model, models } = (body ?? {}) as { model?: unknown; models?: unknown }
@@ -174,6 +183,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
       try {
         // 整单校验 + 一次落盘：中途冲突不得留下半批（见 provider-key-store 注释）。
         addProviderKeyModels(name, keyId, parsed.models)
+        notify()
         return { status: 200, body: { ok: true, added: parsed.models.map(m => m.id), keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -183,7 +193,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
     // 覆盖该 key 名下的同 id 模型（编辑 ctx/max/视觉标记）。与 POST 的分工：
     // POST = 新增（重复报错），PUT = upsert（存在则替换）。
     'PUT /config/providers/:name/keys/:keyId/models/:modelId': withAuth((body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       const keyId = decodeParam(params?.keyId)
       const modelId = decodeParam(params?.modelId)
       if (!name || !keyId || !modelId) {
@@ -203,6 +213,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
       }
       try {
         upsertProviderKeyModel(name, keyId, entry)
+        notify()
         return { status: 200, body: { ok: true, keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
@@ -210,7 +221,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
     }, apiToken),
 
     'DELETE /config/providers/:name/keys/:keyId/models/:modelId': withAuth((_body, params) => {
-      const name = params?.name
+      const name = decodeRouteParam(params?.name)
       const keyId = decodeParam(params?.keyId)
       const modelId = decodeParam(params?.modelId)
       if (!name || !keyId || !modelId) {
@@ -218,6 +229,7 @@ export function buildProviderKeyRoutes(apiToken?: string): Record<string, RouteH
       }
       try {
         removeProviderKeyModel(name, keyId, modelId)
+        notify()
         return { status: 200, body: { ok: true, removed: modelId, keys: listProviderKeys(name, loadConfig().provider.providers[name]!) } }
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }

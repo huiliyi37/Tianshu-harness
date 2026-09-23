@@ -12,6 +12,7 @@ import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { detectEnv, type PythonEnvInfo } from '../tools/env-check.js'
 import { getResolvedEnv, getResolvedPathDiff } from '../tools/resolved-env.js'
+import { detectTlsInterception, TLS_MITM_ADVICE, type TlsTrustReport } from '../platform/tls-interception.js'
 import { getShellDiagnostics } from '../platform.js'
 import { execSync } from 'node:child_process'
 
@@ -32,12 +33,19 @@ export function buildEnvRoute(apiToken?: string): Record<string, RouteHandler> {
       // PATH-recovery diff: dirs the resolver added beyond the raw process PATH.
       // Helps users understand why a tool is/isn't found under GUI launch.
       const added = getResolvedPathDiff().added
+      // HTTPS 信任链：杀毒软件/企业代理的「加密连接扫描」是接口报证书错误时
+      // 用户完全想不到的成因，桌面设置页据此给出可行动的排除指引。
+      const tlsTrust = detectTlsInterception()
       return {
         status: 200,
         body: {
           ...env,
           ...(added.length > 0 ? { pathDiff: added } : {}),
-        } as PythonEnvInfo & { pathDiff?: string[] },
+          tlsTrust: {
+            ...tlsTrust,
+            ...(tlsTrust.suspectCount > 0 ? { advice: [...TLS_MITM_ADVICE] } : {}),
+          },
+        } as PythonEnvInfo & { pathDiff?: string[]; tlsTrust: TlsTrustReport & { advice?: string[] } },
       }
     },
 

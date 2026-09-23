@@ -1,7 +1,7 @@
 import type { ModelConfig, ProviderConfig } from './schema.js'
 import { isLoopbackBaseUrl } from './local-endpoint.js'
 
-export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'grok' | 'siliconflow' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
+export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'grok' | 'siliconflow' | 'stepfun' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'openrouter' | 'relay' | 'ollama'
 
 /** 一种计费模式对应一个官方 Base URL（如百炼的按量计费 / token plan）。 */
 export interface ProviderBillingMode {
@@ -230,6 +230,17 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         toolJsonBug: false,
         prefixCache: 'none',
         prefixCompletion: false,
+        // DeepSeek 系思考模型（v4-pro / v4-flash）由该网关托管，历史里必须**回传**
+        // reasoning_content：剥离思考内容会让第二轮起被拒收「The `reasoning_content`
+        // in the thinking mode must be passed back to the API」（issue #258）。
+        // 与官方 deepseek 预设同款协议声明（thinkingBlock + effort + preserved）。
+        thinkingBlock: 'enabled',
+        effortFormat: 'reasoning_effort',
+        preservedThinkingProtocol: true,
+        // 该网关 reasoning_effort 的合法枚举是 none|minimal|low|medium|high|xhigh|
+        // ultra|max——**没有 off**。内部档位 off（auto-reasoning 对琐碎轮降档）按
+        // none 发；不声明就会被枚举校验拒收（issue #258 的第一条报错）。
+        effortCap: { off: 'none' },
       },
       thinking: 'enabled',
       maxTokens: 64_000,
@@ -978,6 +989,53 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           reasoningEffort: 'medium',
           tier: 'cheap',
         },
+      ],
+      unsupported: [],
+    },
+  },
+  // 阶跃星辰 StepFun —— 官方开放平台，OpenAI 兼容端点（/v1/chat/completions）。
+  // 2026-09-23 接入，规格与定价取自官方文档 platform.stepfun.com（模型页 + 定价页）。
+  // 推理强度走 reasoning_effort（low/medium/high 三档，无 max）——档位映射声明在
+  // api/provider.ts 的 WELL_KNOWN_DEFAULTS.stepfun（effortCap 把项目的 max 降到 high）。
+  stepfun: {
+    key: 'stepfun',
+    label: '阶跃星辰 (StepFun)',
+    description: '阶跃星辰 StepFun：1M 上下文 + 原生多模态（文本/图片/视频），三档推理强度',
+    defaultModelId: 'step-5-preview',
+    keyUrl: 'https://platform.stepfun.com/interface-key',
+    provider: {
+      name: 'stepfun',
+      apiKeyEnv: 'STEPFUN_API_KEY',
+      baseUrl: 'https://api.stepfun.com/v1',
+      protocol: 'openai',
+      capabilities: {
+        cacheControl: false,
+        stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
+        toolJsonBug: false,
+        // 官方支持提示缓存（缓存命中 0.35 元/1M tokens），服务端隐式 exact-prefix——
+        // 与 GLM / LongCat / 硅基流动同款策略：无需客户端 cache_control 断点。
+        prefixCache: 'deepseek-native',
+        prefixCompletion: false,
+      },
+      thinking: 'enabled',
+      maxTokens: 64_000,
+      models: [
+        {
+          id: 'step-5-preview',
+          description: '旗舰：1M 上下文，文本/图片/视频输入，三档推理强度',
+          contextWindow: 1_000_000,
+          maxTokens: 64_000,
+          reasoningEffort: 'high',
+          tier: 'strong',
+          supportsVision: true,
+          // 官方定价（元 / 1M tokens）：输入 7 / 缓存命中 0.35 / 输出 20
+          pricing: { input: 7, output: 20, cacheRead: 0.35, cacheWrite: 7 },
+        },
+        // 刻意不收 step-3.7-flash / step-3.5-flash：官方只公布了它们的上下文（256K）
+        // 与定价，**没公布最大输出**。而省略 maxTokens 会被 /connect 向导判成「元数据
+        // 不全」，把用户拖进「模型补参」表单（预设的价值正是免填，实测：spec guard
+        // 用例会因此从「能力检测」掉到「模型补参」分支）；随手补一个数字又是编造。
+        // 等官方公布规格再补——用户当下可用「自定义模型」走这两个档。
       ],
       unsupported: [],
     },

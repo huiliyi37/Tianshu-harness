@@ -38,6 +38,10 @@ export interface TurnStreamCallbacks {
   /** 413 / 图片被拒导致本次请求剥掉了 image_url——模型这一轮看不到这些图，
    *  调用方应告知用户，否则会被读成「模型没理我的截图」。 */
   onImageStripped?: (info: { removedCount: number }) => void
+  /** 网关拒收「历史缺 reasoning_content」，重试已改为保留思考内容重发
+   *  （issue #258）。必须可见：wire 形态中途变了，且该 provider 声明
+   *  capabilities.preservedThinkingProtocol 就能免掉这次白跑。 */
+  onReasoningEchoRecovered?: () => void
   /** 出网请求体触发了体积护栏（截断历史工具输出 / 逼近上限）。必须可见：被截断的
    *  历史静默 = 「模型忘了我们刚做的事」，逼近上限在第三方中转上直接 400。 */
   onBodyGuard?: (info: BodyGuardNotice) => void
@@ -219,6 +223,9 @@ export class TurnStreamController {
       },
       onImageStripped: (info) => {
         input.callbacks.onImageStripped?.(info)
+      },
+      onReasoningEchoRecovered: () => {
+        input.callbacks.onReasoningEchoRecovered?.()
       },
       onBodyGuard: (info) => {
         input.callbacks.onBodyGuard?.(info)

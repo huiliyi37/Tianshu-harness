@@ -45,5 +45,5 @@ export function buildHandoffPrompt(absPath: string, note?: string): string {
  */
 export function formatHandoffNudge(ratio: number): string {
   const pct = Math.round(ratio * 100)
-  return `⏜ 上下文已占用约 ${pct}%——建议 /handoff 写交接文档后开新会话（交接自动注入新会话；比整段回连省前缀重建成本）。`
+  return `⏜ 上下文已占用约 ${pct}%——建议 /handoff 写交接文档后开新会话（交接文档落在会话目录，新会话可直接读；比整段回连省前缀重建成本）。`
 }

@@ -7,6 +7,7 @@
 
 import { ReasoningRepetitionError } from './reasoning-repetition.js'
 import { RequestInvariantError } from './request-invariant.js'
+import { detectTlsInterception } from '../platform/tls-interception.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -23,7 +24,9 @@ export type ErrorCategory =
   | 'image_strip'
   | 'stream_parse'
   | 'reasoning_repetition'
+  | 'reasoning_echo'
   | 'request_invariant'
+  | 'tls_intercept'
   | 'unknown'
 
 /** 全部错误类别的运行时清单——config 侧（schema.ts 的 retry.overrides 键枚举）
@@ -31,7 +34,7 @@ export type ErrorCategory =
 export const ERROR_CATEGORIES = [
   'rate_limit', 'overloaded', 'server_error', 'timeout', 'auth_error',
   'client_error', 'context_overflow', 'image_strip', 'stream_parse',
-  'reasoning_repetition', 'request_invariant', 'unknown',
+  'reasoning_repetition', 'reasoning_echo', 'request_invariant', 'tls_intercept', 'unknown',
 ] as const satisfies readonly ErrorCategory[]
 
 // 编译期穷尽检查：类型新增类别而清单漏列时，下面这行报错（无运行时代价）。
@@ -49,6 +52,12 @@ export interface ClassifiedError {
   /** When true, the retry engine should strip image_url content from
    * messages before retrying. Does not consume retry budget (first strip only). */
   stripImages?: boolean
+  /** When true, the retry engine should **re-send reasoning_content** on the next
+   *  attempt. Some OpenAI-protocol gateways hosting DeepSeek thinking models reject
+   *  history whose assistant turns had their reasoning stripped
+   *  ("The `reasoning_content` in the thinking mode must be passed back to the API").
+   *  One-shot like stripImages — the retry either proves the gateway needs it or not. */
+  preserveReasoning?: boolean
   /** True when `retryDelayMs` came from the server's Retry-After header rather
    *  than the category default — the retry engine keeps such delays fixed
    *  (jitter only, no exponential growth; the server named the wait). */
@@ -243,6 +252,86 @@ function classifyByStatus(status: number, payloadHadImages?: boolean): Classifie
   return null
 }
 
+/**
+ * TLS 证书校验失败的特征。
+ *
+ * 判定依据是错误链文本：Node/OpenSSL 的 `code`（UNABLE_TO_VERIFY_LEAF_SIGNATURE…）
+ * 与 message 文案（"unable to verify the first certificate"…）两套都要认——
+ * `fetchCauseDetail` 优先取 message，纯匹配 code 会漏。
+ *
+ * 刻意**不**收 `ERR_TLS_CERT_ALTNAME_INVALID`（主机名不匹配）：那多为代理/CDN
+ * 配置问题，套上"加密连接扫描"的结论是误导。
+ */
+const TLS_VERIFY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/UNABLE_TO_VERIFY_LEAF_SIGNATURE|unable to verify leaf signature|unable to verify the first certificate/i, 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'],
+  [/SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|self[-\s]?signed certificate/i, 'SELF_SIGNED_CERT_IN_CHAIN'],
+  [/UNABLE_TO_GET_ISSUER_CERT(_LOCALLY)?|unable to get (local )?issuer certificate/i, 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'],
+  [/CERT_UNTRUSTED|CERTIFICATE_VERIFY_FAILED|certificate verify failed/i, 'CERT_UNTRUSTED'],
+]
+
+/** Return the matched TLS verification failure code, or null when the text isn't one. */
+function matchTlsVerification(text: string): string | null {
+  for (const [re, code] of TLS_VERIFY_PATTERNS) {
+    if (re.test(text)) return code
+  }
+  return null
+}
+
+/** 判"本机是否有中间人"所需的探测结果子集（便于测试注入）。 */
+export interface TlsInterceptionHint {
+  suspectCount: number
+  vendors: string[]
+}
+
+/**
+ * 把一次 TLS 证书校验失败分类成 `tls_intercept`。
+ *
+ * **两种成因必须分开说，不能一律甩给杀毒软件**（2026-09-23 跟进修）：
+ *   · 本机系统证书存储里检出加密连接扫描根证书 ⇒ 本地中间人，**确定性失败**，
+ *     重试只会重现同一张证书（0 次重试），文案直接给三条本地处置。
+ *   · 未检出 ⇒ 更可能是**服务端证书链不完整**（provider 轮换证书时部分节点发半截链，
+ *     报的正是 `unable to verify the first certificate`）——那种情况重试能撞上正常节点，
+ *     所以留 1 次重试；文案并列两种可能并指向 /doctor 自查，避免把用户引去瞎调杀毒软件。
+ *
+ * @param code   matchTlsVerification 命中的错误码
+ * @param probe  detectTlsInterception() 的结果；null = 探不到（非 Windows / 存储不可读）
+ */
+export function classifyTlsIntercept(code: string, probe: TlsInterceptionHint | null): ClassifiedError {
+  const localMitm = (probe?.suspectCount ?? 0) > 0
+  const who = probe && probe.vendors.length > 0 ? probe.vendors.join('、') : '未知来源'
+
+  if (localMitm) {
+    return {
+      retryable: false,
+      retryDelayMs: 0,
+      shouldReconnect: false,
+      category: 'tls_intercept',
+      userMessage:
+        `HTTPS 证书校验失败（${code}）：本机系统证书存储里有加密连接扫描根证书（${who}），` +
+        '接口的 TLS 连接被中间人替换了证书——天枢的 sidecar 默认只信任内置 CA 列表，不读系统证书存储。处置：' +
+        '① 在该软件里为天枢与 node[.exe] 排除接口域名（首选，零信任降级）；' +
+        '② 设 NODE_EXTRA_CA_CERTS 指向其根证书；' +
+        '③ 或设 NODE_OPTIONS=--use-system-ca 信任系统 CA 存储。' +
+        '（同一张证书重试必然复现，故不重试。）',
+      maxRetries: 0,
+    }
+  }
+
+  return {
+    retryable: true,
+    retryDelayMs: 2000,
+    shouldReconnect: true,
+    category: 'tls_intercept',
+    userMessage:
+      `HTTPS 证书校验失败（${code}）：本机未检出加密连接扫描根证书，` +
+      '更可能是服务端证书链不完整（provider 轮换证书期间的常见窗口，重试通常自愈）——' +
+      '先重试一次。若仍失败：① 换 provider 或稍后再试；' +
+      '② 若本机装了杀毒软件/企业代理，运行 /doctor 看「HTTPS 信任链」一节，' +
+      '有检出就按其中的排除指引处理（或设 NODE_EXTRA_CA_CERTS / NODE_OPTIONS=--use-system-ca）。',
+    maxRetries: 1,
+  }
+}
+
 /** Classify based on error name / message patterns. */
 function classifyByPattern(error: unknown): ClassifiedError {
   const name = error instanceof Error ? error.name : ''
@@ -252,6 +341,15 @@ function classifyByPattern(error: unknown): ClassifiedError {
   const causeDetail = fetchCauseDetail(error)
   const searchText = causeDetail ? `${message} | ${causeDetail}` : message
   const lower = searchText.toLowerCase()
+
+  // TLS 证书校验失败——必须排在「Connection lost」之前：undici 只报
+  // "fetch failed"，证书原因埋在 cause 链里，落到下面那条就变成笼统的
+  // "Connection lost. Reconnecting."，用户永远看不到真实成因。分类本身交给
+  // classifyTlsIntercept：它按「本机是否检出加密连接扫描」分开判重试与文案。
+  const tlsCode = matchTlsVerification(searchText)
+  if (tlsCode) {
+    return classifyTlsIntercept(tlsCode, detectTlsInterception())
+  }
 
   // Connection reset / refused / unreachable — transport-level network failures.
   // "fetch failed" without a recognizable cause still lands here: it is by
@@ -497,6 +595,30 @@ export function classifyApiError(error: unknown): ClassifiedError {
     }
   }
 
+  // 思考模式要求回传 reasoning_content（issue #258）：网关托管 DeepSeek 思考模型
+  // 时，客户端按「陌生供应商默认剥离思考内容」处理历史 → 第二轮起必 400
+  // "The `reasoning_content` in the thinking mode must be passed back to the API."
+  //
+  // 必须早于下面的状态码分类：400 默认落 client_error（不可重试），而这条恰恰
+  // **只能靠重试修**——client 侧把 reasoning_content 保留后重发一次即可通过
+  // （见 openai-client 的 onRetry 分支）。与 image_strip 同款一次性语义。
+  if (
+    status !== null && status >= 400 && status < 500 &&
+    msg !== null &&
+    /reasoning_content/i.test(msg) &&
+    /(passed back|must be passed)/i.test(msg)
+  ) {
+    return {
+      retryable: true,
+      retryDelayMs: 0,
+      shouldReconnect: false,
+      category: 'reasoning_echo',
+      userMessage: '推理内容未回传被网关拒收——已保留思考内容重发（provider 可声明 capabilities.preservedThinkingProtocol 免去这一次重试）。',
+      maxRetries: 1,
+      preserveReasoning: true,
+    }
+  }
+
   // 1. Try status-code based classification first
   if (status !== null) {
     const result = classifyByStatus(status, extractPayloadHadImages(error))
@@ -537,6 +659,9 @@ export function errorRecoveryGuidance(error: unknown): string {
       return '请求被拒（模型 id 或端点路径错）：/model 确认模型；自定义端点检查 baseUrl 是否缺 /v1'
     case 'image_strip':
       return '图片负载超限：去掉部分图片后重发'
+    case 'reasoning_echo':
+      return '该网关要求回传思考内容（reasoning_content）：已在本次重试中保留；'
+        + '若持续出现，在该 provider 的 capabilities 里声明 preservedThinkingProtocol: true'
     case 'stream_parse':
       return '流解析失败：重发一次；反复出现用 /logs 打包日志提 issue'
     case 'reasoning_repetition':

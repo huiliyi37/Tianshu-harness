@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runWebCLI, formatSearchResultText } from '../web-cli.js'
+import { runWebCLI, formatSearchResultText, parseSearchArgs } from '../web-cli.js'
 
 test('runWebCLI prints usage and exits 1 for no subcommand', async () => {
   let out = ''
@@ -113,4 +113,56 @@ test('formatSearchResultText lists per-backend errors when all fail', () => {
   assert.match(text, /✗ bing: timed out after 15s/)
   assert.match(text, /✗ duckduckgo: no results/)
   assert.match(text, /未找到结果/)
+})
+
+// ── parseSearchArgs 纯函数（参数解析，不触网）────────────────────────────
+
+test('parseSearchArgs keeps the --count value out of the query', () => {
+  // 回归：`query` 曾由 args 过滤「以 - 开头」后直接 join——`--count` 本身被滤掉，
+  // 但它的取值（如 "3"）不以 - 开头，残留进查询词，Bing 收到「… 区别 应用 3」。
+  const p = parseSearchArgs(['量子计算 原理 区别 应用', '--json', '--count', '3'])
+  assert.equal(p.query, '量子计算 原理 区别 应用')
+  assert.equal(p.count, 3)
+  assert.equal(p.json, true)
+})
+
+test('parseSearchArgs supports the --count=N form', () => {
+  const p = parseSearchArgs(['foo', '--count=5'])
+  assert.equal(p.query, 'foo')
+  assert.equal(p.count, 5)
+})
+
+test('parseSearchArgs defaults count to 10 and clamps out-of-range values', () => {
+  assert.equal(parseSearchArgs(['q']).count, 10)
+  assert.equal(parseSearchArgs(['q', '--count', '99']).count, 20)
+  assert.equal(parseSearchArgs(['q', '--count', '0']).count, 1)
+  assert.equal(parseSearchArgs(['q', '--count', 'abc']).count, 10)
+})
+
+test('parseSearchArgs drops unrecognised flags without eating query words', () => {
+  const p = parseSearchArgs(['--verbose', 'foo', 'bar'])
+  assert.equal(p.query, 'foo bar')
+  assert.equal(p.json, false)
+})
+
+test('parseSearchArgs handles a dangling --count without consuming a word', () => {
+  const p = parseSearchArgs(['q', '--count'])
+  assert.equal(p.query, 'q')
+  assert.equal(p.count, 10)
+})
+
+test('formatSearchResultText renders the low-confidence fallback when nothing relevant was found', () => {
+  const text = formatSearchResultText('美国 AI 实验室', {
+    backend: null,
+    results: [],
+    errors: [{ backend: 'bing', message: 'off-topic results' }],
+    offTopicFallback: {
+      backend: 'bing',
+      results: [{ title: '美国（美国）_百度百科', url: 'https://example.com/1', snippet: '美国是……' }],
+    },
+  }, null)
+  assert.match(text, /低相关兜底/)
+  assert.match(text, /仅供参考/)
+  assert.match(text, /美国（美国）_百度百科/)
+  assert.ok(!text.includes('未找到结果'), '有兜底结果时不得报「未找到结果」')
 })

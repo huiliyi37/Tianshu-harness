@@ -16,7 +16,7 @@
 
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled } from '../turn-step-producer.js'
+import { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled, prevSessionHandoffEnabled, crossSessionClaimsInjectionEnabled, crossSessionEventsAppendixEnabled } from '../turn-step-producer.js'
 
 // ── crossSessionDisabled() unit tests ──────────────────────────
 
@@ -169,5 +169,109 @@ describe('combineMemoryBlocks — 虚空仓库双路注入合并', () => {
 
   it('两路都空 → null（附录零占用）', () => {
     assert.equal(combineMemoryBlocks(null, null), null)
+  })
+})
+
+// ── prevSessionHandoffEnabled() — 显式关闭上一会话 handoff 注入 ──────────────
+// 2026-09-22：该注入的选取规则是「最近更新的另一个会话 + 同星域优先」，在并行
+// 会话工作区里会把一份可能已被并行会话超越的陈旧 handoff 当上下文注入，且它不挂
+// CvmInjectionSource，禅模式的 appendixLean 不会收缩它。故显式默认关闭——这是
+// 产品判断，不是接线缺陷；此测试锁住「默认必须为关」。
+describe('prevSessionHandoffEnabled — 默认关闭（并行会话安全）', () => {
+  const saved = process.env.RIVET_PREV_HANDOFF
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.RIVET_PREV_HANDOFF
+    else process.env.RIVET_PREV_HANDOFF = saved
+  })
+
+  it('无 env 时为关闭——默认值必须是不注入', () => {
+    delete process.env.RIVET_PREV_HANDOFF
+    assert.equal(prevSessionHandoffEnabled(), false)
+    assert.equal(prevSessionHandoffEnabled(undefined), false)
+    assert.equal(prevSessionHandoffEnabled(''), false)
+  })
+
+  it('只有显式的 1/on/true 才开启', () => {
+    for (const v of ['1', 'on', 'true', 'TRUE', ' On ']) {
+      assert.equal(prevSessionHandoffEnabled(v), true, `应开启: ${JSON.stringify(v)}`)
+    }
+  })
+
+  it('其它取值一律关闭——不把「看起来像真值」的东西当开启', () => {
+    for (const v of ['0', 'off', 'false', 'yes', 'no', '2', 'enabled']) {
+      assert.equal(prevSessionHandoffEnabled(v), false, `应关闭: ${JSON.stringify(v)}`)
+    }
+  })
+})
+
+// ── 闸门解耦（2026-09-22）：两个「往 prompt 注入」开关各自默认关 ──────────────
+// 起因：此前一个 if 同时控制「事件 appendix / claims 注入 / handoff 注入 / 读缓存
+// 失效」四件事，想关一件必须关全部。解耦后前三件各有独立开关且默认关；
+// 读缓存失效是本地一致性动作（fail-safe），**不受这些开关约束**。
+describe('跨会话注入开关 —— 解耦后各自默认关', () => {
+  const savedClaims = process.env.RIVET_CROSS_SESSION_CLAIMS
+  const savedEvents = process.env.RIVET_CROSS_SESSION_EVENTS
+
+  afterEach(() => {
+    if (savedClaims === undefined) delete process.env.RIVET_CROSS_SESSION_CLAIMS
+    else process.env.RIVET_CROSS_SESSION_CLAIMS = savedClaims
+    if (savedEvents === undefined) delete process.env.RIVET_CROSS_SESSION_EVENTS
+    else process.env.RIVET_CROSS_SESSION_EVENTS = savedEvents
+  })
+
+  it('claims 注入默认关：无 env 即 false', () => {
+    delete process.env.RIVET_CROSS_SESSION_CLAIMS
+    assert.equal(crossSessionClaimsInjectionEnabled(), false)
+    assert.equal(crossSessionClaimsInjectionEnabled(''), false)
+    assert.equal(crossSessionClaimsInjectionEnabled('0'), false)
+    assert.equal(crossSessionClaimsInjectionEnabled('yes'), false)
+  })
+
+  it('claims 注入仅 1/on/true 开启', () => {
+    for (const v of ['1', 'on', 'true', ' TRUE ']) {
+      assert.equal(crossSessionClaimsInjectionEnabled(v), true, v)
+    }
+  })
+
+  it('事件 appendix 默认关：无 env 即 false', () => {
+    delete process.env.RIVET_CROSS_SESSION_EVENTS
+    assert.equal(crossSessionEventsAppendixEnabled(), false)
+    assert.equal(crossSessionEventsAppendixEnabled(''), false)
+    assert.equal(crossSessionEventsAppendixEnabled('0'), false)
+    assert.equal(crossSessionEventsAppendixEnabled('enabled'), false)
+  })
+
+  it('事件 appendix 仅 1/on/true 开启', () => {
+    for (const v of ['1', 'on', 'true', ' On ']) {
+      assert.equal(crossSessionEventsAppendixEnabled(v), true, v)
+    }
+  })
+
+  it('三个注入开关互相独立——打开一个不影响另一个', () => {
+    delete process.env.RIVET_PREV_HANDOFF
+    delete process.env.RIVET_CROSS_SESSION_EVENTS
+    assert.equal(crossSessionEventsAppendixEnabled('1'), true)
+    assert.equal(crossSessionClaimsInjectionEnabled('1'), true)
+    assert.equal(prevSessionHandoffEnabled(), false, 'handoff 不应被另两个开关带开')
+    assert.equal(crossSessionClaimsInjectionEnabled(), false, 'claims 不应被 events 开关带开')
+  })
+})
+
+// ── 接线锚点：AgentLoop 的 config 必须真的拿到 sessionRegistry ────────────────
+// 2026-09-22：该字段（loop-types.ts:96）声明了却从未被任何构造路径填充，
+// createAgentConfig 的入参/白名单都没有它，导致 AgentLoop 侧整个跨会话块静默
+// 失效。协调器那条路（bootstrap 的 DelegationCoordinator config）一直传的是
+// refs.sessionRegistry，所以「有人填过」的印象是假的。这里钉住接线，防止再次
+// 回退成「声明了但没人填」——那种形态下文档说功能在跑而代码永远不跑。
+describe('接线锚点 —— AgentLoop config 的 sessionRegistry 透传', () => {
+  it('bootstrap 的 AgentLoop config 字面量必须传 sessionRegistry', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../../bootstrap.ts', import.meta.url), 'utf-8')
+    assert.match(
+      src,
+      /sessionRegistry: refs\.sessionRegistry \?\? undefined,/,
+      'AgentLoop 的 config 必须从 refs.sessionRegistry 透传，否则跨会话块（含读缓存失效）静默失效',
+    )
   })
 })

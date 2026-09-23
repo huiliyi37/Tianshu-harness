@@ -140,6 +140,25 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 - 白屏 / 渲染卡顿先查 WebView2 版本并跑修复工具（见第 9 节现象 A）。
 - 确认存储位置指向有效目录：设置 → 存储位置里的 `current` 字段是当前实际数据目录。注意桌面端**不读** shell 里的 `RIVET_HOME`，以设置里为准。
 
+## 11. 杀毒软件 / 企业代理拦截（安装与联网）
+
+天枢的 Windows 安装包内嵌 Node 运行时、PortableGit 等可执行文件，安装器又要结束残留进程才能覆盖 `node.exe`——这些形状会被杀毒软件的主防（行为拦截）盯上；HTTPS 还可能被「加密连接扫描」中间人。三类现象的处置各不相同：
+
+**现象 A：安装包被 SmartScreen / 杀毒软件拦下，提示"未知发布者"。** Windows 安装包正在接入 Authenticode 代码签名（见 [`desktop/DISTRIBUTION.md`](../../desktop/DISTRIBUTION.md)「Windows」）；**未签名的版本**只能手动放行一次：
+
+- SmartScreen：点「更多信息」→「仍要运行」。企业策略禁止时需管理员放行。
+- 卡巴斯基：「更多」→「添加到排除项」，或在 设置 → 安全 → 威胁与排除 → 管理排除项 里把安装包所在目录加进去；装好后在 设置 → 安全 → [受信任应用程序](https://support.kaspersky.cn/ksv-light-agent/5.2/65921) 里放行 `tianshu-desktop.exe` **和** 安装目录下 `node-runtime\node.exe`（子进程有独立规则）。
+
+**现象 B：双击安装包"没反应"，或覆盖安装报 `Can't write ... node.exe`。** 安装器会先结束占用 `node.exe` 的残留进程（sidecar，以及你在集成终端里跑的 node/npx/tsx）。若杀毒软件拦了这一步，安装就停在无提示状态。处置：先在 受信任应用程序 里放行安装包，或临时暂停防护；也可以先手动退出天枢、关掉用着内置终端的窗口，再安装。诊断日志在 `%TEMP%\tianshu-update-hook.log`。
+
+**现象 C：会话里一发消息就报证书错误**（`UNABLE_TO_VERIFY_LEAF_SIGNATURE` / `SELF_SIGNED_CERT_IN_CHAIN` / `unable to get local issuer certificate`）。这是杀毒软件/企业代理的「加密连接扫描」替换了 HTTPS 证书，而天枢的 sidecar 默认只信任内置 CA 列表、不读 Windows 证书存储。先跑 `/doctor` 看「HTTPS 信任链」一节（会列出检出的扫描根证书），然后三选一：
+
+1. 在该软件里排除接口域名（首选，零信任降级）：卡巴斯基 → 设置 → 安全 → 网络设置 → 加密连接扫描 → 管理排除项。
+2. `NODE_EXTRA_CA_CERTS=<导出的根证书路径>` 后重启天枢（只多信这一张）。
+3. `NODE_OPTIONS=--use-system-ca` 后重启天枢（信任系统 CA 存储里的全部 CA，收敛性最差）。
+
+**现象 D：连接超时 / `ECONNRESET` / 连不上 443。** 多为防火墙的应用程序规则拦了出站（新装的"未知发布者"默认询问或阻止；`node.exe` 常需单独放行）。放行后仍不通，就走代理：`rivet config set-proxy http://127.0.0.1:7890`（或设置 → 网络），也可在 provider 上单配 `proxy`。
+
 ## 还有问题
 
 在终端跑 `rivet logs --json`，把输出的结构化落点清单贴进 issue——它列出所有会话/日志文件的实际路径与写入门控，维护者能据此快速定位。

@@ -18,6 +18,7 @@ import { createDefaultToolRegistry } from '../tools/default-registry.js'
 import { pluginToolsSnapshot, partitionPluginTools } from './plugin-session-cache.js'
 import { AgentLoop } from '../agent/loop.js'
 import type { ApprovalMode } from '../agent/loop-types.js'
+import { resolveMaxTurns } from '../agent/turn-budget-policy.js'
 import { SessionContext } from '../agent/context.js'
 import type { SessionRegistry } from '../agent/session-registry.js'
 import { createTaskLedger } from '../agent/task-ledger.js'
@@ -606,10 +607,10 @@ function assembleAgentLoop(
   // （setApprovalMode 直接 mutate config.approvalMode，与构造时设等价）。
   if (approvalMode) {
     agent.setApprovalMode(approvalMode)
-    // 自治级别（dangerously-skip-permissions）联动无限轮次：真正全自动。
-    if (approvalMode === 'dangerously-skip-permissions') {
-      agent.config.maxTurns = 0
-    }
+    // 轮次上限随生效档位走（策略单点 agent/turn-budget-policy.ts）。此前这里只有
+    // 单向"skip → 0"：全局档为 skip 时 createAgentRuntime 已把 0 写进 config，
+    // 会话 override 降回监督/自动时只覆盖 mode、不收回上限 → 监督会话也无限轮次。
+    agent.config.maxTurns = resolveMaxTurns(approvalMode, mergedConfig.agent.maxTurns)
   }
 
   // 交付门禁的影响测试覆盖检查（delivery-gate-v2.ts:330）读的是 ctx.getImpactedTests。
@@ -822,8 +823,11 @@ export function buildManagedAgent(
     abort: () => agent.abort(),
     setApprovalMode: (mode) => {
       agent.setApprovalMode(mode)
-      // 自治联动无限轮次，非自治恢复默认 200
-      agent.config.maxTurns = mode === 'dangerously-skip-permissions' ? 0 : 200
+      // 轮次上限随档位联动，策略单点 agent/turn-budget-policy.ts。
+      // 此前写死 `: 200`——用户在 config 里配的 agent.maxTurns（如 500）只要动过
+      // 一次档位就被静默改回 200；且与 TUI（读 config.agent.maxTurns）口径不一致。
+      // 取盘上新鲜值（reload），配置改了不必重启 sidecar 才生效。
+      agent.config.maxTurns = resolveMaxTurns(mode, resolveSessionBaseConfig(ctx, reload).agent.maxTurns)
     },
     enterPlanMode: () => agent.enterPlanMode(),
     exitPlanMode: () => agent.exitPlanMode(),
@@ -880,6 +884,11 @@ export function buildManagedAgent(
     // Context usage display (desktop header progress bar) — real occupancy
     // (last API prompt_tokens + tail estimate), provider-agnostic.
     getEstimatedTokens: () => agent.session.getRealOccupancy(),
+    // 中断收尾补发 turn_complete 的快照源（见 session-manager 的 onAbort）——
+    // 被打断的 run 到不了 natural-finish，没有这笔桌面端输入框的命中率就永远
+    // 停在上一个跑完的 run 上。
+    getTotalUsage: () => agent.session.getTotalUsage(),
+    getTurnCount: () => agent.session.getTurnCount(),
     getContextWindow: () => spec.model.contextWindow,
     getReasoningEffort: () => agent.getReasoningEffort(),
     // 识图桥真实状态（供桌面端准确显示，而非只看 config 有没有 visionModel 键）。

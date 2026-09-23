@@ -72,10 +72,7 @@ export async function runWebCLI(args: string[], ctx: WebCliContext = {}): Promis
 // ── web search ───────────────────────────────────────────────────────
 
 async function runSearch(args: string[], config: Config, write: (s: string) => void): Promise<number> {
-  const json = args.includes('--json')
-  const countIdx = args.indexOf('--count')
-  const count = countIdx >= 0 && args[countIdx + 1] ? clampInt(args[countIdx + 1]!, 1, 20, 10) : 10
-  const query = args.filter(a => !a.startsWith('-') && a !== '--json').join(' ').trim()
+  const { query, count, json } = parseSearchArgs(args)
 
   if (!query) {
     write('用法: rivet web search <query> [--count N] [--json]\n')
@@ -102,47 +99,16 @@ async function runSearch(args: string[], config: Config, write: (s: string) => v
       backend: result.backend,
       results: result.results,
       errors: result.errors,
+      ...(result.offTopicFallback ? { offTopicFallback: result.offTopicFallback } : {}),
       proxy: resolveProxyForUrl('https://example.com', proxyOpts) ?? null,
     }, null, 2) + '\n')
-    return result.results.length > 0 ? 0 : 1
+    return result.results.length > 0 || result.offTopicFallback ? 0 : 1
   }
 
-  // 文本输出：逐后端报告 + 结果
-  const lines: string[] = []
-  lines.push(`搜索：「${query}」`)
-  // 代理来源（帮助诊断国内连通性问题）
-  const proxy = resolveProxyForUrl('https://example.com', proxyOpts)
-  lines.push(`代理：${proxy ?? '直连'}`)
-  lines.push('')
-
-  // 逐后端状态（哪些被跳过、哪些失败、哪个中选）
-  if (result.errors.length > 0) {
-    lines.push('后端链路：')
-    for (const e of result.errors) {
-      lines.push(`  ✗ ${e.backend}: ${e.message}`)
-    }
-  }
-  if (result.backend) {
-    lines.push(`  ✓ ${result.backend} 命中 ${result.results.length} 条`)
-  }
-  lines.push('')
-
-  if (result.results.length === 0) {
-    lines.push('未找到结果（所有后端均无结果或失败）。')
-    write(lines.join('\n') + '\n')
-    return 1
-  }
-
-  for (let i = 0; i < result.results.length; i++) {
-    const r = result.results[i]!
-    lines.push(`${i + 1}. ${r.title}`)
-    lines.push(`   ${r.url}`)
-    if (r.snippet) lines.push(`   ${r.snippet}`)
-    lines.push('')
-  }
-
-  write(lines.join('\n') + '\n')
-  return 0
+  // 文本输出：逐后端报告 + 结果（与 formatSearchResultText 共用同一实现，避免双实现漂移）
+  const proxy = resolveProxyForUrl('https://example.com', proxyOpts) ?? null
+  write(formatSearchResultText(query, result, proxy) + '\n')
+  return result.results.length > 0 || result.offTopicFallback ? 0 : 1
 }
 
 // ── web fetch ────────────────────────────────────────────────────────
@@ -267,11 +233,43 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   return Math.min(Math.max(n, min), max)
 }
 
+/** 解析 `rivet web search` 参数：`--count` 的取值不得落入查询词。 */
+export function parseSearchArgs(args: string[]): { query: string; count: number; json: boolean } {
+  let count = 10
+  let json = false
+  const words: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a === '--json') {
+      json = true
+      continue
+    }
+    if (a === '--count') {
+      // 连带吃掉取值：否则它以普通词身份残留进 query（Bing 会收到「… 应用 3」）。
+      const v = args[i + 1]
+      if (v !== undefined) {
+        count = clampInt(v, 1, 20, 10)
+        i++
+      }
+      continue
+    }
+    if (a.startsWith('--count=')) {
+      count = clampInt(a.slice('--count='.length), 1, 20, 10)
+      continue
+    }
+    if (a.startsWith('-')) continue // 未识别的选项：跳过（保持宽容）
+    words.push(a)
+  }
+  return { query: words.join(' ').trim(), count, json }
+}
+
 // 便于测试：导出纯文本格式化函数（不依赖网络）
 export function formatSearchResultText(query: string, result: {
   backend: string | null
   results: SearchResult[]
   errors: Array<{ backend: string; message: string }>
+  /** 被判跑题但保留的低置信批次（见 web-search/chain.ts 的 offTopicFallback）。 */
+  offTopicFallback?: { backend: string; results: SearchResult[] } | undefined
 }, proxy: string | null): string {
   const lines: string[] = []
   lines.push(`搜索：「${query}」`)
@@ -283,16 +281,29 @@ export function formatSearchResultText(query: string, result: {
   }
   if (result.backend) lines.push(`  ✓ ${result.backend} 命中 ${result.results.length} 条`)
   lines.push('')
+
   if (result.results.length === 0) {
+    // 低置信兜底优先于「未找到结果」：结果保留 + 显式标注，采信判断权交回使用者。
+    const fallback = result.offTopicFallback
+    if (fallback) {
+      lines.push(`⚠ 低相关兜底（${fallback.backend}）——搜索后端未返回覆盖查询要点的结果，以下为宽泛匹配结果，仅供参考：`)
+      lines.push('')
+      appendResults(lines, fallback.results)
+      return lines.join('\n')
+    }
     lines.push('未找到结果（所有后端均无结果或失败）。')
     return lines.join('\n')
   }
-  for (let i = 0; i < result.results.length; i++) {
-    const r = result.results[i]!
+  appendResults(lines, result.results)
+  return lines.join('\n')
+}
+
+function appendResults(lines: string[], results: readonly SearchResult[]): void {
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]!
     lines.push(`${i + 1}. ${r.title}`)
     lines.push(`   ${r.url}`)
     if (r.snippet) lines.push(`   ${r.snippet}`)
     lines.push('')
   }
-  return lines.join('\n')
 }

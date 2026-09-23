@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { findProjectConfig } from '../config/manager.js'
 import { userConfigPath } from '../config/paths.js'
-import { isRuntimeLeanAspect } from '../config/runtime-lean.js'
 // 叶模块（0 import），仅取域内置档位默认，无循环依赖。
 import { STAR_DOMAINS } from '../agent/star-domain-data.js'
 
@@ -9,10 +8,11 @@ import { STAR_DOMAINS } from '../agent/star-domain-data.js'
  * Tool preset — 会话启动期的工具装配档位（会话内冻结，前缀缓存零影响）。
  *
  * 三档语义（2026-07-19 工具审计落地，入口成本实测见 .rivet/scratch/tool-audit.ts）：
- * - **minimal（30 个）**：日常开发全能力——读写/检索/bash/git/测试/委托/
+ * - **minimal（默认，30）**：日常开发全能力——读写/检索/bash/git/测试/委托/
  *   交付/plan/web_search/web_fetch。去掉编排（council/team）、browser 系、
- *   attack_case、semantic_search 等重而冷门的工具。
- * - **frontend（默认，31）**：minimal + browser_debug（UI 渲染验证闭环）。
+ *   attack_case、semantic_search 等重而冷门的工具。（2026-09-23 起为发版默认档，
+ *   取代 frontend——browser_debug 改用 RIVET_BROWSER_DEBUG=1 或显式给档开启。）
+ * - **frontend（31）**：minimal + browser_debug（UI 渲染验证闭环）。
  * - **full（51）**：全集，含 attack_case/council/team/semantic_search/repo_graph/
  *   undo/recall_general/record_general_finding/ast_edit/related_tests/
  *   inspect_project/import_resource/leave_mark/browser_debug/monitor。
@@ -35,7 +35,7 @@ import { STAR_DOMAINS } from '../agent/star-domain-data.js'
  * 解析优先级：`RIVET_TOOL_PRESET` env > 项目 `.rivet-config.json` tools.preset
  * > 项目 runtime.domains[域].toolPreset > 用户配置 tools.preset（`userConfigPath()`，
  * 认 RIVET_HOME/RIVET_CONFIG_PATH）> 用户 runtime.domains[域].toolPreset
- * > 域内置默认档（STAR_DOMAINS[域].toolPreset）> lean 默认 `minimal` > 'frontend'。
+ * > 域内置默认档（STAR_DOMAINS[域].toolPreset）> 默认 `minimal`。
  * 变更只在下个会话生效（会话中途改工具指纹 = 前缀全量重建，反经济）。
  */
 
@@ -104,7 +104,9 @@ export function resolveToolPreset(cwd: string, domainId?: string): ToolPreset {
     preset = parsePreset((STAR_DOMAINS as Record<string, { toolPreset?: unknown }>)[domainId]?.toolPreset)
   }
 
-  const resolved = preset ?? (isRuntimeLeanAspect('tools', undefined, cwd) ? 'minimal' : 'frontend')
+  // 默认档 minimal（2026-09-23 起为发版默认，取代 frontend；对齐 3.14 线）。
+  // lean 的 tools aspect 自此与默认同值，不再单独参与解析。
+  const resolved = preset ?? 'minimal'
   memo.set(key, resolved)
   return resolved
 }

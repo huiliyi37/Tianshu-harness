@@ -119,6 +119,21 @@ describe('REPO_MAP_TOOL', () => {
     }
   })
 
+  it('rejects a drive-letter path instead of treating it as a cwd-relative subpath', async () => {
+    // 旧判据是 `resolve(cwd) + '/'` 再 startsWith：win32 上 resolve 出反斜杠，
+    // `startsWith('D:\repo/')` 恒 false → 任何 path 都被判越界（连「path 是文件」
+    // 这条合法错误分支都到不了）。新判据归一到 POSIX 后按逃逸判定：盘符形路径在
+    // win32 宿主上等价于「cwd 外路径」，在 POSIX 宿主上被保守拦下（fail-closed）。
+    const result = await REPO_MAP_TOOL.execute(makeParams({ path: 'D:\\outside' }))
+    assert.equal(result.isError, true)
+    assert.match(result.content, /必须位于项目目录内/)
+  })
+
+  it('allows path "." — 新判据不得把 cwd 本体误判为逃逸', async () => {
+    const result = await REPO_MAP_TOOL.execute(makeParams({ path: '.' }))
+    assert.equal(result.isError, undefined)
+  })
+
   it('focuses on subdirectory with path parameter', async () => {
     const result = await REPO_MAP_TOOL.execute({
       input: { path: 'src/agent' },

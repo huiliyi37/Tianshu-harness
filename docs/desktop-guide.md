@@ -209,8 +209,8 @@ Settings → 外观 提供 26 套内置主题（含暗色/亮色各半，如 `da
 
 | 档位 | 工具数 | 适用 |
 |---|---|---|
-| minimal | 30 | 日常开发全能力，省 token |
-| frontend（默认） | 31 | + `browser_debug` 浏览器验证 |
+| minimal（默认） | 30 | 日常开发全能力，省 token |
+| frontend | 31 | + `browser_debug` 浏览器验证 |
 | full | 51 | 全集（编排 / semantic_search / computer_use / 办公工具族），system prompt 开销更大 |
 | taiyi | 14 | 最小评测档——钉定太一域时自动落此档，无需手选 |
 

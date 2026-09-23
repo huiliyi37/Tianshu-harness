@@ -46,12 +46,22 @@ function setupPythonProject(options: { withTests?: boolean; withFakePytest?: boo
   if (options.withFakePytest) {
     const binDir = join(dir, 'node_modules', '.bin')
     mkdirSync(binDir, { recursive: true })
+    // 假 pytest 用「无扩展名 shim + shebang」，这是 npm 在 POSIX 上的 .bin 形态，
+    // 只有 POSIX 内核认（win32 上 npm 生成的是 .cmd，而产品的 resolveTestSpawn
+    // 刻意把 pytest 当裸可执行文件直连 spawn、不走 shell）。夹具本身是 POSIX 专属，
+    // 消费它的两条用例在 win32 上跳过——真实 Python 项目由 pip 安装 pytest.exe。
     const pytestPath = join(binDir, 'pytest')
     writeFileSync(pytestPath, '#!/usr/bin/env node\nconsole.log("1 passed in 0.01s")\n')
     chmodSync(pytestPath, 0o755)
   }
   return dir
 }
+
+/** 见 setupPythonProject 的注释：夹具是 POSIX-only，win32 上显式跳过并说明原因，
+ *  而不是留一条永远红的用例。 */
+const FAKE_PYTEST_SKIP: string | false = process.platform === 'win32'
+  ? 'fake pytest 夹具是 POSIX-only 的无扩展名 .bin shim（win32 上 npm 生成 .cmd，而产品对 pytest 直连 spawn、不走 shell）'
+  : false
 
 function setupHangingProject(): string {
   const dir = makeTestDir('run-tests-hanging-')
@@ -212,7 +222,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
     }
   })
 
-  it('runs pytest for Python projects with tests directory', async () => {
+  it('runs pytest for Python projects with tests directory', { skip: FAKE_PYTEST_SKIP }, async () => {
     const dir = setupPythonProject({ withTests: true, withFakePytest: true })
     try {
       const result = await RUN_TESTS_TOOL.execute(makeParams({}, dir))
@@ -227,7 +237,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
     }
   })
 
-  it('uses pytest filter directly for Python targeted runs', async () => {
+  it('uses pytest filter directly for Python targeted runs', { skip: FAKE_PYTEST_SKIP }, async () => {
     const dir = setupPythonProject({ withTests: true, withFakePytest: true })
     try {
       const result = await RUN_TESTS_TOOL.execute(makeParams({ filter: 'tests/test_example.py' }, dir))
@@ -236,6 +246,23 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.command, 'pytest tests/test_example.py')
       assert.equal(result.verification!.scope, 'targeted')
       assert.equal(result.verification!.targetFiles?.[0], 'tests/test_example.py')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('strips shell metacharacters from the pytest filter', { skip: FAKE_PYTEST_SKIP }, async () => {
+    const dir = setupPythonProject({ withTests: true, withFakePytest: true })
+    try {
+      // filter 是模型/用户可控串，而它既进 spawn 的 argv，也进 display 与 targetFiles。
+      // pytest 当前走直连 spawn（不走 shell），但这条剥离仍是安全边界：一旦有人把它
+      // 改成 shell，或用户照 display 复制去终端执行，未剥的 ` $ \ ; " ' | 就是注入面。
+      // 此前没有任何测试覆盖它——删掉那行 replace 不会红，等于静默失去防护。
+      const result = await RUN_TESTS_TOOL.execute(makeParams({ filter: 'tests/`a;b|c.py' }, dir))
+
+      const cmd = result.verification!.command
+      assert.equal(cmd, 'pytest tests/abc.py')
+      assert.ok(!/[`$\\;"'|]/.test(cmd), `命令串不得残留 shell 元字符：${cmd}`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

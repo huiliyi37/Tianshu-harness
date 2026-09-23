@@ -384,4 +384,33 @@ describe('multi-key server contract', () => {
     const res = await router('POST', `/config/providers/${RELAY}/keys`, { apiKey: 'sk-x' }, {})
     assert.equal(res.status, 401)
   })
+
+  // 2026-09-23 回归钉：CJK/非 ASCII 供应商名的 key-pool 路由。浏览器 fetch 会把
+  // 路径里的中文 percent-encode，路由原样捕获 —— handler 必须 decodeRouteParam
+  // 还原（provider 级路由一直这么做；key-pool 六条曾漏掉，中文名供应商的 key
+  // 增删/模型编辑全部 404）。名字里的 `?`/`#` 走客户端 encodeURIComponent 兜底。
+  it('CJK 供应商名：key-pool 路由按 percent-decode 后的名字命中', async () => {
+    const CJK = '我的中转'
+    writeConfig(home, {
+      [CJK]: {
+        name: CJK,
+        baseUrl: 'http://127.0.0.1:1/v1',
+        keys: [
+          { id: 'default', keyRef: `${CJK}:default`, models: [{ id: 'k0-a' }] },
+          { id: 'spare', keyRef: `${CJK}:spare`, models: [{ id: 'k1-a' }] },
+        ],
+        models: [{ id: 'k0-a' }],
+      },
+    }, CJK)
+    writeSecret(`${CJK}:default`, 'sk-cjk-0', home)
+    writeSecret(`${CJK}:spare`, 'sk-cjk-1', home)
+    router = createRouter(buildConfigRoutes(TOKEN)) as Router
+
+    // 模拟浏览器：路径里是 percent-encoded 形态
+    const res = await router('DELETE', `/config/providers/${encodeURIComponent(CJK)}/keys/spare`, {}, AUTH)
+    assert.equal(res.status, 200, JSON.stringify(res.body))
+    assert.deepEqual(keysOf(res.body).map(k => k.id), ['default'])
+    // 源配置真的变了（不是只回了 200）
+    assert.equal(loadConfig().provider.providers[CJK]!.keys!.length, 1)
+  })
 })

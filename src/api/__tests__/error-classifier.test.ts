@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { classifyApiError, errorRecoveryGuidance, fetchCauseDetail, parseRetryAfterMs } from '../error-classifier.js'
+import { classifyApiError, classifyTlsIntercept, errorRecoveryGuidance, fetchCauseDetail, parseRetryAfterMs } from '../error-classifier.js'
 import type { ErrorCategory } from '../error-classifier.js'
 
 // ---------------------------------------------------------------------------
@@ -322,6 +322,73 @@ describe('classifyApiError', () => {
     assert.equal(fetchCauseDetail(null), null)
   })
 
+  // ---- TLS 证书校验失败（加密连接扫描 / 企业代理 / 服务端半截链） -----------
+  // 现场形状：中间人做 HTTPS 替换 → undici 只报 "fetch failed"，证书原因在 cause
+  // 链里。归类成可重试的 "Connection lost" 会让用户对着稳定复现的证书错误白等三轮
+  // backoff 且看不出成因——故单列 tls_intercept；但**两种成因不能一律甩给杀毒软件**
+  // （2026-09-23 跟进修），分类结果按本机探测决定重试与文案，故 helper 单测为主。
+
+  it('检出本机加密连接扫描 → 0 次重试 + 三条本地处置（含厂商名）', () => {
+    const result = classifyTlsIntercept('UNABLE_TO_VERIFY_LEAF_SIGNATURE', {
+      suspectCount: 1,
+      vendors: ['Kaspersky'],
+    })
+    assert.equal(result.category, 'tls_intercept')
+    assert.equal(result.retryable, false)
+    assert.equal(result.maxRetries, 0)
+    assert.equal(result.shouldReconnect, false)
+    assert.match(result.userMessage, /Kaspersky/)
+    assert.match(result.userMessage, /NODE_EXTRA_CA_CERTS/)
+    assert.match(result.userMessage, /--use-system-ca/)
+  })
+
+  it('未检出中间人 → 留 1 次重试（服务端证书链半更新重试能自愈），文案不咬定杀毒软件', () => {
+    const result = classifyTlsIntercept('UNABLE_TO_VERIFY_LEAF_SIGNATURE', { suspectCount: 0, vendors: [] })
+    assert.equal(result.category, 'tls_intercept')
+    assert.equal(result.retryable, true)
+    assert.equal(result.maxRetries, 1)
+    assert.equal(result.shouldReconnect, true)
+    assert.match(result.userMessage, /服务端证书链/)
+    assert.match(result.userMessage, /\/doctor/)
+    // 不能把"杀毒软件"当结论：未检出时它只是可能性之一
+    assert.doesNotMatch(result.userMessage, /本机系统证书存储里有/)
+  })
+
+  it('探不到（非 Windows / 存储不可读，probe=null）按未检出处理——保守重试一次', () => {
+    const result = classifyTlsIntercept('SELF_SIGNED_CERT_IN_CHAIN', null)
+    assert.equal(result.retryable, true)
+    assert.equal(result.maxRetries, 1)
+  })
+
+  it('厂商名缺失时仍给出可读文案（不出现 undefined）', () => {
+    const result = classifyTlsIntercept('CERT_UNTRUSTED', { suspectCount: 2, vendors: [] })
+    assert.match(result.userMessage, /未知来源/)
+    assert.doesNotMatch(result.userMessage, /undefined/)
+  })
+
+  it('classifyApiError 端到端：证书失败一律落 tls_intercept（不落笼统的 Connection lost）', () => {
+    const cause = Object.assign(new Error('unable to verify the first certificate'), {
+      code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    })
+    const result = classifyApiError(new TypeError('fetch failed', { cause }))
+    assert.equal(result.category, 'tls_intercept')
+    assert.match(result.userMessage, /UNABLE_TO_VERIFY_LEAF_SIGNATURE/)
+  })
+
+  it('纯 code（message 为空）也能识别为 tls_intercept', () => {
+    const cause = Object.assign(new Error(''), { code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' })
+    const result = classifyApiError(new TypeError('fetch failed', { cause }))
+    assert.equal(result.category, 'tls_intercept')
+  })
+
+  it('主机名不匹配（ALTNAME）不算加密连接扫描——那是代理/CDN 配置问题', () => {
+    const cause = Object.assign(new Error("Hostname/IP does not match certificate's altnames"), {
+      code: 'ERR_TLS_CERT_ALTNAME_INVALID',
+    })
+    const result = classifyApiError(new TypeError('fetch failed', { cause }))
+    assert.notEqual(result.category, 'tls_intercept')
+  })
+
   // ---- Fallback / edge cases --------------------------------------------
 
   it('classifies unknown error as unknown with retry', () => {
@@ -510,5 +577,48 @@ describe('413 payload-shape split (image_strip vs context_overflow)', () => {
   it('有图 413 的用户指引仍指向图片', () => {
     const guidance = errorRecoveryGuidance(tagged413(true))
     assert.ok(guidance.includes('图片'), `实得：${guidance}`)
+  })
+})
+
+// ── issue #258 ②：网关要求回传 reasoning_content ─────────────────────────────
+// 托管 DeepSeek 思考模型的网关会拒收「历史里被剥掉思考内容」的请求：
+//   The `reasoning_content` in the thinking mode must be passed back to the API.
+// 这是 400 —— 默认落 client_error（不可重试），但这条**只能靠重试修**（client 把
+// 思考内容保留后重发即可通过），所以必须早于状态码分类，且带一次性语义。
+
+describe('reasoning_echo classification (issue #258)', () => {
+  it('classifies the DeepSeek wording as reasoning_echo and makes it retryable', () => {
+    const result = classifyApiError(new FakeApiError(
+      'OpenAI API error (invalid_request_error): The `reasoning_content` in the thinking mode must be passed back to the API.',
+      400,
+    ))
+    assert.equal(result.category, 'reasoning_echo')
+    assert.equal(result.retryable, true, '400 默认不可重试，这一类必须例外')
+    assert.equal(result.preserveReasoning, true)
+    assert.equal(result.maxRetries, 1, '一次性：改一次 wire 形态，成功即结束')
+    assert.equal(result.retryDelayMs, 0)
+  })
+
+  it('classifies the gateway-relayed wording (no backticks/caps variance)', () => {
+    const result = classifyApiError(new FakeApiError(
+      'Upstream request failed: invalid_request_error: reasoning_content must be passed back',
+      400,
+    ))
+    assert.equal(result.category, 'reasoning_echo')
+    assert.equal(result.preserveReasoning, true)
+  })
+
+  it('does not hijack unrelated 400s that merely mention reasoning', () => {
+    const result = classifyApiError(new FakeApiError('reasoning_effort: unknown variant `off`', 400))
+    assert.notEqual(result.category, 'reasoning_echo')
+    assert.equal(result.category, 'client_error')
+  })
+
+  it('recovery guidance tells the user how to skip the wasted retry', () => {
+    const guidance = errorRecoveryGuidance(new FakeApiError(
+      'The `reasoning_content` in the thinking mode must be passed back to the API.',
+      400,
+    ))
+    assert.match(guidance, /preservedThinkingProtocol/)
   })
 })

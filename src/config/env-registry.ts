@@ -3,8 +3,8 @@
  *
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
  * description 字段人工维护，重新生成时按 name 保留。
- * 最后生成：2026-09-21T18:30:52.911Z
- * 共 217 个变量。
+ * 最后生成：2026-09-23T01:54:24.565Z
+ * 共 222 个变量。
  *
  * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
  * 当源码中新增 RIVET_* 引用但注册表未同步时，
@@ -234,6 +234,18 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
+    name: 'RIVET_CROSS_SESSION_CLAIMS',
+    defaultHint: '',
+    files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
+    description: '',
+  },
+  {
+    name: 'RIVET_CROSS_SESSION_EVENTS',
+    defaultHint: '',
+    files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
+    description: '',
+  },
+  {
     name: 'RIVET_CROSS_SESSION_INJECT',
     defaultHint: '',
     files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
@@ -315,6 +327,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_CU_YIELD_MS',
     defaultHint: '',
     files: ['tools/__tests__/bash-yield-wiring.test.ts', 'system/user-idle.ts', 'pro/computer-use/tool.ts'],
+    description: '',
+  },
+  {
+    name: 'RIVET_CU_YIELD_WATCH_MS',
+    defaultHint: '',
+    files: ['tools/bash-yield.ts', 'tools/__tests__/bash-yield-watch.test.ts', 'tools/__tests__/bash-yield-wiring.test.ts'],
     description: '',
   },
   {
@@ -624,6 +642,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
+    name: 'RIVET_LANG',
+    defaultHint: '',
+    files: ['tui/cockpit/labels.ts'],
+    description: 'UI language for the Cockpit dashboard (zh | en; regional prefixes like zh-CN / en-US accepted, unknown values fall back to zh).',
+  },
+  {
     name: 'RIVET_LANGUAGE_ANCHOR',
     defaultHint: '',
     files: ['agent/create-runtime-hooks.ts'],
@@ -855,6 +879,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     name: 'RIVET_PLAYBOOK_INJECT',
     defaultHint: '',
     files: ['agent/context-injection.ts', 'agent/__tests__/playbook-injection-revival.test.ts'],
+    description: '',
+  },
+  {
+    name: 'RIVET_PREV_HANDOFF',
+    defaultHint: '',
+    files: ['agent/cross-session-memory-config.ts', 'agent/__tests__/cross-session-killswitch.test.ts'],
     description: '',
   },
   {

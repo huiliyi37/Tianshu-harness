@@ -53,6 +53,8 @@ export interface StreamTurnParams {
     /** 出网请求体触发体积护栏：历史工具输出被截断（这一轮模型看到的历史不完整），
      *  或已逼近传输上限（第三方中转常有更小的上限）。两者都必须可见（issue #94 同源教训）。 */
     onBodyGuard?: (info: BodyGuardNotice) => void
+    /** 网关拒收「历史缺 reasoning_content」，重试已改为保留思考内容重发（issue #258）。 */
+    onReasoningEchoRecovered?: () => void
   }
 }
 
@@ -778,6 +780,16 @@ export class TurnOrchestrator {
               // 静默剥图会被读成「模型没理我的截图」（issue #94）。
               callbacks.onPhaseChange?.('image-stripped', {
                 reason: `图片已从本次请求移除（${info.removedCount} 张）——本轮模型看不到这些图`,
+              })
+            },
+            onReasoningEchoRecovered: () => {
+              // 网关要求回传思考内容，本次已保留重发（issue #258）。必须可见：
+              // ① wire 形态中途变了（历史里多出 reasoning_content，前缀字节随之改变）；
+              // ② 该 provider 声明 capabilities.preservedThinkingProtocol 就能免掉
+              //    这次「先 400 再重试」的白跑，用户有权知道可以这么配。
+              callbacks.onPhaseChange?.('reasoning-echo', {
+                reason: '该网关要求回传思考内容（reasoning_content），本轮已保留重发——'
+                  + '在该 provider 配置里声明 preservedThinkingProtocol: true 可免去这次重试',
               })
             },
           },

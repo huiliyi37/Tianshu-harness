@@ -43,6 +43,26 @@ test('whisper-engine: 成功转写 → 读取 <wav>.txt 文本', async () => {
   }
 })
 
+test('whisper-engine: binPath 是 JS 脚本时经解释器执行（不依赖可执行位）', async () => {
+  const bin = await makeFakeBin()
+  try {
+    // 摘掉可执行位：POSIX 上裸 spawn 一个无执行位的 .mjs 会 EACCES，只有「经
+    // process.execPath 解释执行」这条还能跑通。Windows 本就没有可执行位语义
+    // （chmod 无效、shebang 不生效），所以这一条同时钉住「JS 脚本当 binPath
+    // 在 win32 上也成立」——真机跑不到的分支，在 POSIX 上用 EACCES 反证。
+    await chmod(bin, 0o644)
+    const engine = createWhisperEngine({ binPath: bin, modelPath: '/tmp/model.bin' })
+    const dir = await mkdtemp(join(tmpdir(), 'rivet-whisper-noexec-'))
+    const wav = join(dir, 'in.wav')
+    await writeFile(wav, Buffer.alloc(44))
+    const { text } = await engine.transcribe(wav)
+    assert.equal(text, 'hello world')
+    await rm(dir, { recursive: true, force: true })
+  } finally {
+    await rm(join(bin, '..'), { recursive: true, force: true })
+  }
+})
+
 test('whisper-engine: exit 非 0 → reject 带 stderr 摘要', async () => {
   const bin = await makeFakeBin()
   try {

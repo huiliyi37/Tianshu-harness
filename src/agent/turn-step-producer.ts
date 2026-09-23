@@ -20,8 +20,8 @@ import { skillRegistry } from '../skills/skill-loader.js'
 import { detectQuizLike } from './intent-retrieval-route.js'
 import { renderMemoryBlock } from '../memory/unified-memory.js'
 import { reviewAdaptiveMemory } from '../memory/adaptive-stm.js'
-import { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled } from './cross-session-memory-config.js'
-export { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled } from './cross-session-memory-config.js'
+import { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled, prevSessionHandoffEnabled, crossSessionClaimsInjectionEnabled, crossSessionEventsAppendixEnabled } from './cross-session-memory-config.js'
+export { combineMemoryBlocks, crossSessionDisabled, crossSessionMemoryPushEnabled, prevSessionHandoffEnabled, crossSessionClaimsInjectionEnabled, crossSessionEventsAppendixEnabled } from './cross-session-memory-config.js'
 import { parseMentions, renderMentionContext, normalizeMentionRefs } from '../tui/mention-parser.js'
 import { renderPlanCacheAdvisory } from './plan-cache-advisory.js'
 import { selectReasoningEffort } from './auto-reasoning.js'
@@ -789,24 +789,43 @@ export class TurnStepProducer {
     }
     this.self.contextInjection.refreshActiveClaims()
 
-    // Read events from other sessions (cache-safe: injected into dynamic appendix only)
+    // Read events from other sessions.
+    //
+    // 闸门解耦（2026-09-22）：此前这一个 if 同时控制四件事，导致「想关掉其中一件
+    // （handoff）」与「想打开另一件（读缓存失效）」互相绑架。现按「是否往 prompt
+    // 写东西」重新划界：
+    //   · 读缓存失效 —— 本地一致性动作，fail-safe（最坏只是一次多余真读），
+    //     **不受任何注入开关约束**，只依赖 registry 可用；
+    //   · 事件 appendix / claims 注入 / handoff 注入 —— 都会往 prompt 写第三方、
+    //     可能陈旧的事实，各自独立开关，**一律默认关**
+    //     （见 cross-session-memory-config.ts）。
     if (!crossSessionDisabled(this.self.config.crossSessionEnabled) && this.self.config.sessionRegistry && this.self.config.sessionId) {
-      const events = this.self.config.sessionRegistry.consumeEvents(this.self.config.sessionId, this.self.lastSeenEventId)
+      const registry = this.self.config.sessionRegistry
+      const events = registry.consumeEvents(this.self.config.sessionId, this.self.lastSeenEventId)
       let appendix = ''
       if (events.length > 0) {
         this.self.lastSeenEventId = Math.max(...events.map(e => e.id))
-        appendix = formatEventsForAppendix(events)
         // Peer sessions edited these files — drop our read-dedup records so
         // the next read_file returns real content instead of a [read-ref].
+        // 被动 mtime+size 检查（read-file.ts）覆盖不到的只有「mtime 粒度内且
+        // 大小不变」的等长编辑，这一格正是本动作存在的理由。
         invalidateReadCachesForEvents(events, this.self.cwd)
+        if (crossSessionEventsAppendixEnabled()) {
+          appendix = formatEventsForAppendix(events)
+        }
       }
       // P2b: inject active cross-session claims so the LLM can proactively avoid conflicts
-      const claims = this.self.config.sessionRegistry.getActiveClaims(this.self.config.sessionId)
-      const claimsBlock = renderCrossSessionClaims(claims)
-      if (claimsBlock) {
-        appendix = (appendix ? appendix + '\n' : '') + claimsBlock
+      if (crossSessionClaimsInjectionEnabled()) {
+        const claimsBlock = renderCrossSessionClaims(registry.getActiveClaims(this.self.config.sessionId))
+        if (claimsBlock) {
+          appendix = (appendix ? appendix + '\n' : '') + claimsBlock
+        }
       }
-      if (this.self.persist) {
+      // 显式闸（2026-09-22，默认关）：并行会话下「最近更新的另一个会话」这条选取
+      // 规则不安全——该 handoff 可能已被并行会话大幅超越，却会完整进 appendix
+      // 变成误导上下文。理由与开启方式见
+      // cross-session-memory-config.ts::prevSessionHandoffEnabled（别当接线 bug 修）。
+      if (this.self.persist && prevSessionHandoffEnabled()) {
         const prevHandoff = SessionPersist.loadPrevHandoff(
           this.self.cwd,
           this.self.config.sessionId,

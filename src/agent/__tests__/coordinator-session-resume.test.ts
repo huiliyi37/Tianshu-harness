@@ -104,15 +104,23 @@ function makeCoordinator(opts: {
 describe('coordinator session resume', () => {
   let homeDir: string
   let savedHome: string | undefined
+  let savedRivetHome: string | undefined
 
   beforeEach(() => {
     homeDir = mkdtempSync(join(TMP_BASE, 'rivet-resume-'))
     savedHome = process.env.HOME
     process.env.HOME = homeDir
+    // rivetHome() 优先 RIVET_HOME——不显式钉住时，环境里的 RIVET_HOME 会让被测代码
+    // 写 $RIVET_HOME/subagents 而断言落在 $HOME/.rivet/subagents（legacy homeDir 形）。
+    // 钉成 <tmp>/.rivet 后两条路径汇合，有无外部环境变量都密闭。
+    savedRivetHome = process.env.RIVET_HOME
+    process.env.RIVET_HOME = join(homeDir, '.rivet')
   })
 
   afterEach(() => {
     process.env.HOME = savedHome
+    if (savedRivetHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = savedRivetHome
   })
 
   it('persists worker session messages after a successful delegate() call', async () => {

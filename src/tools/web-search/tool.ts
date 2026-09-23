@@ -1,6 +1,6 @@
 import type { Tool, ToolCallParams, ToolResult } from '../types.js'
 import type { ProxyResolverOptions } from '../net/proxy-resolver.js'
-import type { SearchBackend, SearchFetch } from './types.js'
+import type { SearchBackend, SearchFetch, SearchResult } from './types.js'
 import { DuckDuckGoBackend } from './duckduckgo.js'
 import { runBackendChain } from './chain.js'
 import { OFF_TOPIC_ERROR } from './relevance.js'
@@ -9,6 +9,25 @@ import { lenientPositiveNumber, lenientString } from '../lenient.js'
 
 const MAX_RESULTS = 20
 const DEFAULT_TIMEOUT_MS = 15_000
+
+/**
+ * 低置信兜底的用户可见标注：结果只覆盖查询中的个别词时（判据见 relevance.ts），
+ * 必须让模型/用户明白这批结果不能直接采信——它们多半是搜索后端降级返回的宽泛匹配。
+ */
+const LOW_CONFIDENCE_NOTICE =
+  '⚠ 相关性提示：以下结果只覆盖了查询中的个别词，可能不是你要找的内容。请勿直接采信为答案——建议换用更具体的查询词，或与其他来源交叉验证。'
+
+/** 结果渲染（正常路径与低置信兜底共用同一份实现，避免双实现漂移）。 */
+function formatResults(results: readonly SearchResult[]): string {
+  return results
+    .map((r, i) => {
+      // 来源站点与发布时间（博查等后端提供）附在 snippet 后，帮助判断可信度与时效
+      const meta = [r.siteName, r.publishedAt].filter(Boolean).join(' · ')
+      const snippet = r.snippet + (meta ? `（${meta}）` : '')
+      return `${i + 1}. [${r.title}](${r.url})\n   ${snippet}`
+    })
+    .join('\n\n')
+}
 
 export interface WebSearchDeps {
   /** Ordered backend chain. Defaults to DuckDuckGo-only (zero-config). */
@@ -85,32 +104,33 @@ export function createWebSearchTool(deps: WebSearchDeps = {}): Tool {
         MAX_RESULTS,
       )
 
-      const { backend, results, errors } = await runBackendChain(backends, query, count, timeoutMs)
+      const { backend, results, errors, offTopicFallback } = await runBackendChain(backends, query, count, timeoutMs)
 
       if (results.length === 0) {
-        // All backends failed → surface why. All backends empty (or returned
-        // off-topic content that was dropped) → benign no-hit: reporting a
-        // hard error would be misleading, the user-visible outcome is the same.
+        // All backends failed → surface why. All backends empty, or only
+        // returned off-topic content → benign no-hit: reporting a hard error
+        // would be misleading, the user-visible outcome is the same.
         const hardErrors = errors.filter(e => e.message !== 'no results' && e.message !== OFF_TOPIC_ERROR)
         if (hardErrors.length > 0) {
           const detail = hardErrors.map(e => `${e.backend}: ${e.message}`).join('; ')
           // detail 转发后端原文（可能含 HTTP 503 等）——中文前缀+变量，可不打标。
           return { content: `搜索失败（${detail}）`, isError: true }
         }
+        // 判跑题的批次降级返回而非静默丢弃：单后端配置下，「后端降级返回泛结果」
+        // 若变成「未找到结果」，用户丢掉的是唯一可得的信息。标注低相关把采信
+        // 判断权交回使用者，同时不让泛结果冒充答案。
+        if (offTopicFallback) {
+          return {
+            content: `「${query}」的网页搜索结果（经 ${offTopicFallback.backend}，低相关）：\n\n`
+              + `${LOW_CONFIDENCE_NOTICE}\n\n`
+              + formatResults(offTopicFallback.results),
+          }
+        }
         return { content: `未找到与「${query}」相关的搜索结果` }
       }
 
-      const formatted = results
-        .map((r, i) => {
-          // 来源站点与发布时间（博查等后端提供）附在 snippet 后，帮助判断可信度与时效
-          const meta = [r.siteName, r.publishedAt].filter(Boolean).join(' · ')
-          const snippet = r.snippet + (meta ? `（${meta}）` : '')
-          return `${i + 1}. [${r.title}](${r.url})\n   ${snippet}`
-        })
-        .join('\n\n')
-
       const via = backend ? `（经 ${backend}）` : ''
-      return { content: `「${query}」的网页搜索结果${via}：\n\n${formatted}` }
+      return { content: `「${query}」的网页搜索结果${via}：\n\n${formatResults(results)}` }
     },
 
     requiresApproval(): boolean {

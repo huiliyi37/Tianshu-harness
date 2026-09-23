@@ -303,6 +303,26 @@ export const WELL_KNOWN_DEFAULTS: Record<string, ProviderCapabilities> = {
     prefixCacheStrategy: 'none',
     supportsResponseFormat: false,
   },
+  // StepFun（阶跃星辰）官方 OpenAI 兼容端点。官方只提供 reasoning_effort 三档
+  // （low/medium/high），没有 thinking block 形态 → 'none'（与 grok/openai 同款）。
+  // 提示缓存是服务端隐式 exact-prefix（官方文档：缓存命中 0.35 元 / 1M tokens），
+  // 无需客户端断点 → 'deepseek-native'（与 GLM/LongCat/硅基流动同款策略）。
+  stepfun: {
+    supportsThinking: true,
+    thinkingBlockType: 'none',
+    // 官方文档明示只有 low/medium/high——项目的 max 降到官方最高档、off 降到最低档。
+    // 不设映射的后果与 kimi 条目记过的教训同型：向上游发它不认识的档位（或反过来的
+    // 静默降档）会让用户显式选的推理强度落不了地。
+    effortCap: { max: 'high', off: 'low' },
+    supportsCacheControl: false,
+    stripParams: ['top_k', 'metadata', 'service_tier', 'cache_control'],
+    hasToolJsonInContentBug: false,
+    effortFormat: 'reasoning_effort',
+    prefixCacheStrategy: 'deepseek-native',
+    supportsResponseFormat: true, // 官方支持 JSON Mode 与 JSON Schema
+    // 刻意不设 preservedThinkingProtocol：StepFun 不是 DeepSeek 系线协议，套用
+    // reasoning_content 回显与中文思考后缀是错配（该字段的语义见上方类型注释）。
+  },
 }
 
 /**
@@ -412,4 +432,30 @@ export function resolveEffortSupported(
   if (provider.protocol === 'anthropic') return false
   if (provider.thinking === 'disabled') return false
   return resolveCapabilities(providerName, provider.capabilities, modelCapabilities).effortFormat !== 'none'
+}
+
+/**
+ * 内部档位 → 线上档位。返回 `undefined` = **不写该字段**。
+ *
+ * `off` 是**内部**档位（auto-reasoning 对琐碎轮降档；也可由用户显式选），它不是
+ * 任何 OpenAI 协议端点的合法枚举值：原样发出会被网关按枚举校验拒收
+ * `invalid_request_error: unknown variant 'off', expected one of
+ * none|minimal|low|medium|high|xhigh|ultra|max`（issue #258，opencode 网关）。
+ *
+ * 两种正确表达，按优先级：
+ *   1. provider 声明了 `effortCap`（如 `{ off: 'none' }` / `{ off: 'low' }`）→ 用声明值。
+ *      这是 provider 自己给出的「该端点认识什么」的事实，优先于任何推断。
+ *   2. 未声明 → **省略字段**。省略 = 不额外要求推理强度，是所有网关都接受的最保守
+ *      表达；硬编码 `'none'` 会在只认 low|medium|high 的端点上再吃一次 400。
+ *
+ * `'off'` 自身永远不作为返回值——它就是本函数存在的理由。
+ */
+export function resolveWireEffort(
+  effort: string | undefined,
+  effortCap?: Record<string, string>,
+): string | undefined {
+  if (!effort) return undefined
+  const mapped = effortCap?.[effort]
+  if (mapped) return mapped
+  return effort === 'off' ? undefined : effort
 }

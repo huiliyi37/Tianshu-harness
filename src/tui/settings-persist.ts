@@ -84,7 +84,7 @@ export function loadSettingsDraft(): SettingsDraft {
       const leanCfg = getRuntimeLeanConfig()
       const leanDefaults = resolveLeanDefaults(leanCfg.lean)
       return {
-        toolPreset: getToolPresetConfig().preset ?? 'frontend',
+        toolPreset: getToolPresetConfig().preset ?? 'minimal',
         runtimeLean: leanCfg.lean,
         maxLoadedSessions: leanCfg.maxLoadedSessions ?? leanDefaults.maxLoadedSessions,
         idleAgentTtlMs: leanCfg.idleAgentTtlMs ?? leanDefaults.idleAgentTtlMs,

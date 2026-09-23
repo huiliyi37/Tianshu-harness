@@ -8,6 +8,7 @@ import { spawnHidden } from './spawn-hidden.js'
 import { killProcessTree } from './process-kill.js'
 import { persistRawOutput, buildUiOutput } from './output-store.js'
 import { getResolvedEnv } from './resolved-env.js'
+import { toPosixPath } from '../path-format.js'
 import { loadDeclaredVerify } from '../config/verify-config.js'
 import { detectProjectFingerprint } from '../repo/project-fingerprint.js'
 import { OutputStreamBudget } from './output-stream-budget.js'
@@ -250,7 +251,12 @@ async function resolveFilterToTestFile(cwd: string, filter: string): Promise<str
   try {
     const files: string[] = []
     for await (const f of glob(`src/**/*${stem}*.test.{ts,tsx,js,jsx,mjs,cjs}`, { cwd })) {
-      files.push(f)
+      // 归一到 POSIX：glob 在 win32 上产出反斜杠，而本函数的返回值流进
+      // `display` / `args` / `targetFiles` 三条对外通道——仓库约定是 POSIX
+      // （见 path-format.ts 的 toPosixPath）。顺带修掉 `exact` 匹配：原先拿
+      // `f.includes('/' + stem + …)` 去比反斜杠路径，win32 上恒不命中，
+      // 只因 `files[0]` 兜底才看不出错。
+      files.push(toPosixPath(f))
     }
     if (files.length === 0) return null
     const exact = files.find(f => f.includes('/' + stem + '.test.') || f.includes('/' + stem))

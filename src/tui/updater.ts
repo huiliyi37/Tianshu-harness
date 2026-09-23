@@ -710,9 +710,13 @@ export function spawnWindowsSelfUpdate(root: string, channel: string, relaunch =
     // 转义问题。
     const scriptPath = join(rivetHome(), 'update.ps1')
     writeFileAtomicSync(scriptPath, script)
-    // 用一个极短的 PowerShell 调用 Start-Process 启动 update.ps1（隐藏窗口）。
+    // 用一个极短的 PowerShell 调用 Start-Process 启动 update.ps1。
     // Start-Process 本身就是分离的——这个调用立即返回，update.ps1 独立运行。
-    const launcher = `Start-Process -FilePath '${powerShell}' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath}' -WindowStyle Hidden`
+    //
+    // 刻意**不加** -WindowStyle Hidden：主防（卡巴斯基等）对"落盘脚本 + 绕过
+    // 执行策略 + 隐藏窗口"这一组合的启发式权重很高，而这正是静默更新最容易
+    // 被拦的形状。窗口可见时用户也能看到升级在做什么（脚本本身结束即关窗）。
+    const launcher = `Start-Process -FilePath '${powerShell}' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptPath}'`
     const child = spawn(
       powerShell,
       ['-NoProfile', '-NonInteractive', '-Command', launcher],

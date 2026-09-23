@@ -25,6 +25,7 @@ import {
 import { readSecret, writeSecret, secretsPath } from '../secrets-store.js'
 import { DEFAULT_CONFIG } from '../default.js'
 import { addProviderKey } from '../provider-key-store.js'
+import { readProviderKeysFile } from '../provider-keys-store.js'
 
 describe('provider config mutations', () => {
   let dir = ''
@@ -727,12 +728,50 @@ describe('removeProvider secret cleanup（一个 key 一个模型组）', () => 
     })
     const result = removeProvider('relay-shared')
     assert.equal(result.secretDeleted, false)
-    assert.deepEqual(result.keyRefSharedWith, ['relay-shared-2'])
+    // keyRefReferrers 全仓扫描（顶层槽 + keys 池槽）：relay-shared-2 的顶层槽与其
+    // 迁移合成的 default key 槽都指向同一 secret，两条都列出（同一底层 ref 的
+    // 两个引用面——判定「密钥保留」的结论不变，可见性更完整）。
+    assert.deepEqual(result.keyRefSharedWith, ['relay-shared-2', 'relay-shared-2:default'])
     assert.equal(readSecret('relay-shared'), 'sk-shared')
     // 第二个条目删除后密钥才清。
     const second = removeProvider('relay-shared-2')
     assert.equal(second.secretDeleted, true)
     assert.equal(readSecret('relay-shared'), undefined)
+  })
+
+  it('回收 keys 池槽位密钥并清池文件——同名重建不再复活旧凭据', () => {
+    registerProvider({
+      providerName: 'relay-pool',
+      baseUrl: 'https://relay.example.com/v1',
+      apiKey: 'sk-main',
+      models: [{ id: 'm1', contextWindow: 128000, maxTokens: 8192 }],
+    })
+    const spare = addProviderKey('relay-pool', {
+      apiKey: 'sk-spare',
+      label: '备用',
+      models: [{ id: 'm2', contextWindow: 128000, maxTokens: 8192 }],
+    })
+    assert.equal(readSecret('relay-pool'), 'sk-main')
+    assert.equal(readSecret(`relay-pool:${spare.id}`), 'sk-spare')
+
+    const result = removeProvider('relay-pool')
+    assert.equal(result.secretDeleted, true)
+    assert.equal(result.keySecretsDeleted, 1, '池槽位 secret 必须计入回收')
+    assert.equal(readSecret(`relay-pool:${spare.id}`), undefined, '池槽位 secret 不得成孤儿')
+    // 池文件不再含该 provider——否则同名重建时旧池连模型带 keyRef 整体复活
+    const keysFile = readProviderKeysFile()
+    assert.equal(keysFile?.providers['relay-pool'], undefined)
+
+    // 同名重建 → 干净的单 key 池，旧 spare/旧模型不复活
+    registerProvider({
+      providerName: 'relay-pool',
+      baseUrl: 'https://relay.example.com/v1',
+      apiKey: 'sk-new',
+      models: [{ id: 'fresh', contextWindow: 128000, maxTokens: 8192 }],
+    })
+    const keys = loadConfig().provider.providers['relay-pool']!.keys ?? []
+    assert.deepEqual(keys.map(k => k.id), ['default'])
+    assert.deepEqual(keys[0]!.models.map(m => m.id), ['fresh'])
   })
 
   it('reports secretDeleted=false for a keyless provider', () => {

@@ -58,6 +58,9 @@ const GLOBAL_INSTALL_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
  *
  * 误报方向刻意偏严（多一次审批），但两个高频形态被显式排除：翻源码的 grep/cat、
  * 以及 computer_use 工具自身生成的脚本（不经 bash 工具，不进本判定）。
+ *
+ * ⚠ 新增「会合成键鼠事件」的原语时，**同步补进 INPUT_SYNTHESIS_PATTERNS**——执行期
+ * 让出监控靠它把自身注入的命令排除在外（漏补的后果是护栏杀掉正在正常干活的命令）。
  */
 export const AVAILABILITY_HAZARD_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   // ── Windows：P/Invoke 声明 user32（合成输入 / 前台抢占的必经形态）──
@@ -74,6 +77,53 @@ export const AVAILABILITY_HAZARD_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
   /\bosascript\b[^\n]*\bSystem\s+Events\b[^\n]*\b(?:click|perform\s+action|set\s+value)\b/i,
   /\bCGEventPost\s*\(/i,
   // ── 通用输入注入工具（Linux 宿主同样适用）──
+  /\bxdotool\b/i,
+]
+
+/**
+ * 「前台抢占但**不**合成键鼠事件」的危害子集——**执行期让出监控只对它启用**
+ * （消费方：`src/tools/bash-yield.ts` 的 shouldWatchExecution）。
+ *
+ * 为什么不给整张 AVAILABILITY_HAZARD_PATTERNS 开执行期监控（2026-09-22 本机实测）：
+ * 合成键鼠会**重置系统的「最近输入」计时器**——静默基线 idle 216020→219715ms，
+ * 一次 CGEventPost 之后立刻读到 67ms。所以对自身在注入的命令，idle 探测读到的小值
+ * 来自命令自己而不是用户：监控会把正常干活的命令杀掉，还给出错误归因的文案
+ * （「你在 67ms 前开始操作本机」——用户根本没碰电脑）。窗口层级操作
+ * （SetForegroundWindow / BringWindowToTop / AppActivate）不合成输入事件，
+ * idle 如实反映真人活动——只有这条子集上的监控是可靠的。
+ *
+ * 刻意用**正向白名单**而非「全表减去注入签名」：负向排除遇到未知注入原语会重新
+ * 引入误杀，白名单可枚举、可审计。代价是覆盖面窄——窄而正确远好于宽而错。
+ */
+export const FOREGROUND_ONLY_HAZARD_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
+  /\bSetForegroundWindow\s*\(/i,
+  /\bBringWindowToTop\s*\(/i,
+  /\bAppActivate\s*\(/i,
+]
+
+/**
+ * 「会合成键鼠事件」的原语——执行期让出监控的**排除项**。
+ *
+ * 判据只看「是否产生输入事件」：这些原语一执行就把系统的「最近输入」计时器推到现在，
+ * 于是 idle 探测读到的小值来自命令自己（与 FOREGROUND_ONLY_HAZARD_PATTERNS 的实测
+ * 同源）。命令**同时**含前台抢占与注入原语时（issue #235 的实际形态：周期性唤起窗口
+ * 并投递按键），按注入类处理——混合脚本照样持续污染信号。
+ *
+ * `DllImport(...user32)` 形态**不在此表**：它是任何 Windows user32 调用的必经声明，
+ * 判不出「是否注入」。纯前台抢占的脚本也带它，把它算进来会把这条子集整个掏空。
+ *
+ * 表与 AVAILABILITY_HAZARD_PATTERNS 是「子集」关系（守卫测试钉住）——新增注入原语时
+ * 两处都要补。
+ */
+export const INPUT_SYNTHESIS_PATTERNS: ReadonlyArray<Readonly<RegExp>> = [
+  // SetForegroundWindow / BringWindowToTop 刻意不在其中：窗口层级操作不合成输入。
+  /\b(?:SetCursorPos|mouse_event|keybd_event|SendInput|BlockInput)\s*\(/i,
+  /\bSendKeys\b[^\n]*(?:\(|::)/i,
+  /\b(?:pyautogui|pynput|pywinauto|AutoIt|AutoHotkey)\b/i,
+  /\bctypes\b[^\n]*\b(?:windll|user32)\b/i,
+  /\bosascript\b[^\n]*\b(?:keystroke|key\s*code)\b/i,
+  /\bosascript\b[^\n]*\bSystem\s+Events\b[^\n]*\b(?:click|perform\s+action|set\s+value)\b/i,
+  /\bCGEventPost\s*\(/i,
   /\bxdotool\b/i,
 ]
 
@@ -227,6 +277,22 @@ function testBoth(pattern: RegExp, command: string): boolean {
 /** manual 档审批门统一入口：原始与归一化视图并检 DANGEROUS 清单。 */
 export function matchesDangerousBash(command: string): boolean {
   return DANGEROUS_BASH_PATTERNS.some(pattern => testBoth(pattern, command))
+}
+
+/**
+ * 命中「纯前台抢占」子集（原始 + 归一化视图并检，与审批门同款 testBoth）——
+ * 执行期让出监控的启用判据。语义详见 FOREGROUND_ONLY_HAZARD_PATTERNS。
+ */
+export function matchesForegroundOnlyHazard(command: string): boolean {
+  return FOREGROUND_ONLY_HAZARD_PATTERNS.some(pattern => testBoth(pattern, command))
+}
+
+/**
+ * 命中「会合成键鼠事件」的原语——执行期让出监控的排除项（同款双视图）。
+ * 语义详见 INPUT_SYNTHESIS_PATTERNS。
+ */
+export function matchesInputSynthesis(command: string): boolean {
+  return INPUT_SYNTHESIS_PATTERNS.some(pattern => testBoth(pattern, command))
 }
 
 export function bashCommandMayWrite(command: string): boolean {

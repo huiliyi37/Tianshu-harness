@@ -308,25 +308,50 @@ export function loadPersistedGrants(cwd: string): void {
  * applyConfiguredPathGrants 对每条配置目录同步 existsSync——Windows 上死映射
  * 盘符/断连网络盘的单次探测可达秒级，单线程 sidecar 上 26 个盘根逐个探测会
  * 冻结事件循环（审批事件都发不出去）。启动与 PUT /config/permission-dirs 都
- * 会全量重放，同一批路径短时间内反复探测纯属浪费。TTL 内命中记忆零阻塞；
- * 调用方传 force（用户刚保存配置）时绕过记忆当场实测——新挂载的盘不能等 TTL。
+ * 会全量重放，同一批路径短时间内反复探测纯属浪费。
+ *
+ * 两条路径两档 TTL（2026-09-22 复查修正——此前共用 30s 让 GET 稳态形同未修）：
+ *  - **授权应用**（applyConfiguredPathGrants）30s：授权要尽快跟随磁盘真值；
+ *    用户刚保存的路径另有 forceRoots 当场实测，不吃记忆。
+ *  - **显示探针**（probeConfiguredDirExists，GET/PUT 响应的 `exists` 字段）5min：
+ *    桌面端 usePermissionDirs 的 staleTime 是 60s，TTL 若短于它，稳态下每次 GET
+ *    到达时记忆必然已过期 → 照样逐盘裸 existsSync（26 盘根 × 秒级 = 冻事件循环）。
  */
 const ROOT_EXISTS_TTL_MS = 30_000
+const PROBE_EXISTS_TTL_MS = 5 * 60_000
 const rootExistsMemo = new Map<string, { exists: boolean; at: number }>()
 
 export function resetRootExistsMemoForTest(): void {
   rootExistsMemo.clear()
 }
 
-function rootExistsCached(root: string, force = false): boolean {
+function rootExistsCached(root: string, force = false, ttlMs: number = ROOT_EXISTS_TTL_MS): boolean {
   const now = Date.now()
   if (!force) {
     const hit = rootExistsMemo.get(root)
-    if (hit && now - hit.at < ROOT_EXISTS_TTL_MS) return hit.exists
+    if (hit && now - hit.at < ttlMs) return hit.exists
   }
   const exists = existsSync(root)
   rootExistsMemo.set(root, { exists, at: now })
   return exists
+}
+
+/**
+ * 配置目录的"存在么"探测（GET/PUT /config/permission-dirs 的 `exists` 字段）。
+ *
+ * 必须走 TTL 记忆，不能裸 existsSync：桌面端「全盘只读」在 Windows 上会写入
+ * 26 个盘根，而该 GET 路由每次 AutonomyMenu 挂载（60s stale 之后）都会打一次，
+ * 逐个同步探测 = 单线程 sidecar 冻结事件循环（审批事件都发不出去，UI 整体
+ * "卡住"）。
+ *
+ * TTL=5min 而非 30s：前端 staleTime 60s，稳态下 30s 记忆必过期，GET 仍会全量
+ * 重探——修了等于没修。代价是 exists 字段最多滞后 5 分钟（设置页 typo/缺失盘
+ * 提示足够；新保存的路径经 PUT 的 forceRoots 当场实测，不吃记忆）。
+ */
+export function probeConfiguredDirExists(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  return rootExistsCached(resolve(expandHome(trimmed)), false, PROBE_EXISTS_TTL_MS)
 }
 
 /**
@@ -336,18 +361,28 @@ function rootExistsCached(root: string, force = false): boolean {
  * in-memory grants (config is the durable source; nothing is written to the
  * per-workspace grant store). Non-existent entries are skipped fail-closed:
  * a typo'd config line must not open a subtree that later comes into being.
+ *
+ * 探测成本（2026-09-22 修复）：`force`（"用户刚保存的路径当场实测"）此前是整批
+ * 语义——桌面上「全盘只读」一次写入 26 个盘根，于是 save 一次就强制同步探测
+ * 26 次，Windows 死映射盘/断连网络盘单次可达秒级 → 事件循环冻结。现在只有
+ * **本次新增**的路径强制实测（`forceRoots`），未变路径走 30s TTL 记忆：新挂载
+ * 的盘照样当场可见，重复保存不再堵住事件循环。
  */
 export function applyConfiguredPathGrants(
   permissions: { additionalReadDirs?: string[]; additionalWriteDirs?: string[] } | undefined,
-  opts?: { force?: boolean },
+  opts?: { force?: boolean; forceRoots?: readonly string[] },
 ): void {
   if (!permissions) return
+  const forced = new Set((opts?.forceRoots ?? [])
+    .map(r => r.trim())
+    .filter(Boolean)
+    .map(r => resolve(expandHome(r))))
   const apply = (dirs: string[] | undefined, mode: GrantMode): void => {
     for (const raw of dirs ?? []) {
       const trimmed = raw.trim()
       if (!trimmed) continue
       const root = resolve(expandHome(trimmed))
-      if (!rootExistsCached(root, opts?.force)) continue
+      if (!rootExistsCached(root, opts?.force === true || forced.has(root))) continue
       grantPath(root, mode, { persist: false })
     }
   }

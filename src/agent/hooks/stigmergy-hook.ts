@@ -146,6 +146,12 @@ export function createStigmergyRuntimeHook(deps: StigmergyRuntimeHookDeps): Post
       }
 
       // Publish cross-session event for file modifications
+      //
+      // 覆盖缺口如实记录（2026-09-23 复审确认）：只有 write_file/edit_file 发
+      // file_changed——hash_edit / apply_patch / bash 写入与 worker（子进程隔离）
+      // 的编辑不产生事件，peer 侧只能靠 read-file 的被动 mtime+size 兜底（唯一
+      // 漏格：同 mtime 粒度内的等长编辑）。扩展发布条件前先想清楚噪声面：bash
+      // 无法可靠归因到单个文件路径，宁缺勿滥。
       if (deps.publishEvent && deps.sessionId) {
         if ((tool.name === 'write_file' || tool.name === 'edit_file') && tool.target && tool.success) {
           try {

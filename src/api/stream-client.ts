@@ -37,6 +37,13 @@ export interface StreamCallbacks {
    *  expected to surface it: the model answering that turn never saw the images,
    *  so a silent strip reads as "the model ignored my screenshot". Optional. */
   onImageStripped?: (info: { removedCount: number }) => void
+  /** Called when an attempt was rejected for missing `reasoning_content` and the
+   *  retry re-sends history **with** the model's thinking content preserved
+   *  (issue #258: some OpenAI-protocol gateways hosting DeepSeek thinking models
+   *  demand it back). The caller is expected to surface it — the wire shape changed
+   *  mid-session, and the provider can declare `capabilities.preservedThinkingProtocol`
+   *  to skip the wasted first attempt. Optional. */
+  onReasoningEchoRecovered?: () => void
   /** Called when a stream attempt aborts after receiving partial output (each failed attempt, before any retry). Optional. */
   onStreamAttemptAborted?: (info: StreamAttemptAbortedInfo) => void
   /** Called when the outgoing body hit the transport-size guard: either it was

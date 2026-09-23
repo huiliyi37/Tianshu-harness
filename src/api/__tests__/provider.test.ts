@@ -234,3 +234,23 @@ describe('Grok (xAI) — reasoning_effort 透传', () => {
     assert.deepEqual(caps.effortCap, { off: 'low', max: 'xhigh' })
   })
 })
+
+describe('StepFun provider capabilities', () => {
+  it('stepfun：reasoning_effort 三档 + 官方上限 high（max 降级）+ 服务端隐式提示缓存', () => {
+    const caps = resolveCapabilities('stepfun')
+    assert.equal(caps.supportsThinking, true)
+    assert.equal(caps.thinkingBlockType, 'none', '官方只走 reasoning_effort，不发 thinking block')
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { max: 'high', off: 'low' })
+    assert.equal(caps.prefixCacheStrategy, 'deepseek-native', '提示缓存是服务端隐式的（无客户端断点）')
+    assert.equal(caps.supportsCacheControl, false)
+    assert.equal(caps.supportsResponseFormat, true, '官方支持 JSON Mode 与 JSON Schema')
+    assert.equal(
+      caps.preservedThinkingProtocol,
+      undefined,
+      '不是 DeepSeek 系线协议——不得套用 reasoning_content 回显与中文思考后缀',
+    )
+    assert.ok(caps.stripParams.includes('cache_control'), 'OpenAI 兼容端点不吃 Anthropic 的缓存断点')
+    assert.equal(resolveEffortSupported('stepfun', { protocol: 'openai', thinking: 'enabled' }), true)
+  })
+})

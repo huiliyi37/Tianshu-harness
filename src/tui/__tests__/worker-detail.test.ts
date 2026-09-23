@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildWorkerDetailContent } from '../worker-detail.js'
 import { SessionPersist, getSessionDir } from '../../agent/session-persist.js'
+import { subagentsDir } from '../../config/paths.js'
 import type { FleetWorkerView } from '../fleet-registry.js'
 
 function tmpCwd(): string {
@@ -27,7 +28,9 @@ async function seedWorkerSession(workerId: string, cwd: string): Promise<void> {
 }
 
 function seedWorkerResult(workerId: string): void {
-  const dir = join(process.env.HOME ?? '/tmp', '.rivet', 'subagents')
+  // 与读取方 loadPersistedResult 同口径（RIVET_HOME 优先）——硬编码 $HOME/.rivet
+  // 会在 RIVET_HOME 隔离环境下写读失配。
+  const dir = subagentsDir()
   mkdirSync(dir, { recursive: true })
   const result = {
     workOrderId: workerId,
@@ -145,8 +148,7 @@ test('buildWorkerDetailContent degrades when result/session missing', () => {
 
 // Cleanup test result files to avoid leaking into real subagent cache.
 test('cleanup worker-detail test artifacts', () => {
-  const dir = join(process.env.HOME ?? '/tmp', '.rivet', 'subagents')
   try {
-    rmSync(join(dir, 'wo_team:T1.json'))
+    rmSync(join(subagentsDir(), 'wo_team:T1.json'))
   } catch { /* ignore */ }
 })

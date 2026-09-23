@@ -79,9 +79,12 @@ describe('web_crawl 工具', () => {
 })
 
 describe('web_map 工具', () => {
+  // 必须用与上面 SITE 不同的 host：web-fetch 缓存按 URL 落在 <cwd>/.rivet/cache/web-fetch/
+  // 且跨用例共享（cwd 都是 '/'），共用 'https://ex.com/' 会让本组取到 web_crawl 用例
+  // 写入的内容（多出 p1/p2 链接）——「种子页链接 ×2」的偶发红即由此而来。
   const MAP_SITE = {
-    'https://ex.com/': `<html><body><a href="/docs/a">a</a><p>${BIG}</p></body></html>`,
-    'https://ex.com/sitemap.xml': '<urlset><url><loc>https://ex.com/docs/s</loc></url></urlset>',
+    'https://ex2.com/': `<html><body><a href="/docs/a">a</a><p>${BIG}</p></body></html>`,
+    'https://ex2.com/sitemap.xml': '<urlset><url><loc>https://ex2.com/docs/s</loc></url></urlset>',
   }
 
   function fakeBackend(results: { title: string; url: string }[]): SearchBackend {
@@ -97,16 +100,16 @@ describe('web_map 工具', () => {
       {
         lookup: publicLookup(),
         fetch: siteFetch(MAP_SITE),
-        searchBackends: [fakeBackend([{ title: 'API 参考', url: 'https://ex.com/docs/api' }])],
+        searchBackends: [fakeBackend([{ title: 'API 参考', url: 'https://ex2.com/docs/api' }])],
       },
     )
     const result = await tool.execute(
-      { input: { url: 'https://ex.com/', search: 'api', limit: 50 }, toolUseId: 'tm_1', cwd: '/' } as any,
+      { input: { url: 'https://ex2.com/', search: 'api', limit: 50 }, toolUseId: 'tm_1', cwd: '/' } as any,
     )
     assert.equal(result.isError, undefined)
-    assert.ok(result.content.includes('https://ex.com/docs/a'))
-    assert.ok(result.content.includes('https://ex.com/docs/s'))
-    assert.ok(result.content.includes('https://ex.com/docs/api — API 参考'))
+    assert.ok(result.content.includes('https://ex2.com/docs/a'))
+    assert.ok(result.content.includes('https://ex2.com/docs/s'))
+    assert.ok(result.content.includes('https://ex2.com/docs/api — API 参考'))
     assert.ok(result.content.includes('来源分布：sitemap ×1、种子页链接 ×1、搜索 ×1（fake）'))
   })
 

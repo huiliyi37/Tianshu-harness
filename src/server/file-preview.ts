@@ -33,7 +33,7 @@ interface CacheEntry {
 
 const pdfCache = new Map<string, CacheEntry>()
 
-function exec(binary: string, args: string[]): Promise<void> {
+function runBinary(binary: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(binary, args, { timeout: SOFFICE_TIMEOUT_MS, windowsHide: true }, (err) => {
       if (err) reject(err)
@@ -48,7 +48,7 @@ async function runSofficeToPdf(filePath: string, outDir: string): Promise<Buffer
   let sawEnoent = false
   for (const binary of ['soffice', 'libreoffice'] as const) {
     try {
-      await exec(binary, ['--headless', '--convert-to', 'pdf', '--outdir', outDir, filePath])
+      await runBinary(binary, ['--headless', '--convert-to', 'pdf', '--outdir', outDir, filePath])
     } catch (err) {
       lastErr = err
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') sawEnoent = true

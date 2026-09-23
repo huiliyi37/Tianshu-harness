@@ -169,19 +169,36 @@ describe('assembly counts per preset', () => {
 
 describe('resolveToolPreset precedence', () => {
   let dir: string
+  let home: string
+  let prevHome: string | undefined
+  let prevConfigPath: string | undefined
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'tool-preset-'))
+    // 隔离真实用户配置（本机 ~/.rivet/config.json 有 tools.preset）——默认档
+    // 断言必须在空配置环境跑，否则读到的是宿主机配置而非默认（2026-09-23
+    // 默认档 frontend→minimal 后此问题显性化）。
+    home = mkdtempSync(join(tmpdir(), 'tool-preset-precedence-home-'))
+    prevHome = process.env.RIVET_HOME
+    prevConfigPath = process.env.RIVET_CONFIG_PATH
+    process.env.RIVET_HOME = home
+    delete process.env.RIVET_CONFIG_PATH
     __resetToolPresetForTest()
     delete process.env.RIVET_TOOL_PRESET
   })
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    if (prevConfigPath === undefined) delete process.env.RIVET_CONFIG_PATH
+    else process.env.RIVET_CONFIG_PATH = prevConfigPath
     delete process.env.RIVET_TOOL_PRESET
     __resetToolPresetForTest()
   })
 
-  it('defaults to frontend with no env and no config', () => {
-    assert.equal(resolveToolPreset(dir), 'frontend')
+  it('defaults to minimal with no env and no config', () => {
+    // 2026-09-23 起发版默认档 minimal（原 frontend；对齐 3.14 线）
+    assert.equal(resolveToolPreset(dir), 'minimal')
   })
 
   it('project .rivet-config.json tools.preset wins over default', () => {
@@ -204,10 +221,10 @@ describe('resolveToolPreset precedence', () => {
     assert.equal(resolveToolPreset(dir), 'frontend')
   })
 
-  it('invalid values fall back to frontend', () => {
+  it('invalid values fall back to minimal', () => {
     writeFileSync(join(dir, '.rivet-config.json'), JSON.stringify({ tools: { preset: 'huge' } }))
     __resetToolPresetForTest()
-    assert.equal(resolveToolPreset(dir), 'frontend')
+    assert.equal(resolveToolPreset(dir), 'minimal')
   })
 
   it('RIVET_TOOL_PRESET=taiyi 解析为 taiyi 档', () => {
@@ -222,9 +239,9 @@ describe('resolveToolPreset precedence', () => {
     }))
     __resetToolPresetForTest()
     assert.equal(resolveToolPreset(dir, 'taiyi'), 'taiyi')
-    // 其他域/无域回退全局（无 tools.preset → frontend）
-    assert.equal(resolveToolPreset(dir, 'qiming'), 'frontend')
-    assert.equal(resolveToolPreset(dir), 'frontend')
+    // 其他域/无域回退全局（无 tools.preset → 默认 minimal）
+    assert.equal(resolveToolPreset(dir, 'qiming'), 'minimal')
+    assert.equal(resolveToolPreset(dir), 'minimal')
   })
 
   it('域 toolPreset：changgeng 参考 taiyi 同样生效（动态域集合）', () => {
@@ -233,26 +250,15 @@ describe('resolveToolPreset precedence', () => {
     }))
     __resetToolPresetForTest()
     assert.equal(resolveToolPreset(dir, 'changgeng'), 'taiyi')
-    assert.equal(resolveToolPreset(dir, 'pojun'), 'frontend', '未配置的域不受影响')
+    assert.equal(resolveToolPreset(dir, 'pojun'), 'minimal', '未配置的域不受影响')
   })
 
   it('域内置默认：defaultDomain=taiyi 无任何配置落到 taiyi 档', () => {
-    // 隔离真实用户配置（本机 ~/.rivet/config.json 有 tools.preset，会先于域内置生效）
-    const home = mkdtempSync(join(tmpdir(), 'tool-preset-home-'))
-    const prevHome = process.env.RIVET_HOME
-    process.env.RIVET_HOME = home
-    try {
-      __resetToolPresetForTest()
-      assert.equal(resolveToolPreset(dir, 'taiyi'), 'taiyi')
-      // 无内置档的域不受波及
-      assert.equal(resolveToolPreset(dir, 'qiming'), 'frontend')
-      assert.equal(resolveToolPreset(dir), 'frontend')
-    } finally {
-      if (prevHome === undefined) delete process.env.RIVET_HOME
-      else process.env.RIVET_HOME = prevHome
-      rmSync(home, { recursive: true, force: true })
-      __resetToolPresetForTest()
-    }
+    __resetToolPresetForTest()
+    assert.equal(resolveToolPreset(dir, 'taiyi'), 'taiyi')
+    // 无内置档的域不受波及
+    assert.equal(resolveToolPreset(dir, 'qiming'), 'minimal')
+    assert.equal(resolveToolPreset(dir), 'minimal')
   })
 
   it('域内置默认：RIVET_TOOL_PRESET env 覆盖 taiyi 域内置档', () => {
@@ -328,9 +334,9 @@ describe('resolveToolPreset honors the active data root', () => {
     assert.equal(resolveToolPreset(dir), 'frontend')
   })
 
-  it('数据根下没有 config.json 时回落 frontend', () => {
+  it('数据根下没有 config.json 时回落 minimal（默认档）', () => {
     process.env.RIVET_HOME = home
     __resetToolPresetForTest()
-    assert.equal(resolveToolPreset(dir), 'frontend')
+    assert.equal(resolveToolPreset(dir), 'minimal')
   })
 })

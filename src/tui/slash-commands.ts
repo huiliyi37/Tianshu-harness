@@ -27,6 +27,7 @@ import { PhaseTracker } from './phase-tracker.js'
 import { createLogEntry, type LogEntry } from './log-state.js'
 import { getPaletteCommands } from './command-palette.js'
 import { handleYoloToggle } from './yolo-toggle.js'
+import { resolveMaxTurns } from '../agent/turn-budget-policy.js'
 import { openInEditor } from './external-editor.js'
 import { formatMissionStrip } from './mission.js'
 import { PANEL_LABELS, PANELS, type Panel } from './cockpit/types.js'
@@ -87,6 +88,7 @@ import { loadSettingsDraft, loadSettingsEnv, saveSettings } from './settings-per
 import { formatMirrorStatus } from '../tools/mirror-env.js'
 import { detectEnv, formatEnvGuidance, recommendUvSetup, isPythonProject } from '../tools/env-check.js'
 import { getResolvedEnv, getResolvedPathDiff } from '../tools/resolved-env.js'
+import { detectTlsInterception, formatTlsTrustLines } from '../platform/tls-interception.js'
 import { getShellCommand } from '../platform.js'
 import { createCoordinatorReviewDeps } from '../agent/review-coordinator-deps.js'
 import { consumePendingReview, peekPendingReview } from '../agent/post-commit-review-pending.js'
@@ -1282,6 +1284,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         lines.push('若已安装，请把其可执行目录加入配置 env.extraPath（数组），或设置对应的 *_HOME 变量后重启天枢。')
       }
 
+      lines.push('', 'HTTPS 信任链 (杀毒软件 / 企业代理)', '───────────────────────')
+      for (const l of formatTlsTrustLines(detectTlsInterception())) lines.push(l)
+
       const guidance = formatEnvGuidance(env)
       const footer = '更多排障：/logs（本会话日志落点）· 排障手册 github.com/huiliyi37/Tianshu-Tui/blob/main/docs/guides/troubleshooting.md'
       pushStatic(createLogEntry({ type: 'system', content: lines.join('\n') + (guidance ? '\n\n' + guidance : '') + '\n\n' + footer }))
@@ -1773,6 +1778,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       const aliased = parsePermissionAlias(sub)
       if (aliased === 'supervise') {
         agent.setApprovalMode(tierToMode('supervise'))
+        // 轮次预算随档位收回（策略单点 agent/turn-budget-policy.ts）：此前监督/自动分支
+        // 完全不碰 maxTurns——从全自动（0=无限轮）降下来收不回，监督会话静默无限轮。
+        agent.config.maxTurns = resolveMaxTurns(tierToMode('supervise'), ctx.config.agent.maxTurns)
         ctx.setAutoSafe(false)
         ctx.persistApprovalMode?.(tierToMode('supervise'))
         pushStatic(createLogEntry({ type: 'system', content: '✓ 已切换至 监督 — 所有高风险操作都需人工确认（已设为默认，重启后仍生效）' }))
@@ -1792,6 +1800,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           setCheckpointConfig({ checkpointEveryTurns: v })
         }
         agent.setApprovalMode(tierToMode('auto'))
+        agent.config.maxTurns = resolveMaxTurns(tierToMode('auto'), ctx.config.agent.maxTurns)
         ctx.setAutoSafe(true)
         ctx.persistApprovalMode?.(tierToMode('auto'))
         const interval = intervalRaw !== undefined ? Number(intervalRaw) : undefined
@@ -1820,7 +1829,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           return true
         }
         agent.setApprovalMode(tierToMode('unattended'))
-        agent.config.maxTurns = 0
+        agent.config.maxTurns = resolveMaxTurns(tierToMode('unattended'), ctx.config.agent.maxTurns)
         ctx.setAutoSafe(false)
         ctx.persistApprovalMode?.(tierToMode('unattended'))
         pushStatic(createLogEntry({ type: 'system', content: '✓ 已切换至 全自动 — 全自动执行，无刹车无打扰（已设为默认，重启后仍生效）。/rollback 可随时回滚。关闭: /yes off' }))
@@ -1838,6 +1847,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
           return true
         }
         agent.setApprovalMode(mode)
+        agent.config.maxTurns = resolveMaxTurns(mode, ctx.config.agent.maxTurns)
         ctx.setAutoSafe(mode === 'auto-safe')
         pushStatic(createLogEntry({ type: 'system', content: `Approval mode → ${mode}` }))
         setIsStreaming(false)
@@ -3491,7 +3501,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       const arg = parts[1]?.toLowerCase()
       if (arg === 'off') {
         agent.setApprovalMode('auto-safe')
-        agent.config.maxTurns = 200
+        agent.config.maxTurns = resolveMaxTurns('auto-safe', ctx.config.agent.maxTurns)
         ctx.setAutoSafe(true)
         ctx.persistApprovalMode?.('auto-safe')
         pushStatic(createLogEntry({ type: 'system', content: '✓ 已退出全自动，切回 自动 — 低/无风险自动，高风险仍确认（已设为默认，重启后仍生效）。' }))
@@ -3499,7 +3509,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         return true
       }
       agent.setApprovalMode('dangerously-skip-permissions')
-      agent.config.maxTurns = 0
+      agent.config.maxTurns = resolveMaxTurns('dangerously-skip-permissions', ctx.config.agent.maxTurns)
       ctx.setAutoSafe(false)
       ctx.persistApprovalMode?.('dangerously-skip-permissions')
       pushStatic(createLogEntry({ type: 'system', content: '✓ 全自动已开启 — 无限轮次，无刹车无打扰（已设为默认，重启后仍生效）。关闭: /yes off · 回滚: /rollback' }))
@@ -4369,6 +4379,8 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       onApprovalChange: (mode: string) => {
         try {
           ctx.agent.setApprovalMode(mode as Parameters<typeof ctx.agent.setApprovalMode>[0])
+          // 轮次上限同源（与 /permission、/yes 一致）：面板改档也必须联动 maxTurns。
+          ctx.agent.config.maxTurns = resolveMaxTurns(mode, loadConfig().agent.maxTurns)
           app.setApprovalMode(mode as Parameters<typeof app.setApprovalMode>[0])
           persistApprovalDefault(mode)
           return true
@@ -4475,6 +4487,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
     handler: ({ trimmed }) => handleYoloToggle(trimmed, {
       agent: ctx.agent,
       app,
+      configuredMaxTurns: ctx.config.agent.maxTurns,
       persistDefault: persistApprovalDefault,
     }, {
       on: '⚠ yolo 已开启 — 无限轮次，无刹车无打扰（已设为默认，重启后仍生效）。关闭: /yolo off · 回滚: /rollback',
@@ -4488,6 +4501,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
     handler: ({ trimmed }) => handleYoloToggle(trimmed, {
       agent: ctx.agent,
       app,
+      configuredMaxTurns: ctx.config.agent.maxTurns,
       persistDefault: persistApprovalDefault,
     }, {
       on: '✓ 全自动已开启 — 无限轮次，无刹车无打扰（已设为默认，重启后仍生效）。关闭: /yes off · 回滚: /rollback',

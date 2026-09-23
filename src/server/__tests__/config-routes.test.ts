@@ -10,6 +10,7 @@ import { readSecret, writeSecret } from '../../config/secrets-store.js'
 import { PROVIDER_PRESETS, type ProviderPresetKey } from '../../config/provider-presets.js'
 import { __setProGrantPublicKeyForTests } from '../../config/pro-license.js'
 import { makeValidGrant } from '../../config/__tests__/grant-fixtures.js'
+import { resetRootExistsMemoForTest, _resetGrantsForTest } from '../../tools/path-grants.js'
 
 const TOKEN = 'secret-token'
 const AUTH = { authorization: `Bearer ${TOKEN}` }
@@ -1745,5 +1746,82 @@ describe('workspace routes (issue #147)', () => {
     const router = createRouter(buildConfigRoutes(TOKEN))
     const res = await router('GET', '/config/workspace', {}, {})
     assert.equal(res.status, 401)
+  })
+})
+
+// ── 常驻目录授权的探测成本（2026-09-22）────────────────────────────────
+// 桌面端「全盘只读」在 Windows 写入 26 个盘根，而 GET 每次 AutonomyMenu 挂载
+// （60s stale 后）都会打一次、PUT 每次保存都会应用一次。裸 existsSync 逐个同步
+// 探测 = 单线程 sidecar 冻结事件循环（审批事件都发不出去，UI 整体"卡住"）。
+// 这里锁两条不变量：①GET 的 exists 走 TTL 记忆（不再逐个重探）②PUT 只对
+// **本次新增**路径强制实测（新挂载的盘照样当场可见）。
+
+describe('config/permission-dirs 探测成本', () => {
+  const prevHome = process.env.RIVET_HOME
+  let home: string
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'rivet-perm-dirs-'))
+    process.env.RIVET_HOME = home
+  })
+
+  after(() => {
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    resetRootExistsMemoForTest()
+    _resetGrantsForTest()
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it('GET 的 exists 走 TTL 记忆：记忆期内不重探，清空后如实反映磁盘', async () => {
+    resetRootExistsMemoForTest()
+    _resetGrantsForTest()
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const late = join(home, 'mounted-later')
+    // 保存一个"当下不存在"的路径 → 探测结果（不存在的负结论）进记忆
+    await router('PUT', '/config/permission-dirs', { additionalReadDirs: [late], additionalWriteDirs: [] }, AUTH)
+    mkdirSync(late, { recursive: true })
+
+    const res = await router('GET', '/config/permission-dirs', {}, AUTH)
+    const dirs = (res.body as { readDirs: Array<{ path: string; exists: boolean }> }).readDirs
+    assert.equal(dirs[0]!.exists, false, 'TTL 内命中记忆——正是这一步挡住了逐个同步 existsSync')
+
+    resetRootExistsMemoForTest()
+    const res2 = await router('GET', '/config/permission-dirs', {}, AUTH)
+    const dirs2 = (res2.body as { readDirs: Array<{ path: string; exists: boolean }> }).readDirs
+    assert.equal(dirs2[0]!.exists, true, '记忆清空后如实反映磁盘')
+  })
+
+  it('PUT 只对新增路径强制实测：未变路径读记忆（force:true 回归会被这条挡住）', async () => {
+    resetRootExistsMemoForTest()
+    _resetGrantsForTest()
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const stable = join(home, 'stable-root')
+    const added = join(home, 'added-root')
+    mkdirSync(stable, { recursive: true })
+    mkdirSync(added, { recursive: true })
+
+    // 首存：stable 存在 → 探测 true 进记忆（本次新增 → forceRoots 当场实测）。
+    const first = await router('PUT', '/config/permission-dirs', { additionalReadDirs: [stable], additionalWriteDirs: [] }, AUTH)
+    assert.equal(first.status, 200)
+    const probeOf = (body: unknown) => (body as { readDirs: Array<{ path: string; exists: boolean }> }).readDirs
+    assert.equal(probeOf(first.body)[0]!.exists, true)
+
+    // 关键区分机关：second 保存**之前**把 stable 删掉——记忆里仍是 true。
+    // 若实现回退成 force: true（整批强制实测），stable 会被重新 existsSync → false，
+    // 本断言即红；只有"未变路径读记忆"才保持 true。
+    rmSync(stable, { recursive: true, force: true })
+
+    const second = await router('PUT', '/config/permission-dirs', { additionalReadDirs: [stable, added], additionalWriteDirs: [] }, AUTH)
+    assert.equal(second.status, 200)
+    const dirs = probeOf(second.body)
+    assert.equal(dirs[0]!.exists, true, 'stable 未变 → 走记忆（未重新探测），force:true 回归会变 false')
+    assert.equal(dirs[1]!.exists, true, 'added 本次新增 → forceRoots 当场实测（已建目录 → true）')
+
+    // 对照：added 若也不存在，forceRoots 如实报 false（记忆不掩盖新路径的真值）
+    resetRootExistsMemoForTest()
+    const ghost = join(home, 'ghost-root')
+    const third = await router('PUT', '/config/permission-dirs', { additionalReadDirs: [ghost], additionalWriteDirs: [] }, AUTH)
+    assert.equal(probeOf(third.body)[0]!.exists, false, '新增路径如实探测：不存在就是 false')
   })
 })

@@ -9,7 +9,7 @@ import { migratePresetModelBackfill } from '../preset-model-backfill.js'
 
 describe('provider presets', () => {
   it('contains required built-in provider modes', () => {
-    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'grok', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'opencode-go', 'opencode-go-anthropic', 'openrouter', 'relay', 'siliconflow', 'volc', 'zhipu-vision'].sort())
+    assert.deepEqual([...providerPresetKeys].sort(), ['ccswitch', 'codex', 'dashscope', 'deepseek', 'glm', 'grok', 'kimi', 'longcat', 'mimo', 'mimo-api', 'minimax', 'ollama', 'openai', 'opencode-go', 'opencode-go-anthropic', 'openrouter', 'relay', 'siliconflow', 'stepfun', 'volc', 'zhipu-vision'].sort())
   })
 
   it('ollama is the only keyless preset (local, no auth)', () => {
@@ -253,5 +253,85 @@ describe('migratePresetModelBackfill', () => {
     assert.equal(migratePresetModelBackfill(raw), false)
     const models = (raw as { provider: { providers: { glm: { models: Array<{ id: string }> } } } }).provider.providers.glm.models
     assert.deepEqual(models.map(m => m.id), ['glm-5.3'])
+  })
+})
+
+describe('stepfun preset (阶跃星辰 StepFun)', () => {
+  it('step-5-preview：1M 上下文 / 64k 输出 / 原生多模态 / 官方定价（元每 1M tokens）', () => {
+    const stepfun = cloneProviderPreset('stepfun')
+    assert.equal(stepfun.name, 'stepfun')
+    assert.equal(stepfun.baseUrl, 'https://api.stepfun.com/v1')
+    assert.equal(stepfun.apiKeyEnv, 'STEPFUN_API_KEY')
+    assert.equal(stepfun.protocol, 'openai')
+    const model = stepfun.models.find(m => m.id === 'step-5-preview')
+    assert.ok(model, 'step-5-preview must be in the preset fleet')
+    assert.equal(model.contextWindow, 1_000_000, '官方 1M tokens 上下文')
+    assert.equal(model.maxTokens, 64_000, '官方最大输出 64k tokens')
+    assert.equal(model.supportsVision, true, '原生支持文本 + 图片 + 视频输入')
+    assert.equal(model.reasoningEffort, 'high', '旗舰默认高档')
+    assert.equal(model.tier, 'strong')
+    // 官方定价页（每 1M tokens）：输入 7 元 / 缓存命中 0.35 元 / 输出 20 元。
+    // cacheWrite = 缓存未命中输入价（同 DeepSeek 条目的口径）。
+    assert.deepEqual(model.pricing, { input: 7, output: 20, cacheRead: 0.35, cacheWrite: 7 })
+
+    // 推理档：官方只有 low/medium/high —— 项目的 max 必须降到 high、off 降到 low，
+    // 否则会向上游发它不认识的档位（Kimi 条目记过同款教训：静默降档也会误导用户）。
+    const caps = resolveCapabilities('stepfun', stepfun.capabilities, model.capabilities)
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { max: 'high', off: 'low' })
+  })
+
+  it('fleet 只收规格完整的型号——未公布最大输出的型号不入预设（否则向导掉进模型补参）', () => {
+    const stepfun = cloneProviderPreset('stepfun')
+    assert.deepEqual(stepfun.models.map(m => m.id), ['step-5-preview'])
+    // step-3.7-flash / step-3.5-flash 官方只公布了上下文与定价，没公布最大输出：
+    // 省略 maxTokens 会让 /connect 向导判成「元数据不全」，把用户拖进「模型补参」
+    // 表单（预设的价值正是免填）。这条守卫防止未来有人随手把它们加回来。
+    for (const m of stepfun.models) {
+      assert.ok(m.contextWindow !== undefined, `${m.id} 必须带上下文窗口`)
+      assert.ok(m.maxTokens !== undefined, `${m.id} 必须带最大输出——否则触发向导补参步`)
+    }
+  })
+
+  it('defaultModelId 是 fleet 成员；keyUrl 指向开放平台的接口密钥页', () => {
+    const preset = PROVIDER_PRESETS.stepfun
+    assert.equal(preset.defaultModelId, 'step-5-preview')
+    assert.ok(
+      preset.provider.models.some(m => m.id === preset.defaultModelId),
+      '默认档必须在 fleet 里（否则首轮就发一个列表外的 id）',
+    )
+    assert.equal(preset.keyUrl, 'https://platform.stepfun.com/interface-key')
+  })
+})
+
+// ── issue #258：托管 DeepSeek 思考模型的网关必须声明完整协议能力 ──────────────
+// 用户报的两条 400 都源自 opencode-go 预设只声明了「传输/缓存」能力，思考协议
+// 三件套（effort 枚举映射 + 回传 reasoning_content）全靠用户手改 config.json。
+describe('opencode-go preset declares the DeepSeek thinking protocol (issue #258)', () => {
+  const caps = PROVIDER_PRESETS['opencode-go'].provider.capabilities!
+
+  it('声明回传 reasoning_content（否则第二轮起被网关 400 拒收）', () => {
+    assert.equal(caps.preservedThinkingProtocol, true)
+    assert.equal(caps.thinkingBlock, 'enabled')
+    assert.equal(PROVIDER_PRESETS['opencode-go'].provider.thinking, 'enabled',
+      'preservedThinkingProtocol 生效的前置：provider.thinking 必须 enabled')
+  })
+
+  it('声明 reasoning_effort 通道与 off→none 映射（该网关枚举无 off）', () => {
+    assert.equal(caps.effortFormat, 'reasoning_effort')
+    assert.deepEqual(caps.effortCap, { off: 'none' })
+  })
+
+  it('解析后的能力对象端到端带上这些字段（applyOverrides 不得吞掉）', () => {
+    const resolved = resolveCapabilities('opencode-go', caps)
+    assert.equal(resolved.preservedThinkingProtocol, true)
+    assert.equal(resolved.effortFormat, 'reasoning_effort')
+    assert.deepEqual(resolved.effortCap, { off: 'none' })
+    assert.equal(resolved.supportsThinking, true, 'thinkingBlock/effortFormat 声明应推导出 supportsThinking')
+    assert.equal(
+      resolveEffortSupported('opencode-go', PROVIDER_PRESETS['opencode-go'].provider),
+      true,
+      '桌面/TUI 档位菜单据此启用（此前该网关的档位是静默丢弃的）',
+    )
   })
 })

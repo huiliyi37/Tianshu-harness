@@ -5849,13 +5849,14 @@ export class TuiApp {
       })
 
       // /handoff 归档：交接 turn 产出项目内文档后，拷贝到会话目录 <id>.handoff.md
-      // （loadPrevHandoff 注入管线认的位置），新会话于是自动吃到交接。
+      // （loadPrevHandoff 注入管线认的位置）。注入默认关闭（并行会话安全，
+      // 2026-09-22 产品决策），RIVET_PREV_HANDOFF=1 可显式开启。
       if (this.pendingHandoffCopy) {
         const { src, dest, sinceMs } = this.pendingHandoffCopy
         try {
           if (existsSync(src) && statSync(src).mtimeMs > sinceMs) {
             copyFileSync(src, dest)
-            this.commitStatic(`✦ 交接文档已写入 ${src} 并归档 ${dest}——新会话将自动注入交接内容。`)
+            this.commitStatic(`✦ 交接文档已写入 ${src} 并归档 ${dest}（默认不注入新会话；RIVET_PREV_HANDOFF=1 可开启）。`)
           }
         } catch { /* best-effort：归档失败不阻断会话 */ }
         this.pendingHandoffCopy = undefined

@@ -193,8 +193,11 @@ export interface OaiChatRequest {
   stream?: boolean
   stream_options?: { include_usage?: boolean }
   temperature?: number
-  /** DeepSeek extension. */
-  reasoning_effort?: 'low' | 'medium' | 'high' | 'max'
+  /** DeepSeek extension. 取值含**内部档位** `'off'`（auto-reasoning 逐轮降档走这条
+   *  路）：它不是合法 wire 枚举，由 client 侧 resolveWireEffort 统一映射/省略——
+   *  写成窄类型只会把越界值推到运行时（issue #258 的第一条报错正是「类型说不会
+   *  发生、线上照样发」的形状）。 */
+  reasoning_effort?: 'off' | 'low' | 'medium' | 'high' | 'max'
   /** Force the model to emit valid JSON (OpenAI-compatible json_object mode).
    *  Worker sessions set this on the final (no-tools) turn to eliminate free-text
    *  parse failures. Requires the prompt to mention "json". */

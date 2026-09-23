@@ -3,7 +3,18 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DANGEROUS_BASH_PATTERNS, INJECTION_PATTERNS, matchesDangerousBash } from '../agent/approval-risk.js'
-import { maybeYieldForUserActivity } from './bash-yield.js'
+import {
+  DEFAULT_INTERRUPT_HINT_MS,
+  executionYieldMessage,
+  interruptHintMessage,
+  matchesAvailabilityHazard,
+  maybeYieldForUserActivity,
+  resolveYieldWatchMs,
+  shouldWatchExecution,
+  startInterruptHint,
+  startYieldWatch,
+} from './bash-yield.js'
+import { probeUserIdleMs, resolveYieldMs, type UserIdleMs } from '../system/user-idle.js'
 import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
@@ -338,6 +349,15 @@ export function __setRtkExecForTests(exec: typeof execFileSync | undefined): voi
 /** 测试专用：暴露 rtkRewrite 的判定行为（不进入生产路径）。 */
 export const __rtkRewriteForTests = rtkRewrite
 
+/** 执行期让出监控的 idle 探测注入点（测试）——clamp 不变量落地后，「阈值置顶 + 小间隔」
+ *  的旧造法恰好是被禁组合，真实探测无法快速造出「用户接管」；见 bash-yield-wiring.test.ts。 */
+let _yieldWatchProbeOverride: (() => Promise<UserIdleMs>) | undefined
+
+/** 测试专用：替换执行期让出监控的探测器；传 undefined 恢复真实探测。 */
+export function __setYieldWatchProbeForTests(probe: (() => Promise<UserIdleMs>) | undefined): void {
+  _yieldWatchProbeOverride = probe
+}
+
 function rtkRewrite(command: string, toolUseId?: string): string {
   if (command === _cachedCommand && _cachedResult !== undefined && toolUseId === _cachedToolUseId) {
     return _cachedResult
@@ -566,6 +586,19 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     // in-memory preview truncation below — persistence must not consume the
     // tail-truncated preview buffer.
     const rawSpool = new BoundedRawSpool()
+
+    // issue #235 执行期护栏的调度句柄。声明放在 finish/onAbort 之前：signal 已
+    // aborted 时 onAbort() 会在原地立刻执行，若句柄到那时才用 const 声明就会撞 TDZ。
+    // 三条 settle 路径（finish / onAbort / child error）都必须摘掉——残留的调度会对
+    // 已经结束的命令继续探测、继续往已 dispose 的 uiOutput 推提示。
+    let stopYieldWatch: (() => void) | undefined
+    let stopInterruptHint: (() => void) | undefined
+    const stopExecutionGuards = () => {
+      stopYieldWatch?.()
+      stopYieldWatch = undefined
+      stopInterruptHint?.()
+      stopInterruptHint = undefined
+    }
 
     child.stdout!.on('data', (data: Buffer) => {
       const text = stdoutDecoder.write(data)
@@ -836,6 +869,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
+      stopExecutionGuards()
       cleanupAbort()
       // 结果装配兜底：buildResult 内任何异常（如 dist 混构导致的
       // ReferenceError，session 22d00a37）从 child 事件处理器逃逸时不会变成
@@ -861,6 +895,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
+      stopExecutionGuards()
       cleanupAbort()
       killProcessTree(child, 'SIGTERM')
       forceKillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 3000)
@@ -884,6 +919,57 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       else signal.addEventListener('abort', onAbort, { once: true })
     }
 
+    // issue #235 期望行为 1 的**执行期**半边（收编公开仓 PR #257）。两条护栏判据不同、
+    // 覆盖面不同，刻意分开：
+    //  ① 中断提示（覆盖**全部**危害签名）：命令跑够 DEFAULT_INTERRUPT_HINT_MS 就往 UI
+    //     推一行出口说明。合成键鼠类命令只能靠这条——它们的自身注入会重置系统
+    //     「最近输入」计时器，idle 探测读到的"用户活跃"其实是命令自己。
+    //  ② 自动让出（只对「纯前台抢占」子集）：这类命令不合成输入，idle 如实反映真人
+    //     活动，探测才可靠；接管即终止，走与 abort/timeout 同一条 kill 路径。
+    // 未命中签名的命令两条都不建（零开销）；RIVET_CU_YIELD_MS=0（让出护栏整体关闭）
+    // 或 RIVET_CU_YIELD_WATCH_MS=0 可分别关掉。
+    if (matchesAvailabilityHazard(rawCommand)) {
+      stopInterruptHint = startInterruptHint({
+        delayMs: DEFAULT_INTERRUPT_HINT_MS,
+        onHint: () => { uiOutput.push(`\n${interruptHintMessage()}\n\n`) },
+      })
+    }
+    const yieldMs = resolveYieldMs()
+    // 有效间隔在解析处被 clamp 到 ≥ yieldMs（见 resolveYieldWatchMs 的注释）——
+    // 否则批准点击会落进首个探测窗口，刚批准的命令开跑即被误判「用户接管」杀掉。
+    const watchMs = yieldMs > 0 && shouldWatchExecution(rawCommand) ? resolveYieldWatchMs(yieldMs) : 0
+    if (watchMs > 0) {
+      stopYieldWatch = startYieldWatch({
+        probe: () => (_yieldWatchProbeOverride ?? probeUserIdleMs)(),
+        thresholdMs: yieldMs,
+        intervalMs: watchMs,
+        onYield: (idleMs) => {
+          if (settled) return
+          settled = true
+          if (timer) clearTimeout(timer)
+          stopExecutionGuards()
+          cleanupAbort()
+          killProcessTree(child, 'SIGTERM')
+          forceKillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 3000)
+          const stdoutTail = stdoutDecoder.end()
+          const stderrTail = stderrDecoder.end()
+          const finalStdout = stdout + stdoutTail
+          const finalStderr = stderr + stderrTail
+          uiOutput.push(stdoutTail)
+          uiOutput.push(stderrTail)
+          uiOutput.flush()
+          uiOutput.dispose()
+          resolve({
+            content: executionYieldMessage(idleMs, watchMs, finalStdout + (finalStderr ? `\n${finalStderr}` : '')),
+            uiContent: '⏸ yielded',
+            // 被护栏终止 = 这次调用没有正常完成：与执行前让出（isError: true）同源。
+            // onAbort 的 isError: false 是"用户自己中止"的语义，不适用于此。
+            isError: true,
+          })
+        },
+      })
+    }
+
     timer = setTimeout(() => {
       timedOut = true
       killProcessTree(child, 'SIGTERM')
@@ -900,6 +986,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       settled = true
       if (timer) clearTimeout(timer)
       if (forceKillTimer) clearTimeout(forceKillTimer)
+      stopExecutionGuards()
       cleanupAbort()
       uiOutput.flush()
       uiOutput.dispose()

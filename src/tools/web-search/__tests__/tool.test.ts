@@ -42,22 +42,39 @@ describe('createWebSearchTool', () => {
     assert.match(out.content, /未找到与「nothing here」相关的搜索结果/)
   })
 
-  it('never answers from an all-off-topic result set', async () => {
-    // 2026-09 cn.bing.com 故障形态：结构完好的无关 SERP。用户可见结果必须是
-    // 「没搜到」，而不是把「西南交通大学研究生院」当成西湖门票的答案。
+  it('labels an all-off-topic result set as low-confidence fallback', async () => {
+    // 2026-09 cn.bing.com 故障形态：结构完好但无关/降级的 SERP。用户可见结果是
+    // 「带低相关标注的兜底结果」——结果保留（单后端配置下不至于什么都搜不到），
+    // 标注必须让模型/用户明白不能把它当答案采信。
     const tool = createWebSearchTool({
       backends: [backend('bing', async () => [
         { title: '西南交通大学研究生院（党委研究生工作部）', url: 'https://gsnews.swjtu.edu.cn/', snippet: '与查询无关。' },
+        { title: '国家科学评论 (National Science Review)', url: 'https://www.nsreviewgroup.com/', snippet: '与查询无关。' },
       ])],
     })
     const out = await tool.execute(params({ query: '杭州西湖 门票预约' }))
     assert.equal(out.isError, undefined)
-    assert.match(out.content, /未找到与「杭州西湖 门票预约」相关的搜索结果/)
-    assert.ok(!out.content.includes('西南交通大学'), '跑题结果不得出现在输出中')
+    assert.match(out.content, /低相关/)
+    assert.match(out.content, /只覆盖了查询中的个别词/)
+    assert.match(out.content, /请勿直接采信/)
+    assert.match(out.content, /西南交通大学/, '兜底结果随标注一并给出')
   })
 
-  it('does not report a hard error when results were dropped as off-topic', async () => {
-    // 软失败语义：用户可见结局与"无结果"一致，不该显示「搜索失败」。
+  it('keeps a relevant result set unlabelled', async () => {
+    const tool = createWebSearchTool({
+      backends: [backend('bing', async () => [
+        { title: '2026杭州西湖景区门票预约购买入口汇总', url: 'https://x/1', snippet: '杭州西湖门票预约入口，每日限流。' },
+        { title: '杭州西湖景区预约指南', url: 'https://x/2', snippet: '西湖门票预约流程与开放时间。' },
+      ])],
+    })
+    const out = await tool.execute(params({ query: '杭州西湖 门票预约' }))
+    assert.equal(out.isError, undefined)
+    assert.ok(!out.content.includes('低相关'), '相关结果不得带低相关标注')
+    assert.match(out.content, /经 bing/)
+  })
+
+  it('does not report a hard error when the only results are low-confidence', async () => {
+    // 软失败语义：低置信兜底不是硬错误，不该显示「搜索失败」。
     const tool = createWebSearchTool({
       backends: [backend('bing', async () => [
         { title: '湖南科技大学', url: 'https://www.hnust.edu.cn/', snippet: '无关。' },
@@ -102,7 +119,7 @@ describe('createWebSearchTool', () => {
     const tool = createWebSearchTool({
       backends: [backend('brave', async (q) => {
         receivedQuery = q
-        // 标题回带查询词：否则「123」与「T」零重叠会被 off-topic 守卫判为跑题并丢弃
+        // 标题回带查询词：否则「123」与「T」零重叠会被 off-topic 守卫判为低置信兜底
         // （守卫行为见 relevance.test.ts）。本用例只关心 query 的类型转换。
         return [{ title: 'T123', url: 'https://x', snippet: 'S' }]
       })],

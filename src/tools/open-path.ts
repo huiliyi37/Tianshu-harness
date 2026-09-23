@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
-import { dirname, extname, resolve } from 'node:path'
+import { dirname, extname, posix, resolve, win32 } from 'node:path'
 import type { Tool } from './types.js'
 import { expandHome } from '../platform.js'
 
@@ -11,10 +11,14 @@ export interface OpenPathCommand {
 
 function normalizeOpenTarget(path: string, platform: NodeJS.Platform): string {
   const expanded = expandHome(path)
-  if (platform === 'win32' && /^(?:[a-zA-Z]:[\\/]|\\\\)/.test(expanded)) {
-    return expanded
+  // 路径语义由**声明的平台**决定，不用宿主 resolve()：否则在 Windows 上跑
+  // darwin/linux 用例时 '/Users/…' 被解析成 'C:\Users\…'，函数对外的跨平台
+  // 语义就不自洽了（生产调用方传的是宿主平台，行为不变）。
+  if (platform === 'win32') {
+    if (/^(?:[a-zA-Z]:[\\/]|\\\\)/.test(expanded)) return expanded
+    return win32.resolve(expanded)
   }
-  return resolve(expanded)
+  return posix.resolve(expanded)
 }
 
 export function buildOpenPathCommand(path: string, platform: NodeJS.Platform = process.platform): OpenPathCommand {

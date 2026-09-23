@@ -41,6 +41,7 @@ const PER_TOKEN_PROVIDERS = new Set<string>([
   'opencode-go',
   'siliconflow', // aggregator — per-token
   'dashscope', // 阿里通义千问 — per-token
+  'stepfun', // 阶跃星辰 StepFun — per-token（官方开放平台按量计费，非订阅制）
   'openrouter', // aggregator — per-token
   'relay', // self-hosted one-api/new-api relay — per-token (default assumption)
 ])

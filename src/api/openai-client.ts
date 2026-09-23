@@ -8,6 +8,7 @@ import type { ProviderProfile } from './provider-profile.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
+import { resolveWireEffort } from './provider.js'
 import { ReasoningRepetitionGuard } from './reasoning-repetition.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
 import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS, MAX_JSON_BODY_BYTES } from '../utils/sanitize.js'
@@ -443,20 +444,30 @@ export class OpenAIClient implements StreamClient {
     this.config = { ...this.config, thinking: mode }
   }
 
-  async stream(
-    request: OaiChatRequest,
-    callbacks: StreamCallbacks,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    this.lastRequestMessages = request.messages
-    // reasoning_content stripping rules:
-    // - Preserved-thinking protocol (capability-declared, e.g. DeepSeek/MiMo):
-    //   keep for tool-call turns, strip for pure-text
-    // - Independent reasoning (e.g. GLM — no preservedThinkingProtocol): always strip
-    // - Thinking disabled: always strip
+  /**
+   * 会话历史 → wire messages。reasoning_content 的保留/剥离规则：
+   * - preserved-thinking 协议（capability 声明，如 DeepSeek/MiMo）：工具轮保留，纯文本轮剥离
+   * - 独立推理（如 GLM，无 preservedThinkingProtocol）：一律剥离
+   * - thinking 关闭：一律剥离
+   *
+   * `opts.preserveReasoning` 是一次性覆盖（issue #258）：当网关明确回 400
+   * 「reasoning_content must be passed back」时，重试必须把思考内容原样发回，
+   * 否则同一个请求再发一次还是同样的 400。覆盖只作用于本次 attempt，成功后由
+   * stream() 把 `preservedThinkingProtocol` 粘到实例上（后续轮次不再重试）。
+   */
+  private mapWireMessages(
+    messages: OaiMessage[],
+    opts?: {
+      preserveReasoning?: boolean
+      /** 该历史数组已派发过 → 忽略粘性的 preservedThinkingProtocol，保持原字节。 */
+      suppressStickyPreserve?: boolean
+    },
+  ): OaiMessage[] {
+    const stickyPreserved = Boolean(this.config.preservedThinkingProtocol)
+      && opts?.suppressStickyPreserve !== true
     const isPreservedThinking = this.config.thinking === 'enabled'
-      && Boolean(this.config.preservedThinkingProtocol)
-    const messages = request.messages.map(m => {
+      && (stickyPreserved || opts?.preserveReasoning === true)
+    return messages.map(m => {
       if (m.role !== 'assistant') return m
       const hasToolCalls = Array.isArray((m as any).tool_calls) && (m as any).tool_calls.length > 0
       // DeepSeek preserved-thinking: tool-call turns must echo reasoning_content.
@@ -475,6 +486,10 @@ export class OpenAIClient implements StreamClient {
         if (transform) return transform(m, this.config.model, this.config.wireContext)
         return m
       }
+      // 被迫保留（preserveReasoning 覆盖）时，纯文本轮也保留——网关要求的是
+      // 「历史里的思考内容原样回传」，只保工具轮会在下一个纯文本 assistant 轮
+      // 再次触发同一个 400。
+      if (opts?.preserveReasoning === true && isPreservedThinking) return m
       const { reasoning_content: _, ...rest } = m
       // DeepSeek requires assistant messages to have `content` or `tool_calls`.
       // After stripping reasoning_content, ensure `content` exists.
@@ -483,6 +498,22 @@ export class OpenAIClient implements StreamClient {
       }
       return rest
     }).map(normalizeOaiMessage)
+  }
+
+  async stream(
+    request: OaiChatRequest,
+    callbacks: StreamCallbacks,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    this.lastRequestMessages = request.messages
+    // 已派发过的历史数组必须保持原字节（request invariant 硬门禁，2026-07-06 事故类）：
+    // 粘性 preservedThinkingProtocol（reasoning_echo 自愈）只作用于此后的**新**数组，
+    // 否则「侧路复用主请求 / 故障转移重放同一 request」会看到不同的字节。
+    // 判断必须早于 observe()（observe 会登记本次派发，之后恒真）。
+    const reentrantDispatch = this.requestInvariant.hasObserved(request)
+    const messages = this.mapWireMessages(request.messages, {
+      suppressStickyPreserve: reentrantDispatch,
+    })
 
     const body: Record<string, unknown> = {
       // 空 model 回退到 client 绑定值——侧路调用（essence-gate / vision bridge）
@@ -561,23 +592,29 @@ export class OpenAIClient implements StreamClient {
         // Only for providers that accept reasoning_effort alongside the thinking block.
         // Providers with in-block effort encoding (budget_tokens / adaptive) don't need
         // a separate reasoning_effort field.
-        if (this.config.effortFormat === 'reasoning_effort'
-          && this.config.reasoningEffort
-          && this.config.reasoningEffort !== 'off') {
-          body.reasoning_effort = this.config.reasoningEffort
+        if (this.config.effortFormat === 'reasoning_effort') {
+          // 档位映射（含 `off` 的省略语义）统一走 resolveWireEffort：旧代码只在
+          // 这里单独判 `!== 'off'`，下面两个写入点漏判——issue #258 的
+          // `reasoning_effort: off` 就是从那里漏出去的。
+          const wireEffort = resolveWireEffort(this.config.reasoningEffort, this.config.effortCap)
+          if (wireEffort) body.reasoning_effort = wireEffort
         }
       } else if (this.config.effortFormat !== 'none') {
-        body.reasoning_effort = this.config.reasoningEffort ?? 'medium'
+        // 未配档位 → 网关默认 medium；显式 `off` 且 provider 未给映射 → 不发该字段
+        //（`off` 不是任何端点的合法枚举值，直发即 400）。
+        const wireEffort = this.config.reasoningEffort === undefined
+          ? 'medium'
+          : resolveWireEffort(this.config.reasoningEffort, this.config.effortCap)
+        if (wireEffort) body.reasoning_effort = wireEffort
       }
     }
-    if (request.reasoning_effort && this.config.effortFormat !== 'none') {
-      body.reasoning_effort = request.reasoning_effort
-    }
-
-    // Effort cap: clamp effort values to provider-supported maximums.
-    if (this.config.effortCap && typeof body.reasoning_effort === 'string') {
-      const capped = this.config.effortCap[body.reasoning_effort]
-      if (capped) body.reasoning_effort = capped
+    if (this.config.effortFormat !== 'none' && request.reasoning_effort) {
+      // 请求级档位是**更具体**的意图（auto-reasoning 逐轮决定走这条），必须能覆盖
+      // 上面写入的 provider 默认档——包括「显式 off 表示本轮不要该字段」这种清空
+      // 语义。否则 off 会被上面刚写进去的 'medium' 掩盖，等于降档失效。
+      const wireEffort = resolveWireEffort(request.reasoning_effort, this.config.effortCap)
+      if (wireEffort) body.reasoning_effort = wireEffort
+      else delete body.reasoning_effort
     }
 
     // Apply stable system suffix (Chinese thinking instruction) — computed once
@@ -636,7 +673,7 @@ export class OpenAIClient implements StreamClient {
 
     if (request.prefixProbe) this.recordWireDivergence(msgArray, body.tools as unknown[] | undefined)
 
-    await this.sendStream(body, callbacks, signal)
+    await this.sendStream(body, callbacks, signal, request.messages)
   }
 
   /** Compare this request's final wire bytes with the previous main-turn
@@ -700,6 +737,12 @@ export class OpenAIClient implements StreamClient {
     body: Record<string, unknown>,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
+    /**
+     * 未剥离的原始历史。`body.messages` 是已按 preserved-thinking 规则剥离过的
+     * 副本——reasoning_echo 自愈（issue #258）必须从原始数组重建，否则剥掉的
+     * 思考内容回不来。缺省 = 该调用方没提供，自愈分支直接跳过（不猜）。
+     */
+    sourceMessages?: OaiMessage[],
   ): Promise<void> {
     // reasoningRef survives retry attempts within this sendStream call.
     // When a mid-stream failure occurs (e.g. idle timeout, connection reset),
@@ -714,6 +757,12 @@ export class OpenAIClient implements StreamClient {
     // 分类器据此改判 context_overflow（不可重试），不会再发第三次。
     let stripRequested = false
     let imagesStripped = false
+
+    // reasoning_echo 恢复状态（issue #258）：网关回 400「reasoning_content must be
+    // passed back」时，本次请求重发一次**保留思考内容**的历史；成功后把
+    // preservedThinkingProtocol 粘到实例上，后续轮次不再吃这一发。
+    let preserveReasoningRequested = false
+    let preserveReasoningApplied = false
 
     // Size-scaled first-byte budget (B): estimate prompt size once (stable across
     // retries; the per-retry reasoning re-injection is negligible) and derive a
@@ -752,6 +801,16 @@ export class OpenAIClient implements StreamClient {
       // 后续轮次仍保图（用户下一句「这张图里…」还能对上）。stripOaiImageParts
       // 是纯函数，无图可剥时返回原引用，下面按引用比较走原路径。
       let wireMessages = body.messages as OaiMessage[]
+      // 保留思考内容重发（上一次失败被判 reasoning_echo）：从**原始** request.messages
+      // 重建（body.messages 已经是剥离后的历史，剥掉的信息回不来）。与剥图同理，
+      // 只改本次 attempt 的 wire 副本，不动 request.messages / body。
+      if (preserveReasoningRequested && !preserveReasoningApplied && sourceMessages) {
+        wireMessages = this.mapWireMessages(sourceMessages, { preserveReasoning: true })
+        preserveReasoningApplied = true
+        // wire 形态被改了（历史里多出 reasoning_content，前缀字节随之变化）——
+        // 静默改形态是本仓最贵的 bug 形状，必须让调用方有机会说出来。
+        callbacks.onReasoningEchoRecovered?.()
+      }
       if (stripRequested && !imagesStripped) {
         const stripped = stripOaiImageParts(wireMessages)
         if (stripped.removedCount > 0) {
@@ -902,8 +961,29 @@ export class OpenAIClient implements StreamClient {
         if (info.classified.category === 'image_strip') {
           stripRequested = true
         }
+        // reasoning_echo 分类 = 网关要求回传 reasoning_content：下一次 attempt
+        // 用保留思考内容的历史重发（重建点见 fn 内的 wireMessages）。
+        if (info.classified.category === 'reasoning_echo') {
+          preserveReasoningRequested = true
+        }
       },
     })
+
+    // 自愈成功 → 把「该端点需要回传思考内容」粘到实例上（本实例 = 该 provider +
+    // 模型），后续轮次不再白吃一次 400 + 重试。只在**成功之后**落：重试同样失败
+    // 时保持剥离语义，不把未经证实的假设固化。
+    //
+    // 已派发过的历史数组不受粘性影响（mapWireMessages 的 suppressStickyPreserve）：
+    // 那些数组再次派发必须字节一致，否则撞 request invariant 硬门禁。生产里每轮
+    // 都是新数组，所以粘性对「下一轮」照常生效。
+    //
+    // 注意 systemSuffix 不跟着翻转：它在构造期按 preservedThinkingProtocol 拼进
+    // system，中途追加会改前缀字节（缓存断点）。保守做法＝本轮起只改历史里的
+    // reasoning_content，system 保持字节稳定。
+    if (preserveReasoningRequested && !this.config.preservedThinkingProtocol) {
+      this.config = { ...this.config, preservedThinkingProtocol: true }
+      debugLog('[openai-client] reasoning_echo 自愈：已为该 provider 打开 preservedThinkingProtocol（后续轮次不再重试）')
+    }
   }
 
   /** Parse SSE stream from a reader — exposed for testing */

@@ -1244,7 +1244,12 @@ export function buildSessionRoutes(
       const modelTotals = new Map<string, { model: string; provider?: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; count: number }>()
       const providerTotals = new Map<string, { provider: string; inputTokens: number; outputTokens: number; totalTokens: number; cost: number; count: number }>()
 
-      // Main session turn-level usage (turn_complete events).
+      // Main session usage — turn_complete 的 usage 是 `session.getTotalUsage()` 的
+      // **累计快照**（不是单轮增量），所以这里必须取「最后一条」而不是求和：
+      // 求和等于把每个 turn 的累计值再加一遍，长会话能放大近 20 倍（2026-09-23
+      // 实测 2026092226d3821a1ce6：求和 62,685,972 vs 末值 3,327,234，而权威账本
+      // meta.tokenUsage.prompt = 3,325,173 与 cache-log 主请求累计逐字节吻合）。
+      // 逐字段取「最后一个非零值」：累计量单调不减，缺字段的畸形帧不该把已有值清零。
       let mainInput = 0
       let mainOutput = 0
       let mainCacheRead = 0
@@ -1256,11 +1261,11 @@ export function buildSessionRoutes(
         if (ev.type === 'turn_complete') {
           const data = ev.data as { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } }
           if (data.usage) {
-            mainInput += data.usage.input_tokens ?? 0
-            mainOutput += data.usage.output_tokens ?? 0
-            mainCacheRead += data.usage.cache_read_input_tokens ?? 0
-            mainCacheWrite += data.usage.cache_creation_input_tokens ?? 0
-            mainReasoning += data.usage.reasoning_tokens ?? 0
+            mainInput = data.usage.input_tokens ?? mainInput
+            mainOutput = data.usage.output_tokens ?? mainOutput
+            mainCacheRead = data.usage.cache_read_input_tokens ?? mainCacheRead
+            mainCacheWrite = data.usage.cache_creation_input_tokens ?? mainCacheWrite
+            mainReasoning = data.usage.reasoning_tokens ?? mainReasoning
           }
           continue
         }
@@ -1310,7 +1315,27 @@ export function buildSessionRoutes(
         const reasoningTokens = usage?.reasoning_tokens ?? 0
         const totalTokens = usage?.total_tokens ?? inputTokens + outputTokens
 
+        // 同一 worker 的 usage 是**累计快照**（coordinator 的 dispatchUsage：跨轮
+        // priorUsage 回种后的净增累计，见 coordinator.ts「usage-ledger 对齐」段），
+        // 因此逐字段取「最后一个非零值」而不是相加——同一批 token 在多次 activity
+        // 事件里重复上报时，相加会按事件数把它记 N 次（主会话那侧同族问题的实测
+        // 放大倍数：19×）。cost 由该快照派生，同样取末值。
         const existing = workers.get(workerId)
+        const prevInput = existing?.inputTokens ?? 0
+        const prevOutput = existing?.outputTokens ?? 0
+        const prevCacheRead = existing?.cacheReadTokens ?? 0
+        const prevCacheWrite = existing?.cacheWriteTokens ?? 0
+        const prevReasoning = existing?.reasoningTokens ?? 0
+        const prevTotal = existing?.totalTokens ?? 0
+        const prevCost = existing?.cost ?? 0
+        const nextInput = inputTokens || prevInput
+        const nextOutput = outputTokens || prevOutput
+        const nextCacheRead = cacheReadTokens || prevCacheRead
+        const nextCacheWrite = cacheWriteTokens || prevCacheWrite
+        const nextReasoning = reasoningTokens || prevReasoning
+        const nextTotal = totalTokens || prevTotal
+        const nextCost = costBreakdown.total || prevCost
+
         const worker = {
           workerId,
           parentId: data.parentId ?? existing?.parentId,
@@ -1320,32 +1345,39 @@ export function buildSessionRoutes(
           provider: provider ?? existing?.provider,
           objective: data.objective ?? existing?.objective,
           elapsedMs: data.elapsedMs ?? existing?.elapsedMs,
-          inputTokens: (existing?.inputTokens ?? 0) + inputTokens,
-          outputTokens: (existing?.outputTokens ?? 0) + outputTokens,
-          cacheReadTokens: (existing?.cacheReadTokens ?? 0) + cacheReadTokens,
-          cacheWriteTokens: (existing?.cacheWriteTokens ?? 0) + cacheWriteTokens,
-          reasoningTokens: (existing?.reasoningTokens ?? 0) + reasoningTokens,
-          totalTokens: (existing?.totalTokens ?? 0) + totalTokens,
-          cost: (existing?.cost ?? 0) + costBreakdown.total,
+          inputTokens: nextInput,
+          outputTokens: nextOutput,
+          cacheReadTokens: nextCacheRead,
+          cacheWriteTokens: nextCacheWrite,
+          reasoningTokens: nextReasoning,
+          totalTokens: nextTotal,
+          cost: nextCost,
         }
         workers.set(workerId, worker)
 
+        // 聚合层用「本次事件带来的增量」累加，保证与 per-worker 末值口径一致
+        // （直接累加原始快照 = 把同一个累计值反复计入）。
+        const dInput = nextInput - prevInput
+        const dOutput = nextOutput - prevOutput
+        const dTotal = nextTotal - prevTotal
+        const dCost = nextCost - prevCost
+
         if (model) {
           const mt = modelTotals.get(model) ?? { model, provider, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, count: 0 }
-          mt.inputTokens += inputTokens
-          mt.outputTokens += outputTokens
-          mt.totalTokens += totalTokens
-          mt.cost += costBreakdown.total
+          mt.inputTokens += dInput
+          mt.outputTokens += dOutput
+          mt.totalTokens += dTotal
+          mt.cost += dCost
           mt.count += 1
           if (provider && !mt.provider) mt.provider = provider
           modelTotals.set(model, mt)
         }
         if (provider) {
           const pt = providerTotals.get(provider) ?? { provider, inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, count: 0 }
-          pt.inputTokens += inputTokens
-          pt.outputTokens += outputTokens
-          pt.totalTokens += totalTokens
-          pt.cost += costBreakdown.total
+          pt.inputTokens += dInput
+          pt.outputTokens += dOutput
+          pt.totalTokens += dTotal
+          pt.cost += dCost
           pt.count += 1
           providerTotals.set(provider, pt)
         }

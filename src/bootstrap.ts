@@ -30,6 +30,7 @@ import { lastSessionPointerDir, rivetHome, stateDir } from './config/paths.js'
 import { setTargetConventions, applyConfiguredGitBashPath } from './platform.js'
 import { AgentLoop } from './agent/loop.js'
 import { resolveZenConfig } from './agent/zen-mode.js'
+import { resolveMaxTurns } from './agent/turn-budget-policy.js'
 import { createAgentConfig, createMainAgentConfigInput } from './agent/create-agent-config.js'
 import { SessionContext } from './agent/context.js'
 import { SessionPersist, evictOldSessions, getSessionDir } from './agent/session-persist.js'
@@ -1087,7 +1088,8 @@ export function createAgentRuntime(deps: {
       // serve.ts）都会把 maxTurns 置 0，唯独「持久化 YOLO 为默认 → 重启」的构造
       // 路径漏了联动：YOLO 会话按 config maxTurns（如 50）跑，turn 45 注入预算
       // 预警、turn 50 被 GUARD 硬截断（session 92a38900，用户观感=自己停止）。
-      maxTurns: config.agent.approval === 'dangerously-skip-permissions' ? 0 : config.agent.maxTurns,
+      // 策略单点在 agent/turn-budget-policy.ts（2026-09-22 收口，别在这里重写三元式）。
+      maxTurns: resolveMaxTurns(config.agent.approval, config.agent.maxTurns),
       checkpointEveryTurns: config.agent.checkpointEveryTurns,
       getSessionMemoryState: () => persist.getSessionMemoryState(),
       fileHistory,
@@ -1101,6 +1103,11 @@ export function createAgentRuntime(deps: {
       playbookStore: process.env['RIVET_PLAYBOOK'] === '1' ? new PlaybookStore(cwd) : undefined,
       providerHealth,
       effortBanditEnabled: effortGate.enabled,
+      // 跨会话 registry 透传（2026-09-22）：与协调器同源（同为 refs.sessionRegistry）。
+      // 此前这个字段从未被填充，导致 AgentLoop 侧整个跨会话块失效——包括
+      // peer 编辑后的读去重失效（invalidateReadCachesForEvents）。注意该块内部
+      // 的「往 prompt 注入」三项仍各有独立开关且默认关。
+      sessionRegistry: refs.sessionRegistry ?? undefined,
       taskLedger: refs.taskLedger ?? undefined,
       ownershipLedger: refs.ownershipLedger ?? undefined,
       verificationSnapshotManager: refs.verificationSnapshotManager ?? undefined,

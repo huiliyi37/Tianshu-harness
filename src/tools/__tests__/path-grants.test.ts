@@ -18,6 +18,8 @@ import {
   applyDefaultDependencyReadGrants,
   applyRivetRuntimeReadGrants,
   isPathUnder,
+  probeConfiguredDirExists,
+  resetRootExistsMemoForTest,
   _resetGrantsForTest,
 } from '../path-grants.js'
 import { rawOutputDir } from '../output-store.js'
@@ -296,6 +298,36 @@ describe('path-grants', () => {
     applyConfiguredPathGrants(undefined)
     applyConfiguredPathGrants({})
     assert.equal(listGrants().length, 0)
+  })
+
+  // ── 探测成本（2026-09-22）：Windows 26 盘根的同步 existsSync 会冻结事件循环 ──
+
+  it('probeConfiguredDirExists 走 TTL 记忆：新建目录在记忆过期前不重探', () => {
+    resetRootExistsMemoForTest()
+    const parent = tmp()
+    const late = join(parent, 'mounted-later')
+    assert.equal(probeConfiguredDirExists(late), false, '尚不存在 → false')
+    mkdirSync(late, { recursive: true })
+    assert.equal(probeConfiguredDirExists(late), false, 'TTL 内命中记忆，不重新 existsSync（正是它挡住的阻塞探测）')
+    resetRootExistsMemoForTest()
+    assert.equal(probeConfiguredDirExists(late), true, '记忆清空后如实反映磁盘')
+  })
+
+  it('applyConfiguredPathGrants: forceRoots 只强制新路径，未变路径走记忆（不再 26 次同步探测）', () => {
+    resetRootExistsMemoForTest()
+    _resetGrantsForTest()
+    const parent = tmp()
+    const stale = join(parent, 'dead-mapped-drive')
+    // 先探一次"不存在"进记忆（等价于上一次 save 留下的事实）。
+    assert.equal(probeConfiguredDirExists(stale), false)
+    mkdirSync(stale, { recursive: true })
+
+    applyConfiguredPathGrants({ additionalReadDirs: [stale] })
+    assert.equal(listGrants().length, 0, '未变路径不强制实测：记忆说没有就不授（省掉同步探测）')
+
+    applyConfiguredPathGrants({ additionalReadDirs: [stale] }, { forceRoots: [stale] })
+    assert.equal(isReadGranted(join(stale, 'a.txt')), true, '本次新增的路径当场实测 → 新挂载的盘照样可用')
+    resetRootExistsMemoForTest()
   })
 
   it('applyDefaultDependencyReadGrants: grants read (not write) for existing HOME caches, skips missing', () => {

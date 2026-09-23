@@ -32,6 +32,7 @@ import type { Artifact } from '../artifact/types.js'
 import { ArtifactStore } from '../artifact/store.js'
 import { refreshAgentTools as refreshAgentToolsImpl } from './agent-tool-refresh.js'
 import type { OaiMessage } from '../api/oai-types.js'
+import type { Usage } from '../api/types.js'
 import { isAssistantWithTools, oaiMessageText, type OaiToolCall } from '../api/oai-types.js'
 import { buildUserAnchors, stripInjectedSuffix } from './rewind-anchors.js'
 import { toolArgSummary } from '../tui/tool-label.js'
@@ -420,6 +421,15 @@ export interface ManagedAgent {
   setDisabledSkills?(names: Set<string>): void
   /** Estimated token count for the current conversation (including prefix overhead). */
   getEstimatedTokens?(): number
+  /**
+   * Cumulative session usage snapshot (`SessionContext.getTotalUsage()`).
+   * 中断收尾补发 turn_complete 用它——被打断的 run 走不到 natural-finish，
+   * 缺这一笔桌面端输入框的缓存命中率会永远停在上一个跑完的 run 上
+   * （2026-09-23）。Optional 以兼容 lightweight test doubles。
+   */
+  getTotalUsage?(): Partial<Usage>
+  /** Completed turn count（中断补发事件的 turnNumber）。 */
+  getTurnCount?(): number
   /** Model context window size (max tokens). */
   getContextWindow?(): number
   /**
@@ -2696,7 +2706,8 @@ export class RuntimeSessionManager {
 
   /**
    * run 收尾时的 handoff 归档：交接 run 产出项目内文档后拷贝到会话目录
-   * <id>.handoff.md 并补一条 system 事件（新会话于是自动注入交接内容）。
+   * <id>.handoff.md 并补一条 system 事件。注入新会话默认关闭（并行会话安全，
+   * 2026-09-22 产品决策，RIVET_PREV_HANDOFF=1 可显式开启）——文案如实告知。
    * best-effort——拷贝失败不阻断 done 事件。
    */
   private settleHandoffArchive(session: InternalSession): void {
@@ -2716,7 +2727,7 @@ export class RuntimeSessionManager {
         copyFileSync(pending.src, pending.dest)
         handoffRecoveries(session.record.cwd, session.record.id)
         this.append(session, 'handoff_archived', {
-          text: `✦ 交接文档已写入 ${pending.src} 并归档 ${pending.dest}——新会话将自动注入交接内容。`,
+          text: `✦ 交接文档已写入 ${pending.src} 并归档 ${pending.dest}（默认不注入新会话；RIVET_PREV_HANDOFF=1 可开启）。`,
           src: pending.src,
           dest: pending.dest,
         })
@@ -3369,6 +3380,9 @@ export class RuntimeSessionManager {
     session.approvalMode = mode
     session.record.approvalMode = mode
     try { session.agent?.setApprovalMode?.(mode) } catch { /* non-fatal */ }
+    // 免审批档：改档同时收口**已经在等**的那次审批（见 approveAllPending 注释）。
+    // 顺序在 agent.setApprovalMode 之后——恢复执行的工具要按新档位评估后续 gate。
+    if (mode === 'dangerously-skip-permissions') this.approveAllPending(session, 'skip-mode')
     this.touch(session)
     this.persistRecord(session)
     return true
@@ -3395,6 +3409,12 @@ export class RuntimeSessionManager {
         session.agent.setApprovalMode?.(mode)
         applied++
       } catch { /* non-fatal — 单会话失败不阻塞广播 */ }
+      // 免审批档：与 per-session 切换同语义——挂起中的审批一并收口，否则用户
+      // 在设置页切「完全权限」后，等在原地的那个工具调用仍然一动不动。
+      if (mode === 'dangerously-skip-permissions' && session.pending.size > 0) {
+        this.approveAllPending(session, 'skip-mode')
+        this.persistRecord(session)
+      }
     }
     try { applySandboxPolicyForApprovalMode(mode) } catch { /* non-fatal */ }
     return applied
@@ -5758,10 +5778,18 @@ export class RuntimeSessionManager {
       onTurnComplete: (usage, turnNumber, isFinal, evidenceSummary, continuationReason) => {
         if (!isActive()) return
         session.watchdogPolicy?.recordTurnComplete()
+        // 上下文占用随事件下发的理由：`enrichRecord().contextTokens` 只在会话记录被
+        // 拉取（push 触发或 30s 兜底轮询）时才现算，长 run 中途环形图的百分比最多
+        // 落后 30s；而 usage 本来就每轮都发，顺带带上同一来源（getEstimatedTokens
+        // = getRealOccupancy）的实时占用，桌面端百分比与缓存行就同频了。additive
+        // 字段：旧客户端忽略之。
+        let contextTokens: number | undefined
+        try { contextTokens = session.agent?.getEstimatedTokens?.() } catch { /* 非致命 */ }
         this.append(session, 'turn_complete', {
           usage,
           turnNumber,
           isFinal: !!isFinal,
+          ...(contextTokens !== undefined && contextTokens > 0 ? { contextTokens } : {}),
           ...(isFinal && evidenceSummary ? { evidence: evidenceSummary } : {}),
           ...(typeof continuationReason === 'string' && continuationReason ? { continuationReason } : {}),
         })
@@ -5779,6 +5807,31 @@ export class RuntimeSessionManager {
         if (session.record.status === 'running') session.record.status = 'interrupted'
       },
       onAbort: (reason) => {
+        // ── 中断也补发一条累计 usage 快照（2026-09-23）────────────────────
+        // finishInterrupted 不调 onTurnComplete（只 recordStop + onAbort）——于是
+        // 被打断 / 看门狗中止的 run 在桌面上永远不刷新缓存命中率：实测有会话
+        // 29 条 turn_complete 全是 isFinal=false、0 条 final，整行的数据源就是空的。
+        // 补发 isFinal=false 的快照：桌面 reducer 对任意 turn_complete 覆盖写计数
+        // （早于 isFinal 闸门），而 isFinal 保持 false → 不追加 turn 块、不改终态
+        // 语义、不影响 TUI（TUI 直接消费 callbacks，不消费事件流）。
+        //
+        // ⚠ 必须放在 isActive() 之前：manager.abort() 先 `lifecycleGeneration++`
+        // 再调 `agent.abort()`，所以用户中止时本回调已经「失活」——而事件恰恰必须
+        // 在这个窗口落下（append 自身有 durability 门禁，归档/卸载的会话仍被拦）。
+        try {
+          const usage = session.agent?.getTotalUsage?.()
+          const hasUsage = !!usage && ((usage.input_tokens ?? 0) > 0
+            || (usage.cache_read_input_tokens ?? 0) > 0
+            || (usage.cache_creation_input_tokens ?? 0) > 0)
+          if (hasUsage) {
+            this.append(session, 'turn_complete', {
+              usage,
+              turnNumber: session.agent?.getTurnCount?.() ?? 0,
+              isFinal: false,
+              aborted: true,
+            })
+          }
+        } catch { /* 补发失败不得影响中断收尾 */ }
         if (!isActive()) return
         session.lastAbortReason = reason
         // 在 finally 的 rejectAllPending 清场之前捕获审批挂起态。
@@ -6128,6 +6181,38 @@ export class RuntimeSessionManager {
       if (pend.timer) clearTimeout(pend.timer)
       pend.resolve({ approved: false })
       this.append(session, 'approval_resolved', { requestId, decision: reason })
+    }
+    session.pending.clear()
+    this.recountApprovals(session)
+  }
+
+  /**
+   * 免审批档的挂起审批收口（2026-09-22）：把**已经在等**的审批一次性批准放行。
+   *
+   * 为什么需要：审批 promise 默认永不超时（`approvalTimeoutMs=0`，见构造函数），
+   * 也不随档位变更自动收口——只由用户点批准/拒绝、abort、unattended、重启四种
+   * 出口 resolve。而工具管线是 `await callbacks.onApprovalRequired(...)` 无界等待
+   * （tool-pipeline.ts）。于是最常见的一类"授权后卡住"是：用户看到审批卡，把档位
+   * 改成「全自动」以为这就是"批准了"——档位确实变了，但**那次已挂起的调用仍在原地
+   * 等**（改档只影响之后的 gate），run 一步不动，观感=界面卡死。
+   *
+   * 只对 skip 档追认：skip 的产品承诺就是"零打扰"（plan 提交即批、出界首触即授），
+   * 用户显式选它即等于授权一切。其它档**不追认**——auto-safe 仍要问高风险、
+   * auto-accept 仍有 unconditional/path-grant 硬门禁，替用户批准等于伪造授权。
+   *
+   * 不写 `remember`：隐式批准不产生常驻授权（与 skip 档"会话级首触即授"一致）。
+   * 调用方负责 persistRecord（与 rejectAllPending 同约定）。
+   */
+  private approveAllPending(session: InternalSession, reason: string): void {
+    if (session.pending.size === 0) return
+    for (const [requestId, pend] of session.pending) {
+      if (pend.timer) clearTimeout(pend.timer)
+      pend.resolve({ approved: true })
+      this.append(session, 'approval_resolved', {
+        requestId,
+        decision: reason,
+        ...(pend.toolName ? { toolName: pend.toolName } : {}),
+      })
     }
     session.pending.clear()
     this.recountApprovals(session)

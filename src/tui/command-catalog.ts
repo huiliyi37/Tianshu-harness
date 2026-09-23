@@ -87,7 +87,7 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/goal-cancel', description: '终止当前正在跑的自主目标（别名 /cancel-goal）' },
   { name: '/goal-resume', description: '恢复一个被暂停或阻塞的目标' },
   { name: '/mcp', description: '查看 MCP 服务器连接状态+工具数。接外部工具后查健康度' },
-  { name: '/cockpit', description: '切换 Cockpit 驾驶舱（5 tab 运行时仪表盘：缓存命中/上下文/doom loop 检测等）', hotkey: 'F4' },
+  { name: '/cockpit', description: '切换 Cockpit 驾驶舱（8 面板运行时仪表盘：缓存命中 / 上下文 / 验证交付 / 提醒台账等）', hotkey: 'F4' },
   { name: '/scroll', description: '浏览历史输出（上下翻页查看已滚走的内容）' },
   { name: '/theme', description: '切换配色主题（暗色/亮色/nebula/sakura 等多套）', tier: 'core', hotkey: 'F5' },
   { name: '/fork', description: '把当前会话 fork 成新分支——想试另一条路又怕丢上下文时用' },

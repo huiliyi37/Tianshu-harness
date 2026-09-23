@@ -12,7 +12,7 @@
  */
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { posix, win32 } from 'node:path'
 
 export interface ToolchainProbeCtx {
   cwd: string
@@ -107,12 +107,18 @@ export function toolchainWritableRoots(ctx: ToolchainProbeCtx): string[] {
   const out: string[] = []
   const seen = new Set<string>()
 
+  // marker / root 的拼接按 ctx.platform 选 path 实现，不用宿主 join()：否则在
+  // Windows 上跑 linux/darwin 用例时 '/w' + 'Cargo.toml' 会拼成 '\w\Cargo.toml'，
+  // 与注入的 POSIX 夹具不匹配，规则恒不激活。真实运行时 ctx.platform 即宿主平台、
+  // home/cwd 也是宿主原生路径，两条路径一致，行为不变。
+  const p = ctx.platform === 'win32' ? win32 : posix
+
   for (const rule of TOOLCHAIN_RULES) {
-    if (!rule.markers.some(m => exists(join(ctx.cwd, m)))) continue
+    if (!rule.markers.some(m => exists(p.join(ctx.cwd, m)))) continue
     const groups = [rule.roots['*'], rule.roots[ctx.platform]]
     for (const group of groups) {
       for (const rel of group ?? []) {
-        const abs = join(ctx.home, rel)
+        const abs = p.join(ctx.home, rel)
         if (seen.has(abs) || !exists(abs)) continue
         seen.add(abs)
         out.push(abs)
@@ -132,8 +138,10 @@ export function _resetToolchainCache(): void {
 /** Diagnostics: which toolchains were detected (for /doctor and learn logs). */
 export function detectedToolchains(ctx: ToolchainProbeCtx): string[] {
   const exists = ctx.exists ?? existsSync
+  // 与 toolchainWritableRoots 同一处置：marker 路径按声明平台拼。
+  const p = ctx.platform === 'win32' ? win32 : posix
   return TOOLCHAIN_RULES
-    .filter(r => r.markers.some(m => exists(join(ctx.cwd, m))))
+    .filter(r => r.markers.some(m => exists(p.join(ctx.cwd, m))))
     .map(r => r.id)
 }
 

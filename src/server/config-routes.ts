@@ -22,6 +22,8 @@
  *   PUT    /config/permission-dirs          set standing directory grants; additions apply immediately
  *   GET    /config/path-grants              approval-time remembered dirs for a workspace (?cwd=)
  *   DELETE /config/path-grants              revoke one remembered dir (?cwd=&path=); effective immediately
+ *   GET    /config/bash-permissions         bash command allow/deny prefixes (persistent, cross-session)
+ *   PUT    /config/bash-permissions         set bash allow/deny prefixes; applies to sessions started after the save
  *   GET    /config/vision-model             vision bridge model (provider/model/prompt/maxTokens/fallback)
  *   PUT    /config/vision-model             set/clear the vision bridge
  *   GET    /config/vision-auto-bridge       auto-pick a vision bridge when unconfigured (opt-in)
@@ -86,9 +88,9 @@ import {
   setDeliveryConfig,
 } from '../config/manager.js'
 import { buildWorkspaceRoutes } from './workspace-route.js'
-import { applyConfiguredPathGrants, listPersistedGrants, revokeGrant } from '../tools/path-grants.js'
+import { applyConfiguredPathGrants, listPersistedGrants, probeConfiguredDirExists, revokeGrant } from '../tools/path-grants.js'
 import { expandHome } from '../platform.js'
-import { resolve, isAbsolute } from 'node:path'
+import { resolve } from 'node:path'
 import { existsSync, readFileSync, mkdirSync } from 'node:fs'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { join } from 'node:path'
@@ -157,6 +159,7 @@ function parseImageGenRequest(body: unknown, options: { requireProviderName?: bo
 import { probeForTestKey, matchModelDefaults } from './provider-probe-adapter.js'
 import { buildProviderKeyRoutes } from './config-routes-keys.js'
 import { buildZenRoutes } from './config-routes-zen.js'
+import { buildPermissionRoutes } from './config-routes-permissions.js'
 import { listProviderKeys, type ProviderKeyListItem } from '../config/provider-key-store.js'
 import { contractModels } from '../config/contract-models.js'
 import { resolveApiKey, resolveCredentialKey } from '../api/factory.js'
@@ -1038,9 +1041,14 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     // Codex-style standing directory grants for the desktop settings UI.
     // `exists` lets the UI warn about missing/typo'd paths without blocking the
     // save — applyConfiguredPathGrants skips non-existent entries fail-closed.
+    //
+    // 探测走 TTL 记忆（probeConfiguredDirExists）：桌面端「全盘只读」在 Windows
+    // 会写入 26 个盘根，裸 existsSync 逐个同步探测会把单线程 sidecar 的事件循环
+    // 冻住（审批事件都发不出去 = UI 整体卡住），而本路由每次 AutonomyMenu 挂载
+    // （60s stale 后）都会打一次。
     'GET /config/permission-dirs': withAuth(() => {
       const dirs = getPermissionDirs()
-      const probe = (p: string) => ({ path: p, exists: existsSync(resolve(expandHome(p))) })
+      const probe = (p: string) => ({ path: p, exists: probeConfiguredDirExists(p) })
       return {
         status: 200,
         body: {
@@ -1065,13 +1073,19 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         // grants for every live session). Removals cannot be revoked from the
         // in-memory store — the same root may also hold an approval-time grant —
         // so a removed entry stays effective until the next sidecar start.
-        // force：用户刚保存的路径必须当场实测（新挂载的盘不能被 TTL 记忆挡住）。
-        applyConfiguredPathGrants(next, { force: true })
+        // forceRoots（而非 force: true）：只有**本次新增**的路径当场实测（新挂载
+        // 的盘不能被 TTL 记忆挡住），未变路径走 30s 记忆——否则一次「全盘只读」
+        // 保存就是 26 次强制同步探测，Windows 上直接冻结事件循环。
+        const added = [
+          ...next.additionalReadDirs.filter(d => !before.additionalReadDirs.includes(d)),
+          ...next.additionalWriteDirs.filter(d => !before.additionalWriteDirs.includes(d)),
+        ]
+        applyConfiguredPathGrants(next, { forceRoots: added })
         const removed = [
           ...before.additionalReadDirs.filter(d => !next.additionalReadDirs.includes(d)),
           ...before.additionalWriteDirs.filter(d => !next.additionalWriteDirs.includes(d)),
         ]
-        const probe = (p: string) => ({ path: p, exists: existsSync(resolve(expandHome(p))) })
+        const probe = (p: string) => ({ path: p, exists: probeConfiguredDirExists(p) })
         return {
           status: 200,
           body: {
@@ -1086,39 +1100,9 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
       }
     }, apiToken),
 
-    // Approval-time directory grants the user chose to remember. Keyed by
-    // workspace (a grant for project A must never surface under project B), so
-    // `cwd` is required rather than defaulting to the sidecar's own directory.
-    'GET /config/path-grants': withAuth((_body, params) => {
-      const cwd = params?.cwd
-      if (!cwd || !isAbsolute(cwd)) {
-        return { status: 400, body: { error: 'cwd (absolute path) is required' } }
-      }
-      return {
-        status: 200,
-        body: {
-          grants: listPersistedGrants(cwd).map(g => ({
-            path: g.root,
-            mode: g.mode,
-            grantedAt: g.grantedAt,
-            exists: existsSync(g.root),
-          })),
-        },
-      }
-    }, apiToken),
-
-    // Revoke is fail-safe (it only ever narrows access), and takes effect in
-    // this running sidecar rather than at the next start — see revokeGrant.
-    'DELETE /config/path-grants': withAuth((_body, params) => {
-      const cwd = params?.cwd
-      const path = params?.path
-      if (!cwd || !isAbsolute(cwd)) {
-        return { status: 400, body: { error: 'cwd (absolute path) is required' } }
-      }
-      if (!path) return { status: 400, body: { error: 'path is required' } }
-      const removed = revokeGrant(path, { cwd })
-      return { status: 200, body: { ok: true, removed } }
-    }, apiToken),
+    // 授权/权限类路由（bash 白名单 + path-grants）外提到 config-routes-permissions.ts
+    // ——config-routes.ts 是点名巨石（source-budgets ceiling），按接缝外提。
+    ...buildPermissionRoutes(apiToken),
 
     // Revoke an app's "always allow" grant. App name in body (may contain
     // spaces/unicode — avoids URL-encoding pitfalls in path params).
@@ -1393,6 +1377,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
 
     // 多 key 池（PR-3）：本文件零行预算，路由住在 config-routes-keys.ts，以
     // spread 接入；该模块自带 withAuth（只依赖 auth.js），与本文件不耦合。
-    ...buildProviderKeyRoutes(apiToken),
+    // 热更通知同链路下发——key 池写盘成功同样要让存活 agent 的启动快照原地
+    // 重建（此前漏接，新增/轮换 key 要等下一次 provider 级写入才生效）。
+    ...buildProviderKeyRoutes(apiToken, notifyProviderConfigChanged),
   }
 }

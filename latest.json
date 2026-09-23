@@ -1,23 +1,15 @@
 {
-  "version": "3.24.0",
-  "notes": "v3.21.1（性能版 + 体验修复）——CLI 启动路径重写（launcher + V8 编译缓存 + TTY 前子命令快速路由，--version 0.4s→0.1s）、会话工作区体系（issue #147）收口（来源徽标 / 临时会话分组与清理 / 隔离根可配置）、会话列表顺序稳定化。完整清单见 docs/releases/v3.21.1.md。",
-  "pub_date": "2026-09-21T09:20:52.725Z",
+  "version": "3.25.0",
+  "notes": "v3.25.0（功能版）——fork 交互闭环、侧边栏 word/pdf/pptx 预览、Composer 停止键与附件草稿保留、供应商增删四修、computer_use 桌面自动化六波、Windows 签名管线落地、内嵌浏览器实时视图。完整清单见 docs/releases/v3.25.0.md。",
+  "pub_date": "2026-09-23T10:20:42.343Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.24.0/Tianshu_3.24.0_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1pXUVVKTDFka2ZMMlczOERhb1dpUHVHelRjMG91VGxZYkc1ZjRLMjlmSVRTRXBJbnlDakhHVldwQXY4ODVHcWNYM3ltZ1VqMk0yZXgzTmJraUYvWHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTc1MTQwCWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CitzMS81Qnpub0xFSE5PVmNDODJuNmRELzFZRVpnelVQSEU5S0o3NFVaR0FtNjFnUXdYN3ltVWRtZE4yTk1VM0hKYmdDYUlQaHJnNkhBd1FtTGdWQkRBPT0K"
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.25.0/Tianshu_3.25.0_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1VOT3U3N2hENGhPNjhUbUxNUWNuZmY0d21ERlZpR0dGbWpST1VDZDk4YUZqWTZnbWpjRVVzbGo4cVdLeUp2UjF6UG96Q1JwYTJwQnR2bFlBZE4vQ3dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTU4NTgyCWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CkF3ekRLT00vajFuOEZMQmVTeE0vbHJEVDhUc0lTSlY5MWFrbEw0ZHdKU3RIK0x6MVlpRlpEVFpxUFBNaWZJN3RXem5EYW5ySWQ2N0hBQncxVFozdkFRPT0K"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.24.0/Tianshu_3.24.0_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2JJYWNOcHRDNkp4dnhPQVlpVzV6blp3Nzg0UW5FbUs3Ykpuc05FZFM0akorMmRxMDg2Y2ZBNUxsdlhEeFVQbjNJTmpGRHQ4ZGExNStxaEtPOEpwYWdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTc1Njg5CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CldtbTkzVEhuaDdlYUMxa0JIY0JBZmNSOTlwejRxUGUvT2phODI2eW5CU1RCM1l1LzUvenh0dS9ZRFdhVVFxbGVDMmVJYWVqV2tQeVhVM05SKzhJc0RRPT0K"
-    },
-    "linux-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.24.0/Tianshu_3.24.0_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1Uvc3U4aUdBdE5TcWxIUyt4N1VuRDZPMVNmQ2ZzWVUwMGh0Rm5QYnYrQUtxajRBd1c5N01hMklrTzNlMEoyOVZTYkpsbXdSUktHVUROYkFZRVF3aWdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTc5NDc0CWZpbGU6VGlhbnNodV8zLjI0LjBfYW1kNjQuQXBwSW1hZ2UKd3UzVjVvaHR6QUd3d240djlzZ1NaelQ5N0R6aDEyeGVDVndQbGFPRWUxK1dWazAvb0QwSXFqZ0E1K0d0VFVmQzdSd3ZlWHVqcklleEZRQnUzUWlFREE9PQo="
-    },
-    "windows-x86_64": {
-      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.24.0/Tianshu_3.24.0_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2Y5c3ZoUFJwaU9WYytRemFrSXQ5b1ZmejRKNFhzc3J2VEZaZjlYL3dsL2dGNnVIdE5OZU83Q2NFN2FpejlnR2drb1QxdERKLytvdWwySEEvWmZTcVFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTgyMTU1CWZpbGU6VGlhbnNodV8zLjI0LjBfeDY0LXNldHVwLmV4ZQpiNEM0SERJQkZjYTlpNENPcllka0pxdjJvQkJsNFZFaXU5UlhrZ2pucE1Pbm5haXRpUXZCQzJSY1JjZkJLNkdnaXN0aExmSlZLbjBZUnJLblJUUHNCQT09Cg=="
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.25.0/Tianshu_3.25.0_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1o1eFg2L05JZmJSUE9PT2FYNnlxbW5CUVZiUHYzMTMvKzE2MUtMV2Judk1wM1ZsVFgzODFieEp2Y0pxQnI0WjhOcUN5azM0TTRBV1VqK1VOUVFCcVFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMTU4ODM2CWZpbGU6VGlhbnNodS5hcHAudGFyLmd6CklGeDB6NHg3SHFzQlZpbkcraU5xZ1M5V2dtaU5oWms3ekk3eExUcEQwZTBheCtjeC9INUtGaERrM2hBSUhoYkozbUt4OWRYRU94d3V1TTUzZzZxVENBPT0K"
     }
   }
 }

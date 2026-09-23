@@ -37,9 +37,10 @@ describe('settings persist', () => {
 
   it('只写脏块——其余块的磁盘内容逐字不动', () => {
     const before = loadSettingsDraft()
+    // 改成一个非默认档（2026-09-23 起默认 minimal）——否则与基线同值测不到脏块。
     const draft: SettingsDraft = {
       ...before,
-      basics: { ...before.basics, toolPreset: 'minimal', checkpointEveryTurns: 7 },
+      basics: { ...before.basics, toolPreset: 'frontend', checkpointEveryTurns: 7 },
     }
     const blocks = dirtyBlocks(before, draft)
     assert.deepEqual(blocks.sort(), ['checkpoint', 'toolPreset'])
@@ -49,7 +50,7 @@ describe('settings persist', () => {
     assert.deepEqual(result.saved.sort(), ['checkpoint', 'toolPreset'])
 
     const after = loadSettingsDraft()
-    assert.equal(after.basics.toolPreset, 'minimal')
+    assert.equal(after.basics.toolPreset, 'frontend')
     assert.equal(after.basics.checkpointEveryTurns, 7)
     // 未列入 blocks 的块必须原样
     assert.deepEqual(after.workers, before.workers)
@@ -260,8 +261,8 @@ describe('settings persist', () => {
 
     assert.deepEqual(flow.dirty(), [], '保存后不应还有脏块')
     assert.match(flow.view().status ?? '', /已保存/)
-    // 面板从默认 frontend 下移一档选到 full，保存后回读应为 full（与磁盘一致）。
-    assert.equal(loadSettingsDraft().basics.toolPreset, 'full')
+    // 面板从默认 minimal 下移一档选到 frontend，保存后回读应为 frontend（与磁盘一致）。
+    assert.equal(loadSettingsDraft().basics.toolPreset, 'frontend')
   })
 
   it('候选模型来自实际配置，识图候选按 supportsVision 过滤', () => {

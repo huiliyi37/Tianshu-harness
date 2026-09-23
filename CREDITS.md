@@ -251,3 +251,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #127 fix(config): config-watcher 改 watch 父目录修复首次原子写后永久失聪 + 丢弃 AgentLoop 时关闭僵尸 watcher（CLOSED）
 - #112 fix(tools): apply_patch 失败分支回滚 --3way 半套用并清索引毒化——失败不再留下冲突标记/暂存残留/UU 死锁（CLOSED）
 - #111 fix(agent): R2 写前独占守卫扩到全部写工具——hash_edit/ast_edit/apply_patch/plan_close 不再绕过跨会话冲突拦截（CLOSED）
+- #110 fix(server): sidecar 启动收割崩溃会话的 claims——硬杀后的幽灵独占锁不再永久阻断写入（CLOSED）

@@ -26,3 +26,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #229 fix(tools): browser 工具加逐请求防护，重定向/iframe/子资源不再绕过 allowlist（issue #213）（CLOSED）
 - #228 fix(web-fetch): 渲染路径用进程内 pin 代理钉住 DNS，关闭 rebinding 窗口（issue #212）（CLOSED）
 - #227 fix(config): 搜索 API key 迁到 secrets-store，config.json 不再落明文（issue #220）（CLOSED）
+- #226 fix(server): project 路由的 cwd 必须在册（issue #221）（CLOSED）

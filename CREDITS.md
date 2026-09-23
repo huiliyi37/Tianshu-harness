@@ -92,3 +92,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：LinHoMo <135706031+LinHoMo@users.noreply.github.com>
 
 - #143 chore: 清理悬空 probe:* 脚本、废弃依赖 parquetjs 与一次性脚本残留（CLOSED）
+- #142 perf(prompt): requestTimeCollapse 单遍索引化，工具结果折叠 O(n²)→O(n)（CLOSED）

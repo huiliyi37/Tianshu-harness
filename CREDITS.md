@@ -240,3 +240,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #158 fix(tools): apply_patch 接入协作式取消——abort/超时级联 SIGTERM 到 git 子进程（CLOSED）
 - #157 fix(serve): ManagedAgent.shutdown 补关 config 热载 watcher——sidecar 释放链补齐（CLOSED）
 - #156 fix(serve): 会话释放链统一收割五张会话键控 module store（cron 放大的内存泄漏）（CLOSED）
+- #155 perf(session): 会话列表缓存改为增量 upsert——append 路径不再打掉缓存（每 LLM 轮 38×）（CLOSED）

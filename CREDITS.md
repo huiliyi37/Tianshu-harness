@@ -110,3 +110,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：liuwanwan1 <243261597+liuwanwan1@users.noreply.github.com>
 
 - #30 chore(install): 安装体积优化——npm 安装体积 ~185MB → 84MB（-54%）（CLOSED）
+- #28 fix(updater): 修复 /update 在非 JSON 响应下 unhandled rejection 崩溃（CLOSED）

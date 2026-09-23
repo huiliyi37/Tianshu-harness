@@ -80,3 +80,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：L4XB <103962359+L4XB@users.noreply.github.com>
 
 - #109 fix(browser): pin the chromium install to the embedded playwright-core version（CLOSED）
+
+## @lei454577-web
+
+署名：lei454577-web <290313748+lei454577-web@users.noreply.github.com>
+
+- #160 docs: add SolidWorks COM integration notes（MERGED）

@@ -167,3 +167,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：Wanming08 <152006802+Wanming08@users.noreply.github.com>
 
 - #152 fix(mcp): guard OAuth token requests against SSRF（CLOSED）
+
+## @yeshilei-QWQ
+
+署名：yeshilei-QWQ <89763253+yeshilei-QWQ@users.noreply.github.com>
+
+- #257 feat(bash): 执行期让出——命中注入签名的命令跑到一半用户接管即终止（issue #235）（OPEN）

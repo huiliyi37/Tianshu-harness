@@ -252,3 +252,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #112 fix(tools): apply_patch 失败分支回滚 --3way 半套用并清索引毒化——失败不再留下冲突标记/暂存残留/UU 死锁（CLOSED）
 - #111 fix(agent): R2 写前独占守卫扩到全部写工具——hash_edit/ast_edit/apply_patch/plan_close 不再绕过跨会话冲突拦截（CLOSED）
 - #110 fix(server): sidecar 启动收割崩溃会话的 claims——硬杀后的幽灵独占锁不再永久阻断写入（CLOSED）
+- #93 fix(ci): 修复 ubuntu Test 层 30+ 存量红——napi 缺装/注册表失同步/过期测试/清理竞态（CLOSED）

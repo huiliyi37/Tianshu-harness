@@ -186,3 +186,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #197 fix(plan): 计划文档的返回路径归一为 POSIX，不再泄漏 Windows 原生分隔符（CLOSED）
 - #196 test(server): host-policy 的手写 chunked 解码按字节切，不再多吃多字节字符（CLOSED）
 - #195 fix(serve): Windows 打开无关联扩展名的文件退化为定位，不再留下永久「选取应用」对话框（CLOSED）
+- #194 fix(agent): meridian 快路径的写工具路径未归一——Windows 上 impact hint 静默全灭（CLOSED）

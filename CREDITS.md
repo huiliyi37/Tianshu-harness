@@ -128,3 +128,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：maoqiu77 <198698497+maoqiu77@users.noreply.github.com>
 
 - #51 feat: 修复会话 Auto 路由并新增星域漂移检测（CLOSED）
+- #35 修复：加固运行时正确性与边界场景（CLOSED）

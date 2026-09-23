@@ -222,3 +222,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #41 fix(tui): 命令面板换绑 Ctrl+P（Ctrl+Esc 在 Windows 被开始菜单抢占且三条送达路径全断）（CLOSED）
 - #40 fix(tui): AI 输出中排队消息不再自动注入，输入框贴底（排队语义 + 渲染顺序）（CLOSED）
 - #37 fix: 全局安装 postinstall 失败（patch-package）+ 默认星域/模型重启后状态栏不恢复（CLOSED）
+- #4 fix: replace interrupt panic with auto-recovered confirmation on write success（CLOSED）

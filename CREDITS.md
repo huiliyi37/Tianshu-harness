@@ -264,3 +264,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #82 fix(agent): CVM 注入预算裁剪先于送达记账——修复假送达腐蚀习惯化/效能反馈环（CLOSED）
 - #81 fix(agent): 会话转录写入失败丢批、flush 竞态击穿落盘屏障（CLOSED）
 - #79 fix(worker): Unix 上 OOP worker 以 detached 拉起——让 killProcessTree 组杀真正生效（MERGED）
+- #78 fix(worker): OOP worker 结算后摘除 abort 监听——不再把运行闭包钉死在会话信号上（MERGED）

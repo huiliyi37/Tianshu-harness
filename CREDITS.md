@@ -229,3 +229,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：zhengbiaofeng <37176299+zhengbiaofeng@users.noreply.github.com>
 
 - #18 feat: harden MCP, benchmark, memory, and runtime hooks（MERGED）
+- #11 fix: improve git detection on Windows for non-standard install paths（MERGED）

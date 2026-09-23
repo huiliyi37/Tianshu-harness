@@ -247,3 +247,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #131 fix(agent): 回滚成功后 journal 写失败不再把已成功的恢复误报为失败（CLOSED）
 - #130 fix(agent): nullDb 降级桩 run() 报 changes:1——better-sqlite3 缺失时首次独占 claim 不再恒失败（CLOSED）
 - #129 fix(agent): durable claims 跨会话继承恒返回空——<id>.claims 附属文件被 listSessions 剥成伪会话且字典序恒大于真 id（CLOSED）
+- #128 fix(config): saveConfig 剥掉 profile 临时层——无关设置保存不再把 profile 覆盖值烘焙进全局 config.json（CLOSED）

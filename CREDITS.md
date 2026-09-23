@@ -21,3 +21,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 
 - #234 fix(prompt): 未受信项目的 AGENTS.md / .rivet.md 不再注入（issue #218）（CLOSED）
 - #233 fix(agent): 不可信来源的工具结果加「数据非指令」结构定界（issue #217）（CLOSED）
+- #232 fix(plugins): permissions 声明如实标注为非强制（issue #216）（CLOSED）

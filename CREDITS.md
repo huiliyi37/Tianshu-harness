@@ -182,3 +182,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #204 fix(tools): killAllSync 在 win32 上只发一次 taskkill——同步路径无等待窗口，第二发与第一发逐字相同（issue #185）（CLOSED）
 - #202 fix(test): workspace-guard 夹具改用 dirname 推导父目录——Windows 上写死 '/' 致 8 条恒 ENOENT（CLOSED）
 - #200 fix(agent): import-graph 的两处 Windows 路径缺陷——绝对路径判据与 index 候选（收 #189 的 U 三簇）（CLOSED）
+- #199 fix(hooks): Windows 上按扩展名选解释器——.sh 不再被 cmd「打开」并弹「选取应用」（CLOSED）

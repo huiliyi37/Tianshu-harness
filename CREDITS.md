@@ -98,3 +98,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #108 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）
 - #107 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）
 - #104 fix(windows): 隐藏 GUI 派生的控制台子进程窗口（Fixes #103）（CLOSED）
+- #97 feat(api): 可配置重试策略 + 可选客户端限速（provider.providers.<name>.retry）（CLOSED）

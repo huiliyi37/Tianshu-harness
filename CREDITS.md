@@ -253,3 +253,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #111 fix(agent): R2 写前独占守卫扩到全部写工具——hash_edit/ast_edit/apply_patch/plan_close 不再绕过跨会话冲突拦截（CLOSED）
 - #110 fix(server): sidecar 启动收割崩溃会话的 claims——硬杀后的幽灵独占锁不再永久阻断写入（CLOSED）
 - #93 fix(ci): 修复 ubuntu Test 层 30+ 存量红——napi 缺装/注册表失同步/过期测试/清理竞态（CLOSED）
+- #90 fix(tui): 剪贴板 TIFF→PNG 转换守卫看注入的 platform——修复 ubuntu CI 持续假红（CLOSED）

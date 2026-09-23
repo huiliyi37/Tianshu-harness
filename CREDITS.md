@@ -262,3 +262,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #84 fix(tools): 路径授权表按工作区分域——sidecar 多会话下 A 的批准不再泄漏给 B（CLOSED）
 - #83 fix(agent): 运行时 hook 超时后的迟到收尾兜底——孤儿 rejection 不再击穿进程（CLOSED）
 - #82 fix(agent): CVM 注入预算裁剪先于送达记账——修复假送达腐蚀习惯化/效能反馈环（CLOSED）
+- #81 fix(agent): 会话转录写入失败丢批、flush 竞态击穿落盘屏障（CLOSED）

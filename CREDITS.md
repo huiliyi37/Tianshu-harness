@@ -250,3 +250,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #128 fix(config): saveConfig 剥掉 profile 临时层——无关设置保存不再把 profile 覆盖值烘焙进全局 config.json（CLOSED）
 - #127 fix(config): config-watcher 改 watch 父目录修复首次原子写后永久失聪 + 丢弃 AgentLoop 时关闭僵尸 watcher（CLOSED）
 - #112 fix(tools): apply_patch 失败分支回滚 --3way 半套用并清索引毒化——失败不再留下冲突标记/暂存残留/UU 死锁（CLOSED）
+- #111 fix(agent): R2 写前独占守卫扩到全部写工具——hash_edit/ast_edit/apply_patch/plan_close 不再绕过跨会话冲突拦截（CLOSED）

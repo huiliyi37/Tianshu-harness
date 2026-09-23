@@ -195,3 +195,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #175 test: 去掉两处依赖墙上时钟精确下界的断言（CI 时序抖动）（CLOSED）
 - #174 test(agent): #173 的端到端表征测试 + #170–#173 前提验证记录（CLOSED）
 - #169 fix(provider): onboarding 时提示 reasoningEffort 无处可去（#153）（CLOSED）
+- #168 fix(pnpm): 补 pnpm-workspace.yaml 构建放行白名单 + 声明幽灵依赖 zod-to-json-schema（#57）（CLOSED）

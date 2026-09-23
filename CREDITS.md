@@ -30,3 +30,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #225 fix(tui): live 流式区套用终端文本契约（issue #222）（CLOSED）
 - #224 fix(config): scratchDir 必须落在数据根内（issue #223）（CLOSED）
 - #210 fix(server): reject path traversal in skills/install names[] (#207)（CLOSED）
+
+## @Eason412
+
+署名：Eason412 <250286526+Eason412@users.noreply.github.com>
+
+- #32 sync: 发布 v2.29.0 公开运行时与委派恢复修复（CLOSED）

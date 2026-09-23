@@ -178,3 +178,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #254 docs: 修正 Cockpit 入口说明的三处错误（issue #245）（OPEN）
 - #253 docs: 统一前缀缓存命中率对外口径为 95–99%（issue #248）（OPEN）
 - #230 fix(ci): 让 main 的 CI 转绿——runner 正则行尾归一 + 跨仓 license/integrity 测试缺文件跳过 + ratchet 账本对齐（CLOSED）
+- #205 feat(serve): 发现外部进程新增的会话——多进程共用一个 home 时免重启即可见（CLOSED）

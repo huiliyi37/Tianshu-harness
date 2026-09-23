@@ -63,3 +63,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：jiangsx496 <298945509+jiangsx496@users.noreply.github.com>
 
 - #64 Update website credit to remove developer's namedocs: credit original…（MERGED）
+- #7 feat(website): rewrite with Vue 3 + Vite, replace Next.js version（CLOSED）

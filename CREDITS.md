@@ -191,3 +191,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #190 fix(tools): 收口 bash 超时/中止与 monitor 订阅失败的三处生命周期缺陷（#184 #186 #187）（MERGED）
 - #183 fix(tools): gitignore 匹配器补根锚定与 ** 语义，收窄树外守卫（MERGED）
 - #182 fix(model): 模型名匹配接入别名表——失配不再位置性回退到 models[0]（CLOSED）
+- #177 test(runner): 非零退出的批点名——修掉「fail 0 却 exit 1」在日志里零线索的盲区（CLOSED）

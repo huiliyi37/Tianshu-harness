@@ -137,3 +137,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 
 - #214 docs: 新增「自带 /mobile 页面」指南与可运行示例（CLOSED）
 - #211 docs(remote-access): 补充 /mobile 静态挂载的扩展方式与 prompt 字段契约（CLOSED）
+
+## @nzz0991999-ai
+
+署名：nzz0991999-ai <224787558+nzz0991999-ai@users.noreply.github.com>
+
+- #91 fix(worker): 单测改用具名导入 node:events——修复 typecheck 红灯（CLOSED）

@@ -136,3 +136,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：moyan3691 <326834146+moyan3691@users.noreply.github.com>
 
 - #214 docs: 新增「自带 /mobile 页面」指南与可运行示例（CLOSED）
+- #211 docs(remote-access): 补充 /mobile 静态挂载的扩展方式与 prompt 字段契约（CLOSED）

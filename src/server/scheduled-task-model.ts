@@ -10,6 +10,7 @@
  * 因此两者之间不构成运行时循环依赖。
  */
 import type { CronTrigger, ScheduledTask } from './cron-scheduler.js'
+import type { ApprovalMode } from '../agent/loop-types.js'
 
 /** Bounded automatic retry for a failed/timed_out run of a scheduled task. */
 export interface ScheduledTaskRetry {
@@ -82,6 +83,8 @@ export interface ScheduledTaskPatch {
   reviewPolicy?: ReviewPolicy | null
   retry?: ScheduledTaskRetry | null
   agentId?: string | null
+  /** 审批档位（issue #259）三态，与 reviewPolicy 同形：undefined=不动 / null=清除 / 值=覆盖。 */
+  approval?: ApprovalMode | null
 }
 
 /**
@@ -93,7 +96,7 @@ export function applyTaskPatch(task: ScheduledTask, patch: ScheduledTaskPatch): 
   // 补丁管辖的可选项必须**先剥掉再按三态装回**：`...task` 会把原值一并带回，
   // 光靠"不写这个键"永远表达不了「显式 null 清除」。删除发生在新副本上，
   // 入参 task 不被改动。
-  const base = omitOptionalKeys(task, ['reviewPolicy', 'retry', 'agentId'])
+  const base = omitOptionalKeys(task, ['reviewPolicy', 'retry', 'agentId', 'approval'])
   const prompt = typeof patch.prompt === 'string' && patch.prompt.trim() ? patch.prompt.trim() : undefined
   const trigger = patch.trigger
     ? { type: patch.trigger.type, spec: patch.trigger.spec }
@@ -112,6 +115,9 @@ export function applyTaskPatch(task: ScheduledTask, patch: ScheduledTaskPatch): 
   const agentId = patch.agentId === undefined
     ? task.agentId
     : (typeof patch.agentId === 'string' && patch.agentId ? patch.agentId : undefined)
+  const approval = patch.approval === undefined
+    ? task.approval
+    : (patch.approval === null ? undefined : normalizeApprovalMode(patch.approval))
   return {
     ...base,
     ...(prompt !== undefined ? { prompt } : {}),
@@ -120,13 +126,14 @@ export function applyTaskPatch(task: ScheduledTask, patch: ScheduledTaskPatch): 
     ...(reviewPolicy ? { reviewPolicy } : {}),
     ...(retry ? { retry } : {}),
     ...(agentId ? { agentId } : {}),
+    ...(approval ? { approval } : {}),
   }
 }
 
 /** 返回去掉指定可选项的副本（不修改入参）。 */
 function omitOptionalKeys(
   task: ScheduledTask,
-  keys: ReadonlyArray<'reviewPolicy' | 'retry' | 'agentId'>,
+  keys: ReadonlyArray<'reviewPolicy' | 'retry' | 'agentId' | 'approval'>,
 ): ScheduledTask {
   const copy: ScheduledTask = { ...task }
   for (const key of keys) delete copy[key]
@@ -136,6 +143,25 @@ function omitOptionalKeys(
 /** Sanitize a review policy; returns undefined for absent/invalid input. */
 export function normalizeReviewPolicy(value: unknown): ReviewPolicy | undefined {
   return REVIEW_POLICIES.includes(value as ReviewPolicy) ? (value as ReviewPolicy) : undefined
+}
+
+/**
+ * 定时任务**可声明**的审批档位（issue #259）。
+ *
+ * 刻意只放行两个「自动」档——`ApprovalMode` 的另两个不放：
+ * - `manual`：语义上与现状（unattended → fail-closed 中止）等价，声明它只会误导；
+ * - `dangerously-skip-permissions`：名字自带警告，让任务定义能声明它等于开一条
+ *   「无人值守全自动」的后门——定时任务没有人在场，越权面比交互式会话大得多。
+ *
+ * 要放开就改这一个常量（并同步 `schedule-routes.ts` 的错误文案）。
+ */
+export const SCHEDULED_TASK_APPROVAL_MODES: readonly ApprovalMode[] = ['auto-accept', 'auto-safe']
+
+/** Sanitize a declared approval mode; undefined for absent/invalid input. */
+export function normalizeApprovalMode(value: unknown): ApprovalMode | undefined {
+  return (SCHEDULED_TASK_APPROVAL_MODES as readonly unknown[]).includes(value)
+    ? (value as ApprovalMode)
+    : undefined
 }
 
 /** Sanitize a retry policy; returns undefined for absent/invalid input. */

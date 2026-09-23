@@ -15,6 +15,7 @@ import { isAuthorizedRequest } from './auth.js'
 import {
   CronScheduler,
   createScheduledTask,
+  normalizeApprovalMode,
   normalizeRetry,
   normalizeReviewPolicy,
   normalizeTaskStatus,
@@ -71,6 +72,7 @@ export function buildScheduleRoutes(
         agentId?: string
         retry?: unknown
         reviewPolicy?: unknown
+        approval?: unknown
       }
       if (!data.prompt || !data.prompt.trim()) {
         return { status: 400, body: { error: 'Missing "prompt"' } }
@@ -86,10 +88,18 @@ export function buildScheduleRoutes(
         return { status: 400, body: { error: 'Invalid "reviewPolicy" (always-review | first-runs | auto-proceed)' } }
       }
       const reviewPolicy = normalizeReviewPolicy(data.reviewPolicy)
+      // 审批档位（issue #259）：只接受 SCHEDULED_TASK_APPROVAL_MODES 里的安全子集——
+      // 非法值（含 manual / dangerously-skip-permissions）一律 400，不静默丢弃，
+      // 否则用户以为"声明生效了"而实际没有。
+      if (data.approval !== undefined && !normalizeApprovalMode(data.approval)) {
+        return { status: 400, body: { error: 'Invalid "approval" (auto-accept | auto-safe)' } }
+      }
+      const approval = normalizeApprovalMode(data.approval)
       const allowedTools = Array.isArray(data.allowedTools) ? data.allowedTools : []
-      // Pro gate（fail-closed）：非 always-review 策略、或显式给了 computer_use
-      // 白名单的定时任务都属于「无人值守自动化」，需要 Pro。
+      // Pro gate（fail-closed）：非 always-review 策略、显式声明审批档位、或显式给了
+      // computer_use 白名单的定时任务都属于「无人值守自动化」，需要 Pro。
       const wantsUnattended = (reviewPolicy !== undefined && reviewPolicy !== 'always-review')
+        || approval !== undefined
         || allowedTools.includes('computer_use')
       if (wantsUnattended && isUnattendedAutomationEnabled && !isUnattendedAutomationEnabled()) {
         return { status: 403, body: { error: 'pro_required', feature: 'unattendedAutomation' } }
@@ -105,6 +115,7 @@ export function buildScheduleRoutes(
             ...(data.agentId ? { agentId: data.agentId } : {}),
             ...(retry ? { retry } : {}),
             ...(reviewPolicy ? { reviewPolicy } : {}),
+            ...(approval ? { approval } : {}),
           },
         )
         scheduler.add(task)
@@ -171,6 +182,7 @@ export function buildScheduleRoutes(
         reviewPolicy?: unknown
         retry?: unknown
         agentId?: unknown
+        approval?: unknown
       }
       const patch: ScheduledTaskPatch = {}
 
@@ -213,6 +225,15 @@ export function buildScheduleRoutes(
           patch.retry = r
         }
       }
+      // 审批档位（issue #259）三态，与 reviewPolicy 同形：缺席=不动、null=清除、值=覆盖。
+      if (data.approval !== undefined) {
+        if (data.approval === null) patch.approval = null
+        else {
+          const a = normalizeApprovalMode(data.approval)
+          if (!a) return { status: 400, body: { error: 'Invalid "approval" (auto-accept | auto-safe)' } }
+          patch.approval = a
+        }
+      }
       if (data.agentId !== undefined) {
         if (data.agentId === null || data.agentId === '') patch.agentId = null
         else if (typeof data.agentId !== 'string') return { status: 400, body: { error: 'Invalid "agentId" (string | null)' } }
@@ -225,12 +246,16 @@ export function buildScheduleRoutes(
 
       // Pro gate（与创建同口径）：更新**后**的生效策略若属无人值守，需 Pro。
       // 用更新后的值判定——否则可以把任务先建成 always-review，再 PATCH 成
-      // auto-proceed 绕过门禁。
+      // auto-proceed（或补一个 approval）绕过门禁。
       const nextReview = patch.reviewPolicy === undefined
         ? current.reviewPolicy
         : (patch.reviewPolicy === null ? undefined : patch.reviewPolicy)
+      const nextApproval = patch.approval === undefined
+        ? current.approval
+        : (patch.approval === null ? undefined : patch.approval)
       const nextTools = patch.allowedTools ?? current.allowedTools
       const wantsUnattended = (nextReview !== undefined && nextReview !== 'always-review')
+        || nextApproval !== undefined
         || nextTools.includes('computer_use')
       if (wantsUnattended && isUnattendedAutomationEnabled && !isUnattendedAutomationEnabled()) {
         return { status: 403, body: { error: 'pro_required', feature: 'unattendedAutomation' } }

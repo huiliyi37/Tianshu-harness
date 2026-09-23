@@ -27,6 +27,7 @@ import {
   nowISO,
 } from './task-store.js'
 import { errorContext, serverLogger } from './logger.js'
+import type { ApprovalMode } from '../agent/loop-types.js'
 
 // ─── Runtime 池接口（来自姊妹 ingress spec，Phase 2 实施） ────
 
@@ -44,6 +45,11 @@ export interface RuntimeHandle {
     options?: {
       /** 无人值守运行：会话内审批请求 fail-closed 中止（付费版 v1 · T2）。 */
       unattended?: boolean
+      /**
+       * 该运行的审批档位（issue #259）——cron 任务显式声明的档位经此到达 runtime，
+       * 由 pool 交给 `createSession({ approvalMode })` 应用。**缺省不注入**。
+       */
+      approvalMode?: ApprovalMode
       /** 任务执行的工作区（cron 任务=创建时会话工作区快照）。缺省=池 defaultCwd。 */
       cwd?: string
     },
@@ -162,6 +168,7 @@ export class TaskRegistry {
         ...(input.retryOf ? { retryOf: input.retryOf } : {}),
         ...(input.retry ? { retry: input.retry } : {}),
         ...(input.unattended ? { unattended: true } : {}),
+        ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
       }
 
@@ -257,6 +264,7 @@ export class TaskRegistry {
         scheduledTaskId: record.scheduledTaskId,
         retry,
         unattended: record.unattended,
+        approvalMode: record.approvalMode,
         attempt: nextAttempt,
         retryOf: origin,
         force: true,
@@ -460,7 +468,7 @@ export class TaskRegistry {
         ac.signal,
         record.allowedTools,
         (sessionId) => { void this.attachSessionId(record.id, sessionId) },
-        { unattended: record.unattended === true, cwd: record.cwd },
+        { unattended: record.unattended === true, cwd: record.cwd, ...(record.approvalMode ? { approvalMode: record.approvalMode } : {}) },
       )
 
       await this.transition(record.id, 'completed', { result })

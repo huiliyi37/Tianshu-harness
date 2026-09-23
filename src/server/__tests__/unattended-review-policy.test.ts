@@ -17,6 +17,7 @@ import { createRouter } from '../index.js'
 import {
   CronScheduler,
   createScheduledTask,
+  normalizeApprovalMode,
   normalizeReviewPolicy,
   resolveRunUnattended,
   FIRST_RUNS_TRUST_THRESHOLD,
@@ -66,6 +67,25 @@ test('createScheduledTask 保留 reviewPolicy，缺省不写字段', () => {
   assert.equal('reviewPolicy' in bare, false)
 })
 
+// ─── issue #259：任务可声明的审批档位 ──────────────────────────
+
+test('normalizeApprovalMode 只接受安全子集（manual / dangerously-skip-permissions 被拒）', () => {
+  assert.equal(normalizeApprovalMode('auto-safe'), 'auto-safe')
+  assert.equal(normalizeApprovalMode('auto-accept'), 'auto-accept')
+  assert.equal(normalizeApprovalMode('manual'), undefined, 'manual 与现状等价，声明它只会误导')
+  assert.equal(normalizeApprovalMode('dangerously-skip-permissions'), undefined, '不得开「无人值守全自动」的后门')
+  assert.equal(normalizeApprovalMode('nonsense'), undefined)
+  assert.equal(normalizeApprovalMode(undefined), undefined)
+  assert.equal(normalizeApprovalMode(null), undefined)
+})
+
+test('createScheduledTask 保留 approval，缺省不写字段（默认零差异）', () => {
+  const withApproval = createScheduledTask('p', { type: 'interval', spec: '60000' }, [], { approval: 'auto-safe' })
+  assert.equal(withApproval.approval, 'auto-safe')
+  const bare = createScheduledTask('p', { type: 'interval', spec: '60000' })
+  assert.equal('approval' in bare, false, '缺省不得注入——否则语义从 fail-closed 漂移')
+})
+
 // ─── /schedule 路由：校验 + Pro gate ──────────────────────────
 
 function makeRouter(proEnabled: boolean, dir: string) {
@@ -84,6 +104,44 @@ test('POST /schedule 拒绝非法 reviewPolicy', async () => {
       prompt: 'x', trigger: { type: 'interval', spec: '1000' }, reviewPolicy: 'yolo',
     }, AUTH)
     assert.equal(res.status, 400)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// issue #259：审批档位走与 reviewPolicy 同形的校验 / Pro gate
+test('POST /schedule 接受安全子集 approval 并回显', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rivet-rp-'))
+  try {
+    const { router } = makeRouter(true, dir)
+    const res = await router('POST', '/schedule', {
+      prompt: 'x', trigger: { type: 'interval', spec: '1000' }, approval: 'auto-safe',
+    }, AUTH)
+    assert.equal(res.status, 201)
+    assert.equal((res.body as { approval?: string }).approval, 'auto-safe')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('POST /schedule 拒绝危险档位（manual / dangerously-skip-permissions）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rivet-rp-'))
+  try {
+    const { router } = makeRouter(true, dir)
+    for (const bad of ['manual', 'dangerously-skip-permissions', 'nonsense']) {
+      const res = await router('POST', '/schedule', {
+        prompt: 'x', trigger: { type: 'interval', spec: '1000' }, approval: bad,
+      }, AUTH)
+      assert.equal(res.status, 400, `${bad} 应被拒`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Pro gate：无 Pro 时仅声明 approval 也 403（与 reviewPolicy 同口径）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rivet-rp-'))
+  try {
+    const { router } = makeRouter(false, dir)
+    const res = await router('POST', '/schedule', {
+      prompt: 'x', trigger: { type: 'interval', spec: '1000' }, approval: 'auto-safe',
+    }, AUTH)
+    assert.equal(res.status, 403)
+    assert.equal((res.body as { feature: string }).feature, 'unattendedAutomation')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

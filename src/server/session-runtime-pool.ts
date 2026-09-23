@@ -39,6 +39,9 @@ export class SessionRuntimePool implements RuntimePool {
           title: `${this.titlePrefix}:${taskId.slice(0, 8)}`,
           // 无人值守（auto-proceed）：审批请求 fail-closed 中止本次运行。
           unattended: options?.unattended === true,
+          // 任务显式声明的审批档位（issue #259）——缺省不带该键，`createSession`
+          // 侧保持既有默认档位（unattended 的 fail-closed 语义因此不受影响）。
+          ...(options?.approvalMode ? { approvalMode: options.approvalMode } : {}),
           // Per-session 工具白名单（蒸馏回放等自动化场景）——经 ensureAgent →
           // createAgent → gateToolDefinitions coreOverride 通路收窄 LLM 可见工具。
           // undefined = 默认全量（行为不变）；[] = 空白名单；['computer_use'] = 只用 GUI。

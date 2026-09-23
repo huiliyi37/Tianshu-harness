@@ -19,6 +19,7 @@ import {
   SCHEDULED_TASK_STATUSES,
   applyTaskPatch,
   isFiringStatus,
+  normalizeApprovalMode,
   normalizeRetry,
   normalizeReviewPolicy,
   normalizeTaskStatus,
@@ -31,12 +32,14 @@ import type {
   ScheduledTaskRetry,
   ScheduledTaskStatus,
 } from './scheduled-task-model.js'
+import type { ApprovalMode } from '../agent/loop-types.js'
 
 export {
   REVIEW_POLICIES,
   SCHEDULED_TASK_STATUSES,
   applyTaskPatch,
   isFiringStatus,
+  normalizeApprovalMode,
   normalizeRetry,
   normalizeReviewPolicy,
   normalizeTaskStatus,
@@ -91,6 +94,12 @@ export interface ScheduledTask {
   /** 审查策略。缺省 = 'always-review'。 */
   reviewPolicy?: ReviewPolicy
   /**
+   * 该任务运行时的审批档位（issue #259）。缺省 = 不声明 → 无人值守时保持既有的
+   * fail-closed（审批请求直接中止运行）。只有显式声明才覆盖——见
+   * `SCHEDULED_TASK_APPROVAL_MODES` 的可选范围。
+   */
+  approval?: ApprovalMode
+  /**
    * 创建该任务时会话的工作区（快照）。任务触发后在快照 cwd 里执行——桌面端
    * 一个 sidecar 托管多个项目，缺省时所有任务都会落到 sidecar 的启动目录，
    * 项目 A 创建的「检查依赖更新」就会在错误的项目里跑 npm/git。
@@ -107,6 +116,8 @@ export interface TaskDueMeta {
   retry?: ScheduledTaskRetry
   /** 本次运行是否无人值守（reviewPolicy 解析后的生效模式）。 */
   unattended?: boolean
+  /** 任务声明的审批档位（issue #259）——缺省不带该键，由执行侧保持既有默认。 */
+  approvalMode?: ApprovalMode
   /** 手动触发（试跑/中止后重跑），非定时到点。 */
   manual?: boolean
   /** 任务创建时会话的工作区快照（执行 cwd，见 ScheduledTask.cwd）。 */
@@ -613,6 +624,8 @@ export class CronScheduler {
       unattended: opts?.forceAttended
         ? false
         : resolveRunUnattended({ reviewPolicy: task.reviewPolicy, triggerCount: preTriggerCount }),
+      // 任务声明的审批档位（issue #259）：只透传，不在这一层解释语义。
+      ...(task.approval ? { approvalMode: task.approval } : {}),
       ...(opts?.manual ? { manual: true } : {}),
       ...(task.cwd ? { cwd: task.cwd } : {}),
     }
@@ -640,7 +653,7 @@ export function createScheduledTask(
   prompt: string,
   trigger: CronTrigger,
   allowedTools: string[] = [],
-  opts?: { recurringMaxAgeMs?: number; agentId?: string; retry?: ScheduledTaskRetry; reviewPolicy?: ReviewPolicy; cwd?: string },
+  opts?: { recurringMaxAgeMs?: number; agentId?: string; retry?: ScheduledTaskRetry; reviewPolicy?: ReviewPolicy; approval?: ApprovalMode; cwd?: string },
 ): ScheduledTask {
   return {
     id: `cron_${randomUUID().slice(0, 8)}`,
@@ -653,6 +666,7 @@ export function createScheduledTask(
     triggerCount: 0,
     ...(normalizeRetry(opts?.retry) ? { retry: normalizeRetry(opts?.retry)! } : {}),
     ...(normalizeReviewPolicy(opts?.reviewPolicy) ? { reviewPolicy: normalizeReviewPolicy(opts?.reviewPolicy)! } : {}),
+    ...(normalizeApprovalMode(opts?.approval) ? { approval: normalizeApprovalMode(opts?.approval)! } : {}),
     ...(opts?.cwd ? { cwd: opts.cwd } : {}),
   }
 }
@@ -716,6 +730,7 @@ function normalizeScheduledTask(value: unknown): ScheduledTask | null {
     ...(status ? { status, enabled: status === 'active' } : {}),
     ...(normalizeRetry(task.retry) ? { retry: normalizeRetry(task.retry)! } : {}),
     ...(normalizeReviewPolicy(task.reviewPolicy) ? { reviewPolicy: normalizeReviewPolicy(task.reviewPolicy)! } : {}),
+    ...(normalizeApprovalMode(task.approval) ? { approval: normalizeApprovalMode(task.approval)! } : {}),
   }
   try {
     validateTriggerOrThrow(normalized.trigger)

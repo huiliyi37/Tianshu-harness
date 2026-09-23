@@ -36,3 +36,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：Eason412 <250286526+Eason412@users.noreply.github.com>
 
 - #32 sync: 发布 v2.29.0 公开运行时与委派恢复修复（CLOSED）
+- #31 feat(tui): 终端内联图片渲染（kitty/iTerm2 协议 + 统一 main commit 队列）（CLOSED）

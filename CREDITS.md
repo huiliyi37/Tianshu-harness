@@ -246,3 +246,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #132 fix(agent): /cd 换工作区后按新 cwd 重建 FileHistory/claimStore——撤销不再静默失效、往返 /cd 不再砖化（CLOSED）
 - #131 fix(agent): 回滚成功后 journal 写失败不再把已成功的恢复误报为失败（CLOSED）
 - #130 fix(agent): nullDb 降级桩 run() 报 changes:1——better-sqlite3 缺失时首次独占 claim 不再恒失败（CLOSED）
+- #129 fix(agent): durable claims 跨会话继承恒返回空——<id>.claims 附属文件被 listSessions 剥成伪会话且字典序恒大于真 id（CLOSED）

@@ -96,3 +96,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #141 fix(security): 敏感文件门补齐（export_file/import_resource）、白名单收窄与 NODE_OPTIONS 摘除（CLOSED）
 - #126 fix(security): 代码审计加固 — SSRF / 路径穿越 / XSS / 权限 / 版本比较（12 findings，11 已修）（CLOSED）
 - #108 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）
+- #107 fix(council): 议事会席位透明化实际命中模型 + v4pro 弃用标记（#105）（CLOSED）

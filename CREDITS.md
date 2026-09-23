@@ -115,3 +115,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #23 Feat/deepseek v4 flash optimization（CLOSED）
 - #22 feat(runtime): 新增 lean 资源档，降低内存与磁盘占用（CLOSED）
 - #20 降低 DeepSeek API 成本：默认思考档、effort 路由与 flash 压缩（CLOSED）
+- #19 降低 DeepSeek API 成本：默认思考档、effort 路由与 flash 压缩（CLOSED）

@@ -201,3 +201,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #164 fix(test): 修掉 Windows 上的 D:\\D:\\ 双前缀路径 —— new URL().pathname 改走 fileURLToPath（MERGED）
 - #163 docs(known-issues): 补一套 #144 的复现与验证夹具（Windows 实机跑通，含安全条款与边界）（MERGED）
 - #159 fix(windows): taskkill 一律带 /F —— 去掉超时/中止路径上 3 秒的纯空转窗口（CLOSED）
+- #151 fix(windows): 别名调用绕过 windowsHide 守卫——每次刷新 git 上下文闪控制台窗口（#103 残留）（CLOSED）

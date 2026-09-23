@@ -93,3 +93,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 
 - #143 chore: 清理悬空 probe:* 脚本、废弃依赖 parquetjs 与一次性脚本残留（CLOSED）
 - #142 perf(prompt): requestTimeCollapse 单遍索引化，工具结果折叠 O(n²)→O(n)（CLOSED）
+- #141 fix(security): 敏感文件门补齐（export_file/import_resource）、白名单收窄与 NODE_OPTIONS 摘除（CLOSED）

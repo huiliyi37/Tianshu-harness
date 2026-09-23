@@ -216,3 +216,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #50 fix(tui): 排队消息在本轮结束后自动发出，并将 ⏳ 条钉在输入框上（CLOSED）
 - #49 fix(tui): 输入框钉住，不随 slash 等 chrome 开合上跳（CLOSED）
 - #46 fix(tui): 命令面板视窗跟随选中项；首屏 ctrl+p 与斜杠命令同色（CLOSED）
+- #45 feat(tui): slash 提示分层——空 query 只展示核心命令层，继续输入即过滤全量（CLOSED）

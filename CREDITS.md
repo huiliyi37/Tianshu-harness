@@ -155,3 +155,9 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 署名：sky-mirrors <118016577+sky-mirrors@users.noreply.github.com>
 
 - #209 perf(prompt): buildOaiRequest 估算/签名链加消息级缓存（#206 建议 1）（CLOSED）
+
+## @wangxx-yu
+
+署名：wangxx-yu <270384808+wangxx-yu@users.noreply.github.com>
+
+- #6 fix: rescue abandoned tool batch after abort to prevent write_file ghost-abort（CLOSED）

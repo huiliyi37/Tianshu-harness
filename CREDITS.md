@@ -220,3 +220,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #43 fix(tui): 跨 run 陈旧 todo 清单不再复活显示——「◇ 任务 (5/5) 不更新」的根因与修复（CLOSED）
 - #42 fix(tui): Ctrl+C 退出确认窗口支持 Esc/编辑取消，修复幽灵输入与带输入退出（CLOSED）
 - #41 fix(tui): 命令面板换绑 Ctrl+P（Ctrl+Esc 在 Windows 被开始菜单抢占且三条送达路径全断）（CLOSED）
+- #40 fix(tui): AI 输出中排队消息不再自动注入，输入框贴底（排队语义 + 渲染顺序）（CLOSED）

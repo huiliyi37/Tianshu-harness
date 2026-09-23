@@ -238,3 +238,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #181 fix(agent,tui,server): 审批门与终端渲染升到语义层——命令归一化双视图判定、text 契约汇聚点兜底、标题落盘剥转义（CLOSED）
 - #180 fix(server): 路由参数解码后加文件名包含性守卫——skill/plans/groupId/workerId 四处同族路径穿越封堵（CLOSED）
 - #158 fix(tools): apply_patch 接入协作式取消——abort/超时级联 SIGTERM 到 git 子进程（CLOSED）
+- #157 fix(serve): ManagedAgent.shutdown 补关 config 热载 watcher——sidecar 释放链补齐（CLOSED）

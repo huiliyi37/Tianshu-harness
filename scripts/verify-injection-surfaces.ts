@@ -296,7 +296,12 @@ export function runChecks(mutate?: (view: ManifestView) => void): Report {
   const warnings: string[] = []
   const fail = (check: string, message: string): void => { failures.push({ check, message }) }
 
-  const readSrc = (rel: string): string => view.sourceOverrides[rel] ?? readRepoFile(rel)
+  // 源码文本在读入处统一归一化 CRLF → LF。下面的解析原语（换行计数、函数边界
+  // 正则、V3 的 CvmInjectionSource 块）都以 `\n` 为边界；Windows runner 的
+  // core.autocrlf=true 会把 checkout 出的源码变成 CRLF，`\n\n` 在 `\r\n\r\n` 里
+  // 匹配不到，V3 会误报「无法解析联合类型」——这是平台假设，不是内容差异。
+  const readSrc = (rel: string): string =>
+    (view.sourceOverrides[rel] ?? readRepoFile(rel)).replace(/\r\n/g, '\n')
   const volatileSrc = readSrc(VOLATILE)
   const engineSrc = readSrc(ENGINE)
   const pressureSrc = readSrc(PRESSURE)

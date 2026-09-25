@@ -1231,3 +1231,7 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 
 본 프로젝트는 [Apache License, Version 2.0](LICENSE) 오픈소스 라이선스로 배포됩니다. Copyright 2025-2026 Tianshu Contributors.
 
+## 감사의 말
+
+- "에이전트 내 사용자 지정 배경화면" 기능 구현은 [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine)(MIT License)에서 파생되었습니다. 자세한 내용은 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)를 참조하세요.
+

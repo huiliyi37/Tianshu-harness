@@ -1117,3 +1117,7 @@ trailers (auto-recorded by scripts/credit-contributors.sh) — contributor wall 
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Copyright 2025-2026 Tianshu Contributors.
+
+## Acknowledgments
+
+- The "in-agent custom wallpaper" feature is derived from [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine) (MIT License); see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

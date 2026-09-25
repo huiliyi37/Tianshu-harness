@@ -26,6 +26,7 @@ try {
   hooksDir = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    windowsHide: true,
   }).trim()
 } catch {
   process.exit(0) // not a git repo — skip silently

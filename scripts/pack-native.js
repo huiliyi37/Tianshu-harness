@@ -249,7 +249,7 @@ function crossPackNative(targetArch, targetPlatform) {
     execFileSync(
       process.execPath,
       [piBin, '--arch', targetArch, '--platform', targetPlatform, '--target', targetNodeVersion, '--runtime', 'node'],
-      { cwd: pkgDir, stdio: 'inherit' },
+      { cwd: pkgDir, stdio: 'inherit', windowsHide: true },
     )
     if (!existsSync(buildRel)) {
       throw new Error('prebuild-install 未产出 better_sqlite3.node（可能该架构/版本无预编译包）')

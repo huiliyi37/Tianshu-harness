@@ -213,6 +213,7 @@ async function main() {
         cwd: repoRoot,
         stdio: 'pipe',
         timeout: 10 * 60_000, // 源码编译 2-5 分钟常见，给足
+        windowsHide: true,
       })
       if (existsSync(NODE_MODULES_NATIVE)) {
         mkdirSync(TARGET_DIR, { recursive: true })
@@ -318,7 +319,7 @@ async function extractNodeBinary(tarPath, destDir) {
     : `tar -xzf "${tarPath}" -C "${destDir}" --strip-components=2 "*/better_sqlite3.node"`
 
   try {
-    execSync(cmd, { stdio: 'pipe', timeout: 30_000 })
+    execSync(cmd, { stdio: 'pipe', timeout: 30_000, windowsHide: true })
   } catch {
     // tar 可能不支持 --strip-components（Windows 旧版），用 Node 手动解压
     await extractWithNode(tarPath, destDir)

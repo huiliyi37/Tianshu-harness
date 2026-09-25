@@ -42,6 +42,7 @@ function runTsc(): Promise<TscRunOutcome> {
       cwd,
       shell: useShell,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     })
     let stdout = ''
     let stderr = ''

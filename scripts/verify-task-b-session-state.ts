@@ -47,7 +47,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     const absPath = path.startsWith('/') ? path : join(CWD, path)
 
     return new Promise((resolve) => {
-      const child = execFile('grep', ['-rn', pattern, absPath], { encoding: 'utf-8', timeout: 5000 }, (error, stdout) => {
+      const child = execFile('grep', ['-rn', pattern, absPath], { encoding: 'utf-8', timeout: 5000, windowsHide: true }, (error, stdout) => {
         if (error && !stdout) {
           resolve('No matches found.')
           return

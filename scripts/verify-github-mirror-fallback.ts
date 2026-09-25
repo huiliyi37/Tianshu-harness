@@ -57,7 +57,7 @@ function realClone(url: string, timeoutMs: number): Promise<void> {
     const args = ['clone', '--depth', '1']
     if (TEST_REF) args.push('--branch', TEST_REF)
     args.push('--', url, target)
-    execFile('git', args, { timeout: timeoutMs }, (err) => {
+    execFile('git', args, { timeout: timeoutMs, windowsHide: true }, (err) => {
       // Cleanup regardless of outcome.
       try { rmSync(target, { recursive: true, force: true }) } catch { /* best-effort */ }
       if (err) reject(err)

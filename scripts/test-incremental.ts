@@ -23,7 +23,7 @@ const RESULTS_FILE = join(RESULTS_DIR, 'test-results.json')
 
 function getChangedFiles(): string[] {
   try {
-    const output = execSync('git diff --name-only main...HEAD', { encoding: 'utf-8', cwd: CWD })
+    const output = execSync('git diff --name-only main...HEAD', { encoding: 'utf-8', cwd: CWD, windowsHide: true })
     return output.trim().split('\n').filter(Boolean)
   } catch {
     // If git command fails (e.g., no main branch, shallow clone), fall back to empty
@@ -108,7 +108,7 @@ function main(): void {
   let stderr = ''
 
   try {
-    stdout = execSync(command, { encoding: 'utf-8', cwd: CWD, stdio: 'pipe', timeout: 120_000 })
+    stdout = execSync(command, { encoding: 'utf-8', cwd: CWD, stdio: 'pipe', timeout: 120_000, windowsHide: true })
   } catch (err: any) {
     exitCode = err.status ?? 1
     stdout = err.stdout?.toString() ?? ''
@@ -124,7 +124,7 @@ function main(): void {
 
   // Write results for cross-session sharing
   mkdirSync(RESULTS_DIR, { recursive: true })
-  const commit = execSync('git rev-parse --short HEAD', { encoding: 'utf-8', cwd: CWD }).trim()
+  const commit = execSync('git rev-parse --short HEAD', { encoding: 'utf-8', cwd: CWD, windowsHide: true }).trim()
   const results = {
     timestamp: new Date().toISOString(),
     commit,

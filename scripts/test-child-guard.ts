@@ -104,6 +104,7 @@ export function runGuardedChild(opts: GuardOptions): Promise<GuardedResult> {
       env: opts.env ?? process.env,
       cwd: opts.cwd,
       shell: false,
+      windowsHide: true,
       // 让批次自成**进程组**：收场时按组杀，才能连带带走批次的子进程。
       // 只 kill 直接子进程是不够的——测试自己 spawn 的孙进程（如
       // test-runner-flags 的 hang fixture runner）会在祖父被杀后 reparent 到 init

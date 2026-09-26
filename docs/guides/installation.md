@@ -19,7 +19,7 @@ related: [../user-guide.md, troubleshooting.md]
 
 ## 方式 A：桌面端（开箱即用）
 
-从 [GitHub Releases](https://github.com/huiliyi37/Tianshu-Tui/releases/latest) 下载：macOS `.dmg`（Apple Silicon / Intel 双架构）· Windows `.exe` 安装向导 · Linux `.AppImage`。
+从 [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) 下载：macOS `.dmg`（Apple Silicon / Intel 双架构）· Windows `.exe` 安装向导 · Linux `.AppImage`（**x86_64 / aarch64 双架构**，3.26.0 起）。
 
 > **macOS 首次打开报「已损坏」**：当前 macOS 包为 ad-hoc 签名、未经 Apple 公证，浏览器下载后会被 Gatekeeper 拦截。把 app 拖进「应用程序」后执行一次即可（移除下载隔离属性）：
 > ```bash
@@ -27,14 +27,14 @@ related: [../user-guide.md, troubleshooting.md]
 > ```
 > 应用内自动更新不受此影响。
 
-> **Linux 支持范围（3.11.2 首发）**：x64 AppImage 免安装——`chmod +x Tianshu_*.AppImage` 后直接运行；要求 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 等主流发行版），推荐 X11 会话（Wayland 未验）。已知限制：语音输入暂不可用（whisper 社区构建缺位，自动降级浏览器语音）；桌面自动更新对 Linux 同样生效。
+> **Linux 支持范围（3.11.2 首发，3.26.0 起双架构）**：AppImage 免安装——`chmod +x Tianshu_*.AppImage` 后直接运行。按架构选包：`Tianshu_*_amd64.AppImage`（x86_64 台式机/笔记本）· `Tianshu_*_aarch64.AppImage`（ARM 设备：树莓派 64 位、ARM Linux 笔记本等）。要求 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 等主流发行版），推荐 X11 会话（Wayland 未验）。已知限制：语音输入暂不可用（whisper 社区构建缺位，自动降级浏览器语音）；桌面自动更新对 Linux 同样生效。
 
-> **Windows 支持范围**：Windows 10（1809+，建议 22H2）/ Windows 11。界面渲染依赖 **WebView2 Runtime（建议 ≥ 120）**——v3.5 起的滚动与渲染优化需要较新运行时，旧版会导致会话区滚动卡顿。自 3.5.3 起安装器内嵌完整离线安装包（无需联网、系统级注册）。存量用户经自动更新升级后若提示过旧：在提示条或「设置 → 运行时与关于」里点「运行修复工具」。**窗口完全打不开**时，用开始菜单「修复 WebView2」，或从 [Releases](https://github.com/huiliyi37/Tianshu-Tui/releases/latest) 下载 `windows-repair` 目录双击 `repair-webview2.cmd`。也可手动安装 [WebView2 离线安装包](https://go.microsoft.com/fwlink/p/?LinkId=2124703) 后重启。
+> **Windows 支持范围**：Windows 10（1809+，建议 22H2）/ Windows 11。界面渲染依赖 **WebView2 Runtime（建议 ≥ 120）**——v3.5 起的滚动与渲染优化需要较新运行时，旧版会导致会话区滚动卡顿。自 3.5.3 起安装器内嵌完整离线安装包（无需联网、系统级注册）。存量用户经自动更新升级后若提示过旧：在提示条或「设置 → 运行时与关于」里点「运行修复工具」。**窗口完全打不开**时，用开始菜单「修复 WebView2」，或从 [Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) 下载 `windows-repair` 目录双击 `repair-webview2.cmd`。也可手动安装 [WebView2 离线安装包](https://go.microsoft.com/fwlink/p/?LinkId=2124703) 后重启。
 > **Win10 平板模式已知行为**：平板模式下切换应用会把上一个应用滑出屏幕——computer_use 的快照已做遮挡/后台自愈（PrintWindow 渲染），无需关闭平板模式。
 
 ## 方式 B：一键安装脚本（推荐）
 
-校验 Node ≥ 24 → 全局安装 `tianshu-tui`（默认 npmmirror 镜像加速，`NPM_CONFIG_REGISTRY` 可覆盖）→ 启动 `rivet`；幂等可重复执行：
+校验 Node ≥ 24 → 全局安装 `tianshu-harness`（默认 npmmirror 镜像加速，`NPM_CONFIG_REGISTRY` 可覆盖）→ 启动 `rivet`；幂等可重复执行：
 
 ```bash
 # macOS / Linux（bash）
@@ -50,12 +50,14 @@ powershell -ExecutionPolicy Bypass -File scripts\install-tui.ps1 -NoLaunch
 
 ## 方式 C：npm 手动安装
 
-已发布为 `tianshu-tui`，无需本地构建，且每次启动自动检查更新：
+已发布为 `tianshu-harness`，无需本地构建，且每次启动自动检查更新：
 
 ```bash
-npm install -g tianshu-tui
+npm install -g tianshu-harness
 rivet
 ```
+
+> **从旧包 `tianshu-tui` 迁移**：旧包（v3.23.1 前）占着 `rivet` 命令链接，直接装新包会报 `EEXIST: file already exists`——先卸再装：`npm uninstall -g tianshu-tui && npm install -g tianshu-harness`。命令名 `rivet` 不变，另新增 `tianshu` 别名。一键安装脚本已内置该迁移。
 
 > **Windows 提示**：装完提示 `rivet 无法识别` 时——先**新开一个终端**（装 Node 时开着的窗口拿的是旧 PATH）；仍不行，把 `npm prefix -g` 输出的目录加进用户 PATH 再开新终端。官方安装器装的 Node 默认无此问题，nvm/fnm/scoop 安装的需手动加一次。
 
@@ -69,7 +71,7 @@ pkg install proot-distro && proot-distro install ubuntu && proot-distro login ub
 # 2. 容器内：基础工具 + Node >= 24（nodesource 或 nvm）
 apt update && apt install -y curl ripgrep git
 # 3. 安装天枢 CLI
-npm install -g tianshu-tui
+npm install -g tianshu-harness
 rivet
 ```
 
@@ -149,4 +151,4 @@ rivet            # 或：npm start / node dist/cli/entry.js
 
 ## 自动更新
 
-通过 npm 安装时，天枢每 24 小时在启动时检查新版本并弹出提示。`/update` 会执行 `npm install -g tianshu-tui@latest` 并重启；源码安装则用 `git pull && npm install && npm run build`。用 `RIVET_NO_UPDATE_CHECK=1` 可关闭检查。
+通过 npm 安装时，天枢每 24 小时在启动时检查新版本并弹出提示。`/update` 会执行 `npm install -g tianshu-harness@latest` 并重启（包名从当前安装的 `package.json` 读取，不写死）；源码安装则用 `git pull && npm install && npm run build`。用 `RIVET_NO_UPDATE_CHECK=1` 可关闭检查。

@@ -1229,3 +1229,7 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 ## ライセンス
 
 本プロジェクトは [Apache License, Version 2.0](LICENSE) で公開されています。Copyright 2025-2026 Tianshu Contributors.
+
+## 謝辞
+
+- 「エージェント内カスタム壁紙」機能の実装は [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine)（MIT License）に由来します。詳細は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照。

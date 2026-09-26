@@ -359,3 +359,7 @@ node dist/cli/entry.js
 
 - [CVM：从 Transformer 共享退化到认知运行时](docs/reference/cvm-cognitive-runtime.md)
 - [CVM 运行时与生态系统对 Agent 模型的实证影响报告](docs/CVM运行时对Agent模型的实证影响.md)
+
+## 致谢
+
+- 本项目「agent 内自定义壁纸」功能实现源自 [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine)（MIT License），详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

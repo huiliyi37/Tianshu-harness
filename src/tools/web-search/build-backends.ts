@@ -6,6 +6,7 @@ import { BingBackend } from './bing.js'
 import { BraveBackend } from './brave.js'
 import { TavilyBackend } from './tavily.js'
 import { BochaBackend } from './bocha.js'
+import { SerplyBackend } from './serply.js'
 import { createProxyAwareFetch } from './proxy-fetch.js'
 import { readSecret } from '../../config/secrets-store.js'
 
@@ -37,7 +38,7 @@ export interface BuildBackendsDeps {
 export function resolveSearchKey(
   config: Config,
   env: NodeJS.ProcessEnv,
-  backend: 'bocha' | 'brave' | 'tavily',
+  backend: 'bocha' | 'brave' | 'tavily' | 'serply',
 ): string | undefined {
   const s = config.search
   // 0. keyRef 指针 → secrets.json。与 provider 的 tryResolveCredentialKey 同序
@@ -93,6 +94,9 @@ export function buildSearchBackends(config: Config, deps: BuildBackendsDeps = {}
       case 'bocha':
         // 国内直连 AI 搜索（api.bochaai.com）——Tavily 在国内的替代
         backends.push(new BochaBackend(fetchImpl, resolveSearchKey(config, env, 'bocha')))
+        break
+      case 'serply':
+        backends.push(new SerplyBackend(fetchImpl, resolveSearchKey(config, env, 'serply')))
         break
       default:
         // Unknown backend name — skip rather than fail the whole chain.

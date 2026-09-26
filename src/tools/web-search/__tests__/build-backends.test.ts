@@ -47,6 +47,14 @@ describe('buildSearchBackends', () => {
     assert.equal(backends[1]!.isAvailable(), true)
   })
 
+  it('constructs serply and resolves SERPLY_API_KEY', () => {
+    const noKey = buildSearchBackends(cfg({ backends: ['serply', 'bing'] }), { fetch: noopFetch, env: {} })
+    assert.deepEqual(noKey.map(b => b.name), ['serply', 'bing'])
+    assert.equal(noKey[0]!.isAvailable(), false, 'serply without key must report unavailable')
+    const withKey = buildSearchBackends(cfg({ backends: ['serply'] }), { fetch: noopFetch, env: { SERPLY_API_KEY: 's' } })
+    assert.equal(withKey[0]!.isAvailable(), true)
+  })
+
   it('respects custom env var names', () => {
     const backends = buildSearchBackends(
       cfg({ backends: ['brave'], braveApiKeyEnv: 'MY_BRAVE' }),

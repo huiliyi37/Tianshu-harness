@@ -1015,7 +1015,7 @@ export interface SearchConfigSnapshot {
 }
 
 /** 需 key 的 backend 名（bing/ddg 免 key，不在此列）。 */
-const KEYED_SEARCH_BACKENDS = ['bocha', 'brave', 'tavily'] as const
+const KEYED_SEARCH_BACKENDS = ['bocha', 'brave', 'tavily', 'serply'] as const
 
 /**
  * 读取用户全局 config 的 search 段。inline key 不返回明文，只返回 keyStatus

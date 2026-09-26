@@ -652,7 +652,8 @@ tianshu config set-approval auto-safe       # 持久化默认档位
     "backends": ["bing", "duckduckgo"],  // web_search 后端链（首个有结果即停）
     "braveApiKeyEnv": "BRAVE_API_KEY",   // 用 Brave 时填 env 变量名
     "tavilyApiKeyEnv": "TAVILY_API_KEY", // Tavily（需 key，offshore）
-    "bochaApiKeyEnv": "BOCHA_API_KEY"    // 博查（国内直连 AI 搜索，Tavily 国内替代，需 key）
+    "bochaApiKeyEnv": "BOCHA_API_KEY",   // 博查（国内直连 AI 搜索，Tavily 国内替代，需 key）
+    "serplyApiKeyEnv": "SERPLY_API_KEY"  // Serply（Google 结果，需 key，offshore，https://serply.io 免费 2,500 次）
   },
   "ui": {
     "theme": "auto",              // 内置名 | auto（OSC 11 探测）| custom:<name>

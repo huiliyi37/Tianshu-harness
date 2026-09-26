@@ -663,6 +663,8 @@ export const searchSchema = z.object({
   tavilyApiKeyEnv: z.string().default('TAVILY_API_KEY'),
   /** Env var holding the Bocha (博查) Search API key — 国内直连 AI 搜索（Tavily 国内替代）。 */
   bochaApiKeyEnv: z.string().default('BOCHA_API_KEY'),
+  /** Env var holding the Serply Search API key (Google results, offshore). */
+  serplyApiKeyEnv: z.string().default('SERPLY_API_KEY'),
   /** Inline Bocha Search API key。**运行时物化值**——明文只活在内存：loadConfig
    *  按 bochaKeyRef 从 secrets.json（AES-256-GCM）读回；config.json 只留 keyRef
    *  指针，绝不落明文（issue #220，与 provider.apiKey 同规）。 */
@@ -671,6 +673,7 @@ export const searchSchema = z.object({
   braveApiKey: z.string().optional(),
   /** Inline Tavily Search API key（运行时物化，落盘只留 tavilyKeyRef）。 */
   tavilyApiKey: z.string().optional(),
+  serplyApiKey: z.string().optional(),
   /** secrets.json 中 Bocha key 的 keyRef 指针（`search:bocha`）。迁移前的老配置若
    *  仍是明文 bochaApiKey，loadConfig 首次读取时迁入 secrets.json 并改写此指针。 */
   bochaKeyRef: z.string().optional(),
@@ -678,6 +681,7 @@ export const searchSchema = z.object({
   braveKeyRef: z.string().optional(),
   /** secrets.json 中 Tavily key 的 keyRef 指针（`search:tavily`）。 */
   tavilyKeyRef: z.string().optional(),
+  serplyKeyRef: z.string().optional(),
   /** Per-backend request timeout (ms). */
   timeoutMs: z.number().int().positive().default(15_000),
   /** Optional region/country hint passed to backends that support it (Brave). */

@@ -188,6 +188,7 @@ export const DEFAULT_CONFIG: Config = {
     braveApiKeyEnv: 'BRAVE_API_KEY',
     tavilyApiKeyEnv: 'TAVILY_API_KEY',
     bochaApiKeyEnv: 'BOCHA_API_KEY',
+    serplyApiKeyEnv: 'SERPLY_API_KEY',
     timeoutMs: 15_000,
   },
   fetch: {

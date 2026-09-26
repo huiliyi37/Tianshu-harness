@@ -9,7 +9,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # 双架构 matrix：GitHub 公有仓免费 arm64 runner（ubuntu-22.04-arm）。
+    # 原生主机构建（无交叉编译）——fetch/stage 脚本按宿主平台取 linux-x64/arm64
+    # 运行时与原生依赖；AppImage 产物走 workflow artifact，minisign 补签与
+    # release 上传由本地完成（updater 私钥不进 CI；完整性签名密钥经 secret 注入）。
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,11 +74,15 @@ jobs:
       - name: Build Tauri app (AppImage)
         working-directory: desktop
         run: npm run tauri:build:appimage
+        env:
+          # 运行时完整性签名私钥（beforeBuildCommand 链的 sign-runtime-integrity
+          # 自 v3.22.0 起必带；允许 CI secret 注入——见该脚本头注释）。
+          RIVET_RELEASE_KEY_PKCS8: ${{ secrets.RIVET_RELEASE_KEY_PKCS8 }}
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: tianshu-linux-appimage
+          name: tianshu-linux-appimage-${{ matrix.arch }}
           path: |
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error

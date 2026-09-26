@@ -204,6 +204,7 @@ try {
     cwd: process.cwd(),
     timeout: 60_000,
     encoding: 'utf-8',
+    windowsHide: true,
   })
   assemblyAuditPassed = result.status === 0
   assemblyAuditOutput = (result.stdout + result.stderr).slice(-2000)

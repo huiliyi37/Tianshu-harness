@@ -15,5 +15,5 @@ export function sanitizeSegment(id: string): string {
 
 /** 参数数组 git 调用（无 shell）。 */
 export function runGit(cwd: string, args: string[], timeoutMs?: number): void {
-  execFileSync('git', args, { cwd, ...(timeoutMs ? { timeout: timeoutMs } : {}) })
+  execFileSync('git', args, { cwd, ...(timeoutMs ? { timeout: timeoutMs } : {}), windowsHide: true })
 }

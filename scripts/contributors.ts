@@ -202,7 +202,7 @@ export function fetchContributorPrs(): ContributorPr[] | null {
     'gh',
     ['pr', 'list', '-R', CONTRIBUTORS_REPO, '--state', 'all', '--limit', '500',
       '--json', 'number,author,title,state,createdAt'],
-    { encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024 },
+    { encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, windowsHide: true },
   )
   if (r.status !== 0 || !r.stdout) return null
   try {

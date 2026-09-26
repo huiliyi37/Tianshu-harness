@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url'
 
 function detectRipgrep() {
   try {
-    execFileSync('rg', ['--version'], { stdio: 'ignore' })
+    execFileSync('rg', ['--version'], { stdio: 'ignore', windowsHide: true })
     return true
   } catch {
     return false

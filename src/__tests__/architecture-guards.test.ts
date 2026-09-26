@@ -14,6 +14,7 @@ import { join, relative, sep } from 'node:path'
 import { MAX_LINES_BASELINE, MAX_LINES_REDLINE, countPhysicalLines } from '../agent/structure-gate.js'
 
 const SRC_ROOT = join(process.cwd(), 'src')
+const SCRIPTS_ROOT = join(process.cwd(), 'scripts')
 
 /**
  * POSIX 形式路径——所有比较与展示都走它。
@@ -34,6 +35,21 @@ function collectTsFiles(dir: string, results: string[] = []): string[] {
     if (statSync(full).isDirectory()) {
       collectTsFiles(full, results)
     } else if (entry.endsWith('.ts') && !entry.endsWith('.d.ts')) {
+      results.push(full)
+    }
+  }
+  return results
+}
+
+/** 同 collectTsFiles，但收 `.js` / `.mjs`——scripts/ 下多为脚本（构建、运维、验收），
+ *  只收 .ts 会整片漏掉。spawn 守卫用它把 scripts/ 纳入语料：issue #103 的遗漏正因
+ *  只扫 src/，让 22 处调用点在无控制台宿主（mintty / Tauri GUI）下持续闪窗。 */
+function collectScriptFiles(dir: string, results: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) {
+      collectScriptFiles(full, results)
+    } else if (/\.(ts|js|mjs)$/.test(entry) && !entry.endsWith('.d.ts')) {
       results.push(full)
     }
   }
@@ -188,6 +204,8 @@ export function scanSpawnCallSites(content: string, aliases: readonly string[] =
 }
 
 const allSrcFiles = collectTsFiles(SRC_ROOT)
+/** spawn 守卫的第二份语料：scripts/ 下的 .ts/.js/.mjs（理由见 collectScriptFiles 的注释）。 */
+const allScriptFiles = collectScriptFiles(SCRIPTS_ROOT)
 
 // —— max-lines 棘轮 ——
 // 基线表与红线值住在 src/agent/structure-gate.ts（deliver_task 的 YELLOW
@@ -245,7 +263,7 @@ describe('architecture guards', () => {
     // 登记标准严格——跨平台命令（node/git/npm/where/reg/taskkill/soffice）
     // 一律不豁免，新增调用点自己带 windowsHide，而不是往这里加名字。
     const PLATFORM_SPECIFIC = ['src/pro/computer-use/macos-driver.ts']
-    const guardFiles = allSrcFiles.filter(f => {
+    const guardFiles = [...allSrcFiles, ...allScriptFiles].filter(f => {
       const p = toPosix(f)
       if (p.includes('/__tests__/')) return false
       return !PLATFORM_SPECIFIC.some(x => p.endsWith(x))
@@ -272,7 +290,7 @@ describe('architecture guards', () => {
       for (const site of scanSpawnCallSites(content, aliases)) {
         callSites++
         if (!site.hasWindowsHide) {
-          violations.push({ file: toPosix(relative(SRC_ROOT, file)), line: site.line, content: site.content })
+          violations.push({ file: toPosix(relative(process.cwd(), file)), line: site.line, content: site.content })
         }
       }
     }

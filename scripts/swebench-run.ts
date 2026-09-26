@@ -435,7 +435,7 @@ async function runSingleInstance(instance: SwebenchInstance, opts: RunnerOptions
   try {
       const patch = execFileSync(
         'git', ['diff', 'swebench-base'],
-        { cwd: workDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
+        { cwd: workDir, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, windowsHide: true },
       )
     if (patch.trim()) {
       record.patch = patch

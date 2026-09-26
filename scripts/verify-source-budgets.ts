@@ -47,7 +47,7 @@ function main(): void {
   const tracked = new Set(
     (() => {
       try {
-        return execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' })
+        return execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8', windowsHide: true })
           .split('\n')
           .filter(Boolean)
       } catch {

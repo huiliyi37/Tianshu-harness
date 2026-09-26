@@ -103,7 +103,7 @@ function gitClean() {
     try { rmSync(join(REPO, f), { force: true }) } catch { /* ignore */ }
   }
   // 还原任何被 agent 改动的已跟踪文件（保守：只 checkout scratch 名，若被跟踪）
-  spawnSync('git', ['checkout', '--', ...scratch], { cwd: REPO })
+  spawnSync('git', ['checkout', '--', ...scratch], { cwd: REPO, windowsHide: true })
 }
 
 async function main() {
@@ -121,6 +121,7 @@ async function main() {
     cwd: ROOT,
     env: { ...process.env, RIVET_SERVER_TOKEN: TOKEN, RIVET_DESKTOP_DIR: stateDir, RIVET_DESKTOP_SESSION_DIR: join(stateDir, 'sessions') },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
   let serverLog = ''
   child.stdout.on('data', (d) => { serverLog += d })

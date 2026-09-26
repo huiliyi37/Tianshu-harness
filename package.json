@@ -1,7 +1,7 @@
 {
   "name": "tianshu-harness",
   "version": "3.25.1",
-  "description": "Cognitive runtime (CVM) for coding agents — stable, evidence-gated delivery; prefix cache works with all models (98–99% hit rate)",
+  "description": "Cognitive runtime (CVM) for coding agents — stable, evidence-gated delivery; prefix cache works with all models (95–99% hit rate)",
   "license": "Apache-2.0",
   "type": "module",
   "keywords": [

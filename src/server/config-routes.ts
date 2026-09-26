@@ -660,7 +660,10 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         skipCompletion: !model,
       })
       const completionSkipped = !report.probedModel
-      const ok = report.completionOk || (completionSkipped && report.modelsOk)
+      // modelsUnavailable（issue #272）：端点不提供 /models 但 chat 端点活着。
+      // 未带 model 时无法做 completion 真测，但「端点存在」已由 404 + chat 探针
+      // 联合确认——不再当作连接失败。
+      const ok = report.completionOk || (completionSkipped && (report.modelsOk || report.modelsUnavailable === true))
       return {
         status: 200,
         body: {
@@ -668,6 +671,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
           completionOk: report.completionOk,
           completionSkipped,
           modelsOk: report.modelsOk,
+          ...(report.modelsUnavailable ? { modelsUnavailable: true } : {}),
           latencyMs: report.latencyMs,
           probedModel: report.probedModel,
           models: report.models,

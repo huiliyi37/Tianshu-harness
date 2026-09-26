@@ -1377,6 +1377,35 @@ describe('POST /config/providers/test (completion probe)', () => {
     server = undefined
   })
 
+  it('ok=true + modelsUnavailable when /models is 404 but the chat endpoint is live (issue #272)', async () => {
+    server = await startProbeServer((req, res) => {
+      // 端点不提供模型列表（火山方舟 Agent Plan 的形态），但 chat 路径存在。
+      if (req.url === '/v1/models') {
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end('{"error":"not found"}')
+        return
+      }
+      if (req.url === '/v1/chat/completions') {
+        res.writeHead(405).end()
+        return
+      }
+      res.writeHead(404).end()
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test', {
+      provider: 'custom', baseUrl: server.baseUrl, apiKey: 'sk-live', protocol: 'openai',
+      // model 未传——「只测 URL 连接」场景
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; completionSkipped?: boolean; modelsOk: boolean; modelsUnavailable?: boolean }
+    assert.equal(body.completionSkipped, true)
+    assert.equal(body.modelsOk, false, '模型列表确实取不到')
+    assert.equal(body.modelsUnavailable, true, 'chat 端点活着 → 端点存在，不是 baseUrl 写错')
+    assert.equal(body.ok, true, '端点存在 + 鉴权通过 → 连接有效')
+    await server.close()
+    server = undefined
+  })
+
   it('ok=true + completionSkipped when no model id but /models works (connection verified)', async () => {
     server = await startProbeServer((req, res) => {
       if (req.url === '/v1/models') {

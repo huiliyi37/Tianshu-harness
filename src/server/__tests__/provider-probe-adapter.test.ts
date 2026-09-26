@@ -84,6 +84,30 @@ describe('probeForTestKey', () => {
     assert.equal(result.status, 404)
   })
 
+  // issue #272：该端点不提供 GET /models，但 chat 端点活着——放行并带标记，
+  // 让用户能继续配置（前端据此引导手填模型 ID），而不是被硬挡在门外。
+  it('404 /models + a live chat endpoint yields ok with modelsUnavailable (issue #272)', async () => {
+    global.fetch = mock.fn(async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.endsWith('/v1/models')) return fetchResponse(404, { error: 'not found' })
+      return new Response('', { status: 405 })
+    }) as typeof fetch
+
+    const result = await probeForTestKey({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-live' })
+    assert.equal(result.ok, true, '端点存在但不提供 /models —— 不该判失败')
+    assert.deepEqual(result.models, [])
+    assert.equal(result.modelsUnavailable, true)
+    assert.equal(result.error, undefined, '成功路径不带 error')
+  })
+
+  it('404 on both /models and the chat endpoint stays http-404 (wrong base path)', async () => {
+    global.fetch = mock.fn(async () => fetchResponse(404, { error: 'not found' })) as typeof fetch
+    const result = await probeForTestKey({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-live' })
+    assert.equal(result.ok, false, '两个端点都不可达 → 连接有效性无法验证')
+    assert.equal(result.error, 'http-404')
+    assert.equal(result.modelsUnavailable, undefined)
+  })
+
   it('classifies a 5xx with code http-500', async () => {
     global.fetch = mock.fn(async () => fetchResponse(500, { error: 'boom' })) as typeof fetch
     const result = await probeForTestKey({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-x' })

@@ -27,6 +27,10 @@ export interface TestKeyResult {
   /** 本次探测无凭据发起（keyless：Ollama/vLLM 等本地端点）时为 true。前端据此
    *  区分空模型列表的语义——keyless 的空（如尚未 pull 模型）不提示权限问题。 */
   keyless?: boolean
+  /** ok=true 但该端点不提供 GET /models（issue #272：火山方舟 Agent Plan）。
+   *  模型列表取不到、chat 端点可用——前端应引导用户手动填写模型 ID，而不是
+   *  把空列表当成「没有可用模型」。 */
+  modelsUnavailable?: boolean
 }
 
 function mapError(report: ProbeReport): TestKeyResult {
@@ -59,6 +63,12 @@ export async function probeForTestKey(opts: {
   const keyless = !opts.apiKey
   const report = await probeProvider({ ...opts, skipCompletion: true })
   if (!report.modelsOk) {
+    // /models 404 但 chat 端点活着（issue #272）：端点存在，只是不提供模型列表。
+    // 判失败会把这类服务商永远挡在门外（界面上没有任何自助路径）。放行 + 标记，
+    // 由前端引导用户手动填写模型 ID。
+    if (report.modelsUnavailable) {
+      return { ok: true, models: [], modelsUnavailable: true, ...(keyless ? { keyless: true } : {}) }
+    }
     // modelsOk=false 且无 modelListError = 200 但列表为空/不可解析——端点连通与
     // 鉴权均已通过，空是数据而非失败（沿旧 key-probe 语义），空列表交消费端渲染。
     if (!report.modelListError) return { ok: true, models: [], ...(keyless ? { keyless: true } : {}) }

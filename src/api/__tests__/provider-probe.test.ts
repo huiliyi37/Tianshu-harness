@@ -412,6 +412,43 @@ describe('probeProvider', () => {
     await server.close()
     server = undefined
   })
+
+  // issue #272：火山方舟 Agent Plan（base …/api/plan/v3）不提供 GET /models，
+  // 但 chat 端点完全可用。旧行为把 404 一律读成「端点不存在」→ 用户无法添加。
+  it('404 /models + a live chat endpoint degrades to modelsUnavailable (issue #272)', async () => {
+    server = await startServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end('{"error":"not found"}')
+        return
+      }
+      if (req.url === '/v1/chat/completions') {
+        // chat 端点存在但不接受 GET —— 405 就是「路径存在」的证据。
+        res.writeHead(405).end()
+        return
+      }
+      res.writeHead(404).end()
+    })
+
+    const report = await probeProvider({ baseUrl: server.baseUrl, apiKey: 'sk-live', skipCompletion: true })
+    assert.equal(report.modelsOk, false, '模型列表确实取不到')
+    assert.equal(report.modelListError?.code, 'http-404', '错误细节保留供诊断')
+    assert.equal(report.modelsUnavailable, true, '但 chat 端点存在 → 不是「端点不存在」')
+    await server.close()
+    server = undefined
+  })
+
+  it('404 on both /models and the chat endpoint stays a plain failure (wrong base path)', async () => {
+    server = await startServer((_req, res) => {
+      res.writeHead(404).end()
+    })
+
+    const report = await probeProvider({ baseUrl: server.baseUrl, apiKey: 'sk-live', skipCompletion: true })
+    assert.equal(report.modelsUnavailable, undefined, 'chat 端点也 404 → base 路径确实不对')
+    assert.equal(report.modelListError?.code, 'http-404')
+    await server.close()
+    server = undefined
+  })
 })
 
 describe('vision real-test (视觉真测)', () => {

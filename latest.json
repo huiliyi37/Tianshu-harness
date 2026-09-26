@@ -14,6 +14,14 @@
     "windows-x86_64": {
       "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.26.0/Tianshu_3.26.0_x64-setup.exe",
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR1U4RW4wY2haSUExRTE2TWtrbEtlSVBNQUR4T0xWOWg2VXlvWWo5UWxYdTVEZGErbEFKTXpxYzJqUGRKcDUvQnFMN2d5aGM1eG9IaUVsZHlmNDQ0MXdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzkwNzI3CWZpbGU6VGlhbnNodV8zLjI2LjBfeDY0LXNldHVwLmV4ZQpqMjUvUmpmcWNCSStubEpaL0tFcU42bm4xNDR1Zk9ReE9HbDlKZk4xTEphWlhScEFmalluNWJ0dk5zV0pLRUxpWkdmMXFZVSt3SFRWQjVJZGxnT1hDUT09Cg=="
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.26.0/Tianshu_3.26.0_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2Q3QVBYbDZhN3o4L21VSklwcFJJUnN6dGZBWWhUTDZvNHprTEdMbGs3ZkxaTUFxV2h5emNSMlJrQlRNaStOUXc4MDljeGQxd05sNy9XMXFhMVpPZUEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzk2ODMyCWZpbGU6VGlhbnNodV8zLjI2LjBfYW1kNjQuQXBwSW1hZ2UKbExuSGFQQm5VbFRxS0dZNkZ2WTZaLzAwc1Bhb2pzbTNFZ1Z4NFlFUWdWVCtmUDhDODY2Znp5VFlRU2JZMm1vL0hLSk4wVFcvYXNWbEY5THFzOFdRQWc9PQo="
+    },
+    "linux-aarch64": {
+      "url": "https://github.com/huiliyi37/Tianshu-harness/releases/download/v3.26.0/Tianshu_3.26.0_aarch64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRaDZmcFdBUytLR2IxLzdIdGdvTzhGNWRRMjBjNzk5SE9Mbmt5M1RZR0NVdFlCcTRJK2JRYWJETUQyVDFnYmRLUGc1SXExUStYcUEvd1JMT2FXbDlTUko2KzR3SEp6dGdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzk2NzczCWZpbGU6VGlhbnNodV8zLjI2LjBfYWFyY2g2NC5BcHBJbWFnZQpsSWFxdU5NV0RxNDZVZCtBb0R2OW94VEloKzFHYWJxWVlGM0FWZ0wyU2dSZ0xHODRDTERuS2hNeXVldXNaajBNS1NUcWhEdWY5R1hIc1UrOE1MYnVEdz09Cg=="
     }
   }
 }

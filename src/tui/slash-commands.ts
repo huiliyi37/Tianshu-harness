@@ -2297,7 +2297,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   {
     name: '/debug',
     immediate: true,
-    handler(ctx) {
+    async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
       const cmd = parts[0]!.toLowerCase()
       const subcmd = parts[1]
@@ -2317,8 +2317,35 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         pushStatic(createLogEntry({ type: 'system', content: formatVolatilePayloadReport(info.volatilePayloadReport) }))
       } else if (subcmd === 'mcp') {
         pushStatic(createLogEntry({ type: 'system', content: mcpStatusText(ctx.mcpManagerRef.current) }))
+      } else if (subcmd === 'cvm') {
+        // CVM 拦截台账的事后查询入口（issue #249）。数据源是 sensorium.jsonl 的
+        // cvm-vector-decision 行——不新增采集，只把已有台账聚合出来。
+        // 可选 argv：/debug cvm <sessionId> 查历史会话，缺省查当前会话。
+        const { resolveLogLocations } = await import('../diagnostics/log-locations.js')
+        const { summarizeCvmLedger, formatCvmLedgerSummary } = await import('./format/cvm-ledger.js')
+        const { existsSync, readFileSync } = await import('node:fs')
+        const sessionId = parts[2] ?? ctx.currentSessionId
+        const report = resolveLogLocations({
+          cwd: ctx.agent.cwd,
+          ...(sessionId ? { sessionId } : {}),
+        })
+        const path = report.locations.find((l) => l.id === 'sensorium')?.path ?? ''
+        // fail-open：读不出来就当空台账（渲染层会指向 /logs 与门控），不让排查命令自己抛。
+        let text = ''
+        if (path && existsSync(path)) {
+          try {
+            text = readFileSync(path, 'utf8')
+          } catch {
+            text = ''
+          }
+        }
+        const summary = summarizeCvmLedger(text.split('\n'))
+        pushStatic(createLogEntry({
+          type: 'system',
+          content: formatCvmLedgerSummary(summary, { ...(sessionId ? { sessionId } : {}), path }),
+        }))
       } else {
-        pushStatic(createLogEntry({ type: 'system', content: 'Usage: /debug [prompt|fingerprint|cache|context-payload|mcp]' }))
+        pushStatic(createLogEntry({ type: 'system', content: 'Usage: /debug [prompt|fingerprint|cache|context-payload|mcp|cvm]' }))
       }
       setIsStreaming(false)
       return true

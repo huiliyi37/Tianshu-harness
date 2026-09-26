@@ -953,3 +953,33 @@ test('外部扫描只增不覆盖：id 已在本进程内存时保持本进程�
   assert.equal(after.updatedAt, before.updatedAt, '不得被磁盘记录覆盖')
   assert.equal(after.status, before.status, '会话状态归持有它的那个进程管')
 })
+
+// issue #274 的契约钉：adopt 只登记 record（events 为空是**懒加载约定**，与
+// rehydrate 一致），首次打开会话时由 ensureEvents 按需补读磁盘日志。这条契约
+// 此前没有测试覆盖——它正是「外部进程的会话在桌面端可见但内容为空」的争夺点：
+// 服务端在 since=0 时必须回放完整历史，否则断点在别处。
+test('adopt 进来的会话首次打开（since=0）回放磁盘上的完整历史', async () => {
+  const p = new LazyMemoryPersistence([seeded('a')])
+  const mgr = new RuntimeSessionManager({
+    createAgent: () => new NoopAgent(),
+    persistence: p,
+    externalScanMs: 0,
+  })
+
+  // 外部进程跑完了一轮对话：record 与 events 都落在共享 home 上
+  p.saveRecord({ ...seeded('c').record, lastSeq: 2, updatedAt: 500 })
+  p.appendEvent('c', ev(1, 'status', { status: 'running' }))
+  p.appendEvent('c', ev(2, 'text_delta', { text: 'hi' }))
+
+  adoptNow(mgr)
+  assert.deepEqual(
+    mgr.listAllSessions().map((s) => s.id).sort(), ['a', 'c'],
+    'adopt 只登记元数据即可见',
+  )
+  assert.deepEqual(p.loadEventsCalls, [], 'adopt 不预读事件日志（懒加载约定）')
+
+  const replay = await mgr.getEventsAsync('c', 0)
+  assert.equal(replay?.events.length, 2, '首次打开必须回放完整历史')
+  assert.equal(replay?.lastSeq, 2)
+  assert.deepEqual(p.loadEventsCalls, ['c'], '懒加载在首次打开时触发')
+})

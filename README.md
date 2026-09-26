@@ -185,7 +185,7 @@ tianshu            # 看到 〉 提示符即就绪
 
 接下来它会自己 grep、读文件、改代码、跑测试——每一步都有对应的工具调用，不是"说完就结束"。默认权限档是**自动**：低风险动作直接执行，高风险动作会停下来问你（档位与会话内切换见下方 [权限模式](#权限模式)）。
 
-### 做完之后看两处
+### 做完之后看三处
 
 **① 交付报告** —— 收尾时天枢会调用 `deliver_task`，输出一块交付报告：交付门状态（GREEN / YELLOW / RED）、本次改动的文件、跑过的验证、逐条完成度审计。「完成」必须有证据；没有证据的收尾会被门禁拦下。
 
@@ -199,6 +199,15 @@ tianshu            # 看到 〉 提示符即就绪
 | `/cockpit safety` | 风险等级与空转检测 |
 
 不带参数是总览，`/cockpit off` 关闭。
+
+**③ CVM 拦截台账** —— 运行时的每次拦截都逐条落在会话的 `sensorium.jsonl`。落点用 `tianshu logs` 查（会列出数据根与各日志路径）：
+
+```bash
+# 按分类复算本会话的拦截次数
+jq -r 'select(.kind=="cvm-vector-decision") | .classification' sensorium.jsonl | sort | uniq -c
+```
+
+台账默认只写轻量行（`vitals-lite` / `cognitive-frame-lite`）；要看全量拦截记录，启动前设 `RIVET_DEBUG_TELEMETRY=1`。分类枚举与复算口径见[指标观测 harness](docs/reference/observability-harness.md)。
 
 ### 无界面模式（脚本 / CI 集成）
 

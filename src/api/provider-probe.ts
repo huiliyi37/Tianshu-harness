@@ -3,7 +3,13 @@
  *
  * probeProvider() verifies a candidate endpoint before anything is written to
  * config:
- *   1. GET /models              → model id list (timeout/404 degrades, not fails)
+ *   1. GET /models              → model id list. **A 404 does not mean the
+ *                                 endpoint is missing** — plenty of gateways
+ *                                 simply don't expose a model list (issue #272).
+ *                                 It is disambiguated with one extra GET on the
+ *                                 chat endpoint: live chat endpoint →
+ *                                 `modelsUnavailable`; both 404 → the base URL
+ *                                 really is wrong.
  *   2. one minimal completion   → stream liveness + capability hints
  *      (max_tokens=8, "hi")       - non-SSE 200 → "missing /v1?" guidance
  *                                 - reasoning_content in the wire → reasoningSplit hint
@@ -73,6 +79,12 @@ export interface ProbeReport {
   models: string[]
   /** GET /models returned a usable list. */
   modelsOk: boolean
+  /** GET /models 返回 404，但 **chat 端点存在** —— 该端点只是不提供模型列表
+   *  （issue #272：火山方舟 Agent Plan /api/plan/v3）。与 modelListError 并存：
+   *  上层据此降级为「可继续」而不是「端点不存在」，modelListError 保留诊断细节。
+   *  与 baseUrl 路径写错的 404 区分靠一次额外的 chat 端点探测（两个都 404 才是
+   *  真的写错）。 */
+  modelsUnavailable?: boolean
   /** 结构化 models 拉取错误——适配层（桌面 test-key）按 code 映射前端 i18n 键
    *  （auth-failed/timeout/network-error/quota/http-<status>）。CLI 仍消费 errors
    *  字符串，本字段是增量，不替代。 */
@@ -261,6 +273,44 @@ interface FetchedModelList {
   infos?: Record<string, ProbedModelInfo>
   /** models 拉取失败时的结构化错误（HTTP 分支）；超时/网络错误分支不带 status。 */
   modelListError?: { code: string; status?: number; message: string }
+  /** 见 ProbeReport.modelsUnavailable —— 404 但 chat 端点活着。 */
+  modelsUnavailable?: boolean
+}
+
+/**
+ * `/models` 返回 404 后的歧义消解：这个 404 是「端点存在但不提供模型列表」，
+ * 还是「baseUrl 路径写错了」？两者在状态码上不可分，但可以用一次**零 token、
+ * 幂等**的 GET 打 chat 端点问出来：
+ *   - 非 404（401/403/405/400/200…）→ 路径正确、端点存在 → 降级放行；
+ *   - 404 → 路径确实不存在 → 保持失败（既有语义不变）。
+ *
+ * issue #272：火山方舟 Agent Plan（base …/api/plan/v3）不提供 GET /models，
+ * 但 chat 端点可用——旧行为把 404 一律读成「端点不存在」，用户在界面上没有
+ * 任何自助路径（该主机对任意路径都先鉴权返回 401，真 key 下的 404 只在路由
+ * 层给出，恰恰证明鉴权已通过）。
+ */
+async function chatEndpointExists(options: ProbeOptions): Promise<boolean> {
+  const endpoints = resolveProbeEndpoints(options.baseUrl, options.providerName)
+  const url = options.protocol === 'anthropic'
+    ? `${endpoints.base}/v1/messages`
+    : options.protocol === 'openai-responses'
+      ? endpoints.responsesUrl
+      : endpoints.chatUrl
+  const headers = options.protocol === 'anthropic'
+    ? anthropicHeaders(options.apiKey)
+    : authHeaders(options.apiKey, probeIdentityHeaders(options))
+  try {
+    const response = await fetchWithProbeTimeout(
+      url, { method: 'GET', headers }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    )
+    // 只要状态码：立刻释放 body，否则 keep-alive 连接会一直挂着（测试里的
+    // server.close() 会因此永不回调）。
+    try { await response.body?.cancel() } catch { /* 无 body / 已断开 —— 与状态码判定无关 */ }
+    return response.status !== 404
+  } catch {
+    // 网络错误/超时：无法判定端点是否存在，保守回退到既有语义（判失败）。
+    return false
+  }
 }
 
 async function fetchModelList(options: ProbeOptions, errors: string[]): Promise<FetchedModelList> {
@@ -284,7 +334,13 @@ async function fetchModelList(options: ProbeOptions, errors: string[]): Promise<
       const bodyText = await response.text().catch(() => '')
       const message = classifyHttpError(response.status, bodyText, options.baseUrl)
       errors.push(`GET /models failed: ${message}`)
-      return { ids: [], modelListError: { code: modelListErrorCode(response.status, bodyText), status: response.status, message } }
+      const modelListError = { code: modelListErrorCode(response.status, bodyText), status: response.status, message }
+      // 404 的歧义消解（见 chatEndpointExists）：chat 端点活着 ⇒ 该端点只是不
+      // 提供模型列表，而不是 baseUrl 写错。issue #272。
+      if (response.status === 404 && await chatEndpointExists(options)) {
+        return { ids: [], modelListError, modelsUnavailable: true }
+      }
+      return { ids: [], modelListError }
     }
     const payload = await response.json() as unknown
     const ids = parseModelIds(payload)
@@ -567,6 +623,7 @@ export async function probeProvider(options: ProbeOptions): Promise<ProbeReport>
     hints: {},
     errors,
     ...(fetched.modelListError ? { modelListError: fetched.modelListError } : {}),
+    ...(fetched.modelsUnavailable ? { modelsUnavailable: true } : {}),
     ...(fetched.infos ? { modelInfos: fetched.infos } : {}),
   }
 

@@ -32,7 +32,8 @@ const SITE_OPERATOR = /\bsite:\S+/gi
  * 把查询切成「查询词 → 匹配词元」的分组。
  *
  * 切词：`[a-z0-9\u4e00-\u9fff]+` 连续段（空格与标点都是分隔），长度 <2 的段丢弃。
- * 词元：中文段按 bigram（`杭州西湖` → `杭州`/`州西`/`西湖`）；纯拉丁数字段整词小写。
+ * 词元：段先统一小写（与 haystack 同口径），中文段按 bigram（`杭州西湖` →
+ * `杭州`/`州西`/`西湖`），纯拉丁数字段整词。
  * 数字与汉字同等参与 bigram，所以 `7月` 这类混合词不会被整词漏掉。
  *
  * `site:host` 操作符整段剔除：域名只会出现在结果的 URL 里，而 URL 不参与匹配，
@@ -47,7 +48,8 @@ export function queryTokenGroups(query: string): string[][] {
   const scan = /[a-z0-9\u4e00-\u9fff]+/gi
   let m: RegExpExecArray | null
   while ((m = scan.exec(query.replace(SITE_OPERATOR, ' '))) !== null) {
-    const chunk = m[0]
+    // 与 haystack 同口径先小写：否则「K线」的 bigram 在小写后的「k线」里永久失配。
+    const chunk = m[0].toLowerCase()
     if (chunk.length < 2) continue
     if (CJK_CHAR.test(chunk)) {
       const grams: string[] = []
@@ -56,7 +58,7 @@ export function queryTokenGroups(query: string): string[][] {
       }
       groups.push(grams)
     } else {
-      groups.push([chunk.toLowerCase()])
+      groups.push([chunk])
     }
   }
   return groups

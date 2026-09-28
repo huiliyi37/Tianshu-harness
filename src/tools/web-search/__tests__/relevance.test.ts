@@ -78,6 +78,13 @@ describe('queryTokens', () => {
     )
     assert.ok(queryTokens('2026年 9月 发布').includes('9月'))
   })
+
+  it('含拉丁字母的混合段同样小写归一——「K线」与「k线」产同词元（issue #289）', () => {
+    // 混合段走 bigram 分支，该分支曾漏掉小写归一：haystack 侧统一 toLowerCase，
+    // 「K线」的 bigram 在「k线」里永久失配。K线/A股/B站/GPT 这类混合词全中招。
+    assert.deepEqual(queryTokens('K线 均线'), ['k线', '均线'])
+    assert.deepEqual(queryTokens('A股 行情'), ['a股', '行情'])
+  })
 })
 
 describe('looksOffTopic', () => {
@@ -115,6 +122,21 @@ describe('looksOffTopic', () => {
   it('拉丁查询大小写不敏感', () => {
     const r: SearchResult[] = [{ title: 'TypeScript: JavaScript With Syntax For Types.', url: 'https://x', snippet: '' }]
     assert.equal(looksOffTopic('typescript types', r), false)
+  })
+
+  it('「K线 均线」与「k线 均线」对同一批结果判定一致——大写 K 不再整批误判跑题（issue #289）', () => {
+    // 5 条结果（复现批形态：4 条双词覆盖 + 1 条泛词）。结果里写「K线」，
+    // haystack 侧统一小写成「k线」；查询侧 bigram 若不归一，那 4 条双词覆盖
+    // 全被记成只覆盖「均线」一词，整批被误判跑题——一个字母大小写翻转判定。
+    const candlestick: SearchResult[] = [
+      { title: 'K线图基础教程', url: 'https://example.com/k1', snippet: 'K线怎么看，均线怎么用。' },
+      { title: '均线入门：K线与均线配合', url: 'https://example.com/k2', snippet: '讲解K线形态。' },
+      { title: 'K线均线实战', url: 'https://example.com/k3', snippet: '双均线策略与K线信号。' },
+      { title: '股票K线分析', url: 'https://example.com/k4', snippet: 'K线组合与均线系统详解。' },
+      { title: '股票入门_百度百科', url: 'https://example.com/k5', snippet: '股票是股份公司发行的所有权凭证。' },
+    ]
+    assert.equal(looksOffTopic('k线 均线', candlestick), false)
+    assert.equal(looksOffTopic('K线 均线', candlestick), false)
   })
 
   it('单个查询词内的多枚 bigram 只计一词——不因自重叠虚高', () => {

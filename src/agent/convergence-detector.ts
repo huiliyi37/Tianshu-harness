@@ -501,12 +501,43 @@ function oscillationHasData(fingerprints: ReadonlyArray<string>): boolean {
   return fingerprints.length >= 4
 }
 
+/** CJK 表意文字/假名区间（含扩展 A 区与兼容区）——判定文本是否无空格分词可用。 */
+const CJK_CHAR_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/
+
+/**
+ * Jaccard 相似度用的 token 集合。
+ *
+ * 空格分词文本（英文等）沿用词级集合（词长 ≥3，行为不变）；CJK 为主的文本
+ * 没有空格，split(/\s+/) 会把整段切成单个 token——「同一段话换序号再发
+ * 一遍」（中文复读的典型形态）两个整段 token 不同 → Jaccard 恒 0 → 重复度
+ * 恒满分，isProducingReport 跟着恒真，no-tool 熔断与 scoreAbort 双双失明
+ * （issue #287）。CJK 文本改用字符级 2-gram 集合：近重复段的 2-gram 集合
+ * 几乎全同，Jaccard 恢复区分度。
+ */
+function buildTextTokenSet(text: string): Set<string> {
+  const chars = text.replace(/\s+/g, '')
+  let cjkCount = 0
+  for (const ch of chars) {
+    if (CJK_CHAR_RE.test(ch)) cjkCount++
+  }
+  if (chars.length > 0 && cjkCount * 2 >= chars.length) {
+    const grams = new Set<string>()
+    for (let i = 0; i + 1 < chars.length; i++) {
+      grams.add(chars.slice(i, i + 2))
+    }
+    return grams
+  }
+  return new Set(text.split(/\s+/).filter(w => w.length >= 3))
+}
+
 /**
  * textRepetitionPenalty: detects cross-turn text output repetition.
  * When the model produces nearly identical text across turns (despite calling
  * different tools), it's stuck in a "reformat the same analysis" loop.
  *
- * Uses word-level Jaccard similarity between recent text fingerprints.
+ * Uses Jaccard similarity between recent text fingerprints — word sets for
+ * space-delimited text, character 2-grams for CJK-dominant text (no spaces
+ * to split on; issue #287).
  * Returns 0.0 (heavy penalty) when 3+ of the last 4 turns have >70% word overlap,
  * 1.0 when text is diverse across turns.
  */
@@ -514,21 +545,21 @@ function computeTextRepetitionPenalty(fingerprints: ReadonlyArray<string>): numb
   const window = fingerprints.slice(-5)
   if (window.length < 3) return 1.0 // not enough data
 
-  // Compute word sets for each fingerprint (skip very short ones)
-  const wordSets = window
+  // Compute token sets for each fingerprint (skip very short ones)
+  const tokenSets = window
     .filter(fp => fp.length >= 50)
-    .map(fp => new Set(fp.split(/\s+/).filter(w => w.length >= 3)))
+    .map(fp => buildTextTokenSet(fp))
 
-  if (wordSets.length < 3) return 1.0
+  if (tokenSets.length < 3) return 1.0
 
   // Count pairs with high Jaccard similarity
   let highSimilarityPairs = 0
   let totalPairs = 0
-  for (let i = 0; i < wordSets.length; i++) {
-    for (let j = i + 1; j < wordSets.length; j++) {
+  for (let i = 0; i < tokenSets.length; i++) {
+    for (let j = i + 1; j < tokenSets.length; j++) {
       totalPairs++
-      const a = wordSets[i]!
-      const b = wordSets[j]!
+      const a = tokenSets[i]!
+      const b = tokenSets[j]!
       if (a.size === 0 || b.size === 0) continue
       let intersection = 0
       for (const word of a) {

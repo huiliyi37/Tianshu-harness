@@ -947,6 +947,66 @@ describe('evaluateConvergence', () => {
     })
   })
 
+  // ── issue #287：中文近重复复读绕过 textRepetitionPenalty ──
+  // 模型中文复读的典型形态：同一段 ≥200 字的分析，每轮换序号原样重发。
+  // 中文没有空格，旧的 split(/\s+/) 把整段切成单个 token——两个「整段 token」
+  // 不同 → Jaccard 恒 0 → textRepetitionPenalty 恒满分 → isProducingReport
+  // 恒真 → no-tool 硬熔断被永久降级为 kick，scoreAbort 也被满分 textRep 堵死。
+  // 同构造的英文（词集合几乎全同）正常熔断——唯一变量是语言。
+
+  describe('CJK near-duplicate repetition (issue #287)', () => {
+    const cnBase = '经过对项目现状的全面梳理，我认为当前架构存在三个层面的结构性问题。第一，模块边界模糊，核心逻辑与外围功能相互纠缠，任何一处改动都会波及多个文件，回归成本居高不下。第二，测试覆盖不足，关键路径缺少自动化保护，重构之后无法快速确认行为没有漂移，只能依赖人工回归。第三，配置来源分散，多个环境各自维护参数，排查问题时需要逐处核对，容易引入不一致。建议分三步收敛：先明确模块边界与依赖方向，再补齐关键路径的回归测试，最后统一配置读取入口。每一步都可独立验收，不影响现有功能。'
+    const enBase = 'After a full review of the project state, the architecture has three structural problems. First, module boundaries are blurry: core logic and peripheral features are entangled, so any single change ripples across many files and regression cost stays high. Second, test coverage is insufficient: critical paths lack automated protection, and after refactoring we cannot quickly confirm behavior has not drifted. Third, configuration sources are scattered across environments, forcing manual cross-checking that invites inconsistency. The convergence plan has three steps: clarify module boundaries and dependency direction, then add regression tests for critical paths, finally unify the configuration entry point. Each step is independently verifiable without breaking existing functionality.'
+
+    // 9 轮 no-tool + 每轮 ≥200 字近重复文本；唯一变量 = 语言（序号在两种
+    // 语言里都只影响极小片段：第1轮/第2轮 vs Round 1/Round 2）。
+    const bilingualInput = (fingerprints: string[]): ConvergenceInput => baseInput({
+      turn: 20,
+      phaseClass: 'explore',
+      contextWindow: 200_000,
+      recentToolHistory: [],
+      noToolTurnCount: 9,
+      textFingerprints: fingerprints,
+    })
+    const cnNearDupFps = Array.from({ length: 9 }, (_, i) => `第${i + 1}轮分析：${cnBase}`)
+    const enNearDupFps = Array.from({ length: 9 }, (_, i) => `Round ${i + 1} analysis: ${enBase}`)
+
+    it('同段中文换序号重发判为重度重复（修复前 Jaccard 恒 0、penalty 恒满分）', () => {
+      const cn = evaluateConvergence(bilingualInput(cnNearDupFps))
+      assert.equal(cn.signals.textRepetitionPenalty, 0,
+        `near-duplicate CJK text must score severe repetition, got ${cn.signals.textRepetitionPenalty}`)
+    })
+
+    it('双语同向：中文换序号复读与英文一样触发 no-tool 硬熔断', () => {
+      const cn = evaluateConvergence(bilingualInput(cnNearDupFps))
+      const en = evaluateConvergence(bilingualInput(enNearDupFps))
+      // English control（行为不变）：词集合几乎全同 → 复读 spin → 硬熔断
+      assert.equal(en.reasoningActive, false)
+      assert.equal(en.shouldAbort, true)
+      assert.equal(en.abortCause, 'no-tool')
+      assert.equal(en.level, 3)
+      // CJK 必须与英文同向（修复前：reasoningActive=true、level=2、abort=false）
+      assert.equal(cn.reasoningActive, false, 'near-duplicate CJK output is spin, not fresh reasoning')
+      assert.equal(cn.shouldAbort, true, 'both abort paths must not stay blind for CJK repetition')
+      assert.equal(cn.abortCause, 'no-tool')
+      assert.equal(cn.level, en.level, 'CJK verdict must match the English control')
+    })
+
+    it('对照：真正不同的无空格中文长分析仍视为推理（2-gram 不误伤 fresh 输出）', () => {
+      // 三段互不相同的无空格中文长分析——真实的多轮深度推理形态。
+      const freshCn = [
+        '本次排查聚焦测试套件无法启动的问题。测试文件导入了三个工厂函数与两个 pytest fixture，但项目根目录和 tests 目录下都不存在定义它们的 conftest，收集阶段直接抛出 fixture 未找到的错误，导致任何回归验证都无法进行。修复思路是新增 conftest 文件，补齐这些工厂函数与 fixture 的定义，并显式声明导入路径，让测试集合恢复可运行状态，否则后续所有改动都得不到自动化验证保护。',
+        '配置层存在多处死接线。SCREENING 字段在配置模块第十八行定义，但通篇没有任何模块引用它；ZONE_MIN_VOLUME 常量同样没有消费方，全仓检索零命中；另有模块顶部一处从 legacy_utils 引入后从未使用的死导入。这类未使用符号会让后来的维护者误以为配置仍在生效，建议统一清理，并为确需保留的字段补充真实消费方，避免配置与代码之间形成幻觉接线。清理时注意区分确认无用与暂时无人用两类，前者直接删除，后者移动到显式的预留区并注释意图，防止下一位维护者重复排查同样的疑点。',
+        '增量更新的起算日逻辑写反了。两处计算起始日期的代码都用了取最小值，会永远选中更早的那个日期，导致每次增量更新都从很久以前重新拉取，既浪费带宽又可能覆盖已经人工修正过的数据。正确做法是按最近一个交易日向前回溯固定窗口，用取最大值把边界锚定到最新数据，否则增量窗口的方向完全错误，数据质量会持续劣化。修正完成后应补一条回归测试锁定新的边界语义，防止后续重构再次把方向写反，同时给运维文档补一段窗口计算说明。',
+      ]
+      const cn = evaluateConvergence(bilingualInput(freshCn))
+      assert.ok(cn.signals.textRepetitionPenalty >= 0.7,
+        `distinct CJK analyses must not look repetitive, got ${cn.signals.textRepetitionPenalty}`)
+      assert.equal(cn.reasoningActive, true, 'fresh no-space CJK reasoning keeps the exemption')
+      assert.equal(cn.shouldAbort, false)
+    })
+  })
+
   // ── Early-exit does not override no-tool stagnation ──
 
   describe('early-exit vs no-tool stagnation', () => {

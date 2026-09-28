@@ -9,6 +9,10 @@
  *   POST   /schedule/:id/pause      pause/resume ({ enabled })
  *   POST   /schedule/:id/stop       stop / archive (terminal — keeps definition + history)
  *   DELETE /schedule/:id            remove (physical — history entry point is lost)
+ *
+ * issue #290 — 写路由全部有锁主守卫（options.isWriteAllowed，serve.ts 注入
+ * lock.isOwner()）：非锁主 sidecar 的内存调度表恒空，任何写都会整表覆写
+ * scheduled_tasks.json；读路由不受限。
  */
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
@@ -55,16 +59,39 @@ export interface ScheduleRouteOptions {
   getStatus?: () => Promise<unknown> | undefined
   /** 付费版 v1 · T5 — unattendedAutomation Pro gate。缺省 = 允许（测试/TUI 软门禁）。 */
   isUnattendedAutomationEnabled?: () => boolean
+  /**
+   * 调度表写权限（issue #290）：多 sidecar 共用同一 desktop 目录时，非锁主进程
+   * 内存表恒空，写操作会整表覆写 scheduled_tasks.json。注入后每个**写**路由在
+   * 处理器开头动态判定（serve.ts 传 lock.isOwner()——锁竞争异步、锁可易主，
+   * 不能注册时静态决定）；返回 false → 503 拒绝且不触碰磁盘。缺省 = 允许
+   * （单进程/测试无锁）。读路由（GET）不受限。
+   */
+  isWriteAllowed?: () => boolean
 }
+
+/** 非锁主写拒绝的统一回执（5xx：本进程没坏，只是写操作不在它这儿受理）。 */
+const SCHEDULE_WRITE_NOT_OWNER = {
+  status: 503,
+  body: {
+    error: 'Schedule writes are served by the lock-owner process; this sidecar does not own the scheduler lock (issue #290)',
+  },
+} as const
 
 export function buildScheduleRoutes(
   scheduler: CronScheduler,
   apiToken?: string,
   options: ScheduleRouteOptions = {},
 ): Record<string, RouteHandler> {
-  const { getStatus, isUnattendedAutomationEnabled } = options
+  const { getStatus, isUnattendedAutomationEnabled, isWriteAllowed } = options
+  /** 写路由守卫（issue #290）：非锁主一律拒绝——任何写路径都会以空内存表整表落盘。 */
+  function writeGuarded(handler: RouteHandler): RouteHandler {
+    return async (body, params, headers, res) => {
+      if (isWriteAllowed && !isWriteAllowed()) return { ...SCHEDULE_WRITE_NOT_OWNER }
+      return handler(body, params, headers, res)
+    }
+  }
   return {
-    'POST /schedule': withAuth((body) => {
+    'POST /schedule': withAuth(writeGuarded((body) => {
       const data = (body ?? {}) as {
         prompt?: string
         trigger?: { type?: string; spec?: string }
@@ -123,7 +150,7 @@ export function buildScheduleRoutes(
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
       }
-    }, apiToken),
+    }), apiToken),
 
     'GET /schedule': withAuth((_body, params) => {
       const tasks = scheduler.list()
@@ -146,34 +173,34 @@ export function buildScheduleRoutes(
 
     // 试跑驱动信任 · Phase 1 — 立即手动触发一次（恒有人值守）。审批卡片
     // 在试跑中弹出即授权采集；试跑计入 triggerCount，与 first-runs 晋级衔接。
-    'POST /schedule/:id/run-now': withAuth((_body, params) => {
+    'POST /schedule/:id/run-now': withAuth(writeGuarded((_body, params) => {
       const ok = scheduler.runNow(params!.id!)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found or not active' } }
       return { status: 200, body: { id: params!.id!, triggered: true } }
-    }, apiToken),
+    }), apiToken),
 
-    'POST /schedule/:id/pause': withAuth((body, params) => {
+    'POST /schedule/:id/pause': withAuth(writeGuarded((body, params) => {
       const data = (body ?? {}) as { enabled?: boolean }
       const enabled = data.enabled === true
       const ok = scheduler.setEnabled(params!.id!, enabled)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
       return { status: 200, body: { id: params!.id!, enabled, status: enabled ? 'active' : 'paused' } }
-    }, apiToken),
+    }), apiToken),
 
     // issue #236 — 停止（归档终态）：定义保留、可查看、可复制重建，但不再触发；
     // 与 DELETE 的区别是**不动定义**，因此其运行历史入口仍然可达。
     // 与 pause 的区别是语义：paused 是可恢复的运行态，stopped 是使命终结。
-    'POST /schedule/:id/stop': withAuth((_body, params) => {
+    'POST /schedule/:id/stop': withAuth(writeGuarded((_body, params) => {
       const ok = scheduler.setStatus(params!.id!, 'stopped')
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
       return { status: 200, body: { id: params!.id!, status: 'stopped' } }
-    }, apiToken),
+    }), apiToken),
 
     // issue #236 — 原地更新：不再需要「删除旧任务 + 新建任务」来调整定义。
     // 覆盖 prompt / trigger / reviewPolicy / allowedTools / retry / agentId；
     // 缺席字段不动，可选项显式 null 清除。id / 运行历史 / 生命周期状态不受影响。
     // 状态迁移不走这里（用 pause / stop），避免同一语义两个入口。
-    'PATCH /schedule/:id': withAuth((body, params) => {
+    'PATCH /schedule/:id': withAuth(writeGuarded((body, params) => {
       const id = params!.id!
       const current = scheduler.get(id)
       if (!current) return { status: 404, body: { error: 'Scheduled task not found' } }
@@ -281,16 +308,17 @@ export function buildScheduleRoutes(
       } catch (err) {
         return { status: 400, body: { error: (err as Error).message } }
       }
-    }, apiToken),
+    }), apiToken),
 
-    'DELETE /schedule/:id': withAuth((_body, params) => {
+    'DELETE /schedule/:id': withAuth(writeGuarded((_body, params) => {
       const ok = scheduler.remove(params!.id!)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
       return { status: 200, body: { removed: true } }
-    }, apiToken),
+    }), apiToken),
 
     // focus-change：前端 Tauri window focus/blur event 命中时调入，fire 所有
     // focus-change 类型任务。不经轮询——纯由前端事件驱动。
+    // （issue #290 不守卫此路由：非锁主内存表恒空 → fired=0 → 不落盘，无覆写面。）
     'POST /schedule/trigger-focus': withAuth(() => {
       const fired = scheduler.fireByEvent('focus-change')
       return { status: 200, body: { fired } }

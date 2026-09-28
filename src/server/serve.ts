@@ -42,7 +42,7 @@ import { buildTrustRoutes } from './trust-api.js'
 import { buildCacheRoutes } from './cache-routes.js'
 import { buildSpeechRoutes, createSpeechEngineFromEnv, type SpeechEngine } from './speech-routes.js'
 import { existsSync } from 'node:fs'
-import { CronScheduler, setActiveScheduler, setUnattendedAutomationGate } from './cron-scheduler.js'
+import { CronScheduler, setActiveScheduler, setScheduleWriteGuard, setUnattendedAutomationGate } from './cron-scheduler.js'
 import { CronWiring } from './cron-wiring.js'
 import { buildMcpRoutes } from './mcp-api.js'
 import { buildPluginRoutes } from './plugin-api.js'
@@ -1232,10 +1232,14 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     // one wins the lock and runs the scheduler — the rest stay idle instead of
     // double-firing every scheduled task.
     const lock = new CronLock({ lockPath: join(rivetDir, 'scheduled_tasks.lock') })
+    // issue #290 — 非锁主内存表恒空，写操作会整表覆写 scheduled_tasks.json；
+    // 写入口按 lock.isOwner() 动态判定（锁竞争异步、锁可易主，注册时未知）。
+    setScheduleWriteGuard(() => lock.isOwner())
     wiring = new CronWiring({ scheduler, registry, runtimePool, lock, cwd: process.cwd() })
     void wiring.start().catch(() => { /* non-fatal: scheduler stays idle */ })
     Object.assign(routes, buildScheduleRoutes(scheduler, apiToken, {
       getStatus: () => wiring?.getStatus(),
+      isWriteAllowed: () => lock.isOwner(), // issue #290 — 写路由锁主守卫
       // 付费版 v1 · T5 — 非 always-review / 含 computer_use 的定时任务归 Pro。
       // 用启动时的 ctx.config：桌面端 Pro 状态经签名凭证注入（激活/吊销后要求
       // 重启 sidecar），CLI 走配置软 gate。

@@ -1,9 +1,9 @@
-import { test, beforeEach, afterEach } from 'node:test'
+import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CronScheduler, setActiveScheduler, setUnattendedAutomationGate } from '../../../server/cron-scheduler.js'
+import { CronScheduler, setActiveScheduler, setScheduleWriteGuard, setUnattendedAutomationGate } from '../../../server/cron-scheduler.js'
 import { SCHEDULE_CREATE_TOOL, SCHEDULE_LIST_TOOL, SCHEDULE_DELETE_TOOL } from '../tool.js'
 
 // schedule 工具测试：真实 CronScheduler 实例（schedulePath 指向 /tmp 临时
@@ -114,6 +114,52 @@ test('schedule_create: 门未注入（CLI/测试缺省）时不拦截', async ()
     prompt: 'x', trigger: { type: 'interval', spec: '3600000' }, reviewPolicy: 'auto-proceed',
   })
   assert.ok(r.content.includes('定时任务已创建'), r.content)
+})
+
+// 回归（issue #290）：多 sidecar 共用同一数据目录时，非锁主进程内存调度表
+// 恒空，scheduler.add/remove 会以空表为基底整表覆写 scheduled_tasks.json。
+// 路由侧经 options.isWriteAllowed 拦（见 schedule-write-guard.test.ts），工具
+// 侧不经 HTTP 路由，必须经同一运行时门（setScheduleWriteGuard）自己拦。
+describe('schedule_* 工具锁主守卫（issue #290）', () => {
+  test('非锁主：create/delete 被拒且不落盘、不动既有盘表', async () => {
+    const schedulePath = join(dir, 'tasks.json')
+    // 既有盘表（锁主进程建的任务）——非锁主从没载入过它
+    scheduler.add({ ...INTERVAL_TASK })
+    const diskBefore = readFileSync(schedulePath, 'utf-8')
+
+    setScheduleWriteGuard(() => false)
+    try {
+      const deniedCreate = await run(SCHEDULE_CREATE_TOOL, {
+        prompt: 'x', trigger: { type: 'interval', spec: '3600000' },
+      })
+      assert.match((deniedCreate as { content: string; isError?: boolean }).content, /未持有调度锁/)
+      assert.equal((deniedCreate as { isError?: boolean }).isError, true, '必须是错误回执')
+      assert.equal(scheduler.list().length, 1, '被拒不新增内存任务')
+      assert.equal(readFileSync(schedulePath, 'utf-8'), diskBefore, '盘表不得被整表覆写')
+
+      const deniedDelete = await run(SCHEDULE_DELETE_TOOL, { id: INTERVAL_TASK.id })
+      assert.match((deniedDelete as { content: string; isError?: boolean }).content, /未持有调度锁/)
+      assert.equal(readFileSync(schedulePath, 'utf-8'), diskBefore, '删除同样不得动盘')
+
+      // 读工具不受限
+      const listed = await run(SCHEDULE_LIST_TOOL, {})
+      assert.ok(listed.content.includes('共 1 个定时任务'), listed.content)
+    } finally {
+      setScheduleWriteGuard(undefined)
+    }
+  })
+
+  test('锁主（isOwner=true）与缺省（未注入门）都放行 create', async () => {
+    setScheduleWriteGuard(() => true)
+    try {
+      const r = await run(SCHEDULE_CREATE_TOOL, { prompt: 'x', trigger: { type: 'interval', spec: '3600000' } })
+      assert.ok(r.content.includes('定时任务已创建'), r.content)
+    } finally {
+      setScheduleWriteGuard(undefined)
+    }
+    const r2 = await run(SCHEDULE_CREATE_TOOL, { prompt: 'y', trigger: { type: 'interval', spec: '3600000' } })
+    assert.ok(r2.content.includes('定时任务已创建'), r2.content)
+  })
 })
 
 test('schedule_list: 空表返回提示', async () => {

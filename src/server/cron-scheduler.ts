@@ -689,3 +689,26 @@ export function setUnattendedAutomationGate(gate: (() => boolean) | undefined): 
 export function isUnattendedAutomationAllowed(): boolean {
   return unattendedAutomationGate === undefined || unattendedAutomationGate()
 }
+
+/**
+ * 调度表写权限门（issue #290）——多 sidecar 指向同一 desktop 目录时，只有
+ * 抢到 CronLock 的锁主进程才允许写 scheduled_tasks.json。非锁主的内存表恒空
+ * （loadSchedule 只在 start() 执行，而 CronWiring.start() 对非锁主早退），
+ * 任何 add/remove/update 都会以空表为基底**整表覆写**落盘——一次建任务就
+ * 静默抹掉其他进程建的全部任务定义。
+ *
+ * 守卫长在写入口（schedule-routes 的写路由 + schedule_create/delete 工具），
+ * 不动 CronScheduler 本身：CLI/测试直接 new + add 的单进程语义保持不变。
+ * serve.ts 注入 `() => lock.isOwner()`（请求时动态判定——锁竞争是异步的，
+ * 且锁可被抢占/释放，不能在注册时静态决定）。缺省未注入 = 允许，与
+ * unattendedAutomationGate 同口径。
+ */
+let scheduleWriteGuard: (() => boolean) | undefined
+
+export function setScheduleWriteGuard(guard: (() => boolean) | undefined): void {
+  scheduleWriteGuard = guard
+}
+
+export function isScheduleWriteAllowed(): boolean {
+  return scheduleWriteGuard === undefined || scheduleWriteGuard()
+}

@@ -12,6 +12,11 @@
  * ——工具路径不经 HTTP 路由，必须自己判（2026-09-24 补；此前只有路由侧有门，
  * 模型可经本工具绕过）。
  *
+ * 写操作还有锁主守卫（issue #290）：多 sidecar 共用同一 desktop 目录时，非锁主
+ * 进程内存表恒空，scheduler.add/remove 会整表覆写 scheduled_tasks.json。路由侧
+ * 经 options.isWriteAllowed 拦，工具侧不经路由，同样要自己判（口径一致）。
+ * 读工具（schedule_list）不受限。
+ *
  * 注册是**条件性**的：`isSchedulerAvailable()` 为假时 default-registry 不注册
  * 这三个工具。CLI 交互模式永远没有调度器，注册了只会让模型看见一个必然失败
  * 的工具，还白付三段描述的提示词——「能调用但一定失败」比没有这个工具更糟。
@@ -21,7 +26,7 @@
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { Tool } from '../types.js'
-import { getActiveScheduler, isUnattendedAutomationAllowed, resolveTaskStatus, validateTriggerOrThrow, type CronTriggerType } from '../../server/cron-scheduler.js'
+import { getActiveScheduler, isScheduleWriteAllowed, isUnattendedAutomationAllowed, resolveTaskStatus, validateTriggerOrThrow, type CronTriggerType } from '../../server/cron-scheduler.js'
 
 const triggerSchema = z.object({
   type: z.enum(['interval', 'cron', 'oneshot', 'startup', 'app-open']),
@@ -47,6 +52,12 @@ export function isSchedulerAvailable(): boolean {
 
 const noScheduler = (): { content: string } => ({
   content: '调度器不可用——定时任务需要 `rivet serve`（桌面端/无头模式）。CLI 交互模式没有 cron 调度器。',
+})
+
+/** issue #290 — 非锁主进程的写拒绝提示（schedule_create / schedule_delete 共用）。 */
+const notLockOwner = (): { content: string; isError: true } => ({
+  content: '调度写入被拒：本进程未持有调度锁——多开 sidecar 共用同一数据目录时，定时任务写操作由锁主进程受理（issue #290）。请在锁主 sidecar 的会话或自动化面板操作。',
+  isError: true,
 })
 
 /** schedule_create — 在对话中创建一个定时任务。 */
@@ -81,6 +92,8 @@ export const SCHEDULE_CREATE_TOOL: Tool = {
     const { input, cwd: sessionCwd } = params
     const scheduler = getActiveScheduler()
     if (!scheduler) return noScheduler()
+    // issue #290 — 非锁主进程写调度表会整表覆写 scheduled_tasks.json，先拦。
+    if (!isScheduleWriteAllowed()) return notLockOwner()
     const parsed = createSchema.safeParse(input)
     if (!parsed.success) {
       return { content: `输入不合法：${parsed.error.message}` }
@@ -173,6 +186,8 @@ export const SCHEDULE_DELETE_TOOL: Tool = {
   async execute({ input }) {
     const scheduler = getActiveScheduler()
     if (!scheduler) return noScheduler()
+    // issue #290 — 删除同样以（空的）内存表为基底整表落盘，非锁主先拦。
+    if (!isScheduleWriteAllowed()) return notLockOwner()
     const id = typeof input.id === 'string' ? input.id : ''
     if (!id) {
       return { content: '缺少 "id" 参数。' }

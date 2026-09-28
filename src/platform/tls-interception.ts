@@ -18,6 +18,7 @@
  * （env 可以被 node 参数解析吞掉、也可能来自 NODE_OPTIONS）。
  */
 
+import { X509Certificate } from 'node:crypto'
 import { getCACertificates } from 'node:tls'
 
 /** 命中即认定为中间人根证书的厂商名（大小写不敏感，出现在证书 subject 里）。 */
@@ -101,19 +102,40 @@ export function findInterceptionCerts(certs: readonly string[]): {
   const vendors: string[] = []
   let count = 0
   for (const cert of certs) {
-    const vendor = INTERCEPTION_VENDORS.find(([re]) => re.test(cert))?.[1]
+    // 真实 PEM 的 subject 明文藏在 base64(DER) 里，正则扫整段文本恒 0 命中（issue #288）：
+    // 必须先 X509 解析出明文 subject 再匹配。解析失败（非 PEM/坏数据）退回文本匹配保底。
+    const subject = parseSubjectLine(cert)
+    const vendor = INTERCEPTION_VENDORS.find(([re]) => re.test(subject ?? cert))?.[1]
     if (!vendor) continue
     count++
     // 厂商清单是「谁在拦」的结论，不是展示列表——必须收全。只给 subject 列表设展示上限；
     // 把 vendors 一起卡在上限内，会让排在第 MAX_SUSPECTS 张之后的那个软件永远不出现在诊断里，
     // 而处置建议（TLS_MITM_ADVICE）恰恰是按软件逐条给菜单路径的。
     if (!vendors.includes(vendor)) vendors.push(vendor)
-    if (suspects.length < MAX_SUSPECTS) suspects.push(firstLine(cert))
+    if (suspects.length < MAX_SUSPECTS) suspects.push(subject ?? firstLine(cert))
   }
   return { suspects, vendors, count }
 }
 
-/** 证书是一段 PEM，展示时只取 subject 那一行（第一行非 BEGIN 的内容）。 */
+/**
+ * 解析证书的明文 subject，并压成 openssl 一行式（多行 RDN 用 ", " 连接）。
+ * 解析失败（非 PEM/坏数据）或 subject 为空时返回 null，绝不抛。
+ */
+function parseSubjectLine(cert: string): string | null {
+  try {
+    const line = new X509Certificate(cert)
+      .subject.split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join(', ')
+    return line.length > 0 ? line : null
+  } catch {
+    return null
+  }
+}
+
+/** 展示兜底：X509 解析失败时取 PEM 第一个非空内容行（真实 PEM 的这一行是 base64
+ *  数据而非 subject，只用于「无论如何给出一行可读内容」；subject 语义在 parseSubjectLine）。 */
 function firstLine(cert: string): string {
   const line = cert
     .split('\n')

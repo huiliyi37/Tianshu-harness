@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionJobs, type JobEvent, type JobSnapshot } from '../../../tools/job-store.js'
@@ -32,10 +33,12 @@ describe('monitor-hook（preTurn 事件投递）', () => {
     submitted = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     registry.dispose()
     store.killAll()
-    rmSync(dir, { recursive: true, force: true })
+    // Windows：被 kill 子进程的退出处理/流关闭挂事件循环回调——同步 rmSync 在
+    // 句柄释放前打击会 EPERM（POSIX 不可见）；异步重试等待期间推进事件循环。
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   function spawnSleeper(): string {

@@ -22,8 +22,12 @@ import chalk from 'chalk'
 // eslint-disable-next-line no-control-regex
 export const ANSI_SEQ_RE = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g
 
+// 剥除区间含 \x0D（裸 CR 把光标拉回列 0，覆写同行已画前缀——CRLF 尾部 CR
+// 此前靠消费方 trim 兜住，行中 CR 一直放行）与 C1（U+0080–U+009F：部分
+// UTF-8 终端按 8 位控制符解释，NEL(U+0085) 会让终端多占一行而行宽计量
+// 计 0——正是 live region 行数失同步的形态）；\x09/\x0A 保留。
 // eslint-disable-next-line no-control-regex
-const C0_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
+const C0_CONTROL_RE = /[\x00-\x08\x0B-\x1F\x7F\u0080-\u009F]/g
 
 /**
  * 终端文本契约——所有「外部内容直写终端」的 sink 共用这一份实现。

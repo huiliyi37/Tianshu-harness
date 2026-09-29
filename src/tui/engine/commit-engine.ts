@@ -87,7 +87,9 @@ export class CommitEngine {
   writeBatch(entries: readonly CommittedEntry[]): void {
     let buf = ''
     for (const entry of entries) {
-      const content = entry.ansi ?? entry.text
+      // 与 write() 同一契约兜底：批量路径不过 enforceTextContract 的话，任何
+      // 未来的批量调用方就是绕过消毒的旁路（差一个调用方就开洞）。
+      const content = entry.ansi ?? enforceTextContract(entry.text)
       const line = content + (content.endsWith('\n') ? '' : '\n') + (entry.trailingNewline ? '\n' : '')
       this.buffer.push(line.trimEnd())
       buf += line

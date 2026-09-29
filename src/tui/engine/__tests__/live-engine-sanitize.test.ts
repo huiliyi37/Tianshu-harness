@@ -52,3 +52,13 @@ test('干净的文本行原样通过（不引入额外改动）', () => {
   engine.render([{ text: 'plain text' }])
   assert.ok(out.captured().includes('plain text'))
 })
+
+test('live 区剥除 C1 控制符（U+0080–U+009F）——NEL 会让终端多占一行而行宽计量计 0', () => {
+  const out = fakeStdout()
+  const engine = new LiveEngine({ stdout: out, reservedRows: 0, maxRows: 20 })
+  engine.render([{ text: 'a\u0085b\u009Bc' }])
+  const written = out.captured()
+  assert.ok(!written.includes('\u0085'), 'NEL 不得进入 live 输出（行数失同步形态）')
+  assert.ok(!written.includes('\u009B'), 'C1 CSI 不得进入 live 输出')
+  assert.ok(written.includes('abc'), '正文存活')
+})

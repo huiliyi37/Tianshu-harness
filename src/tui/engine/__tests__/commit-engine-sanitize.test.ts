@@ -58,4 +58,28 @@ describe('CommitEngine enforces the no-ANSI contract on entry.text', () => {
     assert.ok(out.includes('\x1B[31m'), '同行的 SGR 必须存活')
     assert.ok(out.includes('红色'), '文本内容存活')
   })
+
+  it('剥除行中裸 CR 与 C1 控制符（U+0080–U+009F）——CR 覆写同行前缀、NEL 让终端多占一行而计量计 0', () => {
+    const { engine, writes } = mockEngine()
+    engine.write({ text: 'warn\x0DING\u0085next\u009B' })
+    const out = writes.join('')
+    assert.ok(!out.includes('\x0D'), '裸 CR 不得进入 scrollback（光标回列 0 覆写前缀）')
+    assert.ok(!out.includes('\u0085'), 'NEL 不得进入 scrollback（部分 UTF-8 终端按换行解释）')
+    assert.ok(!out.includes('\u009B'), 'C1 CSI 不得进入 scrollback')
+    assert.ok(out.includes('warnING'), '正文存活')
+  })
+
+  it('writeBatch 与 write 同一契约——批量路径不是绕过消毒的旁路', () => {
+    const { engine, writes } = mockEngine()
+    engine.writeBatch([
+      { text: 'a\x1B]52;c;cGduZWQ=\x07b' },
+      { text: 'c\x0Dd\u0085e' },
+    ])
+    const out = writes.join('')
+    assert.ok(!out.includes('\x1B'), 'writeBatch 的 entry.text 不得携带任何 ESC 序列')
+    assert.ok(!out.includes('\x0D'), 'writeBatch 的 entry.text 不得携带裸 CR')
+    assert.ok(!out.includes('\u0085'), 'writeBatch 的 entry.text 不得携带 C1')
+    assert.ok(out.includes('ab'), '正文存活')
+    assert.ok(out.includes('cde'), '正文存活')
+  })
 })

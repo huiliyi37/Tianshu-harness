@@ -35,6 +35,36 @@ describe('OutputGuard', () => {
     assert.deepEqual(received, ['red textlink'])
   })
 
+  it('行中裸 CR 被剥除——防光标回列 0 覆写同行已画前缀', () => {
+    const received: string[] = []
+    guard = installOutputGuard((t) => { received.push(t) })
+    process.stderr.write('warn\x0DING: spoofed\n')
+    // CR 存活时终端上该行呈 "ING: spoofed"（"warn" 前缀被覆写）——告警前缀欺骗
+    assert.deepEqual(received, ['warnING: spoofed'])
+  })
+
+  it('onText 回调期间再入的 stderr 写入不丢行（外层循环续走）', () => {
+    const received: string[] = []
+    guard = installOutputGuard((t) => {
+      received.push(t)
+      // 模拟 commitStatic 路径里同步触发的又一次告警（再入写）
+      if (t === 'first') process.stderr.write('nested-second\n')
+    })
+    process.stderr.write('first\n')
+    assert.deepEqual(received, ['first', 'nested-second'])
+  })
+
+  it('无换行巨流不撑爆缓冲：截头保尾后行仍完整可读', () => {
+    const received: string[] = []
+    guard = installOutputGuard((t) => { received.push(t) })
+    process.stderr.write('x'.repeat(200_000))
+    process.stderr.write('TAIL\n')
+    assert.equal(received.length, 1)
+    // 内存上界由 MAX_BUFFER_CHARS（64KB 截头保尾）兜底；输出行由 MAX_LINE_CHARS
+    // 再截到 300——200KB 输入下进程不堆积、行发射不失控即为通过
+    assert.ok(received[0]!.length <= 300 + 4, `行超长：${received[0]!.length}`)
+  })
+
   it('多行一次写入逐行发射；空行不发射', () => {
     const received: string[] = []
     guard = installOutputGuard((t) => { received.push(t) })

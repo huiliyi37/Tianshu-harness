@@ -23,6 +23,9 @@ export interface OutputGuard {
 /** 单行文本上限：超长诊断截断，避免一条日志吃掉整个 scrollback。 */
 const MAX_LINE_CHARS = 300
 
+/** 行缓冲上限：无换行流（进度条式 \r 刷写、失控循环打印）不该无界堆积——保尾截头。 */
+const MAX_BUFFER_CHARS = 64 * 1024
+
 /** 剥 CSI/OSC 序列与控制字符（保留可打印文本与空格）。 */
 function sanitizeLine(line: string): string {
   const noAnsi = line
@@ -32,8 +35,10 @@ function sanitizeLine(line: string): string {
     .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')
     // 其他 ESC 开头双字符序列
     .replace(/\x1B[@-Z\\-_]/g, '')
+  // 剥除区间含 \x0D（裸 CR 会把终端光标拉回列 0，让同行后续文本覆盖 ⚠ 前缀
+  // ——CRLF 尾部的 CR 此前靠 trim 兜住，行中 CR 一直放行）；\x09/\x0A 保留。
   // eslint-disable-next-line no-control-regex
-  const noCtrl = noAnsi.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+  const noCtrl = noAnsi.replace(/[\x00-\x08\x0B-\x1F\x7F]/g, '')
   return noCtrl.trim().slice(0, MAX_LINE_CHARS)
 }
 
@@ -78,7 +83,13 @@ export function installOutputGuard(onText: (text: string) => void): OutputGuard 
       ? chunk
       : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
     buf += text
-    emitLines()
+    // 无换行流的上界：截头保尾（丢最旧的部分行，不丢内存）。
+    if (buf.length > MAX_BUFFER_CHARS) buf = buf.slice(buf.length - MAX_BUFFER_CHARS)
+    // 回调（onText → commitStatic）执行期间再入的写入只入队不派发：外层
+    // emitLines 的 while 每轮重扫 buf，回调返回后会续走这些行。此前这里无脑
+    // 嵌套派发，再入行被 inCallback 守卫静默整行丢弃——恰恰在打告警的时刻
+    // 丢诊断日志。
+    if (!inCallback) emitLines()
     const realCb = typeof encodingOrCb === 'function' ? encodingOrCb : cb
     if (typeof realCb === 'function') realCb()
     return true

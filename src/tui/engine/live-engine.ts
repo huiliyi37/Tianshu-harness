@@ -312,7 +312,9 @@ export class LiveEngine {
   private normalizeLines(lines: readonly LiveRegionLine[]): readonly LiveRegionLine[] {
     let dirty = false
     for (const l of lines) {
-      if (l.text.includes('\n') || l.text.includes('\r') || l.text.includes('\t') || l.text.includes('\x1B')) {
+      // C1（U+0080–U+009F）单独触发清洗：部分 UTF-8 终端把它按 8 位控制符
+      // 解释（NEL 多占一行）而行宽计量计 0——不进 dirty 就绕过 enforceTextContract。
+      if (l.text.includes('\n') || l.text.includes('\r') || l.text.includes('\t') || l.text.includes('\x1B') || /[\u0080-\u009F]/.test(l.text)) {
         dirty = true
         break
       }
@@ -320,7 +322,9 @@ export class LiveEngine {
     if (!dirty) return lines
     const out: LiveRegionLine[] = []
     for (const l of lines) {
-      const cleaned = enforceTextContract(l.text).replace(/[\r\t]/g, ' ')
+      // 先做 \r\t→空格（保可读性的既有契约），再进文本契约剥 ESC/OSC/CSI/C1
+      // ——顺序反了的话契约层先把 \r 剥掉，空格替换永远不生效。
+      const cleaned = enforceTextContract(l.text.replace(/[\r\t]/g, ' '))
       if (!cleaned.includes('\n')) {
         out.push(cleaned === l.text ? l : { ...l, text: cleaned })
         continue

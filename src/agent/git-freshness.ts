@@ -8,7 +8,11 @@ import { track } from '../tools/process-tracker.js'
 function gitSpawn(
   args: string[],
   cwd: string,
-  timeoutMs = 100,
+  // 400ms：100ms 在 Windows（git 冷启动 80–150ms，实测裸启动 75–123ms）与
+  // 负载机器上频繁超时，探针静默返回空 → changeRate 恒 0（信号失明，感知
+  // 间隔永不按活跃度收缩）。本函数整体异步（turn-orchestrator 后台 .then
+  // 调用），最坏 6 次调用 2.4s 也不进主循环路径。
+  timeoutMs = 400,
 ): Promise<string> {
   return new Promise(resolve => {
     const child = track(spawnGit(args, {

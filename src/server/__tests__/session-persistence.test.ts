@@ -467,7 +467,7 @@ test('停链后 flushSessionAsync 快速返回，不空转到超时', async () =
   }
 })
 
-test('record 链：EACCES 耗尽梯度停链；锁释放不自愈；新 saveRecord 清位重试', async () => {
+test('record 链：EACCES 耗尽梯度停链；锁释放不自愈；新 saveRecord 清位重试', { skip: process.platform === 'win32' ? 'Windows 无 chmod 目录只读语义（NTFS 不产生 EACCES），无法构造写失败注入；该链在 POSIX/CI 覆盖' : false }, async () => {
   const dir = tmp()
   try {
     const p = new FileSessionPersistence(dir, { maxTransientWriteRetries: 2 })

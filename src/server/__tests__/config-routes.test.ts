@@ -12,6 +12,7 @@ import { __setProGrantPublicKeyForTests } from '../../config/pro-license.js'
 import { makeValidGrant } from '../../config/__tests__/grant-fixtures.js'
 import { resetRootExistsMemoForTest, _resetGrantsForTest } from '../../tools/path-grants.js'
 import { proModulePresent } from '../../api/pro-registry.js'
+import { computerUseModulePresent } from '../../tools/computer-use/bridge.js'
 
 const TOKEN = 'secret-token'
 const AUTH = { authorization: `Bearer ${TOKEN}` }
@@ -47,8 +48,10 @@ describe('GET /config/computer-use', () => {
     assert.equal(res.status, 200)
     const body = res.body as { available: boolean; proRequired: boolean; platform: string; permissions: unknown; grants: unknown[] }
     assert.equal(body.available, false)
-    // proRequired 只在平台支持时成立；Linux 等平台不支持时两者皆 false。
-    if (process.platform === 'darwin' || process.platform === 'win32') {
+    // proRequired = 平台支持 ∧ 模块在位 ∧ Pro 未生效；公开仓无 src/pro/
+    // （computerUseModulePresent() 恒 false）→ 恒 false。按模块在位与否分支，
+    // 而不是按平台硬编码期望——此前 win/mac 上的硬期望在公开仓恒败。
+    if (computerUseModulePresent() && (process.platform === 'darwin' || process.platform === 'win32')) {
       assert.equal(body.proRequired, true)
     } else {
       assert.equal(body.proRequired, false)
@@ -71,8 +74,9 @@ describe('GET /config/computer-use', () => {
       const res = await router('GET', '/config/computer-use', {}, AUTH)
       assert.equal(res.status, 200)
       const body = res.body as { available: boolean; proRequired: boolean; permissions: unknown; grants: unknown[] }
-      // available follows platform + Pro; on unsupported platforms it stays false.
-      if (process.platform === 'darwin' || process.platform === 'win32') {
+      // available = 平台支持 ∧ 模块在位 ∧ Pro 生效；公开仓无 src/pro/ → 恒 false。
+      // 按模块在位与否分支（见上一条用例注释）——此前 win/mac 硬期望恒败。
+      if (computerUseModulePresent() && (process.platform === 'darwin' || process.platform === 'win32')) {
         assert.equal(body.available, true)
         assert.equal(body.proRequired, false)
       } else {

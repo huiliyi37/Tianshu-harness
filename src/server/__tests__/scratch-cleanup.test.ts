@@ -118,12 +118,19 @@ test('removeScratchEntries: 不存在 → skipped not-found（不静默当成功
   }
 })
 
-test('removeScratchEntries: 符号链接不跟随也不删除（逃逸面的最小区分）', () => {
+test('removeScratchEntries: 符号链接不跟随也不删除（逃逸面的最小区分）', (t) => {
   const root = makeRoot()
   const outside = makeRoot()
   try {
     const target = makeEntry(outside, 'real-dir', 16)
-    symlinkSync(target, join(root, 'escape0000'), 'dir')
+    try {
+      symlinkSync(target, join(root, 'escape0000'), 'dir')
+    } catch {
+      // Windows 无开发者模式/特权时 EPERM——符号链接语义无法在该环境构造，
+      // 该逃逸面在 POSIX 侧由本用例与 CI 覆盖。
+      t.skip('当前环境不允许创建符号链接（Windows 无特权/开发者模式）')
+      return
+    }
     const res = removeScratchEntries(root, ['escape0000'])
     assert.deepEqual(res.deleted, [])
     assert.deepEqual(res.skipped, [{ name: 'escape0000', reason: 'symlink' }])

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { isAbsolute } from 'node:path'
 import { filterToolRegistry, ToolRegistry } from '../../tools/registry.js'
 import type { Tool, ToolCallParams } from '../../tools/types.js'
 import type { StreamCallbacks } from '../../api/stream-client.js'
@@ -234,7 +235,7 @@ describe('MockClaimStore', () => {
   it('creates a store with a temp directory', () => {
     const store = new MockClaimStore('test-session')
     try {
-      assert.ok(store.tempDir.startsWith('/'), 'tempDir should be an absolute path')
+      assert.ok(isAbsolute(store.tempDir), 'tempDir should be an absolute path')
       assert.equal(store.sessionId, 'test-session')
       // Verify it can accept proposals
       const claim = store.propose({

@@ -27,7 +27,8 @@ afterEach(() => {
 describe('goalStatePath', () => {
   it('joins sessionDir and sessionId with .goal.json suffix', () => {
     const p = goalStatePath('/tmp/sessions', 'abc-123')
-    assert.equal(p, '/tmp/sessions/abc-123.goal.json')
+    // 期望值用 join 构造（平台无关）——Windows 上 join 产出反斜杠
+    assert.equal(p, join('/tmp/sessions', 'abc-123.goal.json'))
   })
 })
 

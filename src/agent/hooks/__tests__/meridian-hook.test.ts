@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { MeridianIndexer } from '../../../repo/meridian-indexer.js'
@@ -89,7 +90,8 @@ describe('createMeridianHook', () => {
       await hook.postTool.run(hookCtx, tool('read_file', 'src/a.ts'))
       assert.equal(indexer.backfillScheduled, true, 'cold read must schedule on-demand backfill once')
     } finally {
-      rmSync(cwd, { recursive: true, force: true })
+      // Windows：句柄释放竞态（EPERM）——异步重试等待期间推进事件循环。
+      await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 

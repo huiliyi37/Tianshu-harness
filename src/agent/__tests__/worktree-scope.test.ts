@@ -95,7 +95,7 @@ describe('materializeScope', () => {
 
     const result = materializeScope(repoDir, wtDir, [absolute])
 
-    assert.deepEqual(result.materialized, ['docs/plan.md'])
+    assert.deepEqual(result.materialized, [join('docs', 'plan.md')])
     assert.ok(existsSync(join(wtDir, 'docs', 'plan.md')))
   })
 

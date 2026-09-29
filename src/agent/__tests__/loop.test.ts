@@ -1,6 +1,7 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop, formatActivePlanPointer } from '../loop.js'
@@ -412,7 +413,7 @@ describe('AgentLoop — multi-turn tool_use', () => {
     // (no offset/limit) consumes it — mtime unchanged, so it's a live hit.
     assert.equal(agent.getPrewarmStats().hits, 1)
 
-    rmSync(dir, { recursive: true, force: true })
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it('respects maxTurns limit', async () => {
@@ -1163,7 +1164,7 @@ describe('AgentLoop — playbook telemetry bounds', () => {
       assert.ok(lastTurn >= firstTurn, `last turn ${lastTurn} >= first ${firstTurn}`)
       assert.ok(lastTurn - firstTurn < 100, 'turn range should be bounded by maxTurns')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

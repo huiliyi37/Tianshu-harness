@@ -1,6 +1,7 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop } from '../loop.js'
@@ -529,11 +530,12 @@ describe('Zen Mode — AgentLoop 接线（真实 loop + mock LLM）', () => {
   })
 })
 
-// 清理临时目录（node:test 的 after 钩子）。Windows 上残留句柄会让 rmSync 报
-// EPERM（force 不覆盖 EPERM）——maxRetries/retryDelay 是官方给的 Windows 修法。
+// 清理临时目录（node:test 的 after 钩子）。Windows 上句柄释放与 rm 存在竞态，
+// 同步 rmSync 会 EPERM（POSIX 删除不受打开句柄限制，故 CI 不可见）——异步
+// 重试的等待窗口推进事件循环，句柄释放后即删成功。
 import { after } from 'node:test'
-after(() => {
-  rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+after(async () => {
+  await rm(TEST_CWD, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
   it('⑰ zen 未配置 / disabled 时工具面与无 zen 版本逐项一致（opt-in 零行为面哨兵）', () => {

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { StreamCallbacks, StreamClient } from '../../api/stream-client.js'
@@ -189,7 +190,8 @@ describe('V3 domain knowledge integration', () => {
       assert.equal(run.results[0]?.status, 'passed')
       assert.ok(capture.request, 'second worker should have received an LLM request')
     } finally {
-      rmSync(tmp, { recursive: true, force: true })
+      // Windows：句柄释放竞态（EPERM）——异步重试等待期间推进事件循环。
+      await rm(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

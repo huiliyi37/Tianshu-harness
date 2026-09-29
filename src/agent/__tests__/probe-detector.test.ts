@@ -319,7 +319,9 @@ describe('probe-detector', () => {
         ['/cwd/src/a.ts', 'console.log("probe")\n'],
         ['/cwd/src/b.ts', 'const x = 1\n'],
       ])
-      const reader = (p: string) => fakeFs.get(p) ?? null
+      // Windows 上实现侧 join('/cwd','src/a.ts') 产出反斜杠键；fakeFs 用 Unix 键——
+      // reader 归一化两种分隔符（与实现侧 join 语义对齐，Linux 直配不受影响）。
+      const reader = (p: string) => fakeFs.get(p) ?? fakeFs.get(p.replace(/\\/g, '/')) ?? null
       const hits = scanFilesForProbes(['src/a.ts', 'src/b.ts'], '/cwd', reader)
       assert.equal(hits.length, 1)
       assert.equal(hits[0]!.filePath, 'src/a.ts')

@@ -892,10 +892,13 @@ describe('worker finalization turn (B：终轮定型)', () => {
     const order = scoutOrder('wo_fin_abort', { maxRetries: 1 })
     const controller = new AbortController()
     let streamCalls = 0
+    let streamStarted!: () => void
+    const started = new Promise<void>(r => { streamStarted = r })
     // 挂起直到 abort 的卡死流（镜像 fault-client 的 idle_stall）
     const client = {
       stream: mock.fn(async (_req: unknown, _cb: StreamCallbacks, signal?: AbortSignal) => {
         streamCalls++
+        streamStarted()
         await new Promise<void>((_resolve, reject) => {
           if (signal?.aborted) return reject(new Error('aborted'))
           signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
@@ -903,7 +906,10 @@ describe('worker finalization turn (B：终轮定型)', () => {
       }),
     } as unknown as StreamClient
     const p = runWorkerSession(finalizeConfig(order, client, { abortSignal: controller.signal }))
-    setTimeout(() => controller.abort(), 50)
+    // 等第一次 stream 真正进入挂起态再 abort——固定 50ms 延时在慢环境（Windows
+    // 冷启动/负载下初始化 >50ms）会抢跑于首次调用，streamCalls=0 假失败。
+    await started
+    controller.abort()
     const run = await p
 
     assert.equal(run.result.status, 'blocked')

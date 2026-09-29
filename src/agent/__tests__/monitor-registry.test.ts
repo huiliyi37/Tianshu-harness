@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionJobs, type JobEvent, type JobSnapshot } from '../../tools/job-store.js'
@@ -33,10 +34,14 @@ describe('MonitorRegistry', () => {
     registry = new MonitorRegistry(() => store)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     registry.dispose()
     store.killAll()
-    rmSync(dir, { recursive: true, force: true })
+    // Windows：被 kill 子进程的退出处理与日志流关闭（logStream.end）都挂事件
+    // 循环回调上——同步 rmSync 在这些句柄释放前打击会 EPERM（POSIX 删除不受
+    // 打开句柄限制，故 Linux CI 不可见）。fs.promises.rm 的异步重试在等待期间
+    // 推进事件循环，句柄释放后即删成功。
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   function spawnSleeper(): string {

@@ -20,7 +20,8 @@
  */
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -212,7 +213,9 @@ describe('U6 AgentLoop wiring — todo write seeds + serializes the plan trace',
       assert.match(latest, /<plan-execution-trace/)
       assert.match(latest, /理解现状/)
     } finally {
-      rmSync(cwd, { recursive: true, force: true })
+      // Windows：子进程退出处理/日志流关闭挂事件循环回调——同步 rmSync 会
+      // 在句柄释放前打击（EPERM，POSIX 不可见）；异步重试等待期间推进事件循环。
+      await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

@@ -10,7 +10,7 @@
 
 import { appendFileSync, copyFileSync, existsSync, readFileSync } from 'node:fs'
 import { appendFile, open } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { encodeBatch, isZstdFrameStream } from './session-transcript-codec.js'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 
@@ -133,7 +133,10 @@ export class SessionBatchWriter {
     const head = readFileSync(this.filePath)
     if (isZstdFrameStream(head)) return
     try {
-      copyFileSync(this.filePath, join(this.backupDirProvider(), this.filePath.split('/').pop() + '.pre-zstd'))
+      // basename 而非 split('/')：Windows 的 filePath 是反斜杠路径，按 '/' 切
+      // 得到整条路径——join 后成为非法目标，copyFileSync 抛错被下方 catch 静默
+      // 吞掉，迁移备份（pre-zstd）在 Windows 上永远不创建（POSIX 可见、CI 绿）。
+      copyFileSync(this.filePath, join(this.backupDirProvider(), basename(this.filePath) + '.pre-zstd'))
     } catch { /* best-effort backup; transcode still proceeds */ }
     const frame = encodeBatch(head.toString('utf-8'))
     writeFileAtomicSync(this.filePath, frame.length > 0 ? frame : Buffer.alloc(0))

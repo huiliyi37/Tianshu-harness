@@ -46,6 +46,8 @@ export interface UsageTotals {
   output: number
   /** weighted ΣcacheRead/Σinput over main rows, percent 0–100; null when no input */
   hitRate: number | null
+  /** ΣcacheRead/Σinput over ALL rows incl. side-path (the number the bill actually reflects), percent 0–100; null when no input. Same semantics as computeBilledHitRate (billed-hit-rate.ts); `hitRate` above stays main-rows-only by design. */
+  billedHitRate: number | null
   /** total cost in the model's billing currency (per computeUsageCost) */
   cost: number
   /** money saved by cache hits: ΣcacheRead × (missPrice − hitPrice) */
@@ -173,6 +175,7 @@ function toTotals(acc: Accumulator): UsageTotals {
     cacheCreate: acc.cacheCreate,
     output: acc.output,
     hitRate: acc.mainInput > 0 ? Math.round(acc.mainCacheRead / acc.mainInput * 1000) / 10 : null,
+    billedHitRate: acc.input > 0 ? Math.round(acc.cacheRead / acc.input * 1000) / 10 : null,
     cost: round(acc.cost),
     savings: round(acc.savings),
   }

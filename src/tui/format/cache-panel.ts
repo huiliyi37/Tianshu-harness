@@ -5,8 +5,10 @@
  * usage-aggregator 跨会话数据）→ 官方区（platform 登录账单或 API key 余额）。
  * 纯渲染函数，framework-agnostic（ansi/theme only），数据由 main.ts provider 注入。
  *
- * 口径标注：本地命中率 = ΣcacheRead/Σinput（主请求行），官方命中率 =
- * hit/(hit+miss)——两者分母不同，UI 上分别标注，不混算。
+ * 口径标注：本地命中率 = ΣcacheRead/Σinput（主请求行），有侧路请求时并列
+ * 账单口径 billedHitRate = ΣcacheRead/Σinput（含侧路，与 billed-hit-rate.ts
+ * 同义——侧路流量劣化时"成本涨、主轮命中率不动"靠它显形）；官方命中率 =
+ * hit/(hit+miss)——分母各不同，UI 上分别标注，不混算。
  */
 import { color } from '../engine/ansi.js'
 import type { RivetTheme } from '../theme.js'
@@ -138,7 +140,11 @@ export function renderCachePanel(
     out.push(
       `  请求 ${t.requests}${t.sidePathRequests > 0 ? color(` (+侧路 ${t.sidePathRequests})`, theme.dim) : ''}`
       + `   输入 ${formatTokens(t.input)} · 输出 ${formatTokens(t.output)}`
-      + `   命中率 ${color(formatRate(t.hitRate), rateColor(t.hitRate, theme))}`,
+      + `   命中率 ${color(formatRate(t.hitRate), rateColor(t.hitRate, theme))}`
+      + (t.sidePathRequests > 0
+        ? color('（主轮）', theme.dim)
+          + ` 账单口径 ${color(formatRate(t.billedHitRate), rateColor(t.billedHitRate, theme))}`
+        : ''),
     )
     out.push(
       `  成本 ¥${formatYuan(t.cost)}`

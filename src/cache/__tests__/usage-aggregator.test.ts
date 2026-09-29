@@ -138,6 +138,26 @@ test('aggregateUsageRows: 无主请求输入时 hitRate 为 null', () => {
   assert.equal(agg.totals.hitRate, null)
 })
 
+test('aggregateUsageRows: billedHitRate 含侧路行，与主轮口径 hitRate 分列', () => {
+  const rows: CacheUsageRow[] = [
+    mainRow({ input: 1000, cacheRead: 900 }),
+    mainRow({ input: 3000, cacheRead: 1500 }),
+    // 侧路行若混入主轮口径会拉高 hitRate；billed 口径必须计入
+    mainRow({ input: 1000, cacheRead: 1000, sidePath: true }),
+  ]
+  const agg = aggregateUsageRows(rows, { now: NOW })
+  // 主轮 (900+1500)/(1000+3000) = 60%
+  assert.equal(agg.totals.hitRate, 60)
+  // 全量 (900+1500+1000)/(1000+3000+1000) = 68%
+  assert.equal(agg.totals.billedHitRate, 68)
+})
+
+test('aggregateUsageRows: 纯侧路行时 billedHitRate 仍有值而 hitRate 为 null', () => {
+  const agg = aggregateUsageRows([mainRow({ input: 1000, cacheRead: 800, sidePath: true })], { now: NOW })
+  assert.equal(agg.totals.hitRate, null)
+  assert.equal(agg.totals.billedHitRate, 80)
+})
+
 test('aggregateUsageRows: 按天分桶升序 + 按模型降序（成本优先）', () => {
   const dayMs = 86_400_000
   const rows: CacheUsageRow[] = [

@@ -96,6 +96,22 @@ test('侧路请求单列标注，不混进主请求计数', () => {
   assert.match(text, /请求 2 \(\+侧路 3\)/)
 })
 
+test('有侧路时历史区并列显示账单口径命中率，两口径数字可分', () => {
+  // 主轮 2 行 90%；侧路 3 行命中率故意做差（10%）——主轮 90.0%，账单口径
+  // (2×9000+3×1000)/50000 = 42.0%。若混算或漏算，两数不会同时正确。
+  const mixed = [...rows(2), ...rows(3, { sidePath: true, cacheRead: 1_000 })]
+  const a = agg(mixed)
+  const text = strip(renderCachePanel(baseData({ aggregates: { today: a, '7d': a, '30d': a } }), 100, 40, theme))
+  assert.match(text, /命中率 90\.0%（主轮） 账单口径 42\.0%/)
+})
+
+test('无侧路时不显示账单口径（两口径数学上相同，避免噪音）', () => {
+  const a = agg(rows(3))
+  const text = strip(renderCachePanel(baseData({ aggregates: { today: a, '7d': a, '30d': a } }), 100, 40, theme))
+  assert.doesNotMatch(text, /账单口径/)
+  assert.match(text, /命中率 90\.0%/)
+})
+
 test('无会话、无历史数据时给出空态而不是 NaN', () => {
   const empty = agg([])
   const text = strip(renderCachePanel(baseData({

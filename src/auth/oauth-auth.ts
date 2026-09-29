@@ -77,7 +77,7 @@ export class OAuthAuth implements AuthProvider {
     }
 
     if (shouldRefresh(token)) {
-      token = await this.refreshToken(token)
+      token = await this.refreshOnce(token)
     }
 
     return { 'Authorization': `Bearer ${token.accessToken}` }
@@ -212,12 +212,35 @@ export class OAuthAuth implements AuthProvider {
     if (typeof data.error === 'string') {
       throw new Error(`Token exchange error: ${data.error}`)
     }
+    // 200 但缺 access_token（代理改写 body/网关错误页）：裸 as 会把 undefined
+    // 落盘成加密凭据，此后 isAuthenticated()=true 而 Bearer undefined 吃 401
+    // 循环——错误指向完全相反。refreshToken 同款守卫见下。
+    if (typeof data.access_token !== 'string' || !data.access_token) {
+      throw new Error('Token exchange succeeded (200) but the response has no access_token — refusing to store an undefined credential. Check for a proxy/gateway rewriting the token endpoint response.')
+    }
 
     return {
-      accessToken: data.access_token as string,
+      accessToken: data.access_token,
       refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
       expiresAt: Date.now() + ((data.expires_in as number) ?? 3600) * 1000,
     }
+  }
+
+  /** 在飞刷新的去重句柄（见 refreshOnce）。 */
+  private refreshInFlight: Promise<TokenData> | null = null
+
+  /**
+   * single-flight 刷新：过期瞬间的并发调用共享同一次网络刷新。不去重时，
+   * 并发请求各自打一次 token endpoint（浪费配额），且服务端轮换一次性
+   * refresh_token 时交错的 store.save 会互相覆盖——旧 refresh_token 盖掉
+   * 新的，下一次刷新直接登出。
+   */
+  private refreshOnce(token: TokenData): Promise<TokenData> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.refreshToken(token)
+        .finally(() => { this.refreshInFlight = null })
+    }
+    return this.refreshInFlight
   }
 
   private async refreshToken(token: TokenData): Promise<TokenData> {
@@ -248,9 +271,14 @@ export class OAuthAuth implements AuthProvider {
     if (typeof data.error === 'string') {
       throw new Error(`Token refresh error: ${data.error}`)
     }
+    // 同 exchangeCode：200 缺 access_token 时拒绝落盘 undefined（Bearer
+    // undefined 的 401 循环比显式报错难排查得多）。
+    if (typeof data.access_token !== 'string' || !data.access_token) {
+      throw new Error('Token refresh succeeded (200) but the response has no access_token — keeping the previous token. Check for a proxy/gateway rewriting the token endpoint response.')
+    }
 
     const refreshed: TokenData = {
-      accessToken: data.access_token as string,
+      accessToken: data.access_token,
       refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : token.refreshToken,
       expiresAt: Date.now() + ((data.expires_in as number) ?? 3600) * 1000,
     }
@@ -265,7 +293,7 @@ export class OAuthAuth implements AuthProvider {
       const token = this.store.load()
       if (token && shouldRefresh(token)) {
         try {
-          await this.refreshToken(token)
+          await this.refreshOnce(token)
         } catch {
           // Refresh failed — token will expire, user needs to re-auth
         }

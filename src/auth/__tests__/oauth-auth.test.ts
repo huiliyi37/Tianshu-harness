@@ -123,6 +123,71 @@ describe('OAuthAuth', () => {
     auth.dispose() // should not throw
   })
 
+  it('refresh 200 但缺 access_token 时拒绝落盘 undefined，旧凭据保持可读', async () => {
+    // 假凭据一律运行时拼接，源码零凭据字面量（安全扫描纪律）
+    const oldAccess = `at-old-${Date.now()}`
+    const oldRefresh = `rt-old-${Date.now()}`
+    const store = new TokenStore(tmpDir, 'codex')
+    store.save({
+      accessToken: oldAccess,
+      refreshToken: oldRefresh,
+      expiresAt: Date.now() + 60_000,
+    })
+
+    const mockFetch = async () =>
+      // 网关/代理改写过的 200：无 error 字段但主字段缺失
+      new Response(JSON.stringify({ refresh_token: `rt-new-${Date.now()}`, expires_in: 3600 }), { status: 200 })
+
+    const auth = new OAuthAuth({
+      clientId: 'test-client',
+      tokenEndpoint: 'https://auth.example.com/token',
+      fetch: mockFetch as typeof globalThis.fetch,
+    }, tmpDir)
+
+    await assert.rejects(
+      () => auth.getHeaders(),
+      /no access_token/,
+    )
+    // 旧 token 未被 undefined 覆盖（此前裸 as 会把 undefined 存进加密信封）
+    const loaded = store.load()
+    assert.equal(loaded?.accessToken, oldAccess)
+    assert.equal(loaded?.refreshToken, oldRefresh)
+  })
+
+  it('并发 getHeaders 在过期瞬间只打一次 token endpoint（single-flight）', async () => {
+    const newAccess = `at-refreshed-${Date.now()}`
+    const store = new TokenStore(tmpDir, 'codex')
+    store.save({
+      accessToken: `at-old-${Date.now()}`,
+      refreshToken: `rt-old-${Date.now()}`,
+      expiresAt: Date.now() + 60_000,
+    })
+
+    let fetchCalls = 0
+    const mockFetch = async () => {
+      fetchCalls++
+      // 慢响应拉开并发窗口：三个 getHeaders 都应停在这一个在飞请求上
+      await new Promise(resolve => setTimeout(resolve, 30))
+      return new Response(JSON.stringify({
+        access_token: newAccess,
+        refresh_token: `rt-new-${Date.now()}`,
+        expires_in: 3600,
+      }), { status: 200 })
+    }
+
+    const auth = new OAuthAuth({
+      clientId: 'test-client',
+      tokenEndpoint: 'https://auth.example.com/token',
+      fetch: mockFetch as typeof globalThis.fetch,
+    }, tmpDir)
+
+    const results = await Promise.all([auth.getHeaders(), auth.getHeaders(), auth.getHeaders()])
+    assert.equal(fetchCalls, 1, '并发的过期刷新必须共享同一次网络请求')
+    for (const headers of results) {
+      assert.equal(headers['Authorization'], `Bearer ${newAccess}`)
+    }
+  })
+
   it('exchangeCode sends correct parameters', async () => {
     let capturedBody = ''
     const mockFetch = async (_url: string, init?: RequestInit) => {

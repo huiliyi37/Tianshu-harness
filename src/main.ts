@@ -27,6 +27,7 @@ assertStagedRuntimeIntact(dirname(fileURLToPath(import.meta.url)))
 import { bootstrapInteractiveSession, createShutdownHandler, switchAgentRuntime, restorePlanModeFromMeta } from './bootstrap.js'
 import type { BootstrapContext } from './bootstrap.js'
 import { resolveCapabilities } from './api/provider.js'
+import { createExitFuse } from './platform/exit-fuse.js'
 
 /** /model 面板带来的 effort 应用（s=仅会话；Enter 路径先应用再随默认持久化）。
  *  值域校验内联——面板 draft 是封闭枚举，防御性兜底而非业务校验。 */
@@ -203,6 +204,9 @@ let isShuttingDown = false
 async function shutdown(code: number = 0): Promise<void> {
   if (isShuttingDown) return
   isShuttingDown = true
+  // 退出保险丝（见 platform/exit-fuse.ts）：优雅关停链任一步悬挂都不该让退出
+  // 无限推迟——15s 强退，非 0 退出码与干净退出可区分。
+  exitFuse.arm()
 
   await runTuiShutdownSequence({
     dispose: () => { app?.dispose() },
@@ -245,8 +249,15 @@ async function shutdown(code: number = 0): Promise<void> {
   }, code)
 }
 
-process.on('SIGINT', () => { void shutdown(0) })
-process.on('SIGTERM', () => { void shutdown(0) })
+// 二次信号强退（对齐 serve.ts:shutdownServer 先例）：此前第二次 Ctrl+C 被
+// isShuttingDown 幂等守卫静默吞掉，关停链卡住时用户只能干等或 kill -9。
+const exitFuse = createExitFuse({
+  onGraceful: () => { void shutdown(0) },
+  forceExit: code => process.exit(code),
+  log: message => console.error(`[tui] ${message}`),
+})
+process.on('SIGINT', () => exitFuse.signal('SIGINT'))
+process.on('SIGTERM', () => exitFuse.signal('SIGTERM'))
 
 // 进程退出兜底清场（终端态恢复 + MCP 子进程 + tracked 进程树）——独立模块，
 // 细节见 exit-cleanup.ts。

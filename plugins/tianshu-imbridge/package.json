@@ -1,0 +1,34 @@
+{
+  "name": "tianshu-imbridge",
+  "version": "0.4.0",
+  "description": "Tianshu IM bridge plugin — mobile QQ messages flow directly into Tianshu and replies go straight back to QQ (no DSH relay in between).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "tianshu": {
+    "name": "tianshu-imbridge",
+    "version": "0.4.0",
+    "description": "Mobile QQ <-> Tianshu direct bridge: plugin residency + QQ channel + headless call + reply routing",
+    "entry": "index.js",
+    "tools": [
+      {
+        "name": "im_status",
+        "description": "Report the IM bridge status: phase, process info, connection state"
+      },
+      {
+        "name": "im_send",
+        "description": "Send a proactive QQ message to the owner (notification)"
+      }
+    ],
+    "permissions": {
+      "fs": true,
+      "net": true
+    }
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "1.0.4"
+  }
+}

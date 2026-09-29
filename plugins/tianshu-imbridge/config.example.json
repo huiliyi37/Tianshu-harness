@@ -1,0 +1,7 @@
+{
+  "appId": "请填入你的 QQ 开放平台 AppID",
+  "appSecret": "请填入 AppSecret（这个文件不要提交到任何仓库）",
+  "ownerUserOpenid": "必填：你的用户 openid —— 只有它会得到响应；留空则一律不响应",
+  "workspace": "可选：QQ 会话默认进入的工作区绝对路径",
+  "enabled": true
+}

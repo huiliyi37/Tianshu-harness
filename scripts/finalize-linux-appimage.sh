@@ -36,16 +36,22 @@ docker run --rm --platform "linux/$ARCH" \
   "
 
 echo "==> 宿主机验证完整性（与壳内嵌公钥同源）"
-cat > /tmp/verify-linux-rt.ts <<'EOF'
-import { verifyIntegrityManifest } from '/Users/h/work/revit/src/config/runtime-integrity.js'
-import { LICENSE_PUBLIC_KEY_B64 } from '/Users/h/work/revit/src/config/license-keys.js'
+# 临时脚本生成在仓库内（.rivet/ 已 gitignore）：相对 import 从脚本位置解析到
+# 仓库源码——不再依赖任何机器特定的绝对路径（此处曾硬编码作者本机路径，
+# 其他环境必然 ERR_MODULE_NOT_FOUND，且 set -e 会中断后续补签步骤）。
+TMP_TS=".rivet/verify-linux-rt.tmp.ts"
+mkdir -p .rivet
+trap 'rm -f "$TMP_TS"' EXIT
+cat > "$TMP_TS" <<'EOF'
+import { verifyIntegrityManifest } from '../src/config/runtime-integrity.js'
+import { LICENSE_PUBLIC_KEY_B64 } from '../src/config/license-keys.js'
 const dir = process.argv[2]
 const ok = verifyIntegrityManifest(dir, { mode: 'code', publicKeyB64: LICENSE_PUBLIC_KEY_B64 })
 console.log('integrity verify:', ok ? 'PASS' : 'FAIL')
 process.exit(ok ? 0 : 1)
 EOF
-npx tsx /tmp/verify-linux-rt.ts "$OUT/rivet-runtime-verify"
-rm -rf "$OUT/rivet-runtime-verify" /tmp/verify-linux-rt.ts
+npx tsx "$TMP_TS" "$OUT/rivet-runtime-verify"
+rm -rf "$OUT/rivet-runtime-verify"
 
 echo "==> 宿主机 tauri signer 补签"
 if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then

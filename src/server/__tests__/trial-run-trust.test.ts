@@ -118,7 +118,8 @@ test('POST /schedule/:id/run-now：触发一次并 404 未知/暂停任务', asy
 
     const ok = await router('POST', `/schedule/${id}/run-now`, {}, AUTH)
     assert.equal(ok.status, 200)
-    assert.deepEqual(ok.body, { id, triggered: true })
+    // persisted：issue #266/D5 口径——写盘结果随回执返回（可写路径 → true）。
+    assert.deepEqual(ok.body, { id, triggered: true, persisted: true })
     await new Promise((r) => setTimeout(r, 10))
     assert.equal(metas.length, 1)
     assert.equal(metas[0]!.unattended, false)

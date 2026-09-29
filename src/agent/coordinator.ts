@@ -101,7 +101,7 @@ import { StigmergyStore } from '../context/stigmergy.js'
 import { batchPrewarm } from './prewarm-file.js'
 import type { RuntimeCoordinatorSnapshot } from './runtime-self-model.js'
 import { deriveCandidateModels, type CandidateModel } from './candidate-models.js'
-import { isSafeFileName } from '../utils/safe-path.js'
+import { coordinatorSubagentsDir, persistWorkerResult } from './worker-result-store.js'
 
 /** 等槽 waiter：角色决定它能吃哪个池的槽位。 */
 interface WorkerSlotWaiter {
@@ -617,10 +617,6 @@ function skippedDependencyResult(order: WorkOrder, skippedDeps: string[]): Worke
   }
 }
 
-/** Cap on persisted worker-result files under ~/.rivet/subagents/. Without a
- *  TTL/cap this write-mostly sink grew unbounded (one+ file per worker, forever). */
-export const MAX_SUBAGENT_RESULTS = 500
-
 /** Minimum acceptable summary length. When a worker's summary is shorter, the
  *  coordinator auto-triggers a follow-up expansion turn so the parent agent
  *  receives a technically complete handoff. */
@@ -628,136 +624,21 @@ export const SUMMARY_MIN_LENGTH = 200
 /** Max follow-up attempts for brief summaries. 1 = single retry, then accept. */
 export const SUMMARY_CONTINUATION_ATTEMPTS = 1
 
-/** LRU-evict ~/.rivet/subagents/ down to `limit` files (oldest mtime first).
- *  Best-effort and exported for testing. Returns the basenames evicted. */
-export function evictOldSubagentResults(dir: string, limit = MAX_SUBAGENT_RESULTS): string[] {
-  let files: string[]
-  try {
-    files = readdirSync(dir).filter(f => f.endsWith('.json'))
-  } catch {
-    return []
-  }
-  if (files.length <= limit) return []
-  const withMtime = files.map(f => {
-    let mtime = 0
-    try { mtime = statSync(join(dir, f)).mtimeMs } catch { /* ignore */ }
-    return { f, mtime }
-  })
-  withMtime.sort((a, b) => a.mtime - b.mtime)
-  const toEvict = withMtime.slice(0, files.length - limit).map(({ f }) => f)
-  for (const f of toEvict) {
-    try { unlinkSync(join(dir, f)) } catch { /* ignore */ }
-  }
-  return toEvict
-}
-
-/**
- * Persist worker result to ~/.rivet/subagents/ for future resume/inspection.
- *
- * 落三类文件：
- * - `<orderId>.json` —— 最新一轮副本（loadPersistedResult 读它，行为不变）。
- * - `<orderId>.<nonce>.json` —— 按派发 nonce 的逐轮归档（有 nonce 时）。稳定
- *   order id（batch:0 / team:T1）跨委派复用，没有 nonce 时第二次派发会把第一轮
- *   的 findings/usage 物理覆盖（L1）。nonce 与 worker 会话 JSONL 同源
- *   （deriveWorkerSessionId 那颗）。
- * - `<fingerprint>.json` —— T5 resume 指纹副本。
- *
- * LRU 说明：归档让每次派发多占一个文件，MAX_SUBAGENT_RESULTS 会比「复用免费」
- * 时代更早触顶；淘汰仍按最旧 mtime 优先，语义不变——最旧的轮次先死。
- * homeDir 仅供测试注入（与 loadPersistedResult 同例）。
- */
-export function persistWorkerResult(result: WorkerResult, fingerprint?: string, dispatchNonce?: string, homeDir?: string): void {
-  try {
-    const dir = coordinatorSubagentsDir(homeDir)
-    mkdirSync(dir, { recursive: true })
-    const json = JSON.stringify(result, null, 2)
-    writeFileSync(join(dir, `${result.workOrderId}.json`), json, 'utf-8')
-    if (dispatchNonce) {
-      writeFileSync(join(dir, `${result.workOrderId}.${dispatchNonce}.json`), json, 'utf-8')
-    }
-    // T5: also write a fingerprint-indexed copy for resume lookup
-    if (fingerprint) {
-      writeFileSync(join(dir, `${fingerprint}.json`), json, 'utf-8')
-    }
-    // Keep the sink bounded — LRU-evict once it exceeds the cap.
-    evictOldSubagentResults(dir)
-  } catch {
-    // Best-effort: never block primary session on persistence failure
-  }
-}
-
-/** B1: read back a previously persisted worker result for resume/inspection.
- *  The persistWorkerResult sink used to have no reader (write-only grave).
- *  Returns null on cold miss or unparseable content — callers must handle it. */
-function coordinatorSubagentsDir(homeDir?: string): string {
-  // `homeDir` is the legacy "user home" parameter used by tests.
-  // In production, default to the unified subagentsDir() under RIVET_HOME.
-  if (homeDir) return join(homeDir, '.rivet', 'subagents')
-  return subagentsDir()
-}
-
-export function loadPersistedResult(orderId: string, homeDir?: string): WorkerResult | null {
-  // orderId 拼进文件名——与下方 isSafeRoundNonce 同族守卫（nonce 有校验而
-  // orderId 曾裸奔；workerId 亦可经 HTTP 路由到达此处）。
-  if (!isSafeFileName(orderId)) return null
-  try {
-    const path = join(coordinatorSubagentsDir(homeDir), `${orderId}.json`)
-    if (!existsSync(path)) return null
-    return parseWorkerResult(readFileSync(path, 'utf-8'), orderId)
-  } catch {
-    return null
-  }
-}
-
-/** nonce 必须是不含路径语义的裸标识符——它会拼进文件名，拒绝分隔符与父目录逃逸。 */
-function isSafeRoundNonce(nonce: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(nonce)
-}
-
-/** 一轮派发的归档元数据（L1）。 */
-export interface PersistedResultRound {
-  /** 派发 nonce，与 worker 会话 JSONL（worker-<id>-<nonce>.jsonl）后缀同源。 */
-  nonce: string
-  /** 文件 mtime——派发完成时间，兼作轮次排序键。 */
-  savedAt: number
-}
-
-/**
- * 列出某个 order id 的全部归档轮次，按时间升序（第 0 条是首轮）。
- * 只数 `<orderId>.<nonce>.json`：`<orderId>.json` 最新副本（nonce 为空被排除）
- * 与指纹文件（不带 order id 前缀）都不算轮次。
- */
-export function listPersistedResultRounds(orderId: string, homeDir?: string): PersistedResultRound[] {
-  try {
-    const dir = coordinatorSubagentsDir(homeDir)
-    const prefix = `${orderId}.`
-    const rounds: PersistedResultRound[] = []
-    for (const f of readdirSync(dir)) {
-      if (!f.startsWith(prefix) || !f.endsWith('.json')) continue
-      const nonce = f.slice(prefix.length, -'.json'.length)
-      if (!isSafeRoundNonce(nonce)) continue
-      let savedAt = 0
-      try { savedAt = statSync(join(dir, f)).mtimeMs } catch { /* ignore */ }
-      rounds.push({ nonce, savedAt })
-    }
-    rounds.sort((a, b) => a.savedAt - b.savedAt)
-    return rounds
-  } catch {
-    return []
-  }
-}
-
-/** 读取指定轮次的归档结果；未知轮次、非法 nonce 或无法解析一律返回 null。 */
-export function loadPersistedResultRound(orderId: string, nonce: string, homeDir?: string): WorkerResult | null {
-  if (!isSafeRoundNonce(nonce)) return null
-  try {
-    const path = join(coordinatorSubagentsDir(homeDir), `${orderId}.${nonce}.json`)
-    if (!existsSync(path)) return null
-    return parseWorkerResult(readFileSync(path, 'utf-8'), orderId)
-  } catch {
-    return null
-  }
-}
+// ── Worker 结果存储迁出（worker-result-store.ts）──────────────────────
+// persist / load / list / evict 与命名安全化沿接缝拆出：orderId 含冒号
+// （batch:0 / team:T1），Windows 上裸拼名会落成 NTFS ADS（readdir 不可见：
+// 归档列不出、LRU 清理不到）。写/读/列统一走 orderFileKey 编码
+// （src/utils/safe-path.ts），读/列对旧格式回退（细节见该模块头注释）。
+// 公共面经 re-export 保持不变；coordinator 内部用顶部 import 局部绑定。
+export {
+  persistWorkerResult,
+  loadPersistedResult,
+  listPersistedResultRounds,
+  loadPersistedResultRound,
+  evictOldSubagentResults,
+  MAX_SUBAGENT_RESULTS,
+} from './worker-result-store.js'
+export type { PersistedResultRound } from './worker-result-store.js'
 
 /** delegateOrder 内部流转的单次派发状态（首轮 / 重试 / 升级 / 续跑共用同一形状）。 */
 interface DelegateRunState {

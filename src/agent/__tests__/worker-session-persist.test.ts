@@ -94,7 +94,14 @@ describe('worker-session-persist', () => {
 
   it('workerSessionPath returns the expected location', () => {
     const path = workerSessionPath('wo_abc', '/fake/home')
-    assert.equal(path, '/fake/home/.rivet/subagents/wo_abc.session.jsonl')
+    // 期望值用 join 构造（平台无关）——Windows 上 join 产出反斜杠，
+    // 硬编码正斜杠的断言在那里恒败。
+    assert.equal(path, join('/fake/home', '.rivet', 'subagents', 'wo_abc.session.jsonl'))
+    // orderId 含冒号时文件名必须经 orderFileKey 编码（Windows ADS 回归）
+    assert.ok(
+      !workerSessionPath('batch:0', '/fake/home').includes(':'),
+      'session 文件名不得含冒号（Windows 非法，会落成 NTFS ADS）',
+    )
   })
 
   it('round-trips complex multimodal and tool messages', () => {

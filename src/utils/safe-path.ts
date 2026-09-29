@@ -37,3 +37,17 @@ export function isSafeFileName(name: string): boolean {
   if (name.includes('..')) return false
   return true
 }
+
+/**
+ * orderId → 文件系统安全键：拼进文件名前的唯一映射（写/读/列三处共用）。
+ *
+ * orderId 的稳定形状含冒号（batch:0 / team:T1），而 Windows 文件名禁用冒号
+ * ——裸拼名会落成 NTFS 备用数据流（ADS）：同路径写/读都"成功"，但 readdir
+ * 只见宿主文件（`batch`），归档列表/清理对整族文件永远不可见（worker 结果
+ * 归档在 Windows 上列不出的根因）。encodeURIComponent 单射编码（`:`→`%3A`；
+ * `*` 在 Windows 亦非法故显式编码），各平台产出一致文件名；不含特殊字符的
+ * orderId（wo_* 等）映射恒等，零行为差异。
+ */
+export function orderFileKey(orderId: string): string {
+  return encodeURIComponent(orderId).replace(/\*/g, '%2A')
+}

@@ -2,6 +2,7 @@ import { join, dirname, basename } from 'node:path'
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { subagentsDir } from '../config/paths.js'
+import { orderFileKey } from '../utils/safe-path.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import type { WorkerCheckpoint } from './worker-session.js'
 
@@ -40,7 +41,19 @@ function workerSubagentsDir(homeDir?: string): string {
   return subagentsDir()
 }
 
+/**
+ * Session 记录路径。workOrderId 含冒号（batch:0）时以 orderFileKey 编码落盘
+ * ——Windows 文件名禁用冒号，裸拼会落成 NTFS 备用数据流（ADS）：写/读都
+ * "成功"而 readdir 不可见（与 subagents 结果文件同族缺陷，见
+ * worker-result-store.ts 头注释）。
+ */
 export function workerSessionPath(workOrderId: string, homeDir?: string): string {
+  return join(workerSubagentsDir(homeDir), `${orderFileKey(workOrderId)}.session.jsonl`)
+}
+
+/** 旧格式（未编码原名）候选路径——仅当编码改变名字时存在；读路径回退用。 */
+function legacySessionPath(workOrderId: string, homeDir?: string): string | null {
+  if (orderFileKey(workOrderId) === workOrderId) return null
   return join(workerSubagentsDir(homeDir), `${workOrderId}.session.jsonl`)
 }
 
@@ -154,15 +167,19 @@ export function saveWorkerSession(
  *  invalid records (fail-open) — callers must handle it (typically by
  *  degrading to a fresh worker). v1 records load unchanged (`format: 1`). */
 export function loadWorkerSession(workOrderId: string, homeDir?: string): WorkerSessionRecord | null {
-  const path = workerSessionPath(workOrderId, homeDir)
-  if (!existsSync(path)) return null
-  try {
-    const content = readFileSync(path, 'utf-8').trim()
-    if (!content) return null
-    return parseWorkerRecord(JSON.parse(content))
-  } catch {
-    return null
+  const candidates = [workerSessionPath(workOrderId, homeDir)]
+  const legacy = legacySessionPath(workOrderId, homeDir)
+  if (legacy) candidates.push(legacy)
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    try {
+      const content = readFileSync(path, 'utf-8').trim()
+      if (!content) continue
+      const record = parseWorkerRecord(JSON.parse(content))
+      if (record) return record
+    } catch { /* corrupt — fall through to the legacy name once more */ }
   }
+  return null
 }
 
 /** Consume a stored resume checkpoint exactly once: returns the checkpoint and
@@ -176,5 +193,11 @@ export function consumeCheckpointOnce(workOrderId: string, homeDir?: string): Wo
   if (!record || record.checkpoint === undefined) return null
   const { checkpoint, ...rest } = record
   writeAtomic(workerSessionPath(workOrderId, homeDir), JSON.stringify(rest) + '\n')
+  // 升级过渡：消费后清掉旧格式（未编码）副本——它是同一记录的陈旧拷贝，
+  // 留着会让已消费的 checkpoint 在「新名文件丢失」的极端情形下复活（二次消费）。
+  const legacy = legacySessionPath(workOrderId, homeDir)
+  if (legacy) {
+    try { unlinkSync(legacy) } catch { /* already gone — fine */ }
+  }
   return checkpoint
 }

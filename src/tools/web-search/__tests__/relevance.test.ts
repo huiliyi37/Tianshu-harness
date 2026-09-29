@@ -85,6 +85,26 @@ describe('queryTokens', () => {
     assert.deepEqual(queryTokens('K线 均线'), ['k线', '均线'])
     assert.deepEqual(queryTokens('A股 行情'), ['a股', '行情'])
   })
+
+  it('假名 / 谚文 / 全角查询同样产出词元——守卫不再对日韩与全角查询静默放行', () => {
+    // 修复前字符类只有 [a-z0-9\u4e00-\u9fff]：假名（テスト）、谚文（한글）、
+    // 全角字母数字（ＡＢＣ）都提不出词元，looksOffTopic 直接放行整批。
+    // 全角与半角片假名经 NFKC 归一后进入常规字符类。
+    assert.deepEqual(queryTokens('テスト やり方'), ['テス', 'スト', 'やり', 'り方'])
+    assert.ok(queryTokens('한글 테스트').length > 0)
+    assert.deepEqual(queryTokens('ＡＢＣ 行情'), ['abc', '行情'])
+    assert.deepEqual(queryTokens('ﾃｽﾄ 方法'), ['テス', 'スト', '方法'])
+  })
+
+  it('混合段拉丁前缀不再撕成 2 字符碎片——整词出词，过匹配噪声消失', () => {
+    // 整段 bigram 会把 MACD 撕成 ma/ac/cd——includes 子串匹配下「ma」命中
+    // 「marketing」、「ac」命中「academy」，单查询词的零重叠判据被击穿。
+    assert.deepEqual(queryTokens('MACD金叉'), ['macd', '金叉'])
+    assert.deepEqual(queryTokens('iPhone手机'), ['iphone', '手机'])
+    // 桥接词元保留：数字与汉字交界不丢（2026年 → 6年），单字前缀不丢（k线图 → k线）
+    assert.deepEqual(queryTokens('2026年'), ['2026', '6年'])
+    assert.deepEqual(queryTokens('k线图'), ['k线', '线图'])
+  })
 })
 
 describe('looksOffTopic', () => {
@@ -188,6 +208,18 @@ describe('looksOffTopic', () => {
       { title: '西雅图 Belltown 地图 - Google Maps', url: 'https://maps.example', snippet: 'Interactive map of Belltown, Seattle.' },
     ]
     assert.equal(looksOffTopic('asdfqwer 无意义词汇测试', r), true)
+  })
+
+  it('假名查询的跑题批次被识别——此前守卫提不出词元、静默放行整批', () => {
+    const off: SearchResult[] = [{ title: 'Best marketing academy', url: 'https://x', snippet: 'unrelated content' }]
+    assert.equal(looksOffTopic('テスト やり方', off), true)
+  })
+
+  it('混合段查询的无关英文批次被识别——碎片过匹配不再击穿零重叠判据', () => {
+    // 修复前 'MACD金叉' 的 ma/ac/cd 在无关英文里高概率命中（marketing/academy），
+    // 单组零重叠判据被噪声满足而放行整批；修复后 token 为 macd/金叉，零命中。
+    const off: SearchResult[] = [{ title: 'Best marketing academy', url: 'https://x', snippet: 'Learn acrobatics and coding online' }]
+    assert.equal(looksOffTopic('MACD金叉', off), true)
   })
 })
 

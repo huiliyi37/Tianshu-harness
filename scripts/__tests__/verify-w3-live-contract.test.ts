@@ -16,15 +16,19 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const SCRIPT_PATH = join(here, '..', '..', '.rivet', 'patches', 'verify-w3-live.sh')
-const src = readFileSync(SCRIPT_PATH, 'utf-8')
+// .rivet/ 是 gitignored 的 dev 环境资产：公开仓 checkout 里不存在该脚本
+// （sync 不携带）。缺失时整组跳过——文本守卫只对持有该脚本的环境有意义；
+// 用硬性 ENOENT 失败会让公开仓 CI 恒红（2026-09 实测）。
+const scriptExists = existsSync(SCRIPT_PATH)
+const src = scriptExists ? readFileSync(SCRIPT_PATH, 'utf-8') : ''
 
-describe('verify-w3-live.sh：证据缺席不得判通过', () => {
+describe('verify-w3-live.sh：证据缺席不得判通过', { skip: !scriptExists }, () => {
   it('数据库四项「取不到」都必须显式 FAIL 并计 fail=1', () => {
     const cases: Array<[string, RegExp]> = [
       ['publishable key 未取到', /FAIL 数据库：未从公开产物取得 publishable key[^\n]*fail=1/],

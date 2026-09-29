@@ -106,7 +106,11 @@ test('restoreBundleIfNeeded：被改写过的文件按构建源字节复原，�
   assert.deepEqual(outcome.restored, ['native/x.node'])
 
   assert.equal(readFileSync(f.native, 'utf8'), 'ELF-ORIGINAL-BYTES')
-  assert.equal(statSync(f.native).mode & 0o777, 0o755, '恢复后必须保住可执行位')
+  if (process.platform !== 'win32') {
+    // NTFS 不表示 Unix 可执行位（chmod 无效果、stat.mode 由扩展名推断）——
+    // 权限保持断言只在 POSIX 文件系统上有意义；恢复逻辑本身全平台共用。
+    assert.equal(statSync(f.native).mode & 0o777, 0o755, '恢复后必须保住可执行位')
+  }
   assert.equal(verifyIntegrityManifest(f.bundle, { mode: MODE, publicKeyB64: f.publicKeyB64 }).ok, true)
 })
 

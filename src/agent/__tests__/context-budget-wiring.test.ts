@@ -2,6 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+/** src/pro 与 desktop/ 是闭源资产（公开仓不随 sync）：缺失返回 null，契约断言跳过。 */
+const maybeSource = (path: string): string | null => {
+  try { return source(path) } catch { return null }
+}
 
 test('budget reaches the real request builder, transport callbacks and desktop wrapper', () => {
   assert.match(source('../request-context-controller.ts'), /preview: request => .*previewContextRequest/ )
@@ -17,11 +21,21 @@ test('budget reaches the real request builder, transport callbacks and desktop w
 
 test('manual and isolated entry points use the same budget contract', () => {
   assert.match(source('../../server/serve-agent.ts'), /compactContext: \(\) => agent\.compactContext\(\)/)
-  assert.match(source('../../pro/runtime/protocol.ts'), /'getContextBudget'/)
-  assert.match(source('../../pro/runtime/protocol.ts'), /'compactContext'/)
-  assert.match(source('../../pro/runtime/backend.ts'), /method === 'switchModel' \|\| method === 'compactContext'/)
-  assert.match(source('../../pro/runtime/engine.ts'), /'rewindToMessages', 'compactContext'\]\.includes\(method\)/)
   assert.match(source('../../tui/slash-commands.ts'), /ctx\.agent\.compactContext\(\)/)
-  assert.match(source('../../../desktop/src/surfaces/ThreadView.tsx'), /await compactSession\(session\.id\)/)
-  assert.doesNotMatch(source('../../../desktop/src/surfaces/ThreadView.tsx'), /onSend\('Context is getting long/)
+  // src/pro 与 desktop/ 是闭源资产（公开仓不随 sync）：存在时钉契约，缺失跳过——
+  // 硬性 ENOENT 会让公开仓 CI 恒红（2026-09 实测）。
+  const proProtocol = maybeSource('../../pro/runtime/protocol.ts')
+  if (proProtocol) {
+    assert.match(proProtocol, /'getContextBudget'/)
+    assert.match(proProtocol, /'compactContext'/)
+  }
+  const proBackend = maybeSource('../../pro/runtime/backend.ts')
+  if (proBackend) assert.match(proBackend, /method === 'switchModel' \|\| method === 'compactContext'/)
+  const proEngine = maybeSource('../../pro/runtime/engine.ts')
+  if (proEngine) assert.match(proEngine, /'rewindToMessages', 'compactContext'\]\.includes\(method\)/)
+  const threadView = maybeSource('../../../desktop/src/surfaces/ThreadView.tsx')
+  if (threadView) {
+    assert.match(threadView, /await compactSession\(session\.id\)/)
+    assert.doesNotMatch(threadView, /onSend\('Context is getting long/)
+  }
 })

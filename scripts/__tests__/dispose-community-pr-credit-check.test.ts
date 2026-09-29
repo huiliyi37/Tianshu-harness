@@ -58,6 +58,11 @@ function loadCreditHelper(): string {
 function makeLongHistoryRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'dispose-credit-'))
   execFileSync('git', ['init', '-q', '.'], { cwd: dir })
+  // fast-import 的目标分支是 refs/heads/main；显式对齐 HEAD，不依赖
+  // init.defaultBranch 配置——CI runner 默认 master 时 HEAD 指向不存在的
+  // refs/heads/master，`git log` 输出 0 字节、下方断言必败（该测试此前
+  // 隐式依赖作者本机 defaultBranch=main，公开仓 CI 双平台实测皆红）。
+  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: dir })
   const stream: string[] = []
   for (let i = 0; i < 400; i++) {
     stream.push(

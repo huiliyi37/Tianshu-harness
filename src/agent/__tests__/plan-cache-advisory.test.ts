@@ -1,6 +1,7 @@
 import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PromptEngine } from '../../prompt/engine.js'
@@ -115,7 +116,9 @@ describe('AgentLoop PlanCache advisory wiring', () => {
 
       assert.doesNotMatch(allMessageText(calls[0]), /plan-cache-advisory/)
     } finally {
-      rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+      // Windows：句柄释放竞态（EPERM）——同步 maxRetries 在事件循环冻结下无效，
+      // 异步重试的等待窗口才能让句柄释放。
+      await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -154,7 +157,9 @@ describe('AgentLoop PlanCache advisory wiring', () => {
       assert.match(text, /Informational only — not auto-executed\./)
       assert.equal(toolExecuted, false)
     } finally {
-      rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+      // Windows：句柄释放竞态（EPERM）——同步 maxRetries 在事件循环冻结下无效，
+      // 异步重试的等待窗口才能让句柄释放。
+      await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

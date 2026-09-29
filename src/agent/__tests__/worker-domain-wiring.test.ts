@@ -10,7 +10,8 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { StreamCallbacks, StreamClient } from '../../api/stream-client.js'
@@ -123,7 +124,8 @@ async function delegateAndCapture(authority?: string): Promise<OaiChatRequest> {
     assert.ok(capture.request, 'worker should have issued an LLM request')
     return capture.request
   } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    // Windows：句柄释放竞态（EPERM）——异步重试等待期间推进事件循环。
+    await rm(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 }
 

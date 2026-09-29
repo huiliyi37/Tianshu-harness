@@ -189,7 +189,9 @@ describe('abort settles before postSession (detached)', () => {
     phase = 'normal'
     await agent.run('second', cbs())
     assert.ok(secondStreamAt > 0, '第二轮必须真正 stream')
-    assert.ok(secondStreamAt - tAbort < 700, `第二轮开跑不等 2s 慢 hook，实际 ${secondStreamAt - tAbort}ms`)
+    // 判据本意：第二轮开跑"不等 2s 后台链"——等它耗时应 ≥2000ms。原 700ms 阈值
+    // 把 settle + 二轮启动的合理耗时（负载机器实测 ~960ms）也纳入了失败面。
+    assert.ok(secondStreamAt - tAbort < 1_700, `第二轮开跑不等 2s 慢 hook，实际 ${secondStreamAt - tAbort}ms`)
     assert.equal(await agent.drainPostSession(5_000), true)
   })
 })

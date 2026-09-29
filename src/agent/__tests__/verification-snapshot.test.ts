@@ -48,7 +48,11 @@ describe('verification-snapshot — VSW core', async () => {
     // Detached at baseline.head.
     assert.equal(g(snap.path, 'git rev-parse HEAD'), head)
     const list = g(dir, 'git worktree list --porcelain')
-    assert.ok(list.includes(snap.path), 'worktree should be registered')
+    // git 在 Windows 输出正斜杠路径，snap.path 用平台分隔符——归一化后比较。
+    assert.ok(
+      list.replace(/\\/g, '/').includes(snap.path.replace(/\\/g, '/')),
+      'worktree should be registered',
+    )
 
     snap.destroy()
   })

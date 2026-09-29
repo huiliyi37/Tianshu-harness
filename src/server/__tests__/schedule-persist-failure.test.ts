@@ -128,4 +128,80 @@ describe('写盘失败外显（issue #266 / D5）', () => {
       assert.ok(body.persistence.lastError)
     } finally { cleanup() }
   })
+
+  test('POST（create）回执带 persisted:false + 失败原文——与 PATCH 同口径', async () => {
+    const { path, cleanup } = unwritableSchedule()
+    try {
+      const scheduler = new CronScheduler({ schedulePath: path })
+      const router = createRouter(buildScheduleRoutes(scheduler, TOKEN))
+
+      const res = await router('POST', '/schedule', { prompt: 'probe', trigger: { type: 'interval', spec: '3600000' } }, AUTH)
+      assert.equal(res.status, 201, '内存建成功仍是 201——这不是"保存失败"，是"没落盘"')
+      const body = res.body as { id: string; persisted: boolean; persistError?: string; schedulePath?: string }
+      assert.equal(body.persisted, false)
+      assert.ok(body.persistError, '失败原文随回执返回')
+      assert.equal(body.schedulePath, path)
+      assert.ok(scheduler.get(body.id), '内存态已建，本轮调度照常')
+    } finally { cleanup() }
+  })
+
+  test('DELETE（remove）回执带 persisted:false——与 PATCH 同口径', async () => {
+    const { path, cleanup } = unwritableSchedule()
+    try {
+      const scheduler = new CronScheduler({ schedulePath: path })
+      const task = createScheduledTask('t', { type: 'interval', spec: '3600000' })
+      scheduler.add(task)
+      const router = createRouter(buildScheduleRoutes(scheduler, TOKEN))
+
+      const res = await router('DELETE', `/schedule/${task.id}`, {}, AUTH)
+      assert.equal(res.status, 200)
+      const body = res.body as { removed: boolean; persisted: boolean; persistError?: string }
+      assert.equal(body.removed, true)
+      assert.equal(body.persisted, false)
+      assert.ok(body.persistError)
+      assert.equal(scheduler.get(task.id), undefined, '内存态已移除')
+    } finally { cleanup() }
+  })
+
+  test('pause / stop / run-now 回执同口径带 persisted:false', async () => {
+    const { path, cleanup } = unwritableSchedule()
+    try {
+      const scheduler = new CronScheduler({ schedulePath: path })
+      const task = createScheduledTask('t', { type: 'interval', spec: '3600000' })
+      scheduler.add(task)
+      const router = createRouter(buildScheduleRoutes(scheduler, TOKEN))
+
+      // 顺序约束：run-now 只对 active 任务有效——放最前（stop 之后会按设计 404）。
+      const ran = await router('POST', `/schedule/${task.id}/run-now`, {}, AUTH)
+      assert.equal(ran.status, 200)
+      assert.equal((ran.body as { persisted: boolean }).persisted, false)
+
+      const paused = await router('POST', `/schedule/${task.id}/pause`, { enabled: false }, AUTH)
+      assert.equal(paused.status, 200)
+      assert.equal((paused.body as { persisted: boolean }).persisted, false)
+
+      const stopped = await router('POST', `/schedule/${task.id}/stop`, {}, AUTH)
+      assert.equal(stopped.status, 200)
+      assert.equal((stopped.body as { persisted: boolean }).persisted, false)
+    } finally { cleanup() }
+  })
+
+  test('可写路径下 create / delete 回执 persisted:true 且不带 persistError（不误报）', async () => {
+    const { path, cleanup } = writableSchedule()
+    try {
+      const scheduler = new CronScheduler({ schedulePath: path })
+      const router = createRouter(buildScheduleRoutes(scheduler, TOKEN))
+      const created = await router('POST', '/schedule', { prompt: 'ok', trigger: { type: 'interval', spec: '3600000' } }, AUTH)
+      assert.equal(created.status, 201)
+      const cbody = created.body as { id: string; persisted: boolean; persistError?: string }
+      assert.equal(cbody.persisted, true)
+      assert.ok(!('persistError' in cbody), '成功时不带噪音字段')
+
+      const removed = await router('DELETE', `/schedule/${cbody.id}`, {}, AUTH)
+      assert.equal(removed.status, 200)
+      const rbody = removed.body as { persisted: boolean; persistError?: string }
+      assert.equal(rbody.persisted, true)
+      assert.ok(!('persistError' in rbody))
+    } finally { cleanup() }
+  })
 })

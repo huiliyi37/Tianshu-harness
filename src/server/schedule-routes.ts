@@ -109,6 +109,20 @@ function writeErrorResult(
   return { status: 400, body: { error: (err as Error).message } }
 }
 
+/** issue #266 / D5 —— 写盘结果随回执返回（加性字段，不动任务体既有形状）。
+ *  2xx 仍然正确：内存定义**确实**改了、本轮调度照常；`persisted:false` 说的是
+ *  「重启后会丢」。全部写路由（create/update/delete/pause/stop/run-now）必须
+ *  与 PATCH 同口径消费 persist 结果——只修一条路径时，其余路径在磁盘写失败
+ *  （ENOSPC/只读目录）下仍回「成功」，正是本仓最贵的静默降级形状。 */
+function withPersistReport<T extends object>(scheduler: CronScheduler, body: T) {
+  const health = scheduler.persistenceHealth()
+  return {
+    ...body,
+    persisted: health.ok,
+    ...(health.ok ? {} : { persistError: health.lastError, schedulePath: health.path }),
+  }
+}
+
 export interface ScheduleRouteOptions extends ProcessWriteOwnershipOptions {
   getStatus?: () => Promise<unknown> | undefined
   /** 付费版 v1 · T5 — unattendedAutomation Pro gate。缺省 = 允许（测试/TUI 软门禁）。 */
@@ -179,7 +193,7 @@ export function buildScheduleRoutes(
           },
         )
         scheduler.add(task)
-        return { status: 201, body: task }
+        return { status: 201, body: withPersistReport(scheduler, task) }
       } catch (err) {
         return writeErrorResult(err)
       }
@@ -211,7 +225,7 @@ export function buildScheduleRoutes(
       if (denied) return denied
       const ok = scheduler.runNow(params!.id!)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found or not active' } }
-      return { status: 200, body: { id: params!.id!, triggered: true } }
+      return { status: 200, body: withPersistReport(scheduler, { id: params!.id!, triggered: true }) }
     }, apiToken),
 
     'POST /schedule/:id/pause': withAuth((body, params) => {
@@ -221,7 +235,7 @@ export function buildScheduleRoutes(
       const enabled = data.enabled === true
       const ok = scheduler.setEnabled(params!.id!, enabled)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
-      return { status: 200, body: { id: params!.id!, enabled, status: enabled ? 'active' : 'paused' } }
+      return { status: 200, body: withPersistReport(scheduler, { id: params!.id!, enabled, status: enabled ? 'active' : 'paused' }) }
     }, apiToken),
 
     // issue #236 — 停止（归档终态）：定义保留、可查看、可复制重建，但不再触发；
@@ -232,7 +246,7 @@ export function buildScheduleRoutes(
       if (denied) return denied
       const ok = scheduler.setStatus(params!.id!, 'stopped')
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
-      return { status: 200, body: { id: params!.id!, status: 'stopped' } }
+      return { status: 200, body: withPersistReport(scheduler, { id: params!.id!, status: 'stopped' }) }
     }, apiToken),
 
     // issue #236 — 原地更新：不再需要「删除旧任务 + 新建任务」来调整定义。
@@ -337,15 +351,7 @@ export function buildScheduleRoutes(
         // issue #266 / D5 —— 写盘结果随回执返回（加性字段，不动任务体既有形状）。
         // 200 仍然正确：内存定义**确实**改了、本轮调度照常；`persisted:false` 说的是
         // 「重启后会丢」。以前这条信息只进日志，用户看到的是"保存成功、重启即丢"。
-        const health = scheduler.persistenceHealth()
-        return {
-          status: 200,
-          body: {
-            ...updated,
-            persisted: health.ok,
-            ...(health.ok ? {} : { persistError: health.lastError, schedulePath: health.path }),
-          },
-        }
+        return { status: 200, body: withPersistReport(scheduler, updated) }
       } catch (err) {
         return writeErrorResult(err)
       }
@@ -356,7 +362,7 @@ export function buildScheduleRoutes(
       if (denied) return denied
       const ok = scheduler.remove(params!.id!)
       if (!ok) return { status: 404, body: { error: 'Scheduled task not found' } }
-      return { status: 200, body: { removed: true } }
+      return { status: 200, body: withPersistReport(scheduler, { removed: true }) }
     }, apiToken),
 
     // focus-change：前端 Tauri window focus/blur event 命中时调入，fire 所有

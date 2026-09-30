@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import {
   createBrowserDebugTool,
   isLoopbackHost,
@@ -551,7 +551,9 @@ test('default profile dirs are isolated per sessionKey; __default__ keeps legacy
   assert.equal(defaultUserDataDir('session-a', true), legacy, 'shared_profile 回退共享目录')
   const weird = defaultUserDataDir('含中文/斜杠的 key')
   assert.match(weird, /browser-debug-profiles/)
-  assert.doesNotMatch(weird.split('/').pop()!, /[^\w.-]/, '目录名必须文件系统安全（中文/空格/斜杠已替换）')
+  // basename 按平台语义取末段（Windows 反斜杠）——split('/') 在 Windows 上取不到末段，
+  // 整个路径参与断言会恒红。
+  assert.doesNotMatch(basename(weird), /[^\w.-]/, '目录名必须文件系统安全（中文/空格/斜杠已替换）')
 })
 
 test('per-session profile dirs are actually passed to the factory (RIVET_HOME hermetic)', async () => {

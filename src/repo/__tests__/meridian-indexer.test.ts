@@ -391,7 +391,7 @@ describe('MeridianIndexer when the index is unavailable', () => {
     }
   })
 
-  it('rejects symlink escape — file inside repo pointing outside project boundary', () => {
+  it('rejects symlink escape — file inside repo pointing outside project boundary', (t) => {
     const cwd = mkdtempSync(join(tmpdir(), 'meridian-indexer-symlink-'))
     const stateDir = mkdtempSync(join(tmpdir(), 'meridian-indexer-symlink-state-'))
     const outsideDir = mkdtempSync(join(tmpdir(), 'meridian-indexer-symlink-outside-'))
@@ -403,7 +403,12 @@ describe('MeridianIndexer when the index is unavailable', () => {
       // Symlink inside repo → outside target
       const linkPath = join(cwd, 'src', 'leak-link.ts')
       mkdirSync(join(cwd, 'src'), { recursive: true })
-      symlinkSync(target, linkPath)
+      try {
+        symlinkSync(target, linkPath)
+      } catch {
+        t.skip('symlink unavailable on this platform (Windows requires developer mode/admin)')
+        return
+      }
 
       assert.equal(callToRepoRelative(indexer, linkPath), null, 'symlink escape must fail closed')
       assert.equal(callToRepoRelative(indexer, join(cwd, 'src', 'app.ts')), 'src/app.ts', 'in-repo file unaffected')

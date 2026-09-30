@@ -59,8 +59,13 @@ describe('FILE_INFO_TOOL', () => {
     assert.match(result.content, /Exists: false/)
   })
 
-  it('reports symlink target info', async () => {
-    symlinkSync(join(tmpCwd, 'src', 'app.ts'), join(tmpCwd, 'link.ts'), 'file')
+  it('reports symlink target info', async (t) => {
+    try {
+      symlinkSync(join(tmpCwd, 'src', 'app.ts'), join(tmpCwd, 'link.ts'), 'file')
+    } catch {
+      t.skip('symlink unavailable on this platform (Windows requires developer mode/admin)')
+      return
+    }
     const result = await FILE_INFO_TOOL.execute(makeParams({ path: 'link.ts' }, tmpCwd))
     assert.equal(result.isError, undefined)
     assert.match(result.content, /Type: symlink/)

@@ -35,7 +35,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { freeDiskBytes, diskWarnThresholdMb } from '../utils/disk-space.js'
 
 /** tsc 一次运行的原始产物。缓存的是它而不是解析后的诊断——调用方的 filePath
@@ -462,7 +462,10 @@ export function resolveTypecheckLockRoot(cwd: string): string {
       // Windows：GUI 宿主下不加会闪控制台窗口（架构守卫 spawn-family 检查项）
       windowsHide: true,
     }).trim()
-    return top || cwd
+    // 归一为平台原生形态：git 在 Windows 上输出正斜杠（C:/...），而 catch /
+    // 空输出分支返回的 cwd 是原生形态——两分支不同形态会让同一仓库以两种
+    // 字符串进锁/缓存键（跨形态重复锁）。POSIX 上无变化。
+    return top ? top.replaceAll('/', sep) : cwd
   } catch {
     return cwd
   }

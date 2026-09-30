@@ -60,7 +60,10 @@ describe('A′ — keys 池从 config.json 迁出', () => {
     assert.ok(file, 'provider-keys.json 应已生成')
     assert.equal(file.providers.relay?.length, 2)
     assert.equal(file.providers.relay?.[1]?.label, '二号')
-    assert.equal(statSync(providerKeysPath()).mode & 0o777, 0o600)
+    // 0600 纵深防御仅 POSIX 适用（Windows/NTFS 由 ACL 决定访问控制）。
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(providerKeysPath()).mode & 0o777, 0o600)
+    }
   })
 
   it('迁移是一次性且幂等的：文件已存在时 load 不再重写', () => {

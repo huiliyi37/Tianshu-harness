@@ -86,12 +86,17 @@ describe('parseInstallHint — 白名单源', () => {
 // ── isPathWithinRoot：realpath 围栏（CLI-Anything #304 教训） ────────
 
 describe('isPathWithinRoot — realpath 围栏', () => {
-  it('root 内路径 true；symlink 逃逸到 root 外 false', () => {
+  it('root 内路径 true；symlink 逃逸到 root 外 false', (t) => {
     const cwd = tmpCwd()
     const outside = mkdtempSync(join(tmpdir(), 'cli-discover-outside-'))
     try {
       mkdirSync(join(cwd, 'sub'), { recursive: true })
-      symlinkSync(outside, join(cwd, 'sub', 'escape'))
+      try {
+        symlinkSync(outside, join(cwd, 'sub', 'escape'))
+      } catch {
+        t.skip('symlink unavailable on this platform (Windows requires developer mode/admin)')
+        return
+      }
       assert.equal(isPathWithinRoot(cwd, join(cwd, 'sub')), true)
       assert.equal(isPathWithinRoot(cwd, join(cwd, 'sub', 'escape')), false)
       assert.equal(isPathWithinRoot(cwd, join(cwd, 'no-such-path')), false)
@@ -256,13 +261,18 @@ describe('install — 成功路径', () => {
     }
   })
 
-  it('realpath 围栏：.rivet/skills symlink 逃逸项目根 → 拒绝产出 SKILL.md', async () => {
+  it('realpath 围栏：.rivet/skills symlink 逃逸项目根 → 拒绝产出 SKILL.md', async (t) => {
     const cwd = tmpCwd()
     const outside = mkdtempSync(join(tmpdir(), 'cli-discover-outside2-'))
     const generated: string[] = []
     try {
       mkdirSync(join(cwd, '.rivet'), { recursive: true })
-      symlinkSync(outside, join(cwd, '.rivet', 'skills'))
+      try {
+        symlinkSync(outside, join(cwd, '.rivet', 'skills'))
+      } catch {
+        t.skip('symlink unavailable on this platform (Windows requires developer mode/admin)')
+        return
+      }
       const tool = createCliDiscoverTool({
         loadRegistry: () => REGISTRY,
         checkers: noBin,

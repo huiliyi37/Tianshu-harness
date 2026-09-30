@@ -46,7 +46,10 @@ describe('provider-keys-store — 磁盘边界', () => {
     assert.deepEqual(Object.keys(back.providers), ['relay'])
     assert.equal(back.providers.relay?.length, 2)
     assert.equal(back.providers.relay?.[1]?.label, '二号')
-    assert.equal(statSync(providerKeysPath()).mode & 0o777, 0o600)
+    // 0600 纵深防御仅 POSIX 适用（Windows/NTFS 由 ACL 决定访问控制）。
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(providerKeysPath()).mode & 0o777, 0o600)
+    }
   })
 
   it('文件缺失时返回 undefined（fail-open，不抛）', () => {

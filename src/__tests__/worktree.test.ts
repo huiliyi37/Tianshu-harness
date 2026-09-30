@@ -147,7 +147,12 @@ describe('createWorktree branch uniqueness (S1b)', () => {
     assert.ok(wt.branch.startsWith(baseBranch), 'unique branch keeps base prefix')
 
     const list = git(repo, ['worktree', 'list', '--porcelain'])
-    assert.ok(list.includes(wt.path), 'worktree is registered')
+    // git porcelain 输出统一正斜杠（Windows 亦然）；wt.path 是平台原生形态，
+    // 比较前两侧归一，避免 Windows 上 includes 恒 false 的假红。
+    assert.ok(
+      list.replaceAll('\\', '/').includes(wt.path.replaceAll('\\', '/')),
+      'worktree is registered',
+    )
   })
 
   it('includes git stderr in the thrown error', () => {

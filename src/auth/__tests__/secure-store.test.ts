@@ -133,7 +133,7 @@ describe('TokenStore 集成', () => {
     assert.deepEqual(store.load(), TOKEN)
   })
 
-  it('凭据文件权限仍是 0600（POSIX 纵深防御）', () => {
+  it('凭据文件权限仍是 0600（POSIX 纵深防御）', { skip: process.platform === 'win32' ? 'Windows 无 POSIX mode 语义（NTFS 由 ACL 决定访问控制，statSync().mode 恒 0666 档）；实测本机 chmod 0600 不生效，故跳过' : false }, () => {
     const store = new TokenStore(dir, 'account')
     store.save(TOKEN)
     const mode = statSync(join(dir, 'account.json')).mode & 0o777
@@ -179,7 +179,7 @@ describe('TokenStore 集成', () => {
     assert.equal(b.load()?.accessToken, 'at-b')
   })
 
-  it('密钥文件权限 0600', () => {
+  it('密钥文件权限 0600', { skip: process.platform === 'win32' ? 'Windows 无 POSIX mode 语义（NTFS 由 ACL 决定访问控制）；该档仅 POSIX 平台使用' : false }, () => {
     new TokenStore(dir, 'account').save(TOKEN)
     const keyPath = join(dir, SECRET_SIDECAR_FILES.localKey)
     const mode = statSync(keyPath).mode & 0o777

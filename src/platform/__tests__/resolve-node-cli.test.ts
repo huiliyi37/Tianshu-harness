@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import {
   resolveNpmCliCommand,
   buildStdioEnvWithNodePath,
@@ -91,12 +91,14 @@ describe('buildStdioEnvWithNodePath', () => {
   })
 
   it('works when cfg.env is omitted', () => {
+    // darwin 场景的输入必须用 posix.join 构造——宿主 join() 在 Windows 上产
+    // '\opt\node\bin\node'，被平台语义解释成相对路径（探针实测 PATH 变 ".:/usr/bin"）。
     const env = buildStdioEnvWithNodePath(undefined, {
-      execPath: join('/opt', 'node', 'bin', 'node'),
+      execPath: posix.join('/opt', 'node', 'bin', 'node'),
       platform: 'darwin',
       getDefaultEnvironment: () => ({ PATH: '/usr/bin' }),
     })
-    assert.ok(env.PATH?.startsWith(join('/opt', 'node', 'bin') + ':'))
+    assert.ok(env.PATH?.startsWith(posix.join('/opt', 'node', 'bin') + ':'))
   })
 
   // ── issue #149：基座 PATH 缺失时的静默退化 ──────────────────────────

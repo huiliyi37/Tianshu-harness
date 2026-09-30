@@ -119,8 +119,12 @@ test('账号 token 落到 <RIVET_HOME>/account.json，权限 0600', () => {
     assert.equal(envelope.v, 1, '应是带版本号的密文信封')
     assert.equal(envelope.s, 'aes-256-gcm')
 
-    const mode = statSync(join(home, 'account.json')).mode & 0o777
-    assert.equal(mode, 0o600, `凭据文件权限应为 0600，实际 ${mode.toString(8)}`)
+    // POSIX 纵深防御（0600）仅 POSIX 适用——Windows 无 POSIX mode 语义
+    // （NTFS 由 ACL 决定访问控制），凭据层由 DPAPI 托管密钥保护。
+    if (process.platform !== 'win32') {
+      const mode = statSync(join(home, 'account.json')).mode & 0o777
+      assert.equal(mode, 0o600, `凭据文件权限应为 0600，实际 ${mode.toString(8)}`)
+    }
 
     // 能读回来
     assert.equal(store.load()?.accessToken, 'at-1')

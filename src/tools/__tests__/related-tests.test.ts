@@ -124,7 +124,7 @@ describe('RELATED_TESTS_TOOL — Python heuristics (W1)', () => {
   it('finds co-located test_<name>.py', async () => {
     const result = await RELATED_TESTS_TOOL.execute(makeParams({ file: 'pkg/utils.py' }))
     assert.equal(result.isError, undefined)
-    assert.ok(result.content.includes('pkg/test_utils.py'))
+    assert.ok(result.content.includes(join('pkg', 'test_utils.py')))
   })
 
   it('finds sibling tests/ dir test', async () => {

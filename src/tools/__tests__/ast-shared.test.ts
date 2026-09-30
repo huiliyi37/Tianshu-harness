@@ -37,6 +37,10 @@ after(async () => {
   await rm(testDir, { recursive: true, force: true })
 })
 
+/** 归一为 POSIX 形态做子串判据——collectFiles 在 Windows 上返回反斜杠路径，
+ *  带 '/' 的 includes 会静默失配（漏收/假绿两类都发生过）。 */
+const norm = (p: string): string => p.replaceAll('\\', '/')
+
 // ── LANG_BY_EXT / inferLang / resolveLang ─────────────────────────
 
 describe('language inference', () => {
@@ -74,7 +78,7 @@ describe('language inference', () => {
 describe('collectFiles', () => {
   it('returns files matching directory walk', async () => {
     const files = await collectFiles(testDir)
-    const names = files.map(f => f.replace(testDir + '/', ''))
+    const names = files.map(f => norm(f).replace(norm(testDir) + '/', ''))
     assert.ok(names.includes('sample.ts'), `expected sample.ts, got ${names.join(', ')}`)
     assert.ok(names.includes('sample.js'), `expected sample.js`)
   })
@@ -86,12 +90,12 @@ describe('collectFiles', () => {
 
   it('skips .git', async () => {
     const files = await collectFiles(testDir)
-    assert.ok(!files.some(f => f.includes('.git/')), 'should not include .git files')
+    assert.ok(!files.some(f => norm(f).includes('.git/')), 'should not include .git files')
   })
 
   it('skips .rivet', async () => {
     const files = await collectFiles(testDir)
-    assert.ok(!files.some(f => f.includes('.rivet/')), 'should not include .rivet files')
+    assert.ok(!files.some(f => norm(f).includes('.rivet/')), 'should not include .rivet files')
   })
 
   it('does NOT skip .hidden-dir (only well-known tool dirs)', async () => {
@@ -101,7 +105,7 @@ describe('collectFiles', () => {
 
   it('returns nested files', async () => {
     const files = await collectFiles(testDir)
-    assert.ok(files.some(f => f.includes('sub/nested.tsx')), 'should include nested files')
+    assert.ok(files.some(f => norm(f).includes('sub/nested.tsx')), 'should include nested files')
   })
 
   it('returns single file when path is a file', async () => {

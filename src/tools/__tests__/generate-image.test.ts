@@ -12,6 +12,12 @@ import type { ImageGenModelConfigSnapshot } from '../../config/image-gen-schema.
 const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
 const PNG_BYTES = new Uint8Array(Buffer.from(PNG_B64, 'base64'))
 
+/** 图片落盘路径的判据：POSIX 以 / 开头；Windows 以盘符开头（C:\...）。
+ *  两形态都要认得——此前只认 POSIX 形态，Windows 上「应含绝对路径」恒红。 */
+const ABS_IMG_PATH_RE = process.platform === 'win32'
+  ? /[A-Za-z]:\\[^\s：]*\.png/
+  : /\/[^\s：]*\.png/
+
 const CONFIGURED: ImageGenModelConfigSnapshot = {
   provider: 'imagegen-test',
   model: 'flux-pro',
@@ -95,7 +101,7 @@ describe('generate_image tool — base64 never reaches the transcript (§10 反�
     // ② 长度上限是关键——即使不含关键词，塞了长 base64 也会被打红
     assert.ok(result.content.length < 500, `content 应简短，实际 ${result.content.length} 字符`)
     // ③ 必须给出可用的本地路径
-    assert.ok(/\/[^\s：]*\.png/.test(result.content), `应含绝对路径，实际：${result.content}`)
+    assert.ok(ABS_IMG_PATH_RE.test(result.content), `应含绝对路径，实际：${result.content}`)
   })
 
   it('actually writes the image bytes to disk', async () => {
@@ -108,7 +114,7 @@ describe('generate_image tool — base64 never reaches the transcript (§10 反�
     })
 
     const result = await tool.execute({ input: { prompt: 'a red circle' } } as never)
-    const match = result.content.match(/\/[^\s：]*\.png/)
+    const match = result.content.match(ABS_IMG_PATH_RE)
     assert.ok(match)
     const written = match[0] as string
     assert.ok(existsSync(written), `文件应真实落盘：${written}`)

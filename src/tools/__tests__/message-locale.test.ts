@@ -67,7 +67,9 @@ async function scanMessages(dir: string, root = dir, hits: MessageHit[] = []): P
         const raw = m[2]!
         const prose = raw.replace(/\$\{[^}]*\}/g, '')
         if (prose.length < 8) continue
-        hits.push({ file: relative(root, path), line: i + 1, text: raw })
+        // 归一 POSIX：清单（PENDING_MESSAGE_LOCALE）与报告都以正斜杠书写；
+        // Windows 上 relative() 产反斜杠会让豁免查询与陈旧检测双双静默失配。
+        hits.push({ file: relative(root, path).replaceAll('\\', '/'), line: i + 1, text: raw })
       }
     }
   }

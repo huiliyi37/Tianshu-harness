@@ -108,13 +108,18 @@ describe('path-grants', () => {
     }
   })
 
-  it('canonicalizes symlinks so a grant cannot be escaped or missed', () => {
+  it('canonicalizes symlinks so a grant cannot be escaped or missed', (t) => {
     const base = tmp()
     try {
       const realDir = join(base, 'real')
       mkdirSync(realDir)
       const link = join(base, 'link')
-      symlinkSync(realDir, link)
+      try {
+        symlinkSync(realDir, link)
+      } catch {
+        t.skip('symlink unavailable on this platform (Windows requires developer mode/admin)')
+        return
+      }
       // Grant via the symlink; a check on the real path must still match.
       grantPath(link, 'write')
       assert.equal(isWriteGranted(join(realDir, 'a.txt')), true)

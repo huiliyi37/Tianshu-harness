@@ -123,7 +123,9 @@ function scanFieldConsumers(fieldName: string, excludeFiles: string[]): string[]
     if (excludeFiles.some(e => file.endsWith(e))) continue
     const content = readFileSync(file, 'utf8')
     if (dotPattern.test(content) || bracketPattern.test(content)) {
-      consumers.push(relative(SRC_ROOT, file))
+      // 归一为 POSIX 形态：下游判据（tui/ 前缀归类、main.ts 特判）与报告展示
+      // 都以正斜杠书写；Windows 上 relative() 产反斜杠会让归类静默失配。
+      consumers.push(relative(SRC_ROOT, file).replaceAll('\\', '/'))
     }
   }
   return consumers

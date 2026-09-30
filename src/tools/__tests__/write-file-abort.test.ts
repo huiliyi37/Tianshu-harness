@@ -59,6 +59,8 @@ test('write_file: no abort → write succeeds (control, abort guard must not aff
     )
     assert.ok(!res.isError, 'normal write must succeed')
     assert.ok(existsSync(target), 'file must be created')
-    assert.equal(readFileSync(target, 'utf-8'), 'const ok = 1\n')
+    // 新建文件的 EOL 由平台策略决定（src/platform.ts getTargetEol：win32 → crlf），
+    // 期望跟随同一策略，避免把 POSIX 默认当成跨平台契约。
+    assert.equal(readFileSync(target, 'utf-8'), process.platform === 'win32' ? 'const ok = 1\r\n' : 'const ok = 1\n')
   })
 })

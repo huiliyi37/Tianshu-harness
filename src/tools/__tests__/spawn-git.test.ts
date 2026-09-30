@@ -37,8 +37,18 @@ describe('resolveGitCommand', () => {
     assert.notEqual(got, '/nope/does/not/exist/git')
   })
 
-  it('Win: probes LOCALAPPDATA candidate when set', () => {
+  it('Win: probes LOCALAPPDATA candidate when set', (t) => {
     if (!isWin) return
+    // Program Files / x86 候选在真机存在时会先行命中（候选顺序保证，见 spawn-git.ts
+    // 候选表）——本用例只在「前两位候选都不可见」的机器上有判别力。
+    // LOCALAPPDATA 分支本身的接线已由 'via injected existsSync' 用例确定性覆盖。
+    if (
+      existsSync('C:\\Program Files\\Git\\cmd\\git.exe')
+      || existsSync('C:\\Program Files (x86)\\Git\\cmd\\git.exe')
+    ) {
+      t.skip('real-fs variant: Program Files git present on this host — LOCALAPPDATA branch unreachable by design')
+      return
+    }
     const dir = tmpDir()
     const prev = process.env['LOCALAPPDATA']
     try {

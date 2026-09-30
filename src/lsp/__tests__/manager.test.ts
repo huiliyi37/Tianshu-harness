@@ -3,9 +3,16 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { LspManager, createLspManager } from '../manager.js'
 import { PassThrough } from 'node:stream'
 import { encodeMessage, decodeMessages } from '../rpc.js'
+
+/** mock 固定 cwd。Windows 上 '/project' 构不出合法 file:// URI——
+ *  fileURLToPath('file:///project/...') 会抛「must be absolute」，产品走 catch
+ *  分支导致相对化失效。平台化后两平台都走产品的主路径。 */
+const MOCK_CWD = process.platform === 'win32' ? 'C:\\project' : '/project'
+const mockUri = (rel: string): string => pathToFileURL(join(MOCK_CWD, rel)).href
 
 /**
  * Create a mock LSP server process.
@@ -48,7 +55,7 @@ function createMockServer() {
             jsonrpc: '2.0' as const,
             id,
             result: [{
-              uri: 'file:///project/src/target.ts',
+              uri: mockUri('src/target.ts'),
               range: {
                 start: { line: 9, character: 4 },
                 end: { line: 9, character: 10 },
@@ -60,8 +67,8 @@ function createMockServer() {
             jsonrpc: '2.0' as const,
             id,
             result: [
-              { uri: 'file:///project/src/a.ts', range: { start: { line: 5, character: 3 }, end: { line: 5, character: 9 } } },
-              { uri: 'file:///project/src/b.ts', range: { start: { line: 12, character: 1 }, end: { line: 12, character: 7 } } },
+              { uri: mockUri('src/a.ts'), range: { start: { line: 5, character: 3 }, end: { line: 5, character: 9 } } },
+              { uri: mockUri('src/b.ts'), range: { start: { line: 12, character: 1 }, end: { line: 12, character: 7 } } },
             ],
           }))
         } else if (method === 'shutdown') {
@@ -121,7 +128,7 @@ describe('LspManager', () => {
     const mock = createMockServer()
     const mgr = createLspManager(
       () => mock.proc as any,
-      '/project',
+      MOCK_CWD,
     )
     managers.push(mgr)
 
@@ -138,7 +145,7 @@ describe('LspManager', () => {
     const mock = createMockServer()
     const mgr = createLspManager(
       () => mock.proc as any,
-      '/project',
+      MOCK_CWD,
     )
     managers.push(mgr)
 

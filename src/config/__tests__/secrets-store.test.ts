@@ -37,7 +37,10 @@ describe('secrets store', () => {
     assert.equal(readSecret('deepseek'), 'sk-round-trip')
     const path = secretsPath()
     assert.equal(path, join(dir, 'secrets.json'))
-    assert.equal(statSync(path).mode & 0o777, 0o600)
+    // 0600 纵深防御仅 POSIX 适用（Windows/NTFS 由 ACL 决定，见本文件相关注释）。
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(path).mode & 0o777, 0o600)
+    }
   })
 
   /**
@@ -55,7 +58,10 @@ describe('secrets store', () => {
     // 信封形态正确 + 仍能读回 + 权限保留
     assert.equal(JSON.parse(raw).s, 'aes-256-gcm')
     assert.equal(readSecret('deepseek'), 'sk-plaintext-should-never-appear')
-    assert.equal(statSync(secretsPath()).mode & 0o777, 0o600)
+    // 0600 纵深防御仅 POSIX 适用（Windows/NTFS 由 ACL 决定）。
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(secretsPath()).mode & 0o777, 0o600)
+    }
   })
 
   it('reads a legacy plaintext store and upgrades it to a ciphertext envelope on next write', () => {
@@ -76,7 +82,10 @@ describe('secrets store', () => {
     writeSecret('a', 'v1')
     writeSecret('b', 'v2')
     writeSecret('a', 'v3')
-    assert.equal(statSync(secretsPath()).mode & 0o777, 0o600)
+    // 0600 纵深防御仅 POSIX 适用（Windows/NTFS 由 ACL 决定）。
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(secretsPath()).mode & 0o777, 0o600)
+    }
     assert.equal(readSecret('a'), 'v3')
     assert.equal(readSecret('b'), 'v2')
   })

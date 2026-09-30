@@ -13,6 +13,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 
 /** playwright-core 模块缺失时的安装引导——区分 CLI 安装用户 / 仓库内开发 / 桌面端。 */
 export const PLAYWRIGHT_CORE_INSTALL_HINT = [
@@ -82,6 +83,86 @@ export function isBrowserMissingError(err: unknown): boolean {
   return msg.includes('Executable') && msg.includes("doesn't exist")
 }
 
+/**
+ * 系统已安装的 chromium 系浏览器候选路径（按平台；正斜杠统一，Windows 亦接受）。
+ * 只收 chromium/Chrome/Brave：Edge 在 Windows 上恒存在，纳入会把「未下载 chromium」
+ * 的机器全部判成就绪，背离本模块指向 `rivet browser install` 的引导语义。
+ */
+function systemChromiumCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+  switch (platform) {
+    case 'linux':
+      return [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/snap/bin/chromium',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/opt/google/chrome/chrome',
+        '/usr/bin/brave-browser',
+      ]
+    case 'darwin':
+      return [
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+      ]
+    case 'win32': {
+      const pf = env.PROGRAMFILES ?? 'C:/Program Files'
+      const pf86 = env['PROGRAMFILES(X86)'] ?? 'C:/Program Files (x86)'
+      const local = env.LOCALAPPDATA ?? ''
+      return [
+        `${local}/Chromium/Application/chrome.exe`,
+        `${pf}/Google/Chrome/Application/chrome.exe`,
+        `${pf86}/Google/Chrome/Application/chrome.exe`,
+        `${local}/Google/Chrome/Application/chrome.exe`,
+        `${pf}/BraveSoftware/Brave-Browser/Application/brave.exe`,
+      ].filter((p) => !p.startsWith('/'))
+    }
+    default:
+      return []
+  }
+}
+
+/**
+ * 探测系统已安装的 chromium 系浏览器（issue #302）。零副作用——只检查已知路径的
+ * 存在性，绝不启动进程。系统装了浏览器而 playwright 下载版缺失时，这张表是
+ * 「其实能用」与「提示去下载」之间的判据。
+ */
+export function findSystemChromium(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return systemChromiumCandidates(platform, env).find((p) => exists(p))
+}
+
+export interface ResolvedChromiumBinary {
+  /** playwright 下载版 / 系统安装版 / 都没有。 */
+  source: 'playwright' | 'system' | 'missing'
+  /** source !== 'missing' 时可用的可执行文件路径。 */
+  executablePath?: string
+}
+
+/**
+ * 决定这次用哪个 chromium：playwright 下载版优先（registry 版本受控），缺失时
+ * 退回系统安装版（issue #302——Linux 用户装了发行版 chromium 却被报未安装）。
+ * source='missing' 时调用方维持原有「未安装」路径（launch 不传 executablePath，
+ * 让 playwright 抛标准缺失错误）。
+ */
+export function resolveChromiumBinary(
+  mod: { chromium: { executablePath(): string } },
+  findSystem: () => string | undefined = () => findSystemChromium(),
+): ResolvedChromiumBinary {
+  try {
+    const pwPath = mod.chromium.executablePath()
+    if (pwPath && existsSync(pwPath)) return { source: 'playwright', executablePath: pwPath }
+  } catch {
+    // executablePath() 在异常配置下会抛——按「下载版不可用」处理，继续找系统浏览器。
+  }
+  const system = findSystem()
+  return system ? { source: 'system', executablePath: system } : { source: 'missing' }
+}
+
 export interface PwRoute {
   abort(errorCode?: string): Promise<void>
   continue(): Promise<void>
@@ -130,10 +211,14 @@ export interface LaunchHeadlessOptions {
  * 浏览器缺失时抛带安装提示的友好错误；其余启动错误原样上抛。
  */
 export async function launchHeadlessChromium(opts: LaunchHeadlessOptions = {}): Promise<PwBrowser> {
-  const mod = (await loadPlaywrightCore()) as { chromium: PwChromium }
+  const mod = (await loadPlaywrightCore()) as { chromium: PwChromium & { executablePath(): string } }
+  // playwright 下载版优先；缺失时系统安装版兜底（issue #302）——否则「检测说就绪、
+  // 启动又报缺失」的不一致会把用户引向错误方向。
+  const binary = resolveChromiumBinary(mod)
   try {
     return await mod.chromium.launch({
       headless: true,
+      ...(binary.source === 'system' && binary.executablePath ? { executablePath: binary.executablePath } : {}),
       ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
       ...(opts.proxy ? { proxy: opts.proxy } : {}),
     })

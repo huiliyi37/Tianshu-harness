@@ -4,7 +4,7 @@
 
 import { shouldCaptureResponseBody, truncateResponseBody } from './log-capture.js'
 export type { BrowserCookie } from './pw-surface.js'
-import { PLAYWRIGHT_INSTALL_HINT, isBrowserMissingError } from '../net/playwright-driver.js'
+import { PLAYWRIGHT_INSTALL_HINT, isBrowserMissingError, resolveChromiumBinary } from '../net/playwright-driver.js'
 import {
   loadPlaywright,
   type BrowserCookie,
@@ -665,6 +665,9 @@ export function trimBrowserLogs(message: string, maxLen = 800): string {
 
 export const playwrightDriverFactory: BrowserDebugDriverFactory = async (opts) => {
   const mod = await loadPlaywright()
+  // playwright 下载版优先、系统安装版兜底（issue #302）——与 net/playwright-driver
+  // 及 browser-readiness 的就绪判定同源，避免「检测就绪但启动报缺失」的不一致。
+  const binary = resolveChromiumBinary(mod as unknown as { chromium: { executablePath(): string } })
   // 安装提示只挂在真正"浏览器可执行文件缺失"的启动失败上（与 net/playwright-driver
   // 的 launchChromium 同口径）。挂在模块加载失败上会把排查引向错误方向。
   let context: PwContext
@@ -673,6 +676,7 @@ export const playwrightDriverFactory: BrowserDebugDriverFactory = async (opts) =
       headless: opts.headless,
       viewport: opts.viewport ?? DEFAULT_VIEWPORT,
       args: ANTI_THROTTLE_ARGS,
+      ...(binary.source === 'system' && binary.executablePath ? { executablePath: binary.executablePath } : {}),
     })
   } catch (err) {
     if (isBrowserMissingError(err)) {

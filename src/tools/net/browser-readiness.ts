@@ -9,8 +9,7 @@
  * 缺失时的提示统一复用 net/playwright-driver 的 PLAYWRIGHT_MANUAL_INSTALL_HINT，
  * 并指向一键命令 `rivet browser install`，避免多处文案漂移。
  */
-import { existsSync } from 'node:fs'
-import { loadPlaywrightCore, PLAYWRIGHT_MANUAL_INSTALL_HINT, PLAYWRIGHT_CORE_INSTALL_HINT } from './playwright-driver.js'
+import { loadPlaywrightCore, PLAYWRIGHT_MANUAL_INSTALL_HINT, PLAYWRIGHT_CORE_INSTALL_HINT, resolveChromiumBinary } from './playwright-driver.js'
 
 export type BrowserReadyState =
   | 'ready' // chromium 可执行文件就位
@@ -21,6 +20,8 @@ export interface ChromiumProbe {
   state: BrowserReadyState
   installed: boolean
   executablePath?: string
+  /** ready 时的来源：'playwright' = 下载版；'system' = 系统安装版（issue #302）。 */
+  source?: 'playwright' | 'system'
   /** 人类可读的缺失原因（module-missing / browser-missing 时有值）。 */
   reason?: string
 }
@@ -30,14 +31,26 @@ interface PwChromiumProbe {
   executablePath(): string
 }
 
+/** @internal 测试注入口——同进程内换不掉 playwright 已缓存的 browsers 路径
+ * （playwright-core 加载时读取 PLAYWRIGHT_BROWSERS_PATH 并缓存），注入是唯一可测路径。 */
+export interface ChromiumProbeDeps {
+  /** 替换 playwright-core 加载（测试注入 fake 模块）。 */
+  loadModule?: () => Promise<unknown>
+  /** 替换系统浏览器探测（测试注入 fake 路径）。 */
+  findSystem?: () => string | undefined
+}
+
 /**
  * 探测 chromium 是否就绪。**不启动浏览器**——只解析预期可执行路径并检查文件存在。
- * 三态区分让上层能给出精准提示（装浏览器 vs 修依赖）。
+ * 三态区分让上层能给出精准提示（装浏览器 vs 修依赖）。就绪判定与 launch 侧同源
+ * （resolveChromiumBinary）：playwright 下载版优先、系统安装版兜底（issue #302）——
+ * 系统已装浏览器时不再误报「未安装」。
  */
-export async function probeChromium(): Promise<ChromiumProbe> {
+export async function probeChromium(deps: ChromiumProbeDeps = {}): Promise<ChromiumProbe> {
+  const loadModule = deps.loadModule ?? loadPlaywrightCore
   let mod: { chromium: PwChromiumProbe }
   try {
-    mod = (await loadPlaywrightCore()) as { chromium: PwChromiumProbe }
+    mod = (await loadModule()) as { chromium: PwChromiumProbe }
   } catch (err) {
     // playwright-core 模块本身加载不了（打包 dist/node_modules 残缺 / 未 npm i）——
     // 这不是"浏览器没下载"，别给 playwright install 提示（会把排查引向错误方向）。
@@ -47,25 +60,15 @@ export async function probeChromium(): Promise<ChromiumProbe> {
       reason: err instanceof Error ? err.message.split('\n')[0] : String(err),
     }
   }
-  try {
-    const exePath = mod.chromium.executablePath()
-    if (exePath && existsSync(exePath)) {
-      return { state: 'ready', installed: true, executablePath: exePath }
-    }
+  const binary = resolveChromiumBinary(mod, deps.findSystem)
+  if (binary.source === 'missing' || !binary.executablePath) {
     return {
       state: 'browser-missing',
       installed: false,
-      executablePath: exePath || undefined,
-      reason: 'chromium 可执行文件不存在（未下载）',
-    }
-  } catch (err) {
-    // executablePath() 在极少数配置下也会抛——按浏览器缺失处理（可安装解决）。
-    return {
-      state: 'browser-missing',
-      installed: false,
-      reason: err instanceof Error ? err.message.split('\n')[0] : String(err),
+      reason: 'chromium 可执行文件不存在（playwright 未下载，系统也未安装）',
     }
   }
+  return { state: 'ready', installed: true, executablePath: binary.executablePath, source: binary.source }
 }
 
 /**

@@ -61,7 +61,8 @@ export async function runBrowserStatus(
 ): Promise<number> {
   const probe = await probeChromium()
   if (probe.installed) {
-    write(`✓ chromium 已就绪\n  ${probe.executablePath}\n`)
+    const sourceNote = probe.source === 'system' ? '（系统安装版）' : ''
+    write(`✓ chromium 已就绪${sourceNote}\n  ${probe.executablePath}\n`)
     return 0
   }
   write(formatBrowserMissingBanner(probe) + '\n')

@@ -1565,12 +1565,15 @@ describe('/handoff 命令', () => {
     })
     const handled = await handleSlashCommand(ctx)
     assert.equal(handled, true)
-    // 交接指令指向项目内 .rivet/HANDOFF.md（工作区内免审批）
-    assert.ok(submitted.includes('/cwd/.rivet/HANDOFF.md'), `prompt 含项目内路径: ${submitted.slice(0, 200)}`)
+    // 交接指令指向项目内 .rivet/HANDOFF.md（工作区内免审批）。
+    // 期望路径与实现同源（join）构造——Windows 上 join 产出 \cwd\.rivet\HANDOFF.md，
+    // 硬编码 '/cwd/.rivet/HANDOFF.md' 在 Windows 检出上恒红（#189 族）。
+    const handoffPath = join('/cwd', '.rivet', 'HANDOFF.md')
+    assert.ok(submitted.includes(handoffPath), `prompt 含项目内路径: ${submitted.slice(0, 200)}`)
     assert.match(submitted, /## 任务目标/)
     assert.match(submitted, /用户补充指示：重点记下缓存方案/)
     // 归档任务：src=项目内文档，dest=会话目录 <id>.handoff.md
-    assert.equal(registered?.src, '/cwd/.rivet/HANDOFF.md')
+    assert.equal(registered?.src, handoffPath)
     assert.ok(registered?.dest.includes('sess-handoff-001.handoff.md'), `dest: ${registered?.dest}`)
   })
 })

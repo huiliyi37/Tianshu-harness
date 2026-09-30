@@ -7375,7 +7375,11 @@ export class TuiApp {
     if (Array.isArray(input.file_paths)) {
       for (const p of input.file_paths) if (typeof p === 'string') candidates.push(p)
     }
-    return candidates.some(c => !isPathUnder(cwd, resolve(cwd, c)))
+    // 两端都要 resolve 到同一「世界」：Windows 上 resolve(cwd, c) 产出 C:\…
+    // 绝对形式，而裸 cwd（POSIX 风格，如测试/配置里的 /workspace）归一后是
+    // \workspace——前缀判定必然 false，工作区内文件被误判为工作区外
+    // （审批误显示「批准并记住此目录」）。POSIX 上 resolve 恒等，行为不变。
+    return candidates.some(c => !isPathUnder(resolve(cwd), resolve(cwd, c)))
   }
 
   /** 审批处理器 — 交互式 y/n/e/r */

@@ -13,12 +13,37 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * 2026-08-14 缺陷：postinstall 首段裸调 patch-package（devDependency），
  * 全局安装 exit 127 整链失败（sh: patch-package: command not found）。
  */
+/** 模拟全局安装环境的最小 PATH：node 运行时目录 + 系统目录。
+ *  Windows 用原生形式（';' 分隔）供 where.exe 消费；POSIX 供 /bin/sh 消费。 */
 function simulateGlobalInstallPath(): string {
   const parts = [dirname(process.execPath)]
+  if (process.platform === 'win32') {
+    parts.push(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32'))
+    return parts.join(';')
+  }
   for (const p of ['/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin']) {
     if (!parts.includes(p)) parts.push(p)
   }
   return parts.join(':')
+}
+
+/** 命令在该 PATH 下能否解析。
+ *  Windows 用 where.exe 的绝对路径（libuv 找它不经 PATH）：sh 的 MSYS PATH
+ *  语义在 Windows 上不可靠（实测：Windows 风格拼接令 sh 整体失效；且模拟
+ *  PATH 里没有 sh 自身时 execFileSync 找不到 shell，会被吞成假"不可解析"）。
+ *  POSIX 用 /bin/sh 绝对路径同理（不依赖模拟 PATH 里有 shell）。 */
+function isResolvable(cmd: string, env: NodeJS.ProcessEnv): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const whereExe = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe')
+      execFileSync(whereExe, [cmd], { env, stdio: 'pipe' })
+    } else {
+      execFileSync('/bin/sh', ['-c', `command -v ${cmd}`], { env, stdio: 'pipe' })
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -46,13 +71,7 @@ test('postinstall 裸命令在全局安装环境（无 devDeps bin）中必须�
 
   const env = { ...process.env, PATH: simulateGlobalInstallPath() }
   for (const cmd of unguardedCommands(postinstall)) {
-    let resolvable = false
-    try {
-      execFileSync('sh', ['-c', `command -v ${cmd}`], { env, stdio: 'pipe' })
-      resolvable = true
-    } catch {
-      resolvable = false
-    }
+    const resolvable = isResolvable(cmd, env)
     assert.ok(
       resolvable,
       `postinstall 裸命令 "${cmd}" 在全局安装环境（无 devDeps bin）中不可解析 → npm i -g 将 exit 127`,

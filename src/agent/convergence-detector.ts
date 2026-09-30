@@ -590,9 +590,12 @@ function computeTextRepetitionPenalty(fingerprints: ReadonlyArray<string>): numb
 function textRepetitionHasData(fingerprints: ReadonlyArray<string>): boolean {
   const window = fingerprints.slice(-5)
   if (window.length < 3) return false
-  const longWordSets = window.filter(fp => fp.length >= 50)
-    .map(fp => new Set(fp.split(/\s+/).filter(w => w.length >= 3)))
-  return longWordSets.length >= 3
+  // 数据前提只数「足够长的指纹个数」——与 computeTextRepetitionPenalty 的
+  // guard 逐条一致（window<3 / 过滤 fp.length>=50 后 <3）。此前这里还构造了
+  // 空格分词的 Set，但结果只取数组长度、集合内容从未参与判定（死构造；
+  // PR #292 把 compute 的 token 化换成 n-gram 后，两处的"镜像"注释因此
+  // 显得可疑——現以本注释钉住真实不变量：数量维度一致，token 化不参与）。
+  return window.filter(fp => fp.length >= 50).length >= 3
 }
 
 /** Minimum recent text length that counts as a substantial analysis/report. */

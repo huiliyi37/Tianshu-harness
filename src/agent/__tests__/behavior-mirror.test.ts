@@ -18,6 +18,17 @@ describe('detectMirror', () => {
     assert.ok(!mirror.includes('Stop rereading'), 'should not hard-stop at 2nd occurrence')
   })
 
+  it('反斜杠 target（Windows）的 read_loop 警告显示文件名（basenamePortable 回归）', () => {
+    const entries: TrajectoryEntry[] = [
+      { turn: 1, tool: 'read_file', target: 'src\\agent\\loop.ts', durationMs: 10, status: 'success', inputSummary: '', resultSummary: '[diet:redundant] re-read later' },
+      { turn: 2, tool: 'read_file', target: 'src\\agent\\loop.ts', durationMs: 10, status: 'success', inputSummary: '', resultSummary: '[diet:useless] retried successfully' },
+    ]
+    const mirror = detectMirror(entries)
+    assert.ok(mirror, 'read-loop 应被检出')
+    assert.ok(mirror.includes('loop.ts'), '应显示 basename')
+    assert.ok(!mirror.includes('src\\agent\\loop.ts'), '不得显示反斜杠全路径')
+  })
+
   it('detects repeated edits to same file', () => {
     const entries: TrajectoryEntry[] = [
       { turn: 1, tool: 'edit_file', target: 'src/auth.ts', durationMs: 50, status: 'success', inputSummary: '', resultSummary: '' },

@@ -1,4 +1,5 @@
 import type { TrajectoryEntry } from './trajectory.js'
+import { basenamePortable } from '../utils/safe-path.js'
 
 function isDietNoInfoReadResult(content: string): boolean {
   return content.includes('[diet:redundant]') || content.includes('[diet:useless]')
@@ -13,7 +14,7 @@ function detectReadLoop(entries: TrajectoryEntry[]): string | null {
   for (const e of readNoInfo) counts.set(e.target, (counts.get(e.target) ?? 0) + 1)
   for (const [target, count] of counts) {
     if (count >= 2) {
-      const name = target.split('/').pop() ?? target
+      const name = basenamePortable(target)
       return `read_loop: warn — read_file for ${name} returned diet no-info placeholders ${count} times. If you still need this file's content, use read_section with a precise line range instead of re-reading the whole file. grep or repo_graph may also work.`
     }
   }
@@ -40,7 +41,7 @@ export function detectMirror(entries: TrajectoryEntry[]): string | null {
   for (const e of edits) fileCounts.set(e.target, (fileCounts.get(e.target) ?? 0) + 1)
   for (const [file, count] of fileCounts) {
     if (count >= 3) {
-      const name = file.split('/').pop() ?? file
+      const name = basenamePortable(file)
       return `You have edited ${name} ${count} times. What is the root cause? Would a higher-level fix be more effective?`
     }
   }

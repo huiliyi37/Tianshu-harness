@@ -1167,7 +1167,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         return true
       }
       // 项目内 .rivet/ 在工作区内（auto-safe 免审批）；会话目录在工作区外会触发路径审批。
-      const projectPath = join(agent.cwd, '.rivet', 'HANDOFF.md')
+      // projectPath 归一正斜杠：它进入给模型的交接指令文本与归档登记（跨平台期望
+      // 一致；Windows 的 join 产出反斜杠会泄漏平台分隔符——fs 两种都接受）。
+      const projectPath = join(agent.cwd, '.rivet', 'HANDOFF.md').replaceAll('\\', '/')
       const archivePath = join(getSessionDir(agent.cwd), `${ctx.currentSessionId}.handoff.md`)
       // 归档登记：交接 turn 完成后 TUI 把项目内文档拷贝归档到会话目录
       // （loadPrevHandoff 注入管线认 <id>.handoff.md）。

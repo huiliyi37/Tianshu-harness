@@ -192,3 +192,47 @@ describe('EvidenceTracker delivery status', () => {
     assert.equal(summary.gate.state, 'ok')
   })
 })
+
+describe('EvidenceTracker — 反斜杠路径归一化（Windows 回归）', () => {
+  it('file 为反斜杠、命令为正斜杠时，tested 级 per-file level 仍匹配（修复前 base 退化为整串 → 恒 pending）', () => {
+    const tracker = new EvidenceTracker()
+    // Windows 工具输入形态：文件路径反斜杠；命令是模型/用户拼的正斜杠。
+    // inferVerifiedFiles 的归一化曾误写 `replaceAll('\\\\','/')`（双反斜杠字面量，
+    // 对单反斜杠路径零效果）→ normalizedFile 不归一 → split('/') 取不到 basename、
+    // base/stem 退化成整条反斜杠路径 → 与正斜杠命令匹配失败 → level 保持 pending。
+    tracker.trackFileModified('src\\agent\\foo.test.ts')
+    tracker.trackVerification({
+      command: 'npx vitest run src/agent/foo.test.ts',
+      status: 'passed',
+      scope: 'targeted',
+      exitCode: 0,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      durationMs: 100,
+    })
+    const levels = tracker.getState().fileVerificationLevels
+    assert.equal(
+      levels?.get('src\\agent\\foo.test.ts'),
+      'tested',
+      '反斜杠路径经归一化后应匹配命令，level 升到 tested',
+    )
+  })
+
+  it('双端正斜杠路径行为不变（防回归）', () => {
+    const tracker = new EvidenceTracker()
+    tracker.trackFileModified('src/agent/bar.test.ts')
+    tracker.trackVerification({
+      command: 'npx vitest run src/agent/bar.test.ts',
+      status: 'passed',
+      scope: 'targeted',
+      exitCode: 0,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      durationMs: 100,
+    })
+    const levels = tracker.getState().fileVerificationLevels
+    assert.equal(levels?.get('src/agent/bar.test.ts'), 'tested')
+  })
+})

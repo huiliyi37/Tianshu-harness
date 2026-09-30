@@ -14,9 +14,10 @@
  * run() 必等满 6s 批量 drain（既有设计），且 sleep(80) 是否已走进工具批不确定 → 断言必 flaky。
  */
 
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop } from '../loop.js'
@@ -27,6 +28,12 @@ import type { StreamCallbacks, StreamClient } from '../../api/stream-client.js'
 import type { Tool, ToolResult } from '../../tools/types.js'
 
 const TEST_CWD = mkdtempSync(join(tmpdir(), 'rivet-abort-post-session-'))
+
+// 补上清理（此前从不回收——进程退出前 tmp 目录残留）：Windows 句柄释放竞态
+// 用异步重试窗口化解（与 test/win 清理批次同模式）。
+after(async () => {
+  await rm(TEST_CWD, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+})
 
 const APPROVAL_TOOL: Tool = {
   definition: {

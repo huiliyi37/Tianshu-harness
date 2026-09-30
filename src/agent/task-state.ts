@@ -2,6 +2,7 @@ import type { TrajectoryEntry } from './trajectory.js'
 import type { TodoItem } from '../tools/todo-store.js'
 import { detectDependencies, orderPendingByExecutability } from '../tools/todo-deps.js'
 import { oaiMessageText, type OaiMessage } from '../api/oai-types.js'
+import { basenamePortable } from '../utils/safe-path.js'
 
 export interface TaskState {
   completed: string[]
@@ -19,12 +20,12 @@ export function extractTaskState(entries: TrajectoryEntry[], lastModelText: stri
   if (entries.length === 0) return { completed: [], current: 'starting', remaining: [], decisions: [] }
 
   const successful = entries.filter(e => e.status === 'success' || e.status === 'retried-success')
-  const completed = successful.slice(-5).map(e => `${e.tool} ${e.target.split('/').pop() ?? e.target}`)
+  const completed = successful.slice(-5).map(e => `${e.tool} ${basenamePortable(e.target)}`)
 
   const lastEntry = entries[entries.length - 1]!
   const current = lastEntry.status === 'failed' || lastEntry.status === 'retried-failed'
-    ? `fixing ${lastEntry.errorClass ?? 'error'} in ${lastEntry.target.split('/').pop()}`
-    : `${lastEntry.tool} ${lastEntry.target.split('/').pop()}`
+    ? `fixing ${lastEntry.errorClass ?? 'error'} in ${basenamePortable(lastEntry.target)}`
+    : `${lastEntry.tool} ${basenamePortable(lastEntry.target)}`
 
   const remaining: string[] = []
   for (const match of lastModelText.matchAll(NEXT_STEP_RE)) {

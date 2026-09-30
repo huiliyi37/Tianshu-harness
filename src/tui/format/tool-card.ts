@@ -20,6 +20,7 @@ import { toolArgSummary } from '../tool-label.js'
 import { isDelegationTool } from './tool-domain.js'
 import { formatElapsed } from '../tool-elapsed.js'
 import { formatDiff, isDiffContent, computeDiffStats } from './diff.js'
+import { basenamePortable } from '../../utils/safe-path.js'
 import { brailleSpinnerFrame } from '../braille-spinner.js'
 import { displayWidth, truncateToDisplayWidth } from '../width.js'
 import { useAsciiGlyphs } from '../term-caps.js'
@@ -97,7 +98,7 @@ function toolTitleHead(toolName: string): string {
 export function toolCardTitle(toolName: string, toolInput?: Record<string, unknown>, rawPath?: string): string {
   const head = toolTitleHead(toolName)
   let arg = toolInput ? toolArgSummary(toolName, toolInput) : ''
-  if (!arg && rawPath) arg = rawPath.split('/').pop() ?? rawPath
+  if (!arg && rawPath) arg = basenamePortable(rawPath)
   return arg ? `${head}(${arg})` : head
 }
 
@@ -224,7 +225,7 @@ export function formatToolCard(input: FormatToolCardInput, theme: RivetTheme): s
   if (expanded || isQuestion || totalLines <= maxLines) {
     lines.push(...indentBody(contentLines.map(renderLine), indent, theme))
     if (rawPath && !expanded) {
-      lines.push(`${indent}${BODY_CONT_PREFIX}${color(`raw: ${rawPath.split('/').pop() ?? rawPath}`, theme.muted)}`)
+      lines.push(`${indent}${BODY_CONT_PREFIX}${color(`raw: ${basenamePortable(rawPath)}`, theme.muted)}`)
     }
     return lines
   }

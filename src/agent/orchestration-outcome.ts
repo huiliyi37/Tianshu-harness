@@ -137,7 +137,11 @@ function buildWorkerRows(results: ReadonlyArray<TeamOutcomeResultSlice>): TeamWo
     ...(r.objective ? { objective: firstLineCap(r.objective, 60) } : {}),
     changedCount: r.changedFiles?.length ?? 0,
     ...(r.changedFiles && r.changedFiles.length > 0
-      ? { changedFiles: r.changedFiles.slice(0, 3).map(f => f.split('/').pop() ?? f) }
+      ? {
+          // 反斜杠先归一（本文件禁 import 原生域模块的戒律，故 inline 而非借
+          // basenamePortable）：Windows 路径按 '/' 切尾段会返回整条路径。
+          changedFiles: r.changedFiles.slice(0, 3).map(f => f.replaceAll('\\', '/').split('/').pop() ?? f),
+        }
       : {}),
     ...(r.diffArtifactId ? { diffArtifactId: r.diffArtifactId } : {}),
     ...(r.evidenceStatus ? { evidenceStatus: r.evidenceStatus } : {}),

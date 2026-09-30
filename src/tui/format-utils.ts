@@ -1,4 +1,5 @@
 import type { SummaryState } from './summary-state.js'
+import { basenamePortable } from '../utils/safe-path.js'
 
 export function truncate(s: string, max: number): string {
   if (max <= 0) return ''
@@ -90,7 +91,7 @@ export function formatSummaryLine2(state: SummaryState): string {
   }
   if (!state.lastAction) return '├ waiting for first action...'
   const icon = state.lastAction.success ? '✓' : '✗'
-  const target = truncate(state.lastAction.target.split('/').pop() ?? state.lastAction.target, 30)
+  const target = truncate(basenamePortable(state.lastAction.target), 30)
   return `├ last: ${state.lastAction.tool} ${target} → ${icon}`
 }
 

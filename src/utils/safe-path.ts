@@ -51,3 +51,15 @@ export function isSafeFileName(name: string): boolean {
 export function orderFileKey(orderId: string): string {
   return encodeURIComponent(orderId).replace(/\*/g, '%2A')
 }
+
+/**
+ * 跨平台取路径 basename：先归一化分隔符再切尾段。
+ * 取代裸 `split('/').pop()`——后者在 Windows 反斜杠路径上返回**整条路径**
+ * （展示类文案/摘要会显示全路径而非文件名；同族缺陷见 evidence.ts 归一化
+ * 修复的批次说明）。
+ */
+export function basenamePortable(p: string): string {
+  const normalized = p.replaceAll('\\', '/')
+  const idx = normalized.lastIndexOf('/')
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized
+}

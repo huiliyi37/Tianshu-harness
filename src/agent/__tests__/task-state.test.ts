@@ -17,6 +17,15 @@ describe('extractTaskState', () => {
     assert.ok(state.current.includes('fixing'))
   })
 
+  it('反斜杠 target（Windows）显示文件名而非全路径（basenamePortable 回归）', () => {
+    const entries: TrajectoryEntry[] = [
+      { turn: 1, tool: 'read_file', target: 'src\\agent\\auth.ts', durationMs: 30, status: 'success', inputSummary: '', resultSummary: '' },
+    ]
+    const state = extractTaskState(entries, '')
+    assert.ok(state.completed[0]!.includes('auth.ts'), '应显示 basename')
+    assert.ok(!state.completed[0]!.includes('src\\agent'), '不得显示反斜杠全路径')
+  })
+
   it('extracts remaining from model text', () => {
     const entries: TrajectoryEntry[] = [
       { turn: 1, tool: 'read_file', target: 'a.ts', durationMs: 10, status: 'success', inputSummary: '', resultSummary: '' },

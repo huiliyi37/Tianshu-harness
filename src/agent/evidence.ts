@@ -232,9 +232,14 @@ export class EvidenceTracker implements EvidenceTrackerPublic {
     if (level === 'typed') return modified.filter(f => /\.tsx?$/.test(f))
     if (level === 'linted') return modified
     if (command.includes('src/**/__tests__') || command.includes('npm test') || command.includes('run_tests')) return modified
-    const normalizedCommand = command.replaceAll('\\\\', '/')
+    // 归一化分隔符：'\\' 是单反斜杠字面量——此处曾误写为 '\\\\'（双反斜杠，
+    // 对单反斜杠路径零效果），Windows 上 normalizedFile 不归一 → base/stem 退化
+    // 为整条路径 → 匹配失败、level 恒 pending（与全仓 evidence-obligation /
+    // obligation-tracker 等的 '\\' 惯例不一致）。回归：evidence.test.ts
+    // 「反斜杠路径归一化」describe。
+    const normalizedCommand = command.replaceAll('\\', '/')
     return modified.filter(file => {
-      const normalizedFile = file.replaceAll('\\\\', '/')
+      const normalizedFile = file.replaceAll('\\', '/')
       const base = normalizedFile.split('/').pop() ?? normalizedFile
       const stem = base.replace(/\.[^.]+$/, '')
       return normalizedCommand.includes(normalizedFile) || normalizedCommand.includes(base) || normalizedCommand.includes(stem)

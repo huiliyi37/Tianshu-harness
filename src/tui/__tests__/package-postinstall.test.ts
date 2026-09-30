@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -12,13 +12,28 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * devDependencies 不安装 → 其 bin 不在 PATH。PATH 只有系统路径 + node 安装目录。
  * 2026-08-14 缺陷：postinstall 首段裸调 patch-package（devDependency），
  * 全局安装 exit 127 整链失败（sh: patch-package: command not found）。
+ *
+ * PATH 分隔符走 path.delimiter（win ';' / posix ':'）：Windows 上用 ':' 拼接会让
+ * libuv 把整串当成一个条目，连 sh 都启动不了（spawnSync sh ENOENT），表现为
+ * "postinstall 裸命令不可解析"的假红（矩阵实测：';' 时 sh/node 均可解析）。
+ * Windows 侧的系统路径从真实 PATH 里摘 sh 宿主目录（POSIX 名义路径 `/usr/bin`
+ * 在 Windows 的 PATH 解析里不是有效条目，sh 起不来其余断言无从谈起）。
  */
+function systemExtras(): string[] {
+  if (process.platform === 'win32') {
+    const entries = (process.env.PATH ?? '').split(delimiter)
+    const shHost = entries.find((e) => /[\\/]Git[\\/]usr[\\/]bin$/i.test(e))
+    return shHost ? [shHost] : []
+  }
+  return ['/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin']
+}
+
 function simulateGlobalInstallPath(): string {
   const parts = [dirname(process.execPath)]
-  for (const p of ['/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin']) {
+  for (const p of systemExtras()) {
     if (!parts.includes(p)) parts.push(p)
   }
-  return parts.join(':')
+  return parts.join(delimiter)
 }
 
 /**

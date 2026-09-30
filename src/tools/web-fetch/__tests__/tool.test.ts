@@ -1,8 +1,26 @@
-import { describe, it } from 'node:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createWebFetchTool } from '../tool.js'
 import type { FetchLike } from '../../net/http-fetch.js'
 import { SSRFError } from '../../net/ssrf.js'
+
+/**
+ * 缓存隔离：web-fetch 的文件式缓存在 `<cwd>/.rivet/cache/web-fetch/`。
+ * 用例原先统一 cwd 为平台根（Windows 落到 C:\.rivet，跨运行持久污染），
+ * 且同文件内「写缓存的用例 → 读缓存的用例」经共享 cwd 互相污染
+ * （实测「本地提取质量差时走 Playwright 渲染」写入的 github.com/x/y 条目
+ * 会让「渲染失败落 Jina 兜底」读到旧结果，5 例稳定红）。
+ * 每个用例独立临时目录，读写闭环、互不串扰。
+ */
+let tmpCwd: string
+beforeEach(() => { tmpCwd = mkdtempSync(join(tmpdir(), 'webfetch-test-')) })
+afterEach(async () => {
+  await rm(tmpCwd, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 }).catch(() => {})
+})
 
 /** DOM Response ≡ undici Response at runtime; bridge the nominal type gap. */
 const mockFetch = (fn: () => Promise<Response>): FetchLike => fn as unknown as FetchLike
@@ -34,21 +52,21 @@ describe('createWebFetchTool', () => {
 
   it('rejects invalid URLs', async () => {
     const tool = createWebFetchTool()
-    const result = await tool.execute({ input: { url: 'not-a-url' }, toolUseId: 'tu_1', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'not-a-url' }, toolUseId: 'tu_1', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('无效 URL'))
   })
 
   it('rejects non-http protocols', async () => {
     const tool = createWebFetchTool()
-    const result = await tool.execute({ input: { url: 'file:///etc/passwd' }, toolUseId: 'tu_2', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'file:///etc/passwd' }, toolUseId: 'tu_2', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('不支持的协议'))
   })
 
   it('requires approval', () => {
     const tool = createWebFetchTool()
-    assert.equal(tool.requiresApproval({ input: { url: 'https://example.com' }, toolUseId: 't', cwd: '/' } as any), true)
+    assert.equal(tool.requiresApproval({ input: { url: 'https://example.com' }, toolUseId: 't', cwd: tmpCwd } as any), true)
   })
 
   it('rejects binary content types', async () => {
@@ -56,7 +74,7 @@ describe('createWebFetchTool', () => {
       lookup: publicLookup(),
       fetch: mockFetch(async () => textResponse('binary', 'application/pdf')),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/file.pdf' }, toolUseId: 'tu_bin', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/file.pdf' }, toolUseId: 'tu_bin', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('二进制内容'))
     assert.ok(result.content.includes('import_resource'))
@@ -68,7 +86,7 @@ describe('createWebFetchTool', () => {
       lookup: publicLookup(),
       fetch: mockFetch(async () => textResponse(`<p>${longText}</p>`, 'text/html')),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/long' }, toolUseId: 'tu_long', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/long' }, toolUseId: 'tu_long', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes(longText))
     assert.ok(!result.content.includes('truncated'))
@@ -79,7 +97,7 @@ describe('createWebFetchTool', () => {
       lookup: publicLookup(),
       fetch: mockFetch(async () => textResponse('not found', 'text/plain', 404)),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/missing' }, toolUseId: 'tu_404', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/missing' }, toolUseId: 'tu_404', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('HTTP 404'))
   })
@@ -100,7 +118,7 @@ describe('web_fetch 三级降级（Playwright 渲染 → Jina 兜底）', () => 
         blockedAds: 0,
       }),
     })
-    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_pw', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_pw', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('真实 README'))
     assert.ok(result.content.includes('（经 Playwright 渲染）'))
@@ -117,7 +135,7 @@ describe('web_fetch 三级降级（Playwright 渲染 → Jina 兜底）', () => 
           : textResponse(SPA_SHELL)),
       renderFetch: async () => undefined,
     })
-    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_jn', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_jn', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('jina markdown'))
     assert.ok(result.content.includes('（经 Jina Reader）'))
@@ -132,7 +150,7 @@ describe('web_fetch 三级降级（Playwright 渲染 → Jina 兜底）', () => 
         throw new SSRFError('169.254.169.254', '169.254.169.254')
       },
     })
-    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_ssrf', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_ssrf', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('Access denied'))
     assert.ok(!requested.some((u) => u.includes('r.jina.ai')))
@@ -147,7 +165,7 @@ describe('web_fetch 三级降级（Playwright 渲染 → Jina 兜底）', () => 
           ? textResponse(`jina only ${'z'.repeat(300)}`, 'text/plain')
           : textResponse(SPA_SHELL)),
     })
-    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_off', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_off', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('jina only'))
     assert.ok(result.content.includes('（经 Jina Reader）'))
@@ -163,7 +181,7 @@ describe('web_fetch 三级降级（Playwright 渲染 → Jina 兜底）', () => 
           : textResponse(SPA_SHELL)),
       renderFetch: async () => ({ markdown: '白屏薄内容', blockedRequests: 0, blockedAds: 0 }),
     })
-    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_thin', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://github.com/x/y' }, toolUseId: 'tu_thin', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('jina 兜底内容'))
     assert.ok(result.content.includes('（经 Jina Reader）'))
@@ -181,7 +199,7 @@ describe('web_fetch 成功判定规则（坏状态码+有内容=成功）', () =
           403,
         )),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/blocked' }, toolUseId: 'tu_403c', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/blocked' }, toolUseId: 'tu_403c', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('被拦页面仍渲染了真实内容'))
     assert.ok(result.content.includes('状态：403'))
@@ -192,7 +210,7 @@ describe('web_fetch 成功判定规则（坏状态码+有内容=成功）', () =
       lookup: publicLookup(),
       fetch: mockFetch(async () => textResponse('<html><body>短</body></html>', 'text/html', 403)),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/blocked' }, toolUseId: 'tu_403t', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/blocked' }, toolUseId: 'tu_403t', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('HTTP 403'))
   })
@@ -202,7 +220,7 @@ describe('web_fetch 成功判定规则（坏状态码+有内容=成功）', () =
       lookup: publicLookup(),
       fetch: mockFetch(async () => textResponse('{"error":"not found"}', 'application/json', 404)),
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/api' }, toolUseId: 'tu_404j', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/api' }, toolUseId: 'tu_404j', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('HTTP 404'))
   })
@@ -241,7 +259,7 @@ describe('web_fetch maxAge 缓存（B1）', () => {
       fetch: trackingFetch(requested, () => textResponse('不应被请求')),
       cache,
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/docs' }, toolUseId: 'tu_c1', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/docs' }, toolUseId: 'tu_c1', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('缓存的文档内容'))
     assert.ok(result.content.includes('缓存，'))
@@ -255,7 +273,7 @@ describe('web_fetch maxAge 缓存（B1）', () => {
       fetch: trackingFetch([], () => textResponse(`<html><body><main><p>${'实质文档内容。'.repeat(30)}</p></main></body></html>`)),
       cache,
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/page' }, toolUseId: 'tu_c2', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/page' }, toolUseId: 'tu_c2', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.equal(cache.writes.length, 1)
     assert.equal(cache.writes[0], 'https://example.com/page')
@@ -268,7 +286,7 @@ describe('web_fetch maxAge 缓存（B1）', () => {
       fetch: trackingFetch([], () => textResponse('<html><body>薄</body></html>', 'text/html', 500)),
       cache,
     })
-    const result = await tool.execute({ input: { url: 'https://example.com/err' }, toolUseId: 'tu_c3', cwd: '/' } as any)
+    const result = await tool.execute({ input: { url: 'https://example.com/err' }, toolUseId: 'tu_c3', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.equal(cache.writes.length, 0)
   })
@@ -289,7 +307,7 @@ describe('web_fetch actions（B2）', () => {
     const result = await tool.execute({
       input: { url: 'https://ex.com/', actions: [{ type: 'fly' }] },
       toolUseId: 'tu_a1',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('actions 校验失败'))
@@ -305,7 +323,7 @@ describe('web_fetch actions（B2）', () => {
     const result = await tool.execute({
       input: { url: 'https://ex.com/', actions: [{ type: 'click', selector: '.a' }] },
       toolUseId: 'tu_a2',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('需要启用 Playwright'))
@@ -339,7 +357,7 @@ describe('web_fetch actions（B2）', () => {
         ],
       },
       toolUseId: 'tu_a3',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('动作后的真实内容'))
@@ -372,7 +390,7 @@ describe('web_fetch actions（B2）', () => {
         ],
       },
       toolUseId: 'tu_a4',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('第 2 步（write）失败'))
@@ -391,7 +409,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://a.com/1', 'https://b.com/2'] },
       toolUseId: 'tu_b1',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('### 1. https://a.com/1'))
@@ -412,7 +430,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://a.com/1'], url: 'https://other.com/ignored' },
       toolUseId: 'tu_b2',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('### 1. https://a.com/1'))
@@ -431,7 +449,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://good.com/a', 'https://bad.com/missing'] },
       toolUseId: 'tu_b3',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('### 1. https://good.com/a'))
@@ -449,7 +467,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://a.com/x', 'https://b.com/y'] },
       toolUseId: 'tu_b4',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('错误 https://a.com/x：'))
@@ -465,7 +483,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://a.com/long'], maxCharacters: 100 },
       toolUseId: 'tu_b5',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('（已按 100 字符截断）'))
@@ -485,7 +503,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
       const result = await tool.execute({
         input: { urls: ['https://a.com/full'], maxCharacters: bad },
         toolUseId: 'tu_b6',
-        cwd: '/',
+        cwd: tmpCwd,
       } as any)
       assert.equal(result.isError, undefined)
       assert.ok(!result.content.includes('已按'), `maxCharacters=${String(bad)} 不应截断`)
@@ -502,7 +520,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { url: 'https://a.com/single' },
       toolUseId: 'tu_b7',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('单页内容。'))
@@ -517,7 +535,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
     const result = await tool.execute({
       input: { urls: ['https://a.com/1'], actions: [{ type: 'click', selector: '.a' }] },
       toolUseId: 'tu_b8',
-      cwd: '/',
+      cwd: tmpCwd,
     } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('urls 与 actions 不能同时使用'))
@@ -530,7 +548,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
       fetch: trackingFetch(requested, () => textResponse('x')),
     })
     const urls = Array.from({ length: 11 }, (_, i) => `https://a.com/${i}`)
-    const result = await tool.execute({ input: { urls }, toolUseId: 'tu_b9', cwd: '/' } as any)
+    const result = await tool.execute({ input: { urls }, toolUseId: 'tu_b9', cwd: tmpCwd } as any)
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('一次最多抓取 10 个 URL'))
     assert.ok(result.content.includes('11'))
@@ -544,7 +562,7 @@ describe('web_fetch 批量（urls）与 maxCharacters（Shard A）', () => {
         textResponse(`<main><p>${'十页内容。'.repeat(30)}</p></main>`, 'text/html')),
     })
     const urls = Array.from({ length: 10 }, (_, i) => `https://a.com/${i}`)
-    const result = await tool.execute({ input: { urls }, toolUseId: 'tu_b10', cwd: '/' } as any)
+    const result = await tool.execute({ input: { urls }, toolUseId: 'tu_b10', cwd: tmpCwd } as any)
     assert.equal(result.isError, undefined)
     assert.ok(result.content.includes('### 1. https://a.com/0'))
     assert.ok(result.content.includes('### 10. https://a.com/9'))

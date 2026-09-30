@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, writeFileSync, rmSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { chmodSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { RUN_TESTS_TOOL, parseOutput } from '../run-tests.js'
@@ -13,8 +14,8 @@ process.env.TMPDIR = FAKE_TMP
 process.env.TMP = FAKE_TMP
 process.env.TEMP = FAKE_TMP
 
-after(() => {
-  rmSync(FAKE_TMP, { recursive: true, force: true })
+after(async () => {
+  await rm(FAKE_TMP, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
 })
 
 function makeParams(input: Record<string, unknown>, cwd: string) {
@@ -95,9 +96,9 @@ describe('mixed', () => {
     failingDir = setupProject('tsx --test src/example.test.ts', failingTest)
   })
 
-  after(() => {
-    rmSync(passingDir, { recursive: true, force: true })
-    rmSync(failingDir, { recursive: true, force: true })
+  after(async () => {
+    await rm(passingDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    await rm(failingDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
   })
 
   it('detects test command from package.json', async () => {
@@ -186,7 +187,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
       assert.equal(result.verification!.scope, 'targeted')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -202,7 +203,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.match(result.content, /无法自动推断测试命令|无法为该 Python 项目自动推断/)
       assert.match(result.content, /bash/)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -218,7 +219,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.match(result.content, /无法自动推断测试命令|无法为该 Python 项目自动推断/)
       assert.match(result.content, /pytest/i)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -233,7 +234,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.scope, 'full')
       assert.equal(result.verification!.passed, 1)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -247,7 +248,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.scope, 'targeted')
       assert.equal(result.verification!.targetFiles?.[0], 'tests/test_example.py')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -264,7 +265,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(cmd, 'pytest tests/abc.py')
       assert.ok(!/[`$\\;"'|]/.test(cmd), `命令串不得残留 shell 元字符：${cmd}`)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -283,7 +284,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.recommendedCommand, 'npm test')
       assert.doesNotMatch(result.content, /npm test -- foo/)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -315,7 +316,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.match(result.content, /does not provide an export named boom/, 'raw error must be visible to the model')
       assert.match(result.content, /测试运行器启动失败或崩溃/, 'guidance must be included')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -334,7 +335,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(result.verification!.command, 'npm test')
       assert.match(result.content, /超时/)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -375,7 +376,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       assert.equal(visible.split(marker).length - 1, 1)
       assert.equal(visible.replace(`\n${marker}\n`, '').length, 20_000)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 })

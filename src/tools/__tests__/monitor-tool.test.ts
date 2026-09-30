@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionJobs } from '../job-store.js'
@@ -23,10 +24,13 @@ describe('monitor 工具', () => {
     registry = new MonitorRegistry(() => store)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     registry.dispose()
     store.killAll()
-    rmSync(dir, { recursive: true, force: true })
+    // 异步 rm：killAll 的 taskkill 是异步链 + 被杀进程句柄释放有 ~1-1.5s 残窗；
+    // 实测 rmSync 的 maxRetries 在 Windows 此场景不下探重试（0ms 直抛 EPERM），
+    // 而 fs/promises 的 rm 会按 retryDelay 线性退避等待（同 #307 先例）。
+    await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
   })
 
   function params(input: Record<string, unknown>): ToolCallParams {

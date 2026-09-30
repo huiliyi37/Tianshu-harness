@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveBetterSqlite3, tryFetchNativeBinary, isFetchFailureMarkerFresh } from '../native-resolver.js'
 import { existsSync, mkdirSync, writeFileSync, rmSync, copyFileSync, cpSync, readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -46,7 +47,7 @@ describe('native-resolver', () => {
     instance.close()
   })
 
-  it('finds the packed native/ from a nested caller (dist is a tsc tree, not a bundle)', () => {
+  it('finds the packed native/ from a nested caller (dist is a tsc tree, not a bundle)', async () => {
     // Real callers live at dist/repo/meridian-db.js, dist/agent/*.js … while
     // native/ sits at the dist root. A same-directory probe only ever matched
     // dist/main.js, so every real caller fell through to Path 2 and picked up
@@ -65,7 +66,7 @@ describe('native-resolver', () => {
         'a caller one level down must still see the packed native/',
       )
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -85,7 +86,7 @@ describe('native-resolver', () => {
     instance.close()
   })
 
-  it('stops walking up before it can bind an unrelated native/ binary', () => {
+  it('stops walking up before it can bind an unrelated native/ binary', async () => {
     // Walking up is bounded: an ancestor far above the install root is somebody
     // else's, and binding a stranger's .node is worse than not finding one.
     const root = join(tmpdir(), `native-resolver-deep-${process.pid}-${Date.now()}`)
@@ -100,11 +101,11 @@ describe('native-resolver', () => {
         'seven levels up is out of range',
       )
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
-  it('throws (no silent degrade) when native binary is present but wrapper is unresolvable', () => {
+  it('throws (no silent degrade) when native binary is present but wrapper is unresolvable', async () => {
     // A location OUTSIDE the repo so node module resolution finds no
     // better-sqlite3 — but with a native/ binary present, which is exactly the
     // "broken packaging" signal that must fail loud instead of degrading.
@@ -119,7 +120,7 @@ describe('native-resolver', () => {
         'must throw ESQLITE_BUNDLE_BROKEN rather than return a NullDatabase',
       )
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 })
@@ -145,7 +146,7 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
     writeFileSync(join(root, 'scripts', 'fetch-native-sqlite.js'), body)
   }
 
-  it('isFetchFailureMarkerFresh：新鲜 true / 过期与损坏与缺失 false', () => {
+  it('isFetchFailureMarkerFresh：新鲜 true / 过期与损坏与缺失 false', async () => {
     const root = makeRoot()
     mkdirSync(join(root, 'dist', 'native'), { recursive: true })
     const marker = join(root, 'dist', 'native', '.fetch-failed')
@@ -159,11 +160,11 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
       rmSync(marker, { force: true })
       assert.equal(isFetchFailureMarkerFresh(marker), false, '缺失标记按可重试处理')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
-  it('tryFetchNativeBinary：缺失时自动跑补下载，成功返回二进制路径', () => {
+  it('tryFetchNativeBinary：缺失时自动跑补下载，成功返回二进制路径', async () => {
     const root = makeRoot()
     writeStubScript(root, 'heal')
     try {
@@ -172,11 +173,11 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
       assert.equal(existsSync(healed!), true)
       assert.equal(readFileSync(join(root, 'sentinel-ran'), 'utf8'), '1', '启动自愈必须以 RIVET_FETCH_SKIP_COMPILE=1 调用（只下载不编译，启动不被数分钟编译卡住）')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
-  it('tryFetchNativeBinary：5 分钟内新鲜失败标记 → 跳过（脚本不执行）', () => {
+  it('tryFetchNativeBinary：5 分钟内新鲜失败标记 → 跳过（脚本不执行）', async () => {
     const root = makeRoot()
     writeStubScript(root, 'sentinel')
     mkdirSync(join(root, 'dist', 'native'), { recursive: true })
@@ -186,11 +187,11 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
       assert.equal(healed, null, '新鲜标记应跳过自愈')
       assert.equal(existsSync(join(root, 'sentinel-ran')), false, '跳过时桩脚本不应被执行')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
-  it('tryFetchNativeBinary：过期标记不跳过；脚本失败返回 null 不抛错', () => {
+  it('tryFetchNativeBinary：过期标记不跳过；脚本失败返回 null 不抛错', async () => {
     const root = makeRoot()
     writeStubScript(root, 'fail')
     mkdirSync(join(root, 'dist', 'native'), { recursive: true })
@@ -199,11 +200,11 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
       const healed = tryFetchNativeBinary(pathToFileURL(join(root, 'dist', 'chunk.js')).href)
       assert.equal(healed, null, '桩脚本 exit 1 且无二进制产出 → null（降级语义，不崩）')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
-  it('resolveBetterSqlite3 Path 3 端到端：npm 降级布局（wrapper 无二进制）自愈后返回可用绑定', (t) => {
+  it('resolveBetterSqlite3 Path 3 端到端：npm 降级布局（wrapper 无二进制）自愈后返回可用绑定', async (t) => {
     if (!existsSync(realBinary)) { t.skip('本机无 better-sqlite3 二进制（真实依赖未装）'); return }
     const root = makeRoot()
     writeStubScript(root, 'heal')
@@ -226,7 +227,11 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
       assert.equal((instance.prepare('SELECT x FROM t').get() as { x: number }).x, 11)
       instance.close()
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      // 本用例加载了副本的 better_sqlite3.node——Windows 上 dlopen 的模块文件
+      // 在进程存活期间无法 unlink（探针实测 unlink 恒 EPERM）。清理尽力而为：
+      // 可删的删掉，被锁的 .node 链属预期残留（temp 目录，由 OS/后续轮次回收）。
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+        .catch(() => { /* expected: dlopen lock on the loaded binding */ })
     }
   })
 })

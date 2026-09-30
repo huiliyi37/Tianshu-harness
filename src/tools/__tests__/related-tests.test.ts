@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { RELATED_TESTS_TOOL, createRelatedTestsTool } from '../related-tests.js'
@@ -31,10 +32,10 @@ describe('RELATED_TESTS_TOOL', () => {
     writeFileSync(join(testDir, 'lib', '__tests__', 'utils.test.ts'), '')
   })
 
-  after(() => {
+  after(async () => {
     // Windows 上临时文件可能仍被 spawned 进程/AV 占用——rmSync 直接 EPERM；
     // 带重试的清理是平台无关的（POSIX 下立即成功）。
-    rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    await rm(testDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
   })
 
   function makeParams(input: Record<string, unknown>) {
@@ -113,8 +114,8 @@ describe('RELATED_TESTS_TOOL — Python heuristics (W1)', () => {
     writeFileSync(join(pyDir, 'pkg', 'lonely.py'), '')
   })
 
-  after(() => {
-    rmSync(pyDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  after(async () => {
+    await rm(pyDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
   })
 
   function makeParams(input: Record<string, unknown>) {
@@ -202,7 +203,7 @@ describe('createRelatedTestsTool (meridian factory)', () => {
       })
       assert.ok(result.content.includes('foo.test.ts'))
     } finally {
-      rmSync(testDir, { recursive: true, force: true })
+      await rm(testDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 
@@ -221,7 +222,7 @@ describe('createRelatedTestsTool (meridian factory)', () => {
       })
       assert.ok(result.content.includes('bar.test.ts'))
     } finally {
-      rmSync(testDir, { recursive: true, force: true })
+      await rm(testDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }
   })
 })

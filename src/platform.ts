@@ -427,7 +427,11 @@ export function gracefulKill(child: KillableChild): void {
   if (!child.pid) return
   try {
     if (isWin) {
-      spawnSync('taskkill', ['/PID', String(child.pid)], {
+      // taskkill 不带 /F 只对有窗口消息循环的进程有效；对控制台/无窗口子进程
+      // 是 no-op（实测 status 1「只能强制终止此进程(带 /F 选项)」，进程存活）。
+      // Windows 无 SIGTERM 语义，/F（TerminateProcess）是唯一有效路径——
+      // 与 POSIX 侧 SIGTERM 的"让对方退出"目标对齐。
+      spawnSync('taskkill', ['/F', '/PID', String(child.pid)], {
         stdio: ['ignore', 'ignore', 'ignore'],
         timeout: 5000,
         windowsHide: true,

@@ -15,9 +15,15 @@ describe('extractAtToken', () => {
 })
 
 describe('getCompletions', () => {
-  it('returns matching files from cwd', () => {
+  it('returns matching files from cwd', async () => {
     // TUI 2.x 后 app.ts 位于 src/tui/engine/
-    const results = getCompletions('src/tui/engine/app', process.cwd(), 5)
+    // git ls-files 有意 500ms 超时（UI 即时性权衡，见 file-completer.ts 注释）——
+    // 高负载（全量并行）下首次可能超时降级为空，重试给 IO 竞争者让路。
+    let results = getCompletions('src/tui/engine/app', process.cwd(), 5)
+    for (let i = 0; results.length === 0 && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 500))
+      results = getCompletions('src/tui/engine/app', process.cwd(), 5)
+    }
     assert.ok(results.length > 0)
     assert.ok(results[0]!.includes('src/tui/engine/app'))
   })

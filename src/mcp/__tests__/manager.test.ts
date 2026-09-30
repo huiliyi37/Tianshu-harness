@@ -221,11 +221,36 @@ describe('McpManager', () => {
   it('killChildrenSync force-kills MCP child pids and clears connections', async () => {
     // Regression guard (root-cause analysis 2026-06-05, Thread 1A): MCP children
     // are spawned by the SDK, not via process-tracker, so the exit path must
-    // SIGKILL them by pid inline — the async shutdown() is abandoned by
+    // kill them inline by pid — the async shutdown() is abandoned by
     // process.exit before transport.close() runs.
     const mgr = new McpManager(makeConfig({
       echo: { command: 'node', args: ['echo.js'] },
     }))
+
+    if (process.platform === 'win32') {
+      // Windows 无进程组语义：产品分支走 `taskkill /T /F`（manager.ts:339-344），
+      // spy process.kill 在该分支不可达——用真实子进程做端到端验证。
+      const { spawn } = await import('node:child_process')
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore', windowsHide: true })
+      await new Promise<void>((resolve) => { child.once('spawn', resolve) })
+      const exited = new Promise<void>((resolve) => { child.once('exit', () => resolve()) })
+      mgr['_connectServer'] = async () => ({
+        client: {} as any,
+        transport: { close: async () => {}, pid: child.pid }, transportType: 'stdio',
+        serverId: 'echo',
+      })
+      mgr['_discoverTools'] = async () => []
+      await mgr.initialize()
+      mgr.killChildrenSync()
+      const outcome = await Promise.race([
+        exited.then(() => 'exited' as const),
+        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+      ])
+      assert.equal(outcome, 'exited', 'taskkill /T /F 应杀死真实子进程')
+      assert.deepEqual([...(mgr as any).connections.keys()], [])
+      return
+    }
+
     mgr['_connectServer'] = async () => ({
       client: {} as any,
       transport: { close: async () => {}, pid: 4242 }, transportType: 'stdio',

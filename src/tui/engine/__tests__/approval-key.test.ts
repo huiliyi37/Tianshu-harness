@@ -11,6 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { resolve, join } from 'node:path'
 import type { ReadStream, WriteStream } from 'node:tty'
 import { TuiApp } from '../app.js'
 import { MockOut, MockIn } from './_harness.js'
@@ -146,9 +147,13 @@ test('工作区外 write_file 审批：显示记住选项，r 键直达批准并
 })
 
 test('工作区内 write_file 审批：不显示记住选项，r 键被吞', async () => {
-  const { app, stdin } = makeApp('/workspace')
+  // 「工作区内」判定需平台原生路径（win: C:\workspace）：POSIX 假路径 '/workspace'
+  // 与 resolve 产物（带盘符 C:\workspace）前缀不匹配，会把工作区内误判成工作区外
+  // （isPathUnder 的平台化只覆盖分隔符、不覆盖盘符）。
+  const wsCwd = resolve('/workspace')
+  const { app, stdin } = makeApp(wsCwd)
   let resolved: unknown = Symbol('unset')
-  void app.callbacks.onApprovalRequired!('1', 'write_file', { file_path: '/workspace/src/a.ts' }).then(r => { resolved = r })
+  void app.callbacks.onApprovalRequired!('1', 'write_file', { file_path: join(wsCwd, 'src', 'a.ts') }).then(r => { resolved = r })
   const ctrl = (app as unknown as { approvalIntentController: { showRememberOption: boolean } }).approvalIntentController
   await tick()
   assert.equal(ctrl.showRememberOption, false, '工作区内审批无记住选项')

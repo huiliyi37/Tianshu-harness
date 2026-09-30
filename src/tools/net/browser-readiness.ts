@@ -22,6 +22,8 @@ export interface ChromiumProbe {
   executablePath?: string
   /** ready 时的来源：'playwright' = 下载版；'system' = 系统安装版（issue #302）。 */
   source?: 'playwright' | 'system'
+  /** ready 且 source='playwright' 时：headless shell 还是完整 chromium。 */
+  kind?: 'headless-shell' | 'chromium'
   /** 人类可读的缺失原因（module-missing / browser-missing 时有值）。 */
   reason?: string
 }
@@ -60,7 +62,9 @@ export async function probeChromium(deps: ChromiumProbeDeps = {}): Promise<Chrom
       reason: err instanceof Error ? err.message.split('\n')[0] : String(err),
     }
   }
-  const binary = resolveChromiumBinary(mod, deps.findSystem)
+  // 与 launch 侧同源：headless 首选 chrome-headless-shell、缺失时回落完整版/系统
+  // 浏览器（issue #302 同族——probe 曾查完整版、launch 却执行 shell，双向错位）。
+  const binary = resolveChromiumBinary(mod, { headless: true, findSystem: deps.findSystem })
   if (binary.source === 'missing' || !binary.executablePath) {
     return {
       state: 'browser-missing',
@@ -68,7 +72,13 @@ export async function probeChromium(deps: ChromiumProbeDeps = {}): Promise<Chrom
       reason: 'chromium 可执行文件不存在（playwright 未下载，系统也未安装）',
     }
   }
-  return { state: 'ready', installed: true, executablePath: binary.executablePath, source: binary.source }
+  return {
+    state: 'ready',
+    installed: true,
+    executablePath: binary.executablePath,
+    source: binary.source,
+    ...(binary.kind ? { kind: binary.kind } : {}),
+  }
 }
 
 /**

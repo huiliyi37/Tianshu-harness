@@ -665,9 +665,12 @@ export function trimBrowserLogs(message: string, maxLen = 800): string {
 
 export const playwrightDriverFactory: BrowserDebugDriverFactory = async (opts) => {
   const mod = await loadPlaywright()
-  // playwright 下载版优先、系统安装版兜底（issue #302）——与 net/playwright-driver
-  // 及 browser-readiness 的就绪判定同源，避免「检测就绪但启动报缺失」的不一致。
-  const binary = resolveChromiumBinary(mod as unknown as { chromium: { executablePath(): string } })
+  // 解析要用的二进制：headless 时首选 chrome-headless-shell、缺失回落到完整版或系统
+  // 浏览器（issue #302 同族）。与 net/playwright-driver 及 browser-readiness 同源，
+  // 避免「检测说就绪但启动报缺失」的不一致。
+  const binary = resolveChromiumBinary(mod as unknown as { chromium: { executablePath(): string } }, {
+    headless: opts.headless,
+  })
   // 安装提示只挂在真正"浏览器可执行文件缺失"的启动失败上（与 net/playwright-driver
   // 的 launchChromium 同口径）。挂在模块加载失败上会把排查引向错误方向。
   let context: PwContext
@@ -676,7 +679,9 @@ export const playwrightDriverFactory: BrowserDebugDriverFactory = async (opts) =
       headless: opts.headless,
       viewport: opts.viewport ?? DEFAULT_VIEWPORT,
       args: ANTI_THROTTLE_ARGS,
-      ...(binary.source === 'system' && binary.executablePath ? { executablePath: binary.executablePath } : {}),
+      // headless shell 让 playwright 按自己的 registry 解析；系统浏览器与「完整版
+      // 兜底」需显式给路径（issue #302）。
+      ...(binary.executablePath && binary.kind !== 'headless-shell' ? { executablePath: binary.executablePath } : {}),
     })
   } catch (err) {
     if (isBrowserMissingError(err)) {

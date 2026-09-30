@@ -141,24 +141,87 @@ export interface ResolvedChromiumBinary {
   source: 'playwright' | 'system' | 'missing'
   /** source !== 'missing' 时可用的可执行文件路径。 */
   executablePath?: string
+  /** playwright 下载版内部：headless 专用 shell 还是完整 chromium（决定启动模式）。 */
+  kind?: 'headless-shell' | 'chromium'
+}
+
+export interface ResolveChromiumOptions {
+  /** 目标是否 headless——headless 时首选 chrome-headless-shell（playwright 的默认）。 */
+  headless?: boolean
+  /** 路径存在性判定（测试注入）。 */
+  exists?: (path: string) => boolean
+  /** 系统浏览器探测（测试注入）。 */
+  findSystem?: () => string | undefined
 }
 
 /**
- * 决定这次用哪个 chromium：playwright 下载版优先（registry 版本受控），缺失时
- * 退回系统安装版（issue #302——Linux 用户装了发行版 chromium 却被报未安装）。
- * source='missing' 时调用方维持原有「未安装」路径（launch 不传 executablePath，
- * 让 playwright 抛标准缺失错误）。
+ * 从完整版 chromium 路径推导 headless shell 的候选路径。
+ *
+ * playwright 的 `executablePath()` 返回**完整版**（`chromium-<rev>/…/chrome`），但
+ * `launch({ headless: true })` 实际执行的是 `chromium_headless_shell-<rev>/…`——两者
+ * 是不同的文件（issue #302 同族：探测与启动各看各的）。layout 取自 playwright 自身
+ * 的 EXECUTABLE_PATHS 表（`chrome-linux64/chrome` ↔ `chrome-headless-shell-linux64/…`）。
+ *
+ * 无 `chromium-<rev>` 段（非标准布局 / 系统浏览器路径）时返回 `[]`——调用方据此
+ * 退回完整版或系统浏览器，而不是凭空猜路径。
+ */
+export function headlessShellCandidates(fullPath: string): string[] {
+  if (!fullPath) return []
+  const sep = fullPath.includes('\\') ? '\\' : '/'
+  const parts = fullPath.split(/[\\/]/)
+  const idx = parts.findIndex((p) => /^chromium-\d+$/.test(p))
+  const revSeg = idx >= 0 ? parts[idx] : undefined
+  if (!revSeg) return []
+  const rev = revSeg.slice('chromium-'.length)
+  const root = parts.slice(0, idx).join(sep)
+  const dirName = `chromium_headless_shell-${rev}`
+
+  const layouts: Array<{ dir: string; file: string; platform: 'win' | 'linux' | 'mac' }> = [
+    { dir: 'chrome-headless-shell-win64', file: 'chrome-headless-shell.exe', platform: 'win' },
+    { dir: 'chrome-headless-shell-linux64', file: 'chrome-headless-shell', platform: 'linux' },
+    { dir: 'chrome-linux', file: 'headless_shell', platform: 'linux' }, // arm64 / 老布局
+    { dir: 'chrome-headless-shell-mac-x64', file: 'chrome-headless-shell', platform: 'mac' },
+    { dir: 'chrome-headless-shell-mac-arm64', file: 'chrome-headless-shell', platform: 'mac' },
+  ]
+  // 平台相关布局优先——从完整版路径的目录段推断，让首个候选更可能是真命中的那个。
+  const seg = parts.slice(0, idx + 2).join('/')
+  const inferred: 'win' | 'linux' | 'mac' | undefined =
+    /chrome-win|chrome-headless-shell-win/.test(seg) ? 'win'
+    : /chrome-linux|chrome-headless-shell-linux/.test(seg) ? 'linux'
+    : /chrome-mac|chrome-headless-shell-mac/.test(seg) ? 'mac'
+    : undefined
+  const ordered = inferred ? [...layouts].sort((a, b) => (a.platform === inferred ? -1 : 0) - (b.platform === inferred ? -1 : 0)) : layouts
+  return ordered.map(({ dir, file }) => [root, dirName, dir, file].join(sep))
+}
+
+/**
+ * 决定这次用哪个 chromium。优先级：
+ *   1. headless 目标 + 下载版存在 → headless shell（playwright 的默认执行体）
+ *   2. 完整版 chromium 存在 → 完整版（headless 也能跑，issue #302 场景 A 的兜底）
+ *   3. 系统安装版 → 系统浏览器（issue #302——装了发行版 chromium 却报未安装）
+ *
+ * `source='missing'` 时调用方维持原有「未安装」路径（launch 不传 executablePath，
+ * 让 playwright 抛标准缺失错误）。探测层与启动层共用本函数，消除
+ * 「检测说就绪、启动报缺失」（反之亦然）的不一致。
  */
 export function resolveChromiumBinary(
   mod: { chromium: { executablePath(): string } },
-  findSystem: () => string | undefined = () => findSystemChromium(),
+  opts: ResolveChromiumOptions = {},
 ): ResolvedChromiumBinary {
+  const exists = opts.exists ?? existsSync
+  const findSystem = opts.findSystem ?? (() => findSystemChromium())
+  let full: string | undefined
   try {
-    const pwPath = mod.chromium.executablePath()
-    if (pwPath && existsSync(pwPath)) return { source: 'playwright', executablePath: pwPath }
+    const p = mod.chromium.executablePath()
+    if (p) full = p
   } catch {
     // executablePath() 在异常配置下会抛——按「下载版不可用」处理，继续找系统浏览器。
   }
+  if (opts.headless && full) {
+    const shell = headlessShellCandidates(full).find(exists)
+    if (shell) return { source: 'playwright', executablePath: shell, kind: 'headless-shell' }
+  }
+  if (full && exists(full)) return { source: 'playwright', executablePath: full, kind: 'chromium' }
   const system = findSystem()
   return system ? { source: 'system', executablePath: system } : { source: 'missing' }
 }
@@ -212,13 +275,18 @@ export interface LaunchHeadlessOptions {
  */
 export async function launchHeadlessChromium(opts: LaunchHeadlessOptions = {}): Promise<PwBrowser> {
   const mod = (await loadPlaywrightCore()) as { chromium: PwChromium & { executablePath(): string } }
-  // playwright 下载版优先；缺失时系统安装版兜底（issue #302）——否则「检测说就绪、
-  // 启动又报缺失」的不一致会把用户引向错误方向。
-  const binary = resolveChromiumBinary(mod)
+  // 显式解析要用的二进制（headless 首选 chrome-headless-shell；下载版缺失时回落到
+  // 完整版或系统浏览器，issue #302）——与 browser-readiness 的探测同源，消除
+  // 「检测说就绪、启动又报缺失」的不一致。
+  const binary = resolveChromiumBinary(mod, { headless: true })
   try {
     return await mod.chromium.launch({
       headless: true,
-      ...(binary.source === 'system' && binary.executablePath ? { executablePath: binary.executablePath } : {}),
+      // 系统版与「完整版兜底」都要显式给路径；headless shell 让 playwright 自己按
+      // registry 解析（避免把 shell 路径当成用户提供的陌生可执行文件）。
+      ...(binary.executablePath && binary.kind !== 'headless-shell'
+        ? { executablePath: binary.executablePath }
+        : {}),
       ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
       ...(opts.proxy ? { proxy: opts.proxy } : {}),
     })

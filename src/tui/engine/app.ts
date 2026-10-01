@@ -323,6 +323,7 @@ import type { ApprovalResult } from '../../agent/approval-edit.js'
 import type { DelegationActivity } from '../../tools/types.js'
 import type { AutonomyCheckpointInfo } from '../../agent/loop-types.js'
 import type { CvmInterceptionNotice } from '../../agent/cvm-notice.js'
+import { CvmNoticeCoalescer, CVM_NOTICE_WINDOW_MS_DEFAULT, type CvmCoalescedLine } from '../cvm-notice-coalescer.js'
 import type { DomainDriftResult } from '../../agent/domain-drift-detector.js'
 import { FleetRegistry } from '../fleet-registry.js'
 import { JobRegistry, type JobRow } from '../job-registry.js'
@@ -814,6 +815,9 @@ export class TuiApp {
    * 与当前 gen 不符即被丢弃，杜绝旧 run 的 onAbort/onTextDelta 污染新 run 状态。
    */
   private _runGen = 0
+  /** issue #247 第 3 条 — CVM 提示的同窗口聚合器（逻辑全在 src/tui/cvm-notice-coalescer.ts，
+   *  本类只持有实例并驱动渲染）。窗口可由 ui.cvmNoticeWindowMs 重设。 */
+  private cvmNotices = new CvmNoticeCoalescer(CVM_NOTICE_WINDOW_MS_DEFAULT)
   /** Watchdog stall 自动恢复状态机（consecutive/session-total/进度感知配额），
    *  与桌面 sidecar 共享同一实现 — 见 src/agent/watchdog-recovery-policy.ts。 */
   private readonly watchdogPolicy = new WatchdogRecoveryPolicy()
@@ -7555,13 +7559,30 @@ export class TuiApp {
    * issue #247 第 1–3 条 — CVM 拦截「发生时提示」。渲染形态与 handleIntentNote /
    * handleAutonomyCheckpoint 一致（单行 + commitStatic）。不用 setStatusLine：
    * 那是常驻单行位、已被脚本化 statusline 占用，而 CVM 拦截是**事件**不是状态。
-   * 此处不按级别过滤、不做聚合——开关与窗口都在本方法之外叠加，避免两处判据分叉。
+   *
+   * 开关与聚合都不在这里判：窗口逻辑整体在 src/tui/cvm-notice-coalescer.ts，
+   * 本方法只负责「投递 + 渲染首行」。
    */
   private handleCvmInterception(notice: CvmInterceptionNotice): void {
-    const tone = notice.level === 'intercept' ? this.theme.secondary
-      : notice.level === 'warn' ? this.theme.warning
+    const line = this.cvmNotices.push(notice, Date.now())
+    if (line) this.commitCvmLine(line)
+  }
+
+  /** 补发到期窗口的合并行（`×N`）。宿主按节拍调用——见 main.ts 的 unref'd interval。 */
+  flushCvmNotices(now: number = Date.now()): void {
+    for (const line of this.cvmNotices.takeDue(now)) this.commitCvmLine(line)
+  }
+
+  /** 重设聚合窗口（`ui.cvmNoticeWindowMs`）。清掉在途窗口，避免新旧窗口混算。 */
+  setCvmNoticeWindowMs(ms: number): void {
+    this.cvmNotices = new CvmNoticeCoalescer(ms)
+  }
+
+  private commitCvmLine(line: CvmCoalescedLine): void {
+    const tone = line.level === 'intercept' ? this.theme.secondary
+      : line.level === 'warn' ? this.theme.warning
       : this.theme.muted
-    this.commitStatic(color(notice.text, tone))
+    this.commitStatic(color(line.text, tone))
   }
 
   /**

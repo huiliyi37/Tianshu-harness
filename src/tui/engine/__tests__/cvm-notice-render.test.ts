@@ -127,3 +127,52 @@ test('#B 世代守卫：旧 run 的迟到 CVM 通知被丢弃', async () => {
   assert.equal(scrollback(app), before, '旧世代的迟到通知不得写入新 run 的 scrollback')
   assert.ok(!scrollback(app).includes('攻坚停滞'), '旧世代通知内容不得出现')
 })
+
+// ── Wave 3：窗口聚合的 app 层接线 ────────────────────────────────
+// 纯函数层已在 src/tui/__tests__/cvm-notice-coalescer.test.ts 覆盖；
+// 这里只验「接线对不对」——push 走不走聚合器、flush 补不补得出来。
+
+test('#C 窗口内同类只渲染一行；flush 到期后补 ×N（issue #247 第 3 条）', () => {
+  const { app } = makeApp()
+  const at = (turn: number) => ({ ...activeIntercept, turn })
+  app.callbacks.onCvmInterception?.(at(1))
+  app.callbacks.onCvmInterception?.(at(2))
+  app.callbacks.onCvmInterception?.(at(3))
+
+  const during = scrollback(app)
+  assert.equal((during.match(/CVM 拦截/g) ?? []).length, 1,
+    `窗口内三条同类只应渲染一行：${during.slice(0, 400)}`)
+  assert.ok(!during.includes('×'), `窗口未到期不得出现 ×N：${during.slice(0, 400)}`)
+
+  app.flushCvmNotices(Date.now() + 60_000)
+
+  const after = scrollback(app)
+  assert.equal((after.match(/CVM 拦截/g) ?? []).length, 2,
+    `flush 后应补出合并行：${after.slice(0, 400)}`)
+  assert.ok(after.includes('CVM 拦截 ×3：验证债务'), `合并行文案：${after.slice(0, 400)}`)
+})
+
+test('#C flush 未到期时不补发（不能变成「每条都补」的放大镜）', () => {
+  const { app } = makeApp()
+  app.callbacks.onCvmInterception?.({ ...activeIntercept, turn: 1 })
+  app.callbacks.onCvmInterception?.({ ...activeIntercept, turn: 2 })
+  const before = scrollback(app)
+
+  app.flushCvmNotices(Date.now())   // 窗口刚开始
+  assert.equal(scrollback(app), before, '未到期 flush 不得产生任何新行')
+})
+
+test('#C 重设窗口后，旧在途窗口被丢弃（不跨新旧窗口混算 ×N）', () => {
+  const { app } = makeApp()
+  app.callbacks.onCvmInterception?.({ ...activeIntercept, turn: 1 })
+  app.callbacks.onCvmInterception?.({ ...activeIntercept, turn: 2 })
+
+  app.setCvmNoticeWindowMs(1000)
+  app.flushCvmNotices(Date.now() + 60_000)
+  const after = scrollback(app)
+  assert.ok(!after.includes('×2'), `重设窗口前积累的计数必须丢弃：${after.slice(0, 400)}`)
+
+  // 新窗口重新计
+  app.callbacks.onCvmInterception?.({ ...activeIntercept, turn: 3 })
+  assert.ok(!scrollback(app).includes('×'), '新窗口首条不带 ×N')
+})

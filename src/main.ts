@@ -1896,6 +1896,13 @@ async function main() {
     pricingPhaseTimer.unref?.()
   }
 
+  // ── CVM 提示的窗口补发节拍（issue #247 第 3 条）──────────────
+  // 聚合窗口到期要补一条「×N」，但聚合器自身**不带定时器**（时间以 now 注入，
+  // 这样窗口推进在单测里是确定的）。这里给出唯一的节拍源：1s 粒度下合并行的
+  // 滞后 ≤1s，相对 8s 窗口肉眼无感。unref 不阻塞进程退出（同 pricingPhaseTimer）。
+  const cvmNoticeTimer = setInterval(() => tuiApp.flushCvmNotices(), 1_000)
+  cvmNoticeTimer.unref?.()
+
   // ── 常驻任务面板 provider（todo 列表）──────────────────────
   // 统一读本会话 refs.todoStore（多会话隔离的 canonical 源）。TUI 下它就是全局
   // defaultStore，故与旧的 getTodos() 行为一致；server/桌面下则各会话独立。

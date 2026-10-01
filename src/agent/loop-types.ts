@@ -414,4 +414,15 @@ export interface AgentCallbacks {
     kind: 'apply_edit' | 'terminal_exec',
     payload: Record<string, unknown>,
   ) => Promise<{ content: string; isError?: boolean; uiContent?: string; status?: 'ok' | 'rejected' } | null>
+  /**
+   * issue #247 第 1–3 条 — CVM 拦截「发生时提示」。
+   *
+   * CVM-vector 判定产出分类时推送一条结构化通知（含级别与已渲染好的单行文案）。
+   * 分级判定、同类聚合、开关门控**全在消费方**；agent 侧只负责如实上报，
+   * 不决定用户最终看到什么。宿主不接线时此回调不触发（server / 桌面 / 测试替身）。
+   *
+   * 推送与「本会话拦截计数」同源同时机（见 `cvm-notice.ts` 的
+   * `emitCvmInterception`），两者口径一致：凡产出 classification 即计一次。
+   */
+  onCvmInterception?: (notice: import('./cvm-notice.js').CvmInterceptionNotice) => void
 }

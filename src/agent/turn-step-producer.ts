@@ -5,6 +5,7 @@ import type { Sensorium, StrategyProfile } from './sensorium.js'
 import { TurnHeartbeat } from './turn-heartbeat.js'
 import { wrapCallbacksWithHeartbeat } from './turn-orchestrator.js'
 import { debugLog } from '../utils/debug.js'
+import { emitCvmInterception } from './cvm-notice.js'
 import { endsWithInterruptMarker } from './interrupt-marker.js'
 import { recordAppendixTrace } from './appendix-trace.js'
 import { createTraceStore } from './trace-store.js'
@@ -612,10 +613,8 @@ export class TurnStepProducer {
             yielded: decision.yielded,
           })
         }
-        // issue #247 补充项：本会话拦截计数（口径见 SessionContext.recordCvmInterception）
-        if (decision.classification) {
-          this.self.session.recordCvmInterception(decision.classification.kind)
-        }
+        // issue #247：本会话拦截计数（台账口径）+ 用户可见提示；分级与文案见 agent/cvm-notice.ts
+        emitCvmInterception(this.self.session, callbacks, decision, this.self.cvmVector.mode, turn)
         if (this.self.cvmVector.mode === 'active' && decision.candidate) {
           // attack_case 已是 CORE 常驻（2026-07-17，26→27）——绝不在会话中途
           // enableTool：改 tool fingerprint = 200K 前缀全量重建（V4 创建 ¥3/M、

@@ -23,6 +23,37 @@ import type { CvmDifficultyKind, CvmVectorDecision, CvmVectorMode } from './hook
 /** 三级严重度。中文名逐字取自 issue #247 第 1 条的三级表。 */
 export type CvmNoticeLevel = 'intercept' | 'warn' | 'info'
 
+/** issue #247 第 2 条的开关档：off（全关）/ intercept / warn / all。单键表达分级，
+ *  照 `ui.glanceDensity` 的范式（而不是三个 boolean——三键会产生 8 种组合，其中
+ *  几种语义矛盾，例如「只开提示不开拦截」）。 */
+export type CvmNoticeGate = 'off' | 'intercept' | 'warn' | 'all'
+
+/**
+ * issue #247 第 2 条「可配置开关」的**默认值**。
+ *
+ * 为什么默认不是 `off`：issue 原话——「默认关闭会让 CVM 在默认路径下依然不可见，
+ * 本 issue 的立论就没有解决。噪音由分级解决，不由默认关闭解决。」
+ * 默认只放行**拦截级**（candidate 非空 = CVM 判定需要干预），警告与提示级留待
+ * 用户显式打开——这是「分级降噪」而非「默认隐藏」。
+ */
+export const CVM_NOTICE_GATE_DEFAULT: CvmNoticeGate = 'intercept'
+
+/** 严重度序：数值越大越该被看见。 */
+const CVM_SEVERITY: Record<CvmNoticeLevel, number> = { info: 1, warn: 2, intercept: 3 }
+
+/** 每档放行的**最低**严重度。`all` 放到 info(1)；`intercept` 只放到 intercept(3)。 */
+const CVM_GATE_FLOOR: Record<Exclude<CvmNoticeGate, 'off'>, number> = {
+  intercept: 3,
+  warn: 2,
+  all: 1,
+}
+
+/** 该级别在当前开关下是否应渲染。`off` 一票否决。 */
+export function cvmNoticeLevelEnabled(gate: CvmNoticeGate, level: CvmNoticeLevel): boolean {
+  if (gate === 'off') return false
+  return CVM_SEVERITY[level] >= CVM_GATE_FLOOR[gate]
+}
+
 export const CVM_LEVEL_LABELS: Record<CvmNoticeLevel, string> = {
   intercept: '拦截',
   warn: '警告',

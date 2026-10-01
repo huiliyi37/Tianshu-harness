@@ -322,7 +322,7 @@ import { describeIntentNote } from '../../agent/intent-preview.js'
 import type { ApprovalResult } from '../../agent/approval-edit.js'
 import type { DelegationActivity } from '../../tools/types.js'
 import type { AutonomyCheckpointInfo } from '../../agent/loop-types.js'
-import type { CvmInterceptionNotice } from '../../agent/cvm-notice.js'
+import { CVM_NOTICE_GATE_DEFAULT, cvmNoticeLevelEnabled, type CvmInterceptionNotice, type CvmNoticeGate } from '../../agent/cvm-notice.js'
 import { CvmNoticeCoalescer, CVM_NOTICE_WINDOW_MS_DEFAULT, type CvmCoalescedLine } from '../cvm-notice-coalescer.js'
 import type { DomainDriftResult } from '../../agent/domain-drift-detector.js'
 import { FleetRegistry } from '../fleet-registry.js'
@@ -818,6 +818,9 @@ export class TuiApp {
   /** issue #247 第 3 条 — CVM 提示的同窗口聚合器（逻辑全在 src/tui/cvm-notice-coalescer.ts，
    *  本类只持有实例并驱动渲染）。窗口可由 ui.cvmNoticeWindowMs 重设。 */
   private cvmNotices = new CvmNoticeCoalescer(CVM_NOTICE_WINDOW_MS_DEFAULT)
+  /** issue #247 第 2 条的级别开关（`ui.cvmNotices`）。运行期 `/cvm` 切换。
+   *  默认 intercept——issue 明说「默认关闭会让 CVM 在默认路径下依然不可见」。 */
+  cvmNoticeGate: CvmNoticeGate = CVM_NOTICE_GATE_DEFAULT
   /** Watchdog stall 自动恢复状态机（consecutive/session-total/进度感知配额），
    *  与桌面 sidecar 共享同一实现 — 见 src/agent/watchdog-recovery-policy.ts。 */
   private readonly watchdogPolicy = new WatchdogRecoveryPolicy()
@@ -7564,6 +7567,10 @@ export class TuiApp {
    * 本方法只负责「投递 + 渲染首行」。
    */
   private handleCvmInterception(notice: CvmInterceptionNotice): void {
+    // 级别开关（issue #247 第 2 条）：off 一票否决；其余档只放行够严重的级别。
+    // 过滤器放在最前——被关掉的级别不该占用窗口计数（否则开了档位会看到 ×N 里
+    // 混着此前被关掉的次数）。
+    if (!cvmNoticeLevelEnabled(this.cvmNoticeGate, notice.level)) return
     const line = this.cvmNotices.push(notice, Date.now())
     if (line) this.commitCvmLine(line)
   }
@@ -7579,6 +7586,9 @@ export class TuiApp {
   }
 
   private commitCvmLine(line: CvmCoalescedLine): void {
+    // 第二道过滤：窗口可能在「档位还开着」时打开，到期补发时档位已被 `/cvm` 关掉
+    // ——投递口的过滤拦不住这条合并行。两处都判是有意的（不是冗余）。
+    if (!cvmNoticeLevelEnabled(this.cvmNoticeGate, line.level)) return
     const tone = line.level === 'intercept' ? this.theme.secondary
       : line.level === 'warn' ? this.theme.warning
       : this.theme.muted

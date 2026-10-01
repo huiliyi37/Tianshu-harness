@@ -77,6 +77,7 @@ import { switchAgentRuntime, switchAgentSession, switchAgentCwd } from '../boots
 // /new 及其共用的会话切换复原逻辑——独立模块，避免本文件巨石继续膨胀
 //（architecture-guards 的 max-lines ratchet 只降不升）。
 import { applySessionSwitch, registerNewSessionCommand } from './new-session.js'
+import { registerCvmNoticeCommand } from './cvm-notice-command.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
 import { formatPermissionLabel, parsePermissionAlias, tierToMode } from '../agent/approval-vocabulary.js'
 import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied } from '../agent/permissions.js'
@@ -4072,6 +4073,10 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
 
   // /queue：显式排队 lane（handler 在 registerQueueCommand，独立导出供单测注册）。
   registerQueueCommand(app)
+
+  // /cvm：CVM 拦截提示的级别开关（issue #247 第 2 条）。实现在独立模块——与
+  // /new、/queue 同一处置（本文件是点名巨石，只降不升）。
+  registerCvmNoticeCommand(app)
 
   // /new：会话中途开新会话（对齐 Claude Code 的 /clear——同进程换一段干净上下文）。
   // 与 /clear 同走 register 形式：busy 守卫与清屏需要 app 句柄。实现在

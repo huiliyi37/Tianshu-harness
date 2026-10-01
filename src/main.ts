@@ -893,6 +893,12 @@ async function main() {
 
   // ── GlanceBar 密度默认档 + 可脚本化 statusline 接线 ─────────────
   if (ctx!.config.ui?.glanceDensity) tuiApp.glanceDensity = ctx!.config.ui.glanceDensity
+  // CVM 拦截提示：启动默认档 + 聚合窗口（issue #247 第 2–3 条）。config 缺省时
+  // **不覆盖**——级别留在 CVM_NOTICE_GATE_DEFAULT（intercept），窗口留在
+  // CVM_NOTICE_WINDOW_MS_DEFAULT（8000），默认值单一定义在 agent/cvm-notice.ts
+  // 与 tui/cvm-notice-coalescer.ts，不在这里重复一份。
+  if (ctx!.config.ui?.cvmNotices) tuiApp.cvmNoticeGate = ctx!.config.ui.cvmNotices
+  if (ctx!.config.ui?.cvmNoticeWindowMs) tuiApp.setCvmNoticeWindowMs(ctx!.config.ui.cvmNoticeWindowMs)
   let statusLineTimer: ReturnType<typeof setInterval> | null = null
   if (ctx!.config.ui?.statusLine?.command) {
     const slConfig = ctx!.config.ui.statusLine

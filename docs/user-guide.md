@@ -428,6 +428,7 @@ tianshu config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 | 能力 | 说明 · 快捷键 |
 |------|--------------|
 | **GlanceBar 状态栏** | 输入框上方单行实时显示：星域 glyph · git 分支 · 模型 · 推理强度 · 缓存命中率 · CVM 拦截计数（`⛨ N`，本会话累计；`RIVET_CVM_VECTOR=off` 时不显示） · 上下文占比 · 本轮 cost · 耗时 · turn 计数 · todo 徽章。一屏掌握会话健康度。 |
+| **CVM 拦截提示** | CVM 判定需要干预时，在主屏输出一行可见记录（如 `⛨ CVM 拦截：验证债务（CV1） — 已注入纠偏`）。按严重度分级：拦截 / 警告 / 提示；同一类型 8 秒窗口内自动合并为 `×N` 一条。`/cvm [off\|intercept\|warn\|all]` 切换级别（config 键 `ui.cvmNotices`，缺省 `intercept`）。**影子模式（默认）下只记录不注入**，文案会如实标注。 |
 | **流式中打断（Steer）** | agent 还在跑时直接打字，回车即可注入。输入按 `now / next / later` 三档优先级排队，在工具结果或回合边界 drain 给 AgentLoop——不必等它说完。`halt` 类意图自动升到 `now`。 |
 | **消息排队（/queue）** | `/queue <text>` 显式排队：agent busy 时攒下整条消息，settle 后自动投递；Esc 中断后排队内容回填输入框不丢失。输入区实时显示后台任务条与 await 等待区。 |
 | **终端内联图片** | kitty / iTerm2 图形协议在终端里直接渲染图片（工具产物、截图验证结果）。默认自动检测协议，`RIVET_IMAGES=0` 关闭、`kitty`/`iterm2` 强制指定。 |
@@ -654,7 +655,9 @@ tianshu config set-approval auto-safe       # 持久化默认档位
     "theme": "auto",              // 内置名 | auto（OSC 11 探测）| custom:<name>
     "reducedMotion": true,        // 无障碍：冻结 spinner/徽章动画
     "screenReader": true,         // 无障碍：读屏模式（同 --screen-reader）
-    "glanceDensity": "compact"    // GlanceBar 密度：compact | full
+    "glanceDensity": "compact",   // GlanceBar 密度：compact | full
+    "cvmNotices": "intercept",    // CVM 拦截提示级别：off | intercept | warn | all（运行期 /cvm 切换）
+    "cvmNoticeWindowMs": 8000     // CVM 同类拦截的聚合窗口（毫秒，缺省 8000）
   },
   "mirrors": { "enabled": true, "preset": "china" },  // npm/github 等镜像加速
   "env": { "extraPath": ["/usr/local/bin"] }           // 注入 PATH（Windows git-bash 等）

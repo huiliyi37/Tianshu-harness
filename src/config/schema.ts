@@ -895,6 +895,13 @@ export const uiSchema = z.object({
   /** GlanceBar density on startup. 'compact' (default) = mode/model/context%/elapsed;
    *  'full' = everything (goal/todo/effort/cache/cost). Runtime `/glance` toggles. */
   glanceDensity: z.enum(['compact', 'full']).optional(),
+  /** CVM 拦截提示的级别开关（issue #247 第 2 条）。off 全关；intercept 只放行
+   *  拦截级；warn 放行拦截 + 警告；all 全放行。缺省 intercept——issue 明说「默认
+   *  关闭会让 CVM 在默认路径下依然不可见」。运行期 `/cvm [off|intercept|warn|all]` 切换。 */
+  cvmNotices: z.enum(['off', 'intercept', 'warn', 'all']).optional(),
+  /** CVM 同类拦截的聚合同窗口（毫秒，issue #247 第 3 条）。缺省 8000（issue 给
+   *  5–10s 区间，具体取值由实现定）。 */
+  cvmNoticeWindowMs: z.number().int().positive().optional(),
   /** 协同建议行（输入时提示 /team /scout /council）。默认开；false 永久关闭。
    *  环境变量 RIVET_ORCHESTRATION_HINT=0 同效且优先。 */
   orchestrationHint: z.boolean().optional(),

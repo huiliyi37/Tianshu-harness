@@ -15,8 +15,10 @@ import assert from 'node:assert/strict'
 import {
   CVM_KIND_LABELS,
   CVM_LEVEL_LABELS,
+  CVM_NOTICE_GATE_DEFAULT,
   buildCvmNotice,
   classifyCvmDecision,
+  cvmNoticeLevelEnabled,
   emitCvmInterception,
   formatCvmNoticeLine,
   type CvmInterceptionNotice,
@@ -185,5 +187,35 @@ describe('emitCvmInterception — 计数与通知同源', () => {
       verificationDebtCandidate, 'active', 9,
     ))
     assert.deepEqual(session.calls, ['verification-debt'], '计数发生在回调之前，不因回调抛错丢失')
+  })
+})
+
+describe('cvmNoticeLevelEnabled — 开关档（issue #247 第 2 条）', () => {
+  it('默认档是 intercept，不是 off——issue 明说「默认关闭等于没解决」', () => {
+    assert.equal(CVM_NOTICE_GATE_DEFAULT, 'intercept')
+  })
+
+  it('off 一票否决（三级全关）', () => {
+    for (const level of ['intercept', 'warn', 'info'] as const) {
+      assert.equal(cvmNoticeLevelEnabled('off', level), false, `off 不该放行 ${level}`)
+    }
+  })
+
+  it('intercept 只放行拦截级', () => {
+    assert.equal(cvmNoticeLevelEnabled('intercept', 'intercept'), true)
+    assert.equal(cvmNoticeLevelEnabled('intercept', 'warn'), false)
+    assert.equal(cvmNoticeLevelEnabled('intercept', 'info'), false)
+  })
+
+  it('warn = 拦截 + 警告（更严重的一并放行，不会只开中间那档）', () => {
+    assert.equal(cvmNoticeLevelEnabled('warn', 'intercept'), true)
+    assert.equal(cvmNoticeLevelEnabled('warn', 'warn'), true)
+    assert.equal(cvmNoticeLevelEnabled('warn', 'info'), false)
+  })
+
+  it('all = 三级全放行', () => {
+    for (const level of ['intercept', 'warn', 'info'] as const) {
+      assert.equal(cvmNoticeLevelEnabled('all', level), true, `all 应放行 ${level}`)
+    }
   })
 })

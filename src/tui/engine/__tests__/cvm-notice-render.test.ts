@@ -51,6 +51,9 @@ test('#A 拦截级通知渲染到主屏 scrollback', () => {
 
 test('#A 警告级与提示级也渲染（分级只影响默认开关，不影响渲染能力）', () => {
   const { app } = makeApp()
+  // Wave 4 起默认档是 intercept（issue 明说默认不能全关、但也没说默认全开），
+  // 所以验证「渲染能力」必须先把档位开到 all——否则测的是开关而不是渲染。
+  app.cvmNoticeGate = 'all'
   app.callbacks.onCvmInterception?.({
     level: 'warn', kind: 'perspective-locked', ruleId: 'CV2', mode: 'active', turn: 9,
     text: '⛨ CVM 警告：视角锁定（CV2） — 命中但已让位给其他机制',

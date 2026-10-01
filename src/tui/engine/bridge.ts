@@ -111,5 +111,12 @@ export function wrapCallbacksWithTuiApp(
       app.callbacks.onDelegationActivity?.(activity)
       original.onDelegationActivity?.(activity)
     },
+    onCvmInterception: (notice) => {
+      // 迟到的旧 run CVM 通知 → 丢弃，避免为已死 run 追加提示行。
+      // 与上面每个回调同一纪律：世代不符一律静默丢弃。
+      if (!live()) return
+      app.callbacks.onCvmInterception?.(notice)
+      original.onCvmInterception?.(notice)
+    },
   }
 }

@@ -322,6 +322,7 @@ import { describeIntentNote } from '../../agent/intent-preview.js'
 import type { ApprovalResult } from '../../agent/approval-edit.js'
 import type { DelegationActivity } from '../../tools/types.js'
 import type { AutonomyCheckpointInfo } from '../../agent/loop-types.js'
+import type { CvmInterceptionNotice } from '../../agent/cvm-notice.js'
 import type { DomainDriftResult } from '../../agent/domain-drift-detector.js'
 import { FleetRegistry } from '../fleet-registry.js'
 import { JobRegistry, type JobRow } from '../job-registry.js'
@@ -356,6 +357,9 @@ export interface AgentCallbacks {
   onAutonomyCheckpoint?: (info: AutonomyCheckpointInfo) => void
   /** T4 — structured per-worker delegation status/progress feeding the fleet read model. */
   onDelegationActivity?: (activity: DelegationActivity) => void
+  /** issue #247 第 1–3 条 — CVM 拦截「发生时提示」（分级与文案在 agent/cvm-notice.ts）。
+   *  ⚠️ 必须与 agent/loop-types.ts 的 AgentCallbacks 同步——两份接口目前无守卫测试。 */
+  onCvmInterception?: (notice: CvmInterceptionNotice) => void
 }
 
 /**
@@ -1585,6 +1589,8 @@ export class TuiApp {
       // 留在队列，等本轮结束后自动作为下一轮发出——不混进当前轮 [User guidance]。
       onSteerDrain: () => this.steerBuffer.drain('next'),
       onDelegationActivity: (activity) => this.handleDelegationActivity(activity),
+      // issue #247 第 1–3 条：CVM 拦截发生时提示（分级/文案在 agent/cvm-notice.ts）
+      onCvmInterception: (notice) => this.handleCvmInterception(notice),
     }
 
     this.registerBuiltinSlashCommands()
@@ -7543,6 +7549,19 @@ export class TuiApp {
       }
     }
     this.commitStatic(lines.join('\n'))
+  }
+
+  /**
+   * issue #247 第 1–3 条 — CVM 拦截「发生时提示」。渲染形态与 handleIntentNote /
+   * handleAutonomyCheckpoint 一致（单行 + commitStatic）。不用 setStatusLine：
+   * 那是常驻单行位、已被脚本化 statusline 占用，而 CVM 拦截是**事件**不是状态。
+   * 此处不按级别过滤、不做聚合——开关与窗口都在本方法之外叠加，避免两处判据分叉。
+   */
+  private handleCvmInterception(notice: CvmInterceptionNotice): void {
+    const tone = notice.level === 'intercept' ? this.theme.secondary
+      : notice.level === 'warn' ? this.theme.warning
+      : this.theme.muted
+    this.commitStatic(color(notice.text, tone))
   }
 
   /**

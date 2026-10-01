@@ -15,7 +15,7 @@
  */
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { writeFileSync } from 'node:fs'
-import { join, relative, dirname } from 'node:path'
+import { join, relative, dirname, resolve } from 'node:path'
 
 const REPO_ROOT = process.cwd()
 const DOCS_DIR = join(REPO_ROOT, 'docs')
@@ -85,7 +85,7 @@ function inferType(rel: string): DocType | 'unclassified' {
   return 'unclassified'
 }
 
-interface DocMeta {
+export interface DocMeta {
   path: string // 相对 docs/ 的 posix 路径
   title: string
   type: DocType | 'unclassified'
@@ -283,21 +283,93 @@ interface CheckError {
   message: string
 }
 
+/**
+ * `docs:check` 的结果。两个桶的区别是**仓库完整性**，不是 frontmatter 对错：
+ *
+ * - `errors` 非空即校验失败（退出码 1）——frontmatter 真的写错了。
+ * - `unshipped` 是「引用的文档在本仓索引里登记着、但没随本仓分发」。公开仓的 `docs/` 是
+ *   开发仓文档树的**子集**（索引在开发仓生成、随同步进公开仓），所以索引里绝大多数条目
+ *   在本仓并不存在；引用这类文档不是作者写错了路径，而是本仓没分发这个文件（issue #176）。
+ *   单独成桶、只提示不判失败。
+ *
+ * 注意口径没有被整体关掉：引用一个**索引里也没有**的路径仍然是 `errors`。
+ */
+export interface CheckReport {
+  errors: CheckError[]
+  unshipped: CheckError[]
+}
+
+export interface CheckOptions {
+  /** 索引登记的文档路径（仓库根相对 posix）。缺省 `main()` 从 docs/docs.json 读。 */
+  knownIndexPaths?: ReadonlySet<string>
+  /** 读取文档原文以取 frontmatter；测试注入用，缺省读磁盘。 */
+  readFrontmatter?: (docRel: string) => string
+  /** 仓库根；测试注入用。 */
+  cwd?: string
+}
+
+/**
+ * 读取仓库里已提交的 `docs/docs.json`，返回它登记的文档路径集合（仓库根相对 posix）。
+ *
+ * 索引缺失或损坏时返回空集 = **不做子集放宽**，退回旧版的严格口径：宁可真红，不可假绿。
+ */
+export function loadKnownIndexPaths(indexPath: string = join(DOCS_DIR, 'docs.json')): Set<string> {
+  const known = new Set<string>()
+  try {
+    const parsed = JSON.parse(readFileSync(indexPath, 'utf8')) as { docs?: Array<{ path?: unknown }> }
+    for (const entry of parsed.docs ?? []) {
+      if (typeof entry?.path === 'string' && entry.path) known.add(entry.path.split('\\').join('/'))
+    }
+  } catch { /* 见 doc 注释：空集即严格口径 */ }
+  return known
+}
+
+/** related/supersedes 的两种写法（相对本文档目录 / 仓库根相对）各给一个仓库根相对候选。 */
+export function linkTargetCandidates(docRel: string, raw: string, cwd: string): string[] {
+  const mdLink = raw.match(/^\[[^\]]*\]\(([^)]+)\)$/)
+  const target = (mdLink ? mdLink[1] : raw).split('#')[0].trim()
+  if (!target || /^https?:/.test(target)) return []
+  const toRepoRel = (p: string) => relative(cwd, p).split('\\').join('/')
+  return [
+    toRepoRel(resolve(cwd, 'docs', dirname(docRel), target)), // 相对本文档目录
+    toRepoRel(resolve(cwd, target)), // 仓库根相对
+  ]
+}
+
+/**
+ * 归一成「仓库根相对 posix 路径」，供与索引条目比对。
+ * `docs/` 前缀的写法按仓库根相对解释，其余按文档目录相对——与 `resolveLinkTarget`
+ * 的解析优先级一致，否则同一串 target 在两个函数里会指向不同文件。
+ */
+export function toRepoRelative(docRel: string, raw: string, cwd: string = REPO_ROOT): string | null {
+  const mdLink = raw.match(/^\[[^\]]*\]\(([^)]+)\)$/)
+  const target = (mdLink ? mdLink[1] : raw).split('#')[0].trim()
+  if (!target || /^https?:/.test(target)) return null
+  const [docRelative, repoRelative] = linkTargetCandidates(docRel, raw, cwd)
+  const ordered = target.startsWith('docs/') ? [repoRelative, docRelative] : [docRelative, repoRelative]
+  // 归一结果逃出仓库（`../../x`）时不算「索引已知」——那本来就不该被引用。
+  return ordered.find((p) => p && !p.startsWith('..')) ?? null
+}
+
 function resolveLinkTarget(docRel: string, raw: string): boolean {
   // 支持 [文本](路径) 写法、锚点、相对文档目录与相对仓库根两种解析
   const mdLink = raw.match(/^\[[^\]]*\]\(([^)]+)\)$/)
-  let target = (mdLink ? mdLink[1] : raw).split('#')[0].trim()
+  const target = (mdLink ? mdLink[1] : raw).split('#')[0].trim()
   if (!target || /^https?:/.test(target)) return true
   if (existsSync(join(DOCS_DIR, dirname(docRel), target))) return true
   if (existsSync(join(REPO_ROOT, target))) return true
   return false
 }
 
-function checkDocs(docs: DocMeta[]): CheckError[] {
+export function checkDocs(docs: DocMeta[], opts: CheckOptions = {}): CheckReport {
+  const known = opts.knownIndexPaths ?? new Set<string>()
+  const cwd = opts.cwd ?? REPO_ROOT
+  const read = opts.readFrontmatter ?? ((rel: string) => readFileSync(join(DOCS_DIR, rel), 'utf8'))
   const errors: CheckError[] = []
+  const unshipped: CheckError[] = []
   for (const d of docs) {
     if (!d.hasFrontmatter) continue // 存量无 frontmatter 属预期，只约束新格式
-    const raw = parseFrontmatter(readFileSync(join(DOCS_DIR, d.path), 'utf8'))!
+    const raw = parseFrontmatter(read(d.path))!
     // type 是规范 frontmatter 的唯一 schema 标记：无 type 视为外来 schema（Cursor plan 等），跳过
     if (raw.type === undefined || raw.type === '') continue
     if (!(TYPES as readonly string[]).includes(String(raw.type))) {
@@ -313,12 +385,29 @@ function checkDocs(docs: DocMeta[]): CheckError[] {
       errors.push({ path: d.path, message: `date 格式应为 YYYY-MM-DD：${raw.date}` })
     }
     for (const target of [d.supersedes, ...d.related]) {
-      if (target && !resolveLinkTarget(d.path, target)) {
-        errors.push({ path: d.path, message: `related/supersedes 指向不存在的文件：${target}` })
+      if (!target || resolveLinkTarget(d.path, target)) continue
+      const knownPath = toRepoRelative(d.path, target, cwd)
+      if (knownPath && known.has(knownPath)) {
+        unshipped.push({ path: d.path, message: `引用的 ${target} 已登记于本仓索引、但未随本仓分发（子集检出）：${knownPath}` })
+        continue
       }
+      errors.push({ path: d.path, message: `related/supersedes 指向不存在的文件：${target}` })
     }
   }
-  return errors
+  return { errors, unshipped }
+}
+
+/**
+ * 索引覆盖度：索引登记 N 篇而本仓只有 M 篇时，说明这是**子集检出**（索引在开发仓生成后
+ * 同步进来）。返回 null 表示本仓 docs/ 与索引一致（完整树），此时行为与旧版完全一致。
+ */
+export function describeIndexCoverage(known: ReadonlySet<string>, docs: DocMeta[]): string | null {
+  if (known.size === 0) return null
+  const onDisk = new Set(docs.map((d) => `docs/${d.path}`))
+  const missing = [...known].filter((p) => !onDisk.has(p)).length
+  if (missing === 0) return null
+  return `本仓 docs/ 是子集：索引登记 ${known.size} 篇，其中 ${missing} 篇未随本仓分发`
+    + `（索引在开发仓生成、随同步进入本仓）。引用这些文档的 related/supersedes 按子集口径提示、不判失败。`
 }
 
 function main(): void {
@@ -342,20 +431,34 @@ function main(): void {
   for (const list of groups.values()) list.sort(cmpDoc)
 
   const hygiene = collectHygieneWarnings()
-  const errors = checkDocs(docs)
+  const knownIndexPaths = loadKnownIndexPaths()
+  const { errors, unshipped } = checkDocs(docs, { knownIndexPaths })
+  const coverage = describeIndexCoverage(knownIndexPaths, docs)
 
   if (checkOnly) {
     const fmCount = docs.filter((d) => d.hasFrontmatter).length
     const specCount = docs.filter((d) => d.typeSource === 'frontmatter').length
     console.log(`扫描 ${docs.length} 篇：${fmCount} 篇带 frontmatter，其中 ${specCount} 篇遵循规范（含 type 字段）；其余为存量/外来 schema，不视为错误`)
+    if (coverage) console.log(`ℹ ${coverage}`)
     for (const w of hygiene) console.warn(`⚠ ${w}`)
+    for (const u of unshipped) console.warn(`⚠ docs/${u.path}: ${u.message}`)
     if (errors.length) {
       for (const e of errors) console.error(`✗ docs/${e.path}: ${e.message}`)
       console.error(`\n${errors.length} 个 frontmatter 校验错误`)
       process.exit(1)
     }
-    console.log(`frontmatter 校验通过${hygiene.length ? `（${hygiene.length} 条卫生告警）` : ''}`)
+    console.log(
+      'frontmatter 校验通过'
+      + `${unshipped.length ? `（${unshipped.length} 条引用指向未随本仓分发的文档，按子集跳过）` : ''}`
+      + `${hygiene.length ? `（${hygiene.length} 条卫生告警）` : ''}`,
+    )
     return
+  }
+
+  // 生成模式：本仓是子集时重建会把同步来的 900+ 条目砍掉（issue #176 里的 (b) 那条路），先出声。
+  if (coverage) {
+    console.warn(`⚠ ${coverage}\n  → 继续生成会丢弃这些条目并改写 INDEX.md / docs.json / MINDMAP.md；`
+      + '若本仓是子集检出，通常不该重建索引（只看不写用 `npm run docs:check`）。')
   }
 
   const fmCount = docs.filter((d) => d.hasFrontmatter).length
@@ -388,7 +491,10 @@ function main(): void {
 
   console.log(`已生成 docs/INDEX.md、docs/docs.json、docs/MINDMAP.md（${docs.length} 篇，${fmCount} 篇带 frontmatter）`)
   for (const w of hygiene) console.warn(`⚠ ${w}`)
+  if (unshipped.length) console.warn(`⚠ ${unshipped.length} 条引用指向未随本仓分发的文档（子集检出，不判失败）`)
   if (errors.length) console.error(`⚠ ${errors.length} 个 frontmatter 校验错误（npm run docs:check 查看）`)
 }
 
-main()
+// 入口守卫：被测试 import 时不得执行 main()（同 scripts/contributors.ts）。
+const invoked = process.argv[1] ?? ''
+if (/docs-index\.(ts|js|mjs)$/.test(invoked)) main()

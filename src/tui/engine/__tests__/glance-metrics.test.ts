@@ -182,3 +182,56 @@ test('getMetrics 暴露与 GlanceBar 同源的真实指标（供 SlashRouter 读
   assert.equal(m?.cost, 2.5, 'cost 应来自 provider，不再写死 0')
   assert.equal(m?.maxTokens, 200_000, 'maxTokens 应为当前模型窗口，不再取 models[0]')
 })
+
+test('CVM 拦截计数接线：metricsProvider 给值时 GlanceBar 常驻显示 `⛨ N`（issue #247 补充项）', () => {
+  const { app, out } = makeApp()
+  app.setMetricsProvider(() => ({
+    estimatedTokens: 50_000,
+    conversationTokens: 50_000,
+    maxTokens: 200_000,
+    cacheHitRate: 0.9,
+    cost: 0,
+    inputTokens: 50_000,
+    outputTokens: 1_000,
+    lastRealPromptTokens: 48_000,
+    cvmInterceptions: 4,
+  }))
+  app.setModelInfo('test', 200_000)
+  const plain = stripAnsi(out.chunks.join(''))
+  assert.ok(plain.includes('⛨ 4'), `metricsProvider → GlanceBar 应透传拦截计数: ${plain}`)
+})
+
+test('CVM 拦截计数 0 也占位；provider 缺省该字段则不占位', () => {
+  const { app, out } = makeApp()
+  // 0 = 本会话尚未触发拦截，仍须可见（否则与「能力不存在」不可区分）
+  app.setMetricsProvider(() => ({
+    estimatedTokens: 50_000,
+    conversationTokens: 50_000,
+    maxTokens: 200_000,
+    cacheHitRate: 0.9,
+    cost: 0,
+    inputTokens: 50_000,
+    outputTokens: 1_000,
+    lastRealPromptTokens: 48_000,
+    cvmInterceptions: 0,
+  }))
+  app.setModelInfo('test', 200_000)
+  const withZero = stripAnsi(out.chunks.join(''))
+  assert.ok(withZero.includes('⛨ 0'), `0 应占位: ${withZero}`)
+
+  // RIVET_CVM_VECTOR=off / 非 CVM 宿主：provider 不给该字段 → 整段消失
+  out.chunks.length = 0
+  app.setMetricsProvider(() => ({
+    estimatedTokens: 50_000,
+    conversationTokens: 50_000,
+    maxTokens: 200_000,
+    cacheHitRate: 0.9,
+    cost: 0,
+    inputTokens: 50_000,
+    outputTokens: 1_000,
+    lastRealPromptTokens: 48_000,
+  }))
+  app.setModelInfo('test', 200_000)
+  const without = stripAnsi(out.chunks.join(''))
+  assert.ok(!without.includes('⛨'), `缺省该字段不应占位: ${without}`)
+})

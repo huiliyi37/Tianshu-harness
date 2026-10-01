@@ -185,6 +185,8 @@ export class SessionContext {
    * 上限防止长会话无界增长。
    */
   private toolNamesById = new Map<string, string>()
+  /** issue #247 补充项：本会话 CVM 拦截累计（口径/rationale 见 getCvmInterceptions）。 */
+  private cvmInterceptions = { total: 0, byKind: {} as Record<string, number> }
 
   constructor() {
     this.state = {
@@ -711,6 +713,23 @@ export class SessionContext {
     if (this.state.turnCacheHistory.length > MAX_CACHE_HISTORY) {
       this.state.turnCacheHistory = this.state.turnCacheHistory.slice(-MAX_CACHE_HISTORY)
     }
+  }
+
+  /**
+   * 记一次 CVM 拦截。调用点唯一：turn-step-producer 的 CVM-vector 路由。
+   * 口径 = evaluator 产出 classification 的次数，含 gate-blocked 这类只落
+   * 台账、永不发声的分类（issue 抱怨「拦了看不见」的主体）；shadow 下同样
+   * 累加——shadow 是「不发声」不是「不记录」。
+   * 挂 Session 而非 AgentLoop：/model 切换会重建 AgentLoop，挂那边会被清零。
+   */
+  recordCvmInterception(kind: string): void {
+    this.cvmInterceptions.total += 1
+    this.cvmInterceptions.byKind[kind] = (this.cvmInterceptions.byKind[kind] ?? 0) + 1
+  }
+
+  /** 本会话 CVM 拦截累计快照（total 供 GlanceBar；byKind 供分布视图）。 */
+  getCvmInterceptions(): { total: number; byKind: Record<string, number> } {
+    return { total: this.cvmInterceptions.total, byKind: { ...this.cvmInterceptions.byKind } }
   }
 
   markCompacted(turn: number): void {

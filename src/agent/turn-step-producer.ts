@@ -612,6 +612,10 @@ export class TurnStepProducer {
             yielded: decision.yielded,
           })
         }
+        // issue #247 补充项：本会话拦截计数（口径见 SessionContext.recordCvmInterception）
+        if (decision.classification) {
+          this.self.session.recordCvmInterception(decision.classification.kind)
+        }
         if (this.self.cvmVector.mode === 'active' && decision.candidate) {
           // attack_case 已是 CORE 常驻（2026-07-17，26→27）——绝不在会话中途
           // enableTool：改 tool fingerprint = 200K 前缀全量重建（V4 创建 ¥3/M、

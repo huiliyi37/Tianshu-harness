@@ -721,3 +721,37 @@ describe('assistant transport sanitize (JSON body guard)', () => {
     assert.equal(ctx.getMessages()[0]!.content, 'plain ascii + 中文 + emoji 😀')
   })
 })
+
+describe('SessionContext CVM 拦截计数（issue #247 补充项）', () => {
+  // 口径：一次「拦截」= CVM evaluator 产出了一条 classification
+  // （CvmVectorDecision.classification !== null）。与 observability-harness.md
+  // 的复算命令 `jq -r 'select(.kind=="cvm-vector-decision") | .classification'`
+  // 同口径——doc 里的 84 次 = gate-blocked 63 + verification-debt 21。
+  // gate-blocked 这类分类**永不发声**（candidate 恒 null），只在本计数器里可见。
+  it('新建会话计数为 0', () => {
+    const ctx = new SessionContext()
+    assert.deepEqual(ctx.getCvmInterceptions(), { total: 0, byKind: {} })
+  })
+
+  it('每次 recordCvmInterception 递增 total 并按分类累加', () => {
+    const ctx = new SessionContext()
+    ctx.recordCvmInterception('gate-blocked')
+    ctx.recordCvmInterception('verification-debt')
+    ctx.recordCvmInterception('gate-blocked')
+    const snap = ctx.getCvmInterceptions()
+    assert.equal(snap.total, 3)
+    assert.equal(snap.byKind['gate-blocked'], 2)
+    assert.equal(snap.byKind['verification-debt'], 1)
+  })
+
+  it('返回的是快照——外部改写不污染内部计数', () => {
+    const ctx = new SessionContext()
+    ctx.recordCvmInterception('gate-blocked')
+    const first = ctx.getCvmInterceptions()
+    first.total = 999
+    first.byKind['gate-blocked'] = 999
+    const second = ctx.getCvmInterceptions()
+    assert.equal(second.total, 1)
+    assert.equal(second.byKind['gate-blocked'], 1)
+  })
+})

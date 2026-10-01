@@ -295,3 +295,54 @@ describe('formatPermissionModeLine（输入框下方权限模式行，CC parity�
     assert.ok(!plain.includes('全自动'), `must not impersonate 全自动: ${plain}`)
   })
 })
+
+describe('CVM 拦截计数常驻段（issue #247 补充项）', () => {
+  // 契约：GlanceBar 右区常驻本会话 CVM 拦截计数，compact / full 两档都在。
+  // 与 jobsRunning 同款单路渲染（不分档）。
+  it('cvmInterceptions > 0 时渲染 `⛨ N`（compact 与 full 两档都渲染）', () => {
+    for (const density of ['compact', 'full'] as const) {
+      const plain = stripAnsi(formatGlanceRight({
+        width: 160, density, cvmInterceptions: 3,
+        modelName: 'deepseek-v4', cacheHitRate: 0.8,
+      }, theme))
+      assert.ok(plain.includes('⛨ 3'), `${density}: 应常驻渲染拦截计数：${plain}`)
+    }
+  })
+
+  it('cvmInterceptions 为 0 时仍然渲染 `⛨ 0`——「没触发」必须与「没看见」可区分', () => {
+    // issue #247 的核心抱怨之一：用户无法区分「这次没触发拦截」与「拦截了但我没看见」。
+    // 因此 0 是有效值，不当作缺省省略（对比 jobsRunning 的 > 0 才占位）。
+    for (const density of ['compact', 'full'] as const) {
+      const plain = stripAnsi(formatGlanceRight({
+        width: 160, density, cvmInterceptions: 0,
+        modelName: 'deepseek-v4', cacheHitRate: 0.8,
+      }, theme))
+      assert.ok(plain.includes('⛨ 0'), `${density}: 0 也要占位：${plain}`)
+    }
+  })
+
+  it('cvmInterceptions 未提供时不占位（RIVET_CVM_VECTOR=off 或非 CVM 宿主）', () => {
+    for (const density of ['compact', 'full'] as const) {
+      const plain = stripAnsi(formatGlanceRight({
+        width: 160, density,
+        modelName: 'deepseek-v4', cacheHitRate: 0.8,
+      }, theme))
+      assert.ok(!plain.includes('⛨'), `${density}: 未提供不应渲染：${plain}`)
+    }
+  })
+
+  it('整体状态行仍不超宽（⛨ 为 East-Asian Ambiguous 宽字符）', () => {
+    for (const width of [60, 80, 100, 120]) {
+      const result = formatGlanceBar({
+        width,
+        domainGlyph: '⚙', domainName: '天枢', branch: 'feat/247-cvm',
+        modelName: 'opus-4-8',
+        estimatedTokens: 50_000, maxTokens: 1_000_000,
+        cacheHitRate: 0.8, cvmInterceptions: 12,
+        cost: 1.23, elapsedMs: 65_000,
+      }, theme)
+      const statusW = stringWidth(stripAnsi(result))
+      assert.ok(statusW <= width - 1, `width=${width}: status display-width ${statusW} must be ≤ ${width - 1}`)
+    }
+  })
+})

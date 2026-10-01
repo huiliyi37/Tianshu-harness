@@ -1879,6 +1879,12 @@ async function main() {
       // DeepSeek 峰时/闲时计价提醒：仅官方 deepseek provider 给值，其余缺省不渲染。
       // 闭包动态读当前 providerName，/model 切走/切回自动显隐。
       pricingPhase: providerName === 'deepseek' ? deepseekPricingPhase(Date.now()) : undefined,
+      // issue #247 补充项：本会话 CVM 拦截计数（GlanceBar 常驻）。
+      // mode==='off' 时给 undefined 而非 0——能力关闭时显示「⛨ 0」会被读成
+      // 「拦了 0 次」，而事实是「没在拦」。计数挂 session 故跨 /model 切换存活。
+      cvmInterceptions: ctx.agent.cvmVector.mode === 'off'
+        ? undefined
+        : session.getCvmInterceptions().total,
     }
   })
 

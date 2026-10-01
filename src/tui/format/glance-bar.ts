@@ -104,6 +104,24 @@ function formatPricingPhaseBadge(phase: 'peak' | 'offpeak', compact: boolean, th
     : color(compact ? '◷峰' : '◷峰时', theme.muted)
 }
 
+/**
+ * CVM 拦截计数徽章（issue #247 补充项）——右区常驻，compact / full 两档都在。
+ *
+ * 计数口径见 SessionContext.recordCvmInterception：含 gate-blocked 这类
+ * 「只落台账、永不发声」的分类，它们正是 issue 抱怨「拦了但看不见」的主体。
+ *
+ * `undefined` 与 `0` 语义不同，不能合并：
+ *   - undefined = 宿主没有这个能力（RIVET_CVM_VECTOR=off / 非 CVM 宿主）→ 不占位
+ *   - 0         = 本会话尚未触发拦截 → **仍占位**
+ * issue #247 的原话是用户「无法区分『这次没触发拦截』与『拦截了但我没看见』」，
+ * 所以 0 必须画出来（对比 jobsRunning 的 > 0 才占位）。
+ *
+ * 色阶：0 = muted（常态不抢眼）；>0 = secondary（护栏工作过的信号）。
+ */
+function formatCvmBadge(count: number, theme: RivetTheme): string {
+  return color(`⛨ ${count}`, count > 0 ? theme.secondary : theme.muted)
+}
+
 export interface GlanceBarInput {
   /** 终端宽度 */
   width: number
@@ -173,6 +191,10 @@ export interface GlanceBarInput {
   fleetUnread?: number
   /** 在跑后台任务数（JobRegistry 读模型）——>0 时右区显示 `⚙ N`。 */
   jobsRunning?: number
+  /** 本会话 CVM 拦截累计数（SessionContext.getCvmInterceptions().total）。
+   *  undefined = 宿主无此能力（RIVET_CVM_VECTOR=off）→ 不占位；
+   *  0 是有效值 → 仍显示 `⛨ 0`（区分「没触发」与「没看见」，issue #247）。 */
+  cvmInterceptions?: number
   /** team 编队当前波次——team 运行中右区显示 `◆ w2/3`。 */
   teamWave?: { current: number; total: number }
 }
@@ -268,6 +290,8 @@ export function formatGlanceRight(input: GlanceBarInput, theme: RivetTheme): str
     }
     // DeepSeek 计价时段：与缓存段相邻（同为费用决策信息）；非 deepseek 缺省不占位
     if (input.pricingPhase) parts.push(formatPricingPhaseBadge(input.pricingPhase, true, theme))
+    // CVM 拦截计数：与缓存/上下文% 同为「会话健康度」常驻指标（issue #247 补充项）
+    if (input.cvmInterceptions !== undefined) parts.push(formatCvmBadge(input.cvmInterceptions, theme))
     const cRatio = (input.estimatedTokens && input.maxTokens && input.maxTokens > 0)
       ? input.estimatedTokens / input.maxTokens : 0
     if (input.maxTokens && input.maxTokens > 0 && input.estimatedTokens !== undefined) {
@@ -323,6 +347,8 @@ export function formatGlanceRight(input: GlanceBarInput, theme: RivetTheme): str
   }
   // DeepSeek 计价时段：与缓存段相邻（同为费用决策信息）；非 deepseek 缺省不占位
   if (input.pricingPhase) parts.push(formatPricingPhaseBadge(input.pricingPhase, false, theme))
+  // CVM 拦截计数：与缓存/上下文% 同为「会话健康度」常驻指标（issue #247 补充项）
+  if (input.cvmInterceptions !== undefined) parts.push(formatCvmBadge(input.cvmInterceptions, theme))
   const ratio = (input.estimatedTokens && input.maxTokens && input.maxTokens > 0)
     ? input.estimatedTokens / input.maxTokens : 0
   const displayTokens = input.conversationTokens !== undefined ? input.conversationTokens : input.estimatedTokens

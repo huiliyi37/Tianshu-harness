@@ -1565,12 +1565,15 @@ describe('/handoff 命令', () => {
     })
     const handled = await handleSlashCommand(ctx)
     assert.equal(handled, true)
-    // 交接指令指向项目内 .rivet/HANDOFF.md（工作区内免审批）
-    assert.ok(submitted.includes('/cwd/.rivet/HANDOFF.md'), `prompt 含项目内路径: ${submitted.slice(0, 200)}`)
+    // 交接指令指向项目内 .rivet/HANDOFF.md（工作区内免审批）。
+    // 期望值用 join 拼、跟随平台分隔符——写死 '/' 会在 Windows 上恒红（实现侧产出的是
+    // `\cwd\.rivet\HANDOFF.md`）。这条断言的意图是「指向项目内那个文件」，不是分隔符形态。
+    const expectedHandoff = join('/cwd', '.rivet', 'HANDOFF.md')
+    assert.ok(submitted.includes(expectedHandoff), `prompt 含项目内路径: ${submitted.slice(0, 200)}`)
     assert.match(submitted, /## 任务目标/)
     assert.match(submitted, /用户补充指示：重点记下缓存方案/)
     // 归档任务：src=项目内文档，dest=会话目录 <id>.handoff.md
-    assert.equal(registered?.src, '/cwd/.rivet/HANDOFF.md')
+    assert.equal(registered?.src, expectedHandoff)
     assert.ok(registered?.dest.includes('sess-handoff-001.handoff.md'), `dest: ${registered?.dest}`)
   })
 })

@@ -147,7 +147,11 @@ describe('createWorktree branch uniqueness (S1b)', () => {
     assert.ok(wt.branch.startsWith(baseBranch), 'unique branch keeps base prefix')
 
     const list = git(repo, ['worktree', 'list', '--porcelain'])
-    assert.ok(list.includes(wt.path), 'worktree is registered')
+    // `git worktree list --porcelain` 即使在 Windows 上输出的也是**正斜杠**路径
+    // （git 内部规范化），而 createWorktree 返回的是 mkdtempSync(join(tmpdir(), …))
+    // ——平台原生分隔符。两边表示不同，比较前必须归一，否则该断言在 Windows 上恒红。
+    const toPosix = (p: string): string => p.replace(/\\/g, '/')
+    assert.ok(toPosix(list).includes(toPosix(wt.path)), 'worktree is registered')
   })
 
   it('includes git stderr in the thrown error', () => {

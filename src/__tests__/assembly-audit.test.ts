@@ -55,7 +55,16 @@ function collectAllTsFiles(dir: string, results: string[] = []): string[] {
 }
 
 const allSrcFiles = collectTsFiles(SRC_ROOT)
-const productionFiles = allSrcFiles.filter(f => !f.includes('/__tests__/'))
+/**
+ * 路径分隔符归一化。
+ *
+ * `collectTsFiles` 用 `join()` 造路径，在 Windows 上给 `src\agent\foo.ts`、POSIX 上给
+ * `src/agent/foo.ts`。下面凡是按路径**片段**做过滤/比较的地方（`'/__tests__/'`、
+ * `'tui/'`）都必须先过这一层——否则在 Windows 上 `includes('/…')` 恒为 false，
+ * 守卫会**静默失效**（不报错、只是不再守任何东西），把真回归放过去。
+ */
+const toPosix = (p: string): string => p.replace(/\\/g, '/')
+const productionFiles = allSrcFiles.filter(f => !toPosix(f).includes('/__tests__/'))
 const allFilesIncludingTests = collectAllTsFiles(SRC_ROOT)
 
 // ── allowlist 条目 ──
@@ -233,12 +242,17 @@ describe('assembly audit — field consumption coverage', () => {
   })
 
   test('decisionStyle: confirmed display-only (regression guard)', () => {
+    // 归一化后再判——原实现写死 `f.includes('tui/')`，而 consumers 里的路径在
+    // Windows 上是 `src\tui\slash-commands.ts`，过滤恒不生效 → 任何 TUI 消费者
+    // 都被判成「非 TUI 消费者」，该守卫在 Windows 上恒红（与是否真违规无关）。
+    const isTuiOrMain = (f: string): boolean => {
+      const p = toPosix(f)
+      return p.includes('tui/') || p.includes('main.ts')
+    }
     const decisionStyleConsumers = starDomainFields
       .find(f => f.field === 'decisionStyle')!.consumers
-      .filter(f => !f.includes('tui/') && !f.includes('main.ts'))
-    const expectedTuiOnly = decisionStyleConsumers.every(
-      f => f.includes('tui/') || f.includes('main.ts'),
-    )
+      .filter(f => !isTuiOrMain(f))
+    const expectedTuiOnly = decisionStyleConsumers.every(isTuiOrMain)
     assert.ok(expectedTuiOnly,
       `decisionStyle has non-TUI consumers — review whether behavioral wiring was intended:\n${decisionStyleConsumers.join('\n')}`)
   })

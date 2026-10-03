@@ -100,6 +100,9 @@ describe('materializeScope', () => {
   })
 
   it('reports files outside repo as missing', () => {
+    // POSIX：/etc/passwd 是根路径下的绝对路径；Windows：解析为「当前盘根下的
+    // etc/passwd」——两者都在 repo 外，normalizeScopePath 都应拒绝
+    // （win32 跨盘时 relative 返回目标绝对路径，同属 repo 外，一并判 null）。
     const result = materializeScope(repoDir, wtDir, ['/etc/passwd'])
     assert.equal(result.missing.length, 1)
     assert.equal(result.materialized.length, 0)

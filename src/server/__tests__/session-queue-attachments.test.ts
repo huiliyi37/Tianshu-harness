@@ -69,8 +69,20 @@ async function startBusySession(router: ReturnType<typeof setup>['router']): Pro
   return (created.body as { id: string }).id
 }
 
-/** run settle 后等收尾 flush 的 setImmediate 链跑完。 */
-const settle = () => new Promise((r) => setTimeout(r, 20))
+/**
+ * 等收尾 flush 起新 run 消费 lane。原实现是固定 sleep 20ms——全量并发时事件
+ * 循环饥饿会让 flush 链（run settle → setImmediate → 文档抽取）超出窗口而
+ * flaky（实测：全量红、单跑绿）。改为条件轮询，与 recovery-journal-integration
+ * 的 waitUntil 同模式；条件不成立时抛错，门禁力度不变。
+ */
+const waitForSecondRun = async (agent: RecordingAgent): Promise<void> => {
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    if (agent.runs.length >= 2) return
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  throw new Error('收尾 flush 未在 3000ms 内起新 run 消费 lane')
+}
 
 test('queued message carries images into the next run (#238 用例 1)', async () => {
   const { router, agents } = setup()
@@ -80,7 +92,7 @@ test('queued message carries images into the next run (#238 用例 1)', async ()
   assert.equal(queued.status, 200)
 
   agents[0]!.finish()
-  await settle()
+  await waitForSecondRun(agents[0]!)
 
   assert.equal(agents[0]!.runs.length, 2, '收尾 flush 应起新 run 消费 lane')
   const run = agents[0]!.runs[1]!
@@ -96,7 +108,7 @@ test('queued message carries document text, prefixed before its own text (#238 �
   assert.equal(queued.status, 200)
 
   agents[0]!.finish()
-  await settle()
+  await waitForSecondRun(agents[0]!)
 
   const run = agents[0]!.runs[1]!
   const docIdx = run.prompt.indexOf('[document: plan.pdf]')
@@ -114,7 +126,7 @@ test('issue #300：排队文档的引用随归并进入下轮 user 事件（卡�
   assert.equal(queued.status, 200)
 
   agents[0]!.finish()
-  await settle()
+  await waitForSecondRun(agents[0]!)
 
   assert.equal(agents[0]!.runs.length, 2, '收尾 flush 应起新 run 消费 lane')
   const userEvents = manager.getEvents(id, 0)!.events.filter((e) => e.type === 'user')
@@ -265,7 +277,7 @@ test('端到端：排队附件（1 图 + 1 文档）随收尾 flush 进入 run�
   )
 
   agents[0]!.finish()
-  await settle()
+  await waitForSecondRun(agents[0]!)
 
   assert.equal(agents[0]!.runs.length, 2, '收尾 flush 应起新 run 消费 lane')
   const run = agents[0]!.runs[1]!
@@ -294,7 +306,7 @@ test('端到端：多条排队 + 多图时 run.images 与 user 事件 imageIds �
   await router('POST', `/sessions/${id}/queue`, { text: '第二条', images: [JPEG_1PX] }, AUTH)
 
   agents[0]!.finish()
-  await settle()
+  await waitForSecondRun(agents[0]!)
 
   const run = agents[0]!.runs[1]!
   assert.deepEqual(run.images, [PNG_1PX, JPEG_1PX], '排队图片按条目 FIFO 顺序进入本轮 run')

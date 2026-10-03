@@ -70,8 +70,13 @@ describe('runThetaCheck — 共享闸门结论的只读消费者', () => {
     assert.equal(result.outcome, 'no-fresh-verdict')
     assert.deepEqual(result.errors, [])
     assert.equal(result.timedOut, false)
-    // 旧实现会在临时项目里真跑 tsc（数百 ms 起）。只读路径必须是常数级。
-    assert.ok(elapsed < 500, `只读路径不得 spawn tsc（耗时 ${elapsed}ms）`)
+    // 旧实现会在临时项目里真跑 tsc（数百 ms 起）。只读路径的时间量级不同：
+    // POSIX 数十 ms 级，500ms 阈值可区分旧实现；Windows 上同一路径的基础开销
+    // 就有 ~470ms（FS + git + Defender），且随全量并发波动（实测 598ms 假红），
+    // 与旧实现的区间重叠——小阈值无区分力，退守量级上限（抓「全项目 tsc」级回归）。
+    // 契约本身由实现结构保证：theta-check.ts 不含任何 spawn 调用。
+    const ceilingMs = process.platform === 'win32' ? 5_000 : 500
+    assert.ok(elapsed < ceilingMs, `只读路径不得 spawn tsc（耗时 ${elapsed}ms > ${ceilingMs}ms）`)
   })
 
   it('回放「无类型错误」的验证期结论 → ok', async () => {

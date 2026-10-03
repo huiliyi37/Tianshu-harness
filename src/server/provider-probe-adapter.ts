@@ -115,7 +115,7 @@ export async function probeForTestKey(opts: {
   if (!report.modelsOk) {
     // modelsOk=false 且无 modelListError = 200 但列表为空/不可解析——端点连通与
     // 鉴权均已通过，空是数据而非失败（沿旧 key-probe 语义），空列表交消费端渲染。
-    if (!report.modelListError) return { ok: true, models: [], ...(keyless ? { keyless: true } : {}) }
+    if (!report.modelListError) return { ok: true, models: [], inferredIds: [], ...(keyless ? { keyless: true } : {}) }
     // 404 兜底：未知端点也可能只是没有 /models（非官方域名 / 新订阅域）。给了
     // 模型 id 就再发一次最小补全，成功即连接有效；失败仍按结构化错误返回。
     if (report.modelListError.code === 'http-404' && opts.probeModel) {

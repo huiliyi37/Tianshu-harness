@@ -219,7 +219,7 @@ it('L3 fuzzy 命中透出 inferredIds 供 UI 标注——推断值不得静默�
     )
   })
 
-  it('无 fuzzy 命中时不带 inferredIds——精确命中与未知模型都不算推断（issue #324）', async () => {
+  it('无 fuzzy 命中时 inferredIds 为空数组——精确命中与未知模型都不算推断（issue #324）', async () => {
     global.fetch = mock.fn(async () =>
       fetchResponse(200, { data: [{ id: 'deepseek-v4-pro' }, { id: 'zz-definitely-unknown-xyz' }] }),
     ) as typeof fetch

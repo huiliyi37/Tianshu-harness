@@ -29,6 +29,11 @@ export interface TestKeyResult {
   /** 别名表回填后的模型描述符（contextWindow/maxTokens/supportsVision/pricing 等）——
    *  无回填（unknown 模型）时该条为 { id } 骨架。与 models 一一对应。 */
   descriptors?: Array<Partial<ModelConfig> & { id: string }>
+  /** descriptors 里哪些行的元数据是 L3 fuzzy「推断值」而非精确条目（rawId 原样保留）。
+   *  这些行的 contextWindow/maxTokens 由 token 重叠（Jaccard ≥ 阈值）猜出、可能跨厂商
+   *  命中，消费端须按「推断值，请确认」渲染而非当实测值用——issue #324 的口径 (b)：
+   *  标注但放行。与 matchModelDefaults 的 inferredIds 同源同形。 */
+  inferredIds?: string[]
   /** 本次探测无凭据发起（keyless：Ollama/vLLM 等本地端点）时为 true。前端据此
    *  区分空模型列表的语义——keyless 的空（如尚未 pull 模型）不提示权限问题。 */
   keyless?: boolean
@@ -119,16 +124,23 @@ export async function probeForTestKey(opts: {
     return mapError(report)
   }
   const models = report.models
-  const { models: descriptors, notes } = toModelDescriptors(
-    matchModelIds(models, aliasTableWithProbeInfos(report.modelInfos)),
-  )
+  const matched = matchModelIds(models, aliasTableWithProbeInfos(report.modelInfos))
+  const { models: descriptors, notes } = toModelDescriptors(matched)
   if (notes.length > 0) {
     // 低置信/未知模型的 notes 仅供诊断；契约字段不带 notes，避免前端消费负担。
-    // 需要展示时由路由层决定是否透传（当前不透传——同 CLI 的 stderr 提示语义
-    // 不同，桌面端回填失败静默回退界面默认值）。
+    // 「是推断值」这件事改用结构化的 inferredIds 透出（下方），由消费端按 i18n 渲染，
+    // 而不是把中文提示串塞进契约——issue #324。
     void notes
   }
-  return { ok: true, models, descriptors, ...(keyless ? { keyless: true } : {}) }
+  // L3 fuzzy 命中的行必须点名：descriptors 里它带着推断出的 contextWindow/maxTokens，
+  // 而 matcher 注释写明「A wrong contextWindow silently written would corrupt compaction
+  // and truncation behavior」。这里放行但透出 rawId，让三端一致地标注「推断值，请确认」
+  // （口径 b）——此前 test-key 路径整条丢弃，与本文件 matchModelDefaults 的 inferredIds
+  // 行为不一致（issue #324）。
+  const inferredIds = matched
+    .filter((result) => result.needsReview)
+    .map((result) => result.rawId)
+  return { ok: true, models, descriptors, inferredIds, ...(keyless ? { keyless: true } : {}) }
 }
 
 /**

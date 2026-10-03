@@ -78,6 +78,38 @@ function rateColor(rate: number | null, theme: RivetTheme): string {
   return theme.error
 }
 
+/**
+ * 常驻余额角标（issue #98）——输入区状态行（formatWorkspaceMode）复用官方快照
+ * 渲染的紧凑单行徽章，与 /cache 面板「官方区」同源同口径。
+ *
+ * 降级契约（issue #98 要求「不刷屏不报错」）：**仅 ready 时占位**——
+ * loading / 未配置（no-credentials）/ 查询失败一律返回 null，不占行宽。
+ * 引导文案（去桌面端登录）由 /cache 面板的官方区承担，角标不做二次打扰。
+ *
+ * 色：闲时（半价）用 success 呼应「省钱时段」（与 formatPricingPhaseBadge 同口径），
+ * 峰时用 muted（常态不抢眼）；时段未知（非 DeepSeek / 无计价信号）回退 success
+ * ——余额本身是正向信号。颜色一律走 theme token，无色终端按既有 color() 降级。
+ */
+export function formatOfficialUsageBadge(
+  official: CachePanelOfficial,
+  phase: 'peak' | 'offpeak' | undefined,
+  theme: RivetTheme,
+): string | null {
+  if (official.status !== 'ready') return null
+  const tint = phase === 'peak' ? theme.muted : theme.success
+  const cur = official.currency ?? 'CNY'
+  const balance = official.balance
+  if (balance !== undefined && balance !== '') {
+    // CNY 用 ¥ 前缀更紧凑；其他币种带上货币码，避免误读为人民币。
+    const amount = cur === 'CNY' ? `¥${balance}` : `${balance} ${cur}`
+    return color(`余额 ${amount}`, tint)
+  }
+  if (official.todayCost !== undefined) {
+    return color(`今日 ¥${formatYuan(official.todayCost)}`, tint)
+  }
+  return null
+}
+
 /** 按天迷你双色柱：hit 段 success、miss（含 create/uncached）段 dim。 */
 function dayBar(day: DayUsage, maxInput: number, width: number, theme: RivetTheme): string {
   if (maxInput <= 0 || day.input <= 0) return ''

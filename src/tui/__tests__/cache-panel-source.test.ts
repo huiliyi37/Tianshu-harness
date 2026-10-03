@@ -177,3 +177,30 @@ test('扫描失败（目录不存在）不卡在 loading', async () => {
   assert.ok(data.aggregates)
   assert.equal(data.aggregates!.today.totals.requests, 0)
 })
+
+test('TTL 内三档聚合按 rows 版本记忆化——逐帧调用不重算（#98 配套）', async () => {
+  const root = await makeSessionsRoot([mainRow(NOW - 1_000)])
+  try {
+    const source = new CachePanelSource({
+      sessionsRoot: () => root,
+      session: () => null,
+      resolvePricing: () => undefined,
+      loadOfficial: noOfficial,
+      onUpdate: () => {},
+      now: () => NOW,
+    })
+    source.data()
+    await waitFor(() => source.data().aggregates !== null, 3_000, '首次扫盘完成')
+
+    const first = source.data('7d')
+    const second = source.data('30d')
+    assert.ok(first.aggregates)
+    assert.equal(first.aggregates, second.aggregates, 'TTL 内应复用同一 aggregates 对象（未重算）')
+
+    // invalidate（面板打开时调用）把 rowsAt 归零 → 缓存版本失配 → 重算，引用更新。
+    source.invalidate()
+    assert.notEqual(source.data().aggregates, first.aggregates, 'invalidate 后应重算')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

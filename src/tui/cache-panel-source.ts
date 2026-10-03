@@ -68,6 +68,10 @@ export class CachePanelSource {
   private official: CachePanelOfficial = { status: 'loading' }
   private officialAt = 0
   private officialLoading = false
+  /** 三档聚合的记忆化（issue #98 配套）——data() 现在被 live 渲染循环逐帧调用
+   *  （常驻余额角标读 official），聚合只随 rows 刷新（rowsAt 版本）变化，
+   *  不做记忆化会让每帧重算三档全量遍历。 */
+  private aggregatesCache: { rowsAt: number; value: NonNullable<CachePanelData['aggregates']> } | null = null
 
   constructor(private deps: CachePanelSourceDeps) {}
 
@@ -113,11 +117,20 @@ export class CachePanelSource {
     this.ensureOfficial(now)
 
     const rows = this.rows
-    const aggregates = rows === null ? null : {
-      today: aggregateUsageRows(rows, { days: periodDays('today', now), now, resolvePricing: this.deps.resolvePricing }),
-      '7d': aggregateUsageRows(rows, { days: 7, now, resolvePricing: this.deps.resolvePricing }),
-      '30d': aggregateUsageRows(rows, { days: 30, now, resolvePricing: this.deps.resolvePricing }),
+    // rows 版本没变（30s TTL 内）就复用上次聚合：live 区逐帧调 data()，
+    // 逐次重算三档是纯浪费。rowsAt 随每次扫盘完成更新，其变化即
+    // 「聚合需要重算」的信号；invalidate() 把它归零，同样触发重算。
+    if (rows !== null && (this.aggregatesCache === null || this.aggregatesCache.rowsAt !== this.rowsAt)) {
+      this.aggregatesCache = {
+        rowsAt: this.rowsAt,
+        value: {
+          today: aggregateUsageRows(rows, { days: periodDays('today', now), now, resolvePricing: this.deps.resolvePricing }),
+          '7d': aggregateUsageRows(rows, { days: 7, now, resolvePricing: this.deps.resolvePricing }),
+          '30d': aggregateUsageRows(rows, { days: 30, now, resolvePricing: this.deps.resolvePricing }),
+        },
+      }
     }
+    const aggregates = rows !== null && this.aggregatesCache !== null ? this.aggregatesCache.value : null
 
     return {
       period,

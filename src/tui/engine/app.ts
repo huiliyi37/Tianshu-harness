@@ -318,7 +318,7 @@ import type { DomainDriftResult } from '../../agent/domain-drift-detector.js'
 import { FleetRegistry } from '../fleet-registry.js'
 import { JobRegistry, type JobRow } from '../job-registry.js'
 import { renderJobsOverlay } from '../format/jobs-panel.js'
-import { renderCachePanel, CACHE_PERIODS, type CachePanelData } from '../format/cache-panel.js'
+import { renderCachePanel, CACHE_PERIODS, type CachePanelData, type CachePanelOfficial } from '../format/cache-panel.js'
 import type { JobEvent } from '../../tools/job-store.js'
 import { WorkerMirrorStore } from '../worker-mirror.js'
 import { formatWorkerView } from '../format/worker-view.js'
@@ -2346,6 +2346,21 @@ export class TuiApp {
    */
   refreshOverlay(id: string): void {
     if (this.overlay.activeId() === id) this.overlay.rerender()
+  }
+
+  /**
+   * 常驻余额角标（issue #98）的官方快照读取——复用 /cache overlay 已注册的数据源
+   * （同一 60s TTL 与凭证降级链），不新增轮询频率。
+   *
+   * provider 未注册 / 抛错时返回 null → 角标不占位；官方区的 loading/失败引导仍由
+   * /cache 面板承担（角标只消费 .official，ready 之外的态一律不画）。
+   */
+  private officialUsageSnapshot(): CachePanelOfficial | null {
+    try {
+      return this.overlayController.getData()?.cachePanelData?.()?.official ?? null
+    } catch {
+      return null
+    }
   }
 
   /** 激活 overlay */
@@ -7046,6 +7061,7 @@ export class TuiApp {
       lines.push({ text: formatWorkspaceMode({ width: cols, approvalMode: this._approvalMode,
         planMode: planModeActive, askMode: askModeActive, stashed: this.workflow.stash.occupied,
         cvmInterceptions: metrics?.cvmInterceptions, pricingPhase: metrics?.pricingPhase,
+        officialUsage: shortScreen ? null : this.officialUsageSnapshot(),
         tasks: this.activityStore.project().filter(task => task.status === 'running' || task.status === 'pending').length
           + this.jobsModel.runningCount(), steps: todoSummary ? todoSummary.total - todoSummary.done : 0,
         zenBadge: this.zenBadgeProvider?.() ?? (Date.now() < this.zenUnlockNoticeUntil ? '禅已解除' : undefined),

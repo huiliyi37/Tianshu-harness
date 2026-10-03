@@ -23,7 +23,11 @@ export interface ScopeMaterializeResult {
 function normalizeScopePath(baseCwd: string, filePath: string): string | null {
   if (!isAbsolute(filePath)) return filePath
   const rel = relative(baseCwd, filePath)
-  if (rel === '' || rel.startsWith('..')) return null
+  // win32 跨盘时 relative 无法表达相对路径，原样返回目标的绝对路径——这同样是
+  // 「解析到 repo 外」，必须与 '..' 前缀同判为 null。漏判会让 `D:\other\x.ts`
+  // 这类跨盘路径落进 toBeCreated、诱导 worker 去"创建"一个 repo 外路径。
+  // （`/etc/passwd` 在 Windows 上解析为「当前盘根下的 etc/passwd」，命中的也是这条。）
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
   return rel
 }
 

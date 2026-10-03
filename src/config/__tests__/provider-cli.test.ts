@@ -228,8 +228,11 @@ describe('rivet provider CLI', () => {
 
   it('rejects an invalid --protocol value', async () => {
     const { io, stderr } = captureIO()
+    // 'gemini' used to stand in for "unknown protocol" here; it is a real
+    // protocol now, so this fixture needs a value that is genuinely not in
+    // PROVIDER_PROTOCOL_VALUES.
     await assert.rejects(
-      runProviderCLI(['add', 'bad', '--base-url', 'https://x.example.com/v1', '--protocol', 'gemini'], io),
+      runProviderCLI(['add', 'bad', '--base-url', 'https://x.example.com/v1', '--protocol', 'not-a-real-protocol'], io),
       (error: unknown) => error instanceof ExitCalled && error.code === 1,
     )
     assert.ok(stderr.some(line => line.includes('Invalid --protocol')))

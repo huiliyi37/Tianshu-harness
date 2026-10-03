@@ -2,7 +2,7 @@ import type { ModelConfig, ProviderConfig } from './schema.js'
 import { isLoopbackBaseUrl } from './local-endpoint.js'
 import { VOLC_PRESETS } from './provider-presets-volc.js'
 
-export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'grok' | 'siliconflow' | 'stepfun' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'volc-plan' | 'volc-plan-anthropic' | 'openrouter' | 'relay' | 'ollama'
+export type ProviderPresetKey = 'deepseek' | 'glm' | 'kimi' | 'opencode-go' | 'opencode-go-anthropic' | 'mimo' | 'mimo-api' | 'minimax' | 'codex' | 'openai' | 'grok' | 'siliconflow' | 'stepfun' | 'longcat' | 'ccswitch' | 'zhipu-vision' | 'dashscope' | 'volc' | 'volc-plan' | 'volc-plan-anthropic' | 'openrouter' | 'relay' | 'ollama' | 'gemini'
 
 /** 一种计费模式对应一个官方 Base URL（如百炼的按量计费 / token plan）。 */
 export interface ProviderBillingMode {
@@ -1084,6 +1084,65 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           maxTokens: 8_192,
           reasoningEffort: 'medium',
           tier: 'cheap',
+        },
+      ],
+      unsupported: [],
+    },
+  },
+  // Google Gemini —— 官方**原生**协议，不是 OpenAI 兼容端点。
+  // 端点形态差异是硬性的：模型 id 走 URL 路径（…/v1beta/models/<id>:generateContent）、
+  // 鉴权走 x-goog-api-key、消息体是 contents[].parts[]、系统提示是顶层
+  // systemInstruction、采样参数在 generationConfig、思考在 thinkingConfig。
+  // 兼容层（/v1beta/openai/）能跑单轮对话，但会让 Gemini 3 要求回传的
+  // thought_signature 丢失，多轮工具调用直接 400——所以这里必须走原生。
+  // 对照表与实现见 src/api/gemini-client.ts。
+  gemini: {
+    key: 'gemini',
+    label: 'Google Gemini',
+    description: 'Google 官方 Gemini API：原生协议直连（1M 上下文，原生多模态与思考）',
+    defaultModelId: 'gemini-3.8-flash',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    provider: {
+      name: 'gemini',
+      apiKeyEnv: 'GEMINI_API_KEY',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      protocol: 'gemini',
+      capabilities: {
+        cacheControl: false,
+        stripParams: [],
+        toolJsonBug: false,
+        prefixCache: 'none',
+        prefixCompletion: false,
+      },
+      thinking: 'enabled',
+      maxTokens: 65_536,
+      models: [
+        {
+          id: 'gemini-3.8-flash',
+          description: '快速档：1M 上下文，原生多模态（文本/图像），支持思考',
+          contextWindow: 1_048_576,
+          maxTokens: 65_536,
+          reasoningEffort: 'medium',
+          supportsVision: true,
+          tier: 'cheap',
+        },
+        {
+          id: 'gemini-3.5-flash',
+          description: '均衡档：1M 上下文，原生多模态',
+          contextWindow: 1_048_576,
+          maxTokens: 65_536,
+          reasoningEffort: 'medium',
+          supportsVision: true,
+          tier: 'cheap',
+        },
+        {
+          id: 'gemini-3.1-pro-preview',
+          description: '旗舰档：深度推理',
+          contextWindow: 1_048_576,
+          maxTokens: 65_536,
+          reasoningEffort: 'high',
+          supportsVision: true,
+          tier: 'strong',
         },
       ],
       unsupported: [],

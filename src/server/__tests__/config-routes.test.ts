@@ -1823,6 +1823,37 @@ describe('POST /config/providers/test-key — 探测走统一 probeProvider', ()
     assert.equal(authHeader, 'Bearer sk-plan', '火山方舟 Messages 只认 Bearer')
     assert.equal(apiKeyHeader, undefined, '不得同发 x-api-key')
   })
+
+  it('L3 fuzzy 命中时响应体带 inferredIds——L3 推断值不再对消费端不可见（issue #324）', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    // deepseek-v4-flash-0731 经 token 重叠（Jaccard）命中 deepseek-v4-flash＝L3；
+    // deepseek-v4-pro 是 L1 精确命中，不得被计入推断。
+    mockModelsResponse({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-v4-flash-0731' }] })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+
+    const res = await router('POST', '/config/providers/test-key', {
+      provider: 'deepseek',
+      apiKey: 'sk-x',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    const body = res.body as { ok: boolean; inferredIds?: string[] }
+    assert.equal(body.ok, true)
+    // 契约字段：消费端据此渲染「推断值，请确认」，而非静默当地默认值。
+    assert.deepEqual(body.inferredIds, ['deepseek-v4-flash-0731'])
+  })
+
+  it('无 L3 命中时 inferredIds 为空数组——精确命中不算推断（issue #324）', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    mockModelsResponse({ data: [{ id: 'deepseek-v4-pro' }] })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+
+    const res = await router('POST', '/config/providers/test-key', {
+      provider: 'deepseek',
+      apiKey: 'sk-x',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    assert.deepEqual((res.body as { inferredIds?: string[] }).inferredIds, [])
+  })
 })
 
 describe('POST /config/providers/match-models（纯本地匹配，零网络）', () => {

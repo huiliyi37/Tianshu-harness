@@ -553,6 +553,35 @@ test('draft: valid draft opens the resume prompt; resume restores the key step',
   assert.equal(commit.commit.setup.apiKey, 'sk-test-123')
 })
 
+test('diy path: L3 fuzzy 命中在多选列表显式标注「低置信推断」——推断值不得冒充实测元数据（issue #324）', () => {
+  const flow = new ConnectFlow()
+  toProbe(flow)
+  const applied = flow.applyProbe(report({
+    // deepseek-v4-flash-0731 → 经 token 重叠（Jaccard）命中 deepseek-v4-flash：
+    // L3 元数据是猜的，不是该型号的官方规格。deepseek-v4-pro 是 L1 精确命中作对照。
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash-0731'],
+  }))
+  assert.equal(applied.kind, 'next')
+  assert.equal(flow.submitChoice('continue').kind, 'next')
+  const view = flow.view()
+  assert.equal(view.kind, 'multi-choice')
+
+  // 精确命中：如实告知是回填。
+  assert.match(view.options?.[0]?.description ?? '', /已知模型/, 'L1 精确命中沿用「已知模型」描述')
+  assert.doesNotMatch(view.options?.[0]?.description ?? '', /推断/, 'L1 不得被标成推断')
+
+  // L3 推断：必须点名「推断」，并给出它猜到了哪个 canonical 型号。
+  const fuzzy = view.options?.[1]?.description ?? ''
+  assert.match(fuzzy, /低置信推断/, 'L3 必须显式标注推断，否则用户会把它当实测规格')
+  assert.match(fuzzy, /^≈ /, 'L3 用 ≈ 表示「约等于」而非确定命中')
+  assert.match(fuzzy, /deepseek-v4-flash/, 'L3 须透出推断目标，用户才能核对')
+
+  // 这一行是 L3 唯一的可见信号：fuzzy 命中带完整 metadata，不会进补参表单。
+  const confirmed = flow.confirm()
+  assert.equal(confirmed.kind, 'next')
+  assert.notEqual(flow.view().title, '模型补参', 'L3 元数据完整→不落补参表单，故多选描述是唯一提示位')
+})
+
 test('draft: diy-models resume recomputes matcher results and keeps checkbox state', () => {
   const flow = new ConnectFlow([], draft({
     phase: 'diy-models',

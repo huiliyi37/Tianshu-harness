@@ -18,6 +18,10 @@
 import { hasModelsListEndpoint, normalizeBaseUrl, resolveProbeEndpoints } from './endpoint-map.js'
 import { resolveProviderWire } from './provider-catalog.js'
 import { providerIdentityHeaders } from './caller-identity.js'
+// Single source of truth for the wire-protocol union — an inline copy here
+// silently rejects any protocol added to PROVIDER_PROTOCOL_VALUES, which is
+// exactly how 'gemini' first broke this file's callers.
+import type { ProviderProtocol } from '../config/schema.js'
 import { type ModelAliasEntry, type ModelAliasMetadata } from './model-aliases.js'
 import { matchModelId } from './model-id-matcher.js'
 import { ENRICHED_ALIAS_TABLE } from './model-meta-kb.js'
@@ -52,7 +56,7 @@ export function isVisionCapableId(rawId: string, table: readonly ModelAliasEntry
 export interface ProbeOptions {
   baseUrl: string
   apiKey?: string
-  protocol?: 'openai' | 'anthropic' | 'openai-responses'
+  protocol?: ProviderProtocol
   /** Provider/preset name — selects the endpoint-path mapping (unknown → OpenAI-compatible default). */
   providerName?: string
   /** Per-request timeout. Default 15s — cold endpoints should not hang onboarding. */

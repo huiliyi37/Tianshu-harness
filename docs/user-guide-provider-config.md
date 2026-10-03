@@ -414,6 +414,29 @@ curl https://opencode.ai/zen/go/v1/messages \
 - `protocol: 'openai'` → `OpenAIClient` → 请求 `/v1/chat/completions`
 - `protocol: 'anthropic'` → `AnthropicClient` → 请求 `/v1/messages`
 - `protocol: 'openai-responses'` → `ResponsesClient` → 请求 `/v1/responses`（OpenAI Responses API；用于只提供该版式的官方 / 中转端点，issue #239）
+- `protocol: 'gemini'` → `GeminiClient` → 请求 `/v1beta/models/{model}:streamGenerateContent`（Google Gemini **原生** API，见下节）
+
+#### Gemini 原生协议（`protocol: 'gemini'`）
+
+Google 的 Gemini 官方 API 与 OpenAI 兼容协议**在每一根轴上都不同**，只加一个 OpenAI 兼容预设接不住：
+
+| 维度 | OpenAI 兼容 | Gemini 原生 |
+|---|---|---|
+| 端点 | `POST {base}/chat/completions` | `POST {base}/v1beta/models/{model}:streamGenerateContent` |
+| 模型位置 | 请求体 `model` | **URL 路径**里的 `models/<id>` |
+| 鉴权 | `Authorization: Bearer` | `x-goog-api-key` 头 |
+| 角色 | `system` / `user` / `assistant` | `user` / `model` |
+| 系统提示 | `role: 'system'` 消息 | 顶层 `systemInstruction` |
+| 消息体 | `messages[].content` | `contents[].parts[]`（`{text}` / `{inlineData}` / `{fileData}`） |
+| 采样参数 | 顶层 `temperature` / `max_tokens` | `generationConfig` |
+| 思考控制 | `reasoning_effort` | `generationConfig.thinkingConfig` |
+| 工具定义 | `tools[].function` | `tools[].functionDeclarations[]` |
+| 工具结果 | `role:'tool'` + `tool_call_id` | `role:'user'` + `functionResponse{name,response}` |
+| 用量 | `usage.prompt_tokens` | `usageMetadata.promptTokenCount` |
+
+**为什么不能走兼容层**：Google 提供了 `/v1beta/openai/` 兼容端点，单轮对话与工具调用都能跑；但 Gemini 3 要求**回放时**在 `functionCall` part 上带回模型发出的 `thoughtSignature`，兼容层不保留该字段，多轮工具调用在第二轮直接 `HTTP 400 Function call is missing a thought_signature`。对编码 agent 来说工具循环坏掉即不可用，因此必须走原生协议。`GeminiClient` 会按工具调用 id 记住签名并在回放时挂回。
+
+配置方式：`/connect` 或桌面端「添加供应商」里选 **Google Gemini**，粘贴 [AI Studio](https://aistudio.google.com/apikey) 的 API Key（也可用 `GEMINI_API_KEY` 环境变量）。可用模型以 `GET /v1beta/models` 实际返回为准——`gemini-2.5-*` 对**新用户**已退役。
 
 预设 `opencode-go-anthropic` 显式写了 `protocol: "anthropic"`。手工配置时把 `name` 设为 `"anthropic"` 同样有效（schema 对名为 anthropic 的条目默认 protocol 为 anthropic），但显式 `protocol` 字段更不容易误配。
 

@@ -166,7 +166,7 @@ export type ProviderKeyConfig = z.infer<typeof providerKeySchema>
 
 /** Wire-protocol union — runtime list + TS type in one place so the zod enum,
  *  route validation and CLI parsing can never drift apart. */
-export const PROVIDER_PROTOCOL_VALUES = ['openai', 'anthropic', 'openai-responses'] as const
+export const PROVIDER_PROTOCOL_VALUES = ['openai', 'anthropic', 'openai-responses', 'gemini'] as const
 export type ProviderProtocol = (typeof PROVIDER_PROTOCOL_VALUES)[number]
 
 export const providerBaseSchema = z.object({
@@ -180,7 +180,12 @@ export const providerBaseSchema = z.object({
   /** Wire protocol of the endpoint. 'openai' = chat/completions-compatible;
    *  'anthropic' = /v1/messages with cache_control breakpoints;
    *  'openai-responses' = OpenAI Responses API (POST /v1/responses) — for
-   *  API-key endpoints that only speak the Responses format (issue #239).
+   *  API-key endpoints that only speak the Responses format (issue #239);
+   *  'gemini' = Google Gemini native generateContent/streamGenerateContent —
+   *  a different wire shape on every axis (path-carried model id,
+   *  x-goog-api-key auth, contents/parts instead of messages/content,
+   *  top-level systemInstruction, generationConfig, thought signatures), so it
+   *  cannot be reached through the OpenAI-compatible path.
    *  Factory dispatch is driven ONLY by this field — provider names and
    *  capability heuristics are not consulted. A provider NAMED 'anthropic'
    *  defaults to protocol 'anthropic'. */

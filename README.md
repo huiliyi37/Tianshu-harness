@@ -262,6 +262,7 @@ tianshu --goal "修复所有类型错误" --budget 50  # 无头目标自主模�
 | Grok (xAI) | API key | grok-4.6 (500K ctx, 视觉, 推理档 low/medium/high/xhigh) |
 | MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
 | MiMo | API key | mimo-v2.5-pro |
+| Gemini (Google) | API key（原生协议直连） | gemini-3.8-flash (1M ctx), gemini-3.5-flash, gemini-3.1-pro-preview |
 
 另支持任意 OpenAI 兼容自定义端点（Ollama / vLLM 等）。会话内 `/model` 随时切换；识图桥、生图端点、子代理分模型路由等见 [Provider 配置手册](docs/user-guide-provider-config.md) 与 [识图能力手册](docs/user-guide-vision.md)。
 

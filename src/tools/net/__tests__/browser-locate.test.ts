@@ -23,8 +23,11 @@ test('findSystemChromium 在 PATH 目录里命中候选名（#303 发行版 chro
 })
 
 test('exists 判定生效：跳过不存在的条目，命中真实存在的', () => {
-  const dir = makePathDir(['google-chrome'])
-  const chrome = join(dir, 'google-chrome')
+  // 'linux' 语义的 PATH 段须为 POSIX 形状：临时目录带 Windows 盘符（`C:\…`）
+  // 时，盘符冒号会被 ':' 分隔符切坏、全部候选 miss（恒红，与 exists 判定
+  // 语义无关）。exists 注入精确匹配 → 前两个候选跳过、google-chrome 命中。
+  const dir = '/opt/browsers'
+  const chrome = `${dir}/google-chrome`
   const hit = findSystemChromium('linux', dir, (p) => p === chrome)
   assert.equal(hit, chrome)
 })
@@ -44,7 +47,10 @@ test('win32：候选带 .exe 后缀、PATH 用 ; 分隔', () => {
 })
 
 test('候选顺序：chromium 系优先于 google-chrome', () => {
-  const dir = makePathDir(['chromium', 'google-chrome'])
+  // PATH 段须与 'linux' 语义自洽（':' 分隔、POSIX 形状）：临时目录带 Windows
+  // 盘符（`C:\…`）时，盘符冒号被当作分隔符切出 `C` 段、返回畸形成员（恒红，
+  // 与候选顺序的语义无关）。
+  const dir = '/opt/browsers'
   const hit = findSystemChromium('linux', dir, () => true)
   assert.equal(hit, `${dir}/chromium`)
 })

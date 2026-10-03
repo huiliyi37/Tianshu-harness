@@ -17,7 +17,9 @@ test('workspace browse/search is authenticated, filtered and sandboxed', async (
     writeFileSync(join(root, 'app.min.js'), 'generated')
     writeFileSync(join(root, 'node_modules', 'hidden.md'), 'hidden')
     writeFileSync(join(root, 'ignored', 'hidden.md'), 'hidden')
-    symlinkSync(outside, join(root, 'escape'), 'dir')
+    // Windows 上 dir symlink 需开发者模式/管理员（普通权限恒 EPERM，与防护逻辑
+    // 无关）；junction 无需特权、同样呈报 isSymbolicLink=true，逃逸防护语义等价。
+    symlinkSync(outside, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
     const handler = buildFileContextRoutes('file-context-test')['GET /workspace/file-context']!
     assert.equal((await handler(undefined, { cwd: root }, {})).status, 401)
     const browse = await handler(undefined, { cwd: root }, auth)

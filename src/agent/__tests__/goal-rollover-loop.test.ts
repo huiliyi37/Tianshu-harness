@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop } from '../loop.js'
@@ -13,7 +14,10 @@ import type { StreamClient, StreamCallbacks } from '../../api/stream-client.js'
 
 test('real agent loop finalizes after a tool batch at the rollover threshold', async t => {
   const cwd = mkdtempSync(join(tmpdir(), 'goal-loop-rollover-'))
-  t.after(() => rmSync(cwd, { recursive: true, force: true }))
+  t.after(async () => {
+    // Windows：句柄释放竞态（EPERM）——异步重试等待期间推进事件循环。
+    await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
   writeFileSync(join(cwd, 'evidence.md'), 'evidence')
   const session = new SessionContext()
   session.getEstimatedTokens = () => 60_000

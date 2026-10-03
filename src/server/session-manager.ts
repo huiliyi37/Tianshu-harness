@@ -767,6 +767,13 @@ export interface RuntimeSessionManagerOptions {
   /** Cap on retained events per session (ring buffer). Default 5000. */
   maxEvents?: number
   /**
+   * 内存环字节预算（issue #315 泄漏点 B）。条数上限挡不住单条近 1MB 的终态
+   * tool_result 累积；超限时最旧条目退化为投影（seq/type/ts + 空 data）而非整体
+   * 丢弃，保证有界内存的同时不破坏回放/对账的 seq 连续性。Default 64 MiB。
+   * 0 = 关闭（仅按条数截尾）。
+   */
+  maxEventBytes?: number
+  /**
    * Cap on how many sessions keep their event log resident at once. Lazy-loaded
    * sessions beyond this (LRU, and only ones with no live agent / not running /
    * unwatched) have their logs dropped back to disk, bounding memory regardless
@@ -1312,24 +1319,90 @@ function extractTodoState(input: Record<string, unknown>): TodoStateItem[] | nul
 }
 
 /**
- * 内存环截尾（M1 修复）：保留尾部窗口，但 delegation 事件豁免——stale 对账
- * （sweepStaleDelegationNodes）与回放依赖它们完整；被截尾的早期 running
- * 节点对账不可见，回放会永久卡「运行中」。delegation 事件量级小（每 worker
- * 2-4 条），豁免增长可控。
+ * 内存环截尾（M1 修复）：保留尾部窗口，但 delegation 事件优先保留——stale 对账
+ * （sweepStaleDelegationNodes）与回放依赖它们；被截尾的早期 running 节点对账
+ * 不可见，回放会永久卡「运行中」。
+ *
+ * issue #315 泄漏点 A：原实现把溢出全甩给非 delegation 事件（`e.type !== 'delegation'`
+ * 才丢），注释假设「每 worker 2-4 条、增长可控」不成立——delegation 事件由 worker
+ * activity 流高频产生（每 tool_use / 每 turn / 每 ~120ms 合并的 text 各一条），当
+ * 其数量本身超过 maxEvents 时 overflow 无法被非 delegation 事件填满，环线性无界增长。
+ * 改为两遍：先丢最旧的非 delegation，仍不足则从最旧的 delegation 起补丢——保留
+ * 「尽量留 delegation」的意图，同时保证 |ring| <= maxEvents 恒成立。
  */
 function trimEventRing(events: SessionEvent[], maxEvents: number): SessionEvent[] {
   if (events.length <= maxEvents) return events
-  const overflow = events.length - maxEvents
+  let overflow = events.length - maxEvents
   const kept: SessionEvent[] = []
-  let dropped = 0
   for (const e of events) {
-    if (dropped < overflow && e.type !== 'delegation') {
-      dropped++
+    if (overflow > 0 && e.type !== 'delegation') {
+      overflow--
       continue
     }
     kept.push(e)
   }
+  // 仍超限 → 环被 delegation 事件主导，从最旧的一端补丢到上限（尾部/最新保留）。
+  if (overflow > 0) return kept.slice(overflow)
   return kept
+}
+
+/** per-event 字节估算的 WeakMap 记忆化——appendRaw 热路径每次到顶都要核算环内
+ *  总量，JSON.stringify 每个事件只做一次（事件对象不可变，投影会新建对象）。 */
+const eventSizeCache = new WeakMap<SessionEvent, number>()
+
+function eventByteSize(e: SessionEvent): number {
+  const cached = eventSizeCache.get(e)
+  if (cached !== undefined) return cached
+  let bytes: number
+  try {
+    bytes = JSON.stringify(e).length
+  } catch {
+    bytes = 256
+  }
+  eventSizeCache.set(e, bytes)
+  return bytes
+}
+
+/**
+ * 把一条事件退化为「投影」：保留 seq/type/ts（+ runId/attemptId 关联字段），data
+ * 置空对象。issue #315 泄漏点 B——字节预算超限时从最旧一端做此变换回收内存。
+ *
+ * 与磁盘口径（session-persistence.ts MAX_EVENT_JSON_BYTES 单条超限即投影）方向
+ * 对齐，但**不**照搬磁盘 stub 语义（不加 `_truncated`）：内存侧消费方（listeners /
+ * 回放 / sweepStaleDelegationNodes 的 `ev.data.x` 读取）拿到的 data 恒为对象，
+ * 读不存在的键得 undefined 而非抛错；seq 连续，`getEvents(since)` 仍按 seq 过滤。
+ */
+function projectEventForMemory(e: SessionEvent): SessionEvent {
+  if (!e.data || Object.keys(e.data).length === 0) return e
+  return {
+    seq: e.seq,
+    ts: e.ts,
+    type: e.type,
+    ...(e.runId ? { runId: e.runId } : {}),
+    ...(e.attemptId ? { attemptId: e.attemptId } : {}),
+    data: {},
+  }
+}
+
+/**
+ * 内存环总字节预算（issue #315 泄漏点 B）：条数上限（maxEvents=5000）挡不住单条
+ * 近 1MB 的终态 tool_result（只有 partial 分片走合并，终态不参与）累积——可达 GiB
+ * 级。超限时从最旧的事件起投影 data 直到收敛。返回 null = 未超限、无需替换。
+ */
+function trimRingBytes(events: SessionEvent[], maxBytes: number): SessionEvent[] | null {
+  if (maxBytes <= 0 || events.length === 0) return null
+  let total = 0
+  for (const e of events) total += eventByteSize(e)
+  if (total <= maxBytes) return null
+  const out = events.slice()
+  for (let i = 0; i < out.length && total > maxBytes; i++) {
+    const e = out[i]!
+    const projected = projectEventForMemory(e)
+    if (projected === e) continue
+    total -= eventByteSize(e) - eventByteSize(projected)
+    out[i] = projected
+  }
+  return out
 }
 
 export class RuntimeSessionManager {
@@ -1347,6 +1420,8 @@ export class RuntimeSessionManager {
   private readonly now: () => number
   private readonly idGenerator: () => string
   private readonly maxEvents: number
+  /** 内存环字节预算（issue #315 泄漏点 B）。0 = 关闭。 */
+  private readonly maxEventBytes: number
   private readonly maxLoadedSessions: number
   /** LRU of session ids whose event log is currently resident (oldest first). */
   private readonly loadedOrder: string[] = []
@@ -1404,6 +1479,9 @@ export class RuntimeSessionManager {
     const envMaxEvents = Number(process.env.RIVET_MAX_EVENTS)
     this.maxEvents = opts.maxEvents
       ?? (Number.isFinite(envMaxEvents) && envMaxEvents >= 100 ? Math.floor(envMaxEvents) : 5000)
+    // 内存环字节预算（issue #315 泄漏点 B）：默认 64 MiB——正常会话（小事件 ×
+    // 5000）远够用，仅在病态的大 tool_result 累积时触发最旧条目投影。
+    this.maxEventBytes = opts.maxEventBytes ?? 64 * 1024 * 1024
     this.maxLoadedSessions = opts.maxLoadedSessions ?? 16
     // 审批等待超时：0（默认）= 永不超时——审批卡持久化可回放，无限等优于长
     // 自主任务被误拒；部署侧（无人值守/CI）可用 RIVET_APPROVAL_TIMEOUT_MS
@@ -1711,9 +1789,7 @@ export class RuntimeSessionManager {
       if (e.type === 'artifact') session.knownArtifacts.add(String(e.data.id))
       session.record.updatedAt = Math.max(session.record.updatedAt, e.ts)
     }
-    if (session.events.length > this.maxEvents) {
-      session.events = trimEventRing(session.events, this.maxEvents)
-    }
+    this.enforceRingLimits(session)
     session.record.lastSeq = session.seq
     for (const e of novel) {
       for (const listener of session.listeners) {
@@ -1860,8 +1936,8 @@ export class RuntimeSessionManager {
           pendingApprovals: 0,
         },
         agent: null,
-        // 内存环上限与懒加载路径一致：只保留尾部 maxEvents 进内存。
-        events: events.length > this.maxEvents ? trimEventRing(events, this.maxEvents) : events,
+        // 内存环上限与懒加载路径一致：装填后由 enforceRingLimits 收敛（条数 + 字节）。
+        events,
         diskFirstSeq: events[0]?.seq,
         eventsLoaded: true,
         seq: maxSeq,
@@ -1884,6 +1960,7 @@ export class RuntimeSessionManager {
         planAutoApproveUi: ps.record.planAutoApproveUi === true,
       }
       this.sessions.set(session.record.id, session)
+      this.enforceRingLimits(session)
       if (wasRunning) {
         session.seq += CRASH_RECOVERY_SEQ_GAP
         // Close out approvals the crash left dangling (see lazy path above) —
@@ -1962,7 +2039,8 @@ export class RuntimeSessionManager {
     // 保留尾部进内存——与活跃会话超过环容量后的行为一致（append 已截尾），
     // 客户端 since=0 重放本来就只拿得到环内尾部。磁盘 events.jsonl 不动，
     // 仍是完整历史的 source of truth。
-    session.events = evs.length > this.maxEvents ? trimEventRing(evs, this.maxEvents) : evs
+    session.events = evs
+    this.enforceRingLimits(session)
   }
 
   /** adoptLoadedEvents 的尾部版：截断已在读取侧完成，被截头部的信息由
@@ -1972,8 +2050,10 @@ export class RuntimeSessionManager {
     if (tail.total > 0) session.diskFirstSeq = tail.diskFirstSeq
     const maxSeq = tail.total > 0 ? tail.lastSeq : session.record.lastSeq
     session.seq = Math.max(session.seq, maxSeq)
-    // 兜底（M1）：tail 实现返回超限普通事件时再压一次；delegation 两处都豁免。
-    session.events = trimEventRing(tail.events, this.maxEvents)
+    // 兜底（M1/#315）：tail 实现（workers/events-tail.ts 的 TailAccumulator）仍对
+    // delegation 全豁免，可能返回超限条数——此处统一收敛（两遍截尾 + 字节预算）。
+    session.events = tail.events
+    this.enforceRingLimits(session)
   }
 
   /**
@@ -5781,9 +5861,8 @@ export class RuntimeSessionManager {
     const maxSeq = eventsPrefix.length > 0 ? eventsPrefix[eventsPrefix.length - 1]!.seq : 0
     child.seq = maxSeq
     child.diskFirstSeq = eventsPrefix[0]?.seq ?? 1
-    child.events = eventsPrefix.length > this.maxEvents
-      ? trimEventRing(eventsPrefix, this.maxEvents)
-      : [...eventsPrefix]
+    child.events = [...eventsPrefix]
+    this.enforceRingLimits(child)
     child.eventsLoaded = true
     for (const ev of eventsPrefix) {
       try { this.persistence?.appendEvent(created.id, ev) } catch { /* best-effort：活状态已就位 */ }
@@ -7039,6 +7118,21 @@ export class RuntimeSessionManager {
     return watermark
   }
 
+  /**
+   * 环写入后的统一限额收敛（issue #315）：先按条数（delegation 感知的两遍截尾），
+   * 再按字节总量（最旧条目投影回收字节）。所有把事件装入 session.events 的路径
+   * 都应经此收敛，保证内存环既有条数上界也有字节上界。
+   */
+  private enforceRingLimits(session: InternalSession): void {
+    if (session.events.length > this.maxEvents) {
+      session.events = trimEventRing(session.events, this.maxEvents)
+    }
+    if (this.maxEventBytes > 0) {
+      const trimmed = trimRingBytes(session.events, this.maxEventBytes)
+      if (trimmed) session.events = trimmed
+    }
+  }
+
   private appendRaw(
     session: InternalSession,
     type: SessionEventType,
@@ -7051,9 +7145,7 @@ export class RuntimeSessionManager {
       ...(session.record.runId ? { runId: session.record.runId, attemptId: session.record.attemptId } : {}),
     }
     session.events.push(stored)
-    if (session.events.length > this.maxEvents) {
-      session.events = trimEventRing(session.events, this.maxEvents)
-    }
+    this.enforceRingLimits(session)
     session.record.lastSeq = session.seq
     session.record.updatedAt = stored.ts
     if (this.persistence) {

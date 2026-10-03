@@ -35,3 +35,18 @@ test('未注册工作区的 cwd 一律 403，在册的照常（issue #221）', a
     rmSync(outside, { recursive: true, force: true })
   }
 })
+
+test('已注册但在磁盘上不存在的工作区（被删/被移），status 与 apply 均返回 404 且不崩溃', async () => {
+  const missing = join(tmpdir(), `rivet-tpl-missing-${Date.now()}`)
+  // missing 目录从未创建或已被删除，但属于 knownWorkspaces（如历史会话遗留 cwd）
+  const router = createRouter(buildProjectTemplatesRoutes(TOKEN, () => [missing]))
+
+  const status = await router('GET', `/project-templates/status?cwd=${encodeURIComponent(missing)}`, {}, AUTH)
+  assert.equal(status.status, 404, '不存在的工作区 status 必须返回 404')
+  assert.equal((status.body as { error: string }).error, 'Workspace directory does not exist')
+
+  const apply = await router('POST', '/project-templates/apply', { cwd: missing, agentsMode: 'overwrite' }, AUTH)
+  assert.equal(apply.status, 404, '不存在的工作区 apply 必须返回 404，不得抛未捕获 ENOENT 崩溃')
+  assert.equal((apply.body as { error: string }).error, 'Workspace directory does not exist')
+})
+

@@ -5,6 +5,7 @@
  * Mirrors the TUI first-run prompt in `src/main.ts`, but exposed as HTTP routes
  * so the desktop UI can drive the same flow with a modal/banner.
  */
+import { existsSync } from 'node:fs'
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { isKnownWorkspace, UNKNOWN_WORKSPACE_ERROR } from './workspace-guard.js'
@@ -48,6 +49,9 @@ export function buildProjectTemplatesRoutes(
       if (!isKnownWorkspace(cwd, knownWorkspaces())) {
         return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
       }
+      if (!existsSync(cwd)) {
+        return { status: 404, body: { error: 'Workspace directory does not exist' } }
+      }
       const status: ProjectTemplatesStatus = {
         needsInit: needsTemplatesInit(cwd),
         cwd,
@@ -71,15 +75,22 @@ export function buildProjectTemplatesRoutes(
       if (!['overwrite', 'append', 'skip'].includes(agentsMode)) {
         return { status: 400, body: { error: 'Invalid agentsMode' } }
       }
+      if (!existsSync(cwd)) {
+        return { status: 404, body: { error: 'Workspace directory does not exist' } }
+      }
 
-      const result: ApplyTemplatesResult = applyProjectTemplates(cwd, { agentsMode })
-      const decision = agentsMode === 'skip' ? 'declined' : 'created'
-      recordTemplatesDecision(cwd, decision, {
-        created: result.created,
-        appended: result.appended,
-        skipped: result.skipped,
-      })
-      return { status: 200, body: { ...result, decision } }
+      try {
+        const result: ApplyTemplatesResult = applyProjectTemplates(cwd, { agentsMode })
+        const decision = agentsMode === 'skip' ? 'declined' : 'created'
+        recordTemplatesDecision(cwd, decision, {
+          created: result.created,
+          appended: result.appended,
+          skipped: result.skipped,
+        })
+        return { status: 200, body: { ...result, decision } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
     },
   }
 }

@@ -153,6 +153,7 @@ export function writeTemplatesSentinel(cwd: string, value: TemplateSentinel): vo
  * based on what we find.
  */
 export function needsTemplatesInit(cwd: string): boolean {
+  if (!cwd || !existsSync(cwd)) return false
   if (hasTemplatesSentinel(cwd)) return false
   if (existsSync(join(cwd, RIVET_MD_PATH))) return false
   if (existsSync(join(cwd, AGENTS_MD_PATH))) return false
@@ -192,6 +193,10 @@ export function applyProjectTemplates(
   cwd: string,
   options: ApplyTemplatesOptions,
 ): ApplyTemplatesResult {
+  if (!cwd || !existsSync(cwd)) {
+    throw new Error(`Workspace directory does not exist: ${cwd}`)
+  }
+
   const created: string[] = []
   const appended: string[] = []
   const skipped: string[] = []

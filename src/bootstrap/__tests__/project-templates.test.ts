@@ -111,9 +111,22 @@ describe('needsTemplatesInit', () => {
     recordTemplatesDecision(cwd, 'created')
     assert.equal(needsTemplatesInit(cwd), false)
   })
+
+  it('returns false when directory does not exist on disk', () => {
+    const missing = join(sandboxTmpDir(), `project-templates-missing-${Date.now()}`)
+    assert.equal(needsTemplatesInit(missing), false)
+  })
 })
 
 describe('applyProjectTemplates', () => {
+  it('throws descriptive error when directory does not exist on disk', () => {
+    const missing = join(sandboxTmpDir(), `project-templates-missing-${Date.now()}`)
+    assert.throws(
+      () => applyProjectTemplates(missing, { agentsMode: 'overwrite' }),
+      /Workspace directory does not exist/,
+    )
+  })
+
   it('on empty project, default mode: writes .rivet.md and AGENTS.md', () => {
     const cwd = mkEmptyProject()
     const result = applyProjectTemplates(cwd, { agentsMode: 'overwrite' })

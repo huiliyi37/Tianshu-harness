@@ -1,8 +1,7 @@
-import { spawn, execFile } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 import { existsSync } from 'fs'
-import { spawnHidden } from './spawn-hidden.js'
 import { createReadStream } from 'fs'
 import { lstat, readdir, realpath, readFile, stat } from 'fs/promises'
 import { join, resolve } from 'path'
@@ -14,13 +13,12 @@ import { relativePosix } from '../path-format.js'
 import { truncateContent } from './truncation.js'
 import { GitignoreFilter } from './gitignore.js'
 import { validatePathSafe } from './path-validate.js'
+import { searchReadableFilesWithRipgrep } from './grep-ripgrep.js'
 import { summarizeGrepResult } from '../artifact/summarize.js'
 import type { ArtifactStore } from '../artifact/store.js'
 import { computeModelReadCap, type ModelReadCap } from './model-read-cap.js'
 import { getToolArtifactThreshold } from './artifact-threshold.js'
 import { debugLog } from '../utils/debug.js'
-import { track } from './process-tracker.js'
-import { gracefulKill } from '../platform.js'
 import { hashLine } from './hash-edit.js'
 import { registerGrepFileAccess } from './read-file.js'
 import { isRestrictedPath } from '../platform/restricted-paths.js'
@@ -121,6 +119,8 @@ Bad: grep(pattern="x") (too broad — will match too many lines)`,
     // Try ripgrep first, fall back to native search
     const rgResult = await tryRipgrep(pattern, absPath, searchPath, glob, maxResults, params.cwd, literal, contextLines, modelCap, params.artifactStore, artifactThreshold, params.abortSignal, params.sessionId)
     if (rgResult !== null) return rgResult
+
+    if (params.abortSignal?.aborted) return { content: 'grep 已取消。', isError: true }
 
     // Native fallback
     const regex = buildRegex(pattern, literal)
@@ -368,147 +368,31 @@ async function tryRipgrep(
   abortSignal?: AbortSignal,
   sessionId?: string,
 ): Promise<ToolResult | null> {
-  if (typeof pattern !== 'string' || pattern.length === 0) {
-    return Promise.resolve({ content: '错误：需要提供 pattern（非空字符串）', isError: true })
+  try {
+    const binary = await resolveRgPath()
+    if (!binary) return null
+    const { lines, truncated } = await searchReadableFilesWithRipgrep({
+      binary, cwd, path: absPath, pattern, glob, literal, contextLines,
+      maxResults, timeoutMs: TIMEOUT_MS, signal: abortSignal,
+    })
+    if (lines.length === 0) return { content: GREP_EMPTY_RESULT }
+    const text = lines.join('\n') + (truncated ? '\n...（已截断）' : '')
+    let hintedText = appendLogRangeHints(text, searchPath)
+    hintedText = await appendHashEditHints(hintedText, absPath, cwd, sessionId)
+    await registerGrepFilesFromOutput(hintedText, cwd, sessionId)
+    if (artifactStore && hintedText.length >= artifactThreshold) {
+      const { summary, sections } = summarizeGrepResult(hintedText, pattern)
+      try {
+        const artifactId = await artifactStore.save({ tool: 'grep', target: absPath, rawContent: hintedText, summary, sections })
+        const text = truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars)
+        return { content: `${text}\n\n${summary}\n使用 read_section(artifactId="${artifactId}", section="L1-L500") 获取完整匹配列表。\n[artifact:${artifactId}]` }
+      } catch { /* use the bounded inline result */ }
+    }
+    return { content: truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars) }
+  } catch (error) {
+    debugLog(`[grep] rg fallback: ${error instanceof Error ? error.message : String(error)}`)
+    return null
   }
-
-  return new Promise((resolve) => {
-    // 执行器体内 await rg 解析（异步探活）——包 async IIFE，resolve 闭包共用。
-    void (async () => {
-    const args = [
-      '--no-heading',
-      '--line-number',
-      '--max-count', String(maxResults),
-      '--color', 'never',
-    ]
-    if (literal) {
-      args.push('--fixed-strings')
-    }
-    if (glob) {
-      args.push('--glob', glob)
-    }
-    if (contextLines > 0) {
-      args.push('--context', String(contextLines))
-    }
-    args.push('--', pattern, absPath)
-
-    let child: ReturnType<typeof spawn>
-    try {
-      const rgBin = await resolveRgPath()
-      if (!rgBin) {
-        debugLog('[grep] no usable rg resolved — falling back to native search')
-        resolve(null)
-        return
-      }
-      child = track(spawnHidden(rgBin, args, {
-        cwd,
-        env: getResolvedEnv(cwd),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }))
-    } catch (err) {
-      debugLog(`[grep] rg spawn failed: ${err instanceof Error ? err.message : String(err)}`)
-      resolve(null)
-      return
-    }
-
-    let stdout = ''
-    let lineCount = 0
-    // 结果收够后我们自己 kill rg。必须记下来：signal kill 让 close 的 code 变成 null，
-    // 不区分就会把这条成功路径当成 rg 失败，丢弃已收结果去跑慢速全树扫描。
-    let killedAtCap = false
-
-    const timer = setTimeout(() => {
-      debugLog(`[grep] rg timed out after ${TIMEOUT_MS}ms, falling back: pattern=${grepPatternLabel(pattern)}`)
-      gracefulKill(child)
-      resolve(null)
-    }, TIMEOUT_MS)
-
-    // 用户中止（Esc/Ctrl+C）：协作式取消，kill rg 子进程。
-    // 没有这一步，rg 在 abort 后继续跑到 30s 超时才停。
-    const onAbort = () => {
-      clearTimeout(timer)
-      gracefulKill(child)
-      resolve(null)
-    }
-    if (abortSignal) {
-      if (abortSignal.aborted) onAbort()
-      else abortSignal.addEventListener('abort', onAbort, { once: true })
-    }
-
-    child.stdout!.on('data', (data: Buffer) => {
-      stdout += data.toString()
-      const lines = stdout.split('\n')
-      if (!stdout.endsWith('\n')) lines.pop()
-      lineCount = lines.filter(l => l.length > 0).length
-      if (lineCount >= maxResults || stdout.length > 200_000) {
-        killedAtCap = true
-        gracefulKill(child)
-      }
-    })
-
-    child.stderr!.on('data', () => {})
-
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
-      debugLog(`[grep] rg process error: ${err.message}`)
-      resolve(null)
-    })
-
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
-      if (!killedAtCap) {
-        if (code === 1) {
-          resolve({ content: GREP_EMPTY_RESULT })
-          return
-        }
-        if (code !== 0) {
-          debugLog(`[grep] rg fallback: code=${code} signal=${signal} pattern=${grepPatternLabel(pattern)}`)
-          resolve(null)
-          return
-        }
-      }
-      const lines = stdout.split('\n').filter(l => l.length > 0).slice(0, maxResults)
-      const suffix = killedAtCap || lineCount >= maxResults ? '\n...（已截断）' : ''
-      const text = lines.join('\n') + suffix
-      let hintedText = appendLogRangeHints(text, searchPath)
-
-      void (async () => {
-        hintedText = await appendHashEditHints(hintedText, absPath, cwd, sessionId)
-        await registerGrepFilesFromOutput(hintedText, cwd, sessionId)
-
-        if (artifactStore) {
-          if (hintedText.length < artifactThreshold) {
-            debugLog(`[artifact-skip] tool=grep(rg) pattern=${grepPatternLabel(pattern)} raw=${hintedText.length} threshold=${artifactThreshold}`)
-            resolve({ content: truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars) })
-            return
-          }
-          debugLog(`[artifact-wrap] tool=grep(rg) pattern=${grepPatternLabel(pattern)} raw=${hintedText.length} threshold=${artifactThreshold}`)
-          const { summary, sections } = summarizeGrepResult(hintedText, pattern)
-          try {
-            const artifactId = await artifactStore.save({
-              tool: 'grep',
-              target: absPath,
-              rawContent: hintedText,
-              summary,
-              sections,
-            })
-            const truncated = truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars)
-            resolve({
-              content: `${truncated}\n\n${summary}\n使用 read_section(artifactId="${artifactId}", section="L1-L500") 获取完整匹配列表。\n[artifact:${artifactId}]`,
-            })
-          } catch {
-            resolve({ content: truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars) })
-          }
-          return
-        }
-
-        resolve({ content: truncateContent(hintedText, modelCap.maxChars, modelCap.headChars, modelCap.tailChars) })
-      })()
-    })
-  })()
-  })
 }
 
 interface NativeSearchOutcome {
@@ -583,6 +467,7 @@ async function nativeSearch(
         if (filter.isIgnored(cwd, fullPath)) continue
         if (globRegex && !globRegex.test(entry.name)) continue
 
+        if (!validatePathSafe(cwd, fullPath).ok) continue
         const matched = await searchFile(fullPath, regex, maxResults - results.length, contextLines)
         for (const line of matched) {
           results.push(`${relPath}:${line}`)

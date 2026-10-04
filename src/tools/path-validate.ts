@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, dirname, join, basename } from 'path'
-import { realpathSync, existsSync } from 'fs'
+import { realpathSync, lstatSync, readlinkSync } from 'fs'
 import { isReadGranted, isWriteGranted } from './path-grants.js'
 import { translateWindowsShellPath } from '../path-format.js'
 import { detectSensitiveFile } from './sensitive-file-detector.js'
@@ -38,7 +38,8 @@ export function validatePathSafe(cwd: string, inputPath: string, mode: 'read' | 
   try {
     realCwd = realpathSync(cwd)
   } catch {
-    realCwd = resolve(cwd)
+    try { realCwd = resolveNearestExisting(resolve(cwd), resolve(cwd)) }
+    catch { return { ok: false, error: `Cannot resolve workspace path: ${cwd}` } }
   }
   const realResolved = resolve(realCwd, inputPath)
 
@@ -54,7 +55,8 @@ export function validatePathSafe(cwd: string, inputPath: string, mode: 'read' | 
   try {
     real = realpathSync(realResolved)
   } catch {
-    real = resolveNearestExisting(realResolved, realCwd)
+    try { real = resolveNearestExisting(realResolved, realCwd) }
+    catch { return { ok: false, error: `Cannot safely resolve path: ${inputPath}` } }
   }
 
   // Sensitive file check — fail-closed BEFORE path escape check, and across every
@@ -114,24 +116,31 @@ export function validatePathSafe(cwd: string, inputPath: string, mode: 'read' | 
  * non-existent tail. Lets new-file writes be validated while still resolving any
  * symlink in the existing portion of the path.
  */
-function resolveNearestExisting(target: string, floor: string): string {
+function resolveNearestExisting(target: string, floor: string, seen = new Set<string>()): string {
   const segments: string[] = []
   let current = target
-  while (!existsSync(current)) {
-    // Stop the walk at the project root (floor). Climbing above it would resolve
-    // ancestors outside the project — e.g. on macOS /home is a synthetic symlink
-    // to /System/Volumes/Data/home — and false-flag legitimate in-project paths
-    // as escapes. floor (realCwd) is already canonicalized and validated above.
-    if (current === floor) return join(floor, ...segments)
-    segments.unshift(basename(current))
-    const parent = dirname(current)
-    if (parent === current) return target // reached fs root without finding existing
-    current = parent
-  }
-  try {
+  while (true) {
+    let entry
+    try { entry = lstatSync(current) }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+      if (current === floor) return join(floor, ...segments)
+      segments.unshift(basename(current))
+      const parent = dirname(current)
+      if (parent === current) return target
+      current = parent
+      continue
+    }
+    // lstat distinguishes an absent directory entry from a link whose target
+    // is absent. existsSync follows the link and cannot make that distinction.
+    if (entry.isSymbolicLink()) {
+      if (seen.has(current) || seen.size >= 40) throw new Error('Symbolic link cycle')
+      seen.add(current)
+      const destination = resolve(dirname(current), readlinkSync(current))
+      return join(resolveNearestExisting(destination, floor, seen), ...segments)
+    }
     return join(realpathSync(current), ...segments)
-  } catch {
-    return target
   }
 }
 

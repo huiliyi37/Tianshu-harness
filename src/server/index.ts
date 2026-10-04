@@ -268,7 +268,7 @@ export async function startServer(
     return lanMode
   }
 
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const reqHeaders = normalizeHeaders(req)
 
     if (!isHostAllowed(req.headers.host, boundPort)) {
@@ -343,8 +343,27 @@ export async function startServer(
       ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
       ...result.headers,
     }
+    const responseBody = result.body ? JSON.stringify(result.body) : ''
     res.writeHead(result.status, headers)
-    res.end(result.body ? JSON.stringify(result.body) : '')
+    res.end(responseBody)
+  }
+
+  const server = createServer((req, res) => {
+    void handleRequest(req, res).catch(error => {
+      if (res.destroyed || res.writableEnded) return
+      serverLogger.error('Request failed', { method: req.method, ...errorContext(error) })
+      if (res.headersSent) {
+        res.destroy()
+        return
+      }
+      const origin = corsOrigin(normalizeHeaders(req))
+      const malformedUrl = error instanceof URIError
+      res.writeHead(malformedUrl ? 400 : 500, {
+        'Content-Type': 'application/json',
+        ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
+      })
+      res.end(JSON.stringify({ error: malformedUrl ? 'Malformed URL encoding' : 'Internal server error' }))
+    })
   })
 
   let boundPort = port

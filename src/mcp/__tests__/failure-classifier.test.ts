@@ -130,3 +130,44 @@ describe('classifyMcpError · stderr 细分（issue #149）', () => {
     assert.equal(result.retryable, true)
   })
 })
+
+/**
+ * stdio 连接超时的误分类修正：本地管道不存在"网络"。实测现场形态（自建最小
+ * MCP 服务器，响应缺 `jsonrpc:"2.0"` 字段）：客户端收到响应但静默丢弃、干等
+ * 到 `MCP connect <id> timed out after 60000ms`，此前被归类为 network/retryable
+ * —— "Transient network error. Retry may succeed" 两个断言皆错：不是网络问题，
+ * 重试也绝不会成功（响应格式是永久性的）。真正根因是握手未完成：服务器实现
+ * 未按协议应答，或首次冷启动超出 timeoutMs。
+ */
+describe('classifyMcpError · stdio 连接超时（握手未完成 ≠ 网络抖动）', () => {
+  const CONNECT_TIMEOUT = new Error('MCP connect ctx-meta timed out after 60000ms')
+
+  it('stdio 连接超时 → protocol，不可重试，建议落在握手/协议/timeoutMs', () => {
+    const result = classifyMcpError(CONNECT_TIMEOUT, { transport: 'stdio' })
+    assert.equal(result.class, 'protocol')
+    assert.equal(result.retryable, false, '响应格式是永久性问题，重试无济于事')
+    assert.match(result.suggestion, /handshake|jsonrpc/i)
+    assert.match(result.suggestion, /mcp\.timeoutMs/i)
+  })
+
+  it('remote 连接超时 → 保持 network/retryable（HTTP 超时才真的是瞬时的）', () => {
+    const result = classifyMcpError(new Error('MCP connect api.example.com timed out after 60000ms'), {
+      transport: 'remote',
+    })
+    assert.equal(result.class, 'network')
+    assert.equal(result.retryable, true)
+  })
+
+  it('callTool 超时不误伤：不是握手问题，维持既有 network 语义', () => {
+    const result = classifyMcpError(new Error('MCP callTool srv/tool timed out after 60000ms'), {
+      transport: 'stdio',
+    })
+    assert.equal(result.class, 'network')
+    assert.equal(result.retryable, true)
+  })
+
+  it('无 transport 上下文时连接超时不判 protocol（保守，与 -32000 的先例一致）', () => {
+    const result = classifyMcpError(CONNECT_TIMEOUT)
+    assert.equal(result.class, 'network')
+  })
+})

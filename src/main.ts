@@ -24,8 +24,8 @@ installEpermFilter()
 // start when it cannot. No-op outside a staged layout (tsx dev runs).
 assertStagedRuntimeIntact(dirname(fileURLToPath(import.meta.url)))
 
-import { bootstrapInteractiveSession, createShutdownHandler, switchAgentRuntime, restorePlanModeFromMeta, getOrCreateSessionId, wasSessionResumed } from './bootstrap.js'
-import type { BootstrapContext } from './bootstrap.js'
+import { bootstrapInteractiveSession, createShutdownHandler, switchAgentRuntime, restorePlanModeFromMeta, getOrCreateSessionId, wasSessionResumed, initializeMcp } from './bootstrap.js'
+import type { BootstrapContext, RuntimeRefs } from './bootstrap.js'
 import { resolveCapabilities } from './api/provider.js'
 import { createExitFuse } from './platform/exit-fuse.js'
 
@@ -340,7 +340,10 @@ async function main() {
       process.exit(2)
     }
 
-    const cfg = loadConfig()
+    // 传 cwd：无头此前从不读项目层配置（.rivet-config.json 不参与合并），是
+    // 「无头不加载 MCP」的更深层根因——即使装配了 initializeMcp，servers 也恒为空。
+    // 项目信任门语义不变：未授信项目的 mcp/hooks 等敏感键在 loadConfig 内剥离。
+    const cfg = loadConfig({ cwd: process.cwd() })
     setTargetConventions(cfg.editor.platform, cfg.editor.eol)
     applyConfiguredGitBashPath(cfg.env.gitBashPath)
     const { buildSearchBackends } = await import('./tools/web-search.js')
@@ -460,6 +463,16 @@ async function main() {
     const builtinNames = new Set(createDefaultToolRegistry([], registryOptions).getAllNames())
     const pluginTools = pluginRegistry.getAll().filter(t => !builtinNames.has(t.definition.name))
 
+    // MCP（无头补齐）：交互路径经 bootstrapInteractiveSession → initializeMcp，
+    // 无头此前从不装配——配置了 MCP 服务器的自动化场景会静默失去全部 mcp__ 工具
+    // （无警告、无报错）。这里先连接后注册（await）：工具在 createAgent 之前就绪，
+    // 不需要交互路径的晚到注册闸门。未配置 MCP 时 initializeMcp 直接早退（零成本）；
+    // 坏服务器的最坏等待由 mcp.timeoutMs 界定，与交互路径同一上限。
+    const mcpStageRegistry = createDefaultToolRegistry([], registryOptions)
+    const mcpRefs = { mcpManager: null } as RuntimeRefs
+    await initializeMcp(cfg, mcpStageRegistry, mcpRefs)
+    const mcpTools = mcpStageRegistry.getAll()
+
     const result = await runHeadless({
       prompt: effectivePrompt,
       json: parsed.json,
@@ -472,6 +485,10 @@ async function main() {
 
         // Register plugin tools (loaded during startup, already conflict-checked)
         for (const tool of pluginTools) {
+          toolRegistry.register(tool)
+        }
+        // Register MCP tools (connected before runHeadless; empty when no MCP configured)
+        for (const tool of mcpTools) {
           toolRegistry.register(tool)
         }
         for (const name of pluginResult.suppressTools) {
@@ -661,6 +678,10 @@ async function main() {
     const exitCode = parsed.goal
       ? (goalTrackerRef.current?.isGoalAchieved() ? 0 : 1)
       : result.exitCode
+    // 无头一次性进程：stdio MCP 子进程会挂住事件循环——退出前显式拆掉
+    // （交互路径的等价收尾挂在 shutdown handler 上，无头分支不走那条路）。
+    try { mcpRefs.mcpManager?.killChildrenSync?.() } catch { /* best-effort */ }
+    try { await mcpRefs.mcpManager?.shutdown?.() } catch { /* best-effort */ }
     process.exit(exitCode)
   }
 

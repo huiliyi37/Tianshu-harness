@@ -104,6 +104,24 @@ export function classifyMcpError(error: unknown, context?: McpErrorContext): Cla
     return { class: 'auth', retryable: false, suggestion: 'Check API key or OAuth configuration for this MCP server.' }
   }
 
+  // stdio 连接超时：本地管道不存在"网络"。子进程被拉起但始终没有完成 MCP 握手
+  // （initialize 已发出、timeoutMs 内无协议有效响应）。实测最常见根因：服务器实现了
+  // 传输层但应答不是合法 JSON-RPC（例如缺 `jsonrpc:"2.0"` 字段时客户端静默丢弃，
+  // 表现就是干等到超时）；其次是首次冷启动（npx 拉包）超出 timeoutMs。两者重试都
+  // 无济于事——与 remote 的瞬时网络超时严格分开（后者才 retryable）。
+  if (context?.transport === 'stdio' && /mcp connect .+timed out/i.test(msg)) {
+    return {
+      class: 'protocol',
+      retryable: false,
+      suggestion: 'The server process started but never completed the MCP handshake (initialize '
+        + 'sent, no protocol-valid response arrived before the timeout). Common causes: the server '
+        + 'does not answer with valid JSON-RPC (every response must carry the `jsonrpc:"2.0"` field — '
+        + 'malformed responses are silently dropped), or the first start is slow (e.g. npx fetching '
+        + 'packages) and exceeds `mcp.timeoutMs`. Retrying will not fix either — fix the server '
+        + 'implementation or raise the timeout.',
+    }
+  }
+
   // Network errors
   if (/econnrefused|etimedout|timed out|socket hang up|econnreset|fetch failed|transport.*close|disconnected|connection closed|-32000/i.test(msg)) {
     return { class: 'network', retryable: true, suggestion: 'Transient network error. Retry may succeed.' }

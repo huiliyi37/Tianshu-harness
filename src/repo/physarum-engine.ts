@@ -230,13 +230,24 @@ export class PhysarumEngine {
       nodeWeights.set(edge.fileB, (nodeWeights.get(edge.fileB) ?? 0) + edge.weight)
     }
 
+    const scales = new Map<string, { scale: number; order: number }>()
     for (const [node, total] of nodeWeights) {
       if (total <= this.config.synapticBudget) continue
-      const scale = this.config.synapticBudget / total
-      for (const edge of this.edges.values()) {
-        if (edge.fileA === node || edge.fileB === node) {
-          edge.weight *= scale
-        }
+      scales.set(node, { scale: this.config.synapticBudget / total, order: scales.size })
+    }
+    if (scales.size === 0) return
+
+    // Each edge has at most two factors. Preserve the previous node order,
+    // including floating-point rounding and scaling a self-edge only once.
+    for (const edge of this.edges.values()) {
+      const a = scales.get(edge.fileA)
+      const b = scales.get(edge.fileB)
+      if (a && b && b.order < a.order) {
+        edge.weight *= b.scale
+        edge.weight *= a.scale
+      } else {
+        if (a) edge.weight *= a.scale
+        if (b && b !== a) edge.weight *= b.scale
       }
     }
   }

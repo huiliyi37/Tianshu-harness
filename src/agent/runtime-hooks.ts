@@ -107,6 +107,8 @@ export interface RuntimeHookEffects {
 export interface RuntimeHookContext {
   snapshot: RuntimeHookSnapshot
   effects: RuntimeHookEffects
+  /** Lifetime of this invocation. Hooks must pass it to cancellable I/O. */
+  signal?: AbortSignal
 }
 
 export interface PreTurnRuntimeHook {
@@ -310,29 +312,30 @@ export class RuntimeHookPipeline {
   }
 
   async runPreTurn(ctx: RuntimeHookContext): Promise<void> {
-    await this.runPhase('preTurn', this.preTurnHooks, hook => hook.run(ctx))
+    await this.runPhase('preTurn', this.preTurnHooks, ctx, (hook, scoped) => hook.run(scoped))
   }
 
   async runAfterPerception(ctx: RuntimeHookContext): Promise<void> {
-    await this.runPhase('afterPerception', this.afterPerceptionHooks, hook => hook.run(ctx))
+    await this.runPhase('afterPerception', this.afterPerceptionHooks, ctx, (hook, scoped) => hook.run(scoped))
   }
 
   async runPostTool(ctx: RuntimeHookContext, tool: RuntimeToolEvent): Promise<void> {
-    await this.runPhase('postTool', this.postToolHooks, hook => hook.run(ctx, tool))
+    await this.runPhase('postTool', this.postToolHooks, ctx, (hook, scoped) => hook.run(scoped, tool))
   }
 
   async runPostTurn(ctx: RuntimeHookContext): Promise<void> {
-    await this.runPhase('postTurn', this.postTurnHooks, hook => hook.run(ctx))
+    await this.runPhase('postTurn', this.postTurnHooks, ctx, (hook, scoped) => hook.run(scoped))
   }
 
   async runPostSession(ctx: RuntimeHookContext): Promise<void> {
-    await this.runPhase('postSession', this.postSessionHooks, hook => hook.run(ctx))
+    await this.runPhase('postSession', this.postSessionHooks, ctx, (hook, scoped) => hook.run(scoped))
   }
 
   private async runPhase<T extends RuntimeHook>(
     phase: RuntimeHookPhase,
     hooks: T[],
-    invoke: (hook: T) => Promise<void> | void,
+    ctx: RuntimeHookContext,
+    invoke: (hook: T, scoped: RuntimeHookContext) => Promise<void> | void,
   ): Promise<void> {
     for (const hook of hooks) {
       if (this.disabledHookIds.has(hook.name)) {
@@ -355,16 +358,39 @@ export class RuntimeHookPipeline {
       let outcome: RuntimeHookRunOutcome = 'completed'
       let message: string | undefined
       let pending: Promise<void> | undefined
+      const controller = new AbortController()
+      const signal = ctx.signal ? AbortSignal.any([ctx.signal, controller.signal]) : controller.signal
+      let active = true
+      // Guard the shared effect channel, including functions captured before the
+      // deadline. The next hook gets a fresh scope and can still update state.
+      const scoped: RuntimeHookContext = {
+        ...ctx,
+        signal,
+        effects: new Proxy(ctx.effects, {
+          get(target, key, receiver) {
+            const effect = Reflect.get(target, key, receiver)
+            return typeof effect === 'function' ? (...args: unknown[]) => {
+              if (active && !signal.aborted) return Reflect.apply(effect, target, args)
+            } : effect
+          },
+        }),
+      }
 
       try {
-        pending = Promise.resolve().then(() => invoke(hook))
+        pending = Promise.resolve().then(() => {
+          signal.throwIfAborted()
+          return invoke(hook, scoped)
+        })
         if (timeoutMs > 0) {
           await Promise.race([
             pending,
             new Promise<never>((_, reject) => {
               timeout = setTimeout(() => {
                 timedOut = true
-                reject(new Error(`Runtime hook '${hook.name}' timed out after ${timeoutMs}ms`))
+                active = false
+                const error = new Error(`Runtime hook '${hook.name}' timed out after ${timeoutMs}ms`)
+                controller.abort(error)
+                reject(error)
               }, timeoutMs)
             }),
           ])
@@ -381,6 +407,8 @@ export class RuntimeHookPipeline {
           error,
         })
       } finally {
+        active = false
+        controller.abort()
         if (timeout) clearTimeout(timeout)
         const durationMs = Date.now() - startedAt
         this.publishRun({
@@ -395,12 +423,10 @@ export class RuntimeHookPipeline {
       }
 
       if (timedOut && pending) {
-        // 迟到收尾：race 超时后 pending 仍会 settle。迟到的 rejection 是
-        // unhandledRejection（main.ts 有 eperm-filter 兜底只打 stderr；未装
-        // 该 filter 的嵌入方/headless 在 Node ≥15 直接崩进程）；迟到的成功
-        // 则副作用照常落地却零记账。迟到失败在此送 onError 保留现场——
-        // run 统计已在上面 finally 以 timed_out 记账，不重复计 runs。
+        // Observe non-cooperative late failures without counting the run twice.
+        // Cancellation with our deadline reason was already reported above.
         pending.catch(lateError => {
+          if (lateError === signal.reason) return
           this.options.onError?.({
             phase,
             hookName: hook.name,

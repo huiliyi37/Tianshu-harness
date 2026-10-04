@@ -61,7 +61,10 @@ export class AntiAnchoringController {
     })
   }
 
-  async callSeedModel(prompt: string): Promise<string> {
+  async callSeedModel(prompt: string, hookSignal?: AbortSignal): Promise<string> {
+    const sessionSignal = this.deps.getAbortSignal()
+    const signal = hookSignal && sessionSignal ? AbortSignal.any([hookSignal, sessionSignal]) : hookSignal ?? sessionSignal
+    signal?.throwIfAborted()
     const antiAnchoring = normalizeAntiAnchoringConfig(this.deps.getAntiAnchoringConfig())
     const request: OaiChatRequest = {
       model: this.deps.getModel(),
@@ -80,7 +83,8 @@ export class AntiAnchoringController {
       },
       onStopReason: () => {},
       onError: error => { throw error },
-    }, this.deps.getAbortSignal())
+    }, signal)
+    signal?.throwIfAborted()
     return text.trim()
   }
 }

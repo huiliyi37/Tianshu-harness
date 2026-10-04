@@ -734,7 +734,7 @@ export function createRuntimeHooksPipeline(self: AgentLoop): RuntimeHookPipeline
     getFileObservations: () => self.config.contextClaimStore?.listClaims({ kind: ['file_observation'] }) ?? [],
     antiAnchoring: normalizeAntiAnchoringConfig(self.config.antiAnchoring),
     getInitialUserMessage: () => self.initialUserMessage,
-    callAntiAnchoringSeedModel: prompt => self.antiAnchoring.callSeedModel(prompt),
+    callAntiAnchoringSeedModel: (prompt, signal) => self.antiAnchoring.callSeedModel(prompt, signal),
     songlineEnabled: self.config.songlineEnabled,
     securityGuidance: self.config.securityGuidance,
     getTaskSummary: self.config.taskLedger ? () => self.config.taskLedger!.getSummary() : undefined,

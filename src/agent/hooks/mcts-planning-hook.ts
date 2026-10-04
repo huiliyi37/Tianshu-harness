@@ -5,7 +5,7 @@ import { buildSeedPrompt } from '../seed-prompt-builder.js'
 
 export interface MCTSPlanningHookOpts {
   /** Calls a lightweight LLM with the given prompt, returns its response */
-  callSeedModel: (prompt: string) => Promise<string>
+  callSeedModel: (prompt: string, signal?: AbortSignal) => Promise<string>
   /** Number of branches to explore (default: 3) */
   branches?: number
   /** Which turn to activate MCTS planning (default: 1) */
@@ -27,9 +27,11 @@ export function createMCTSPlanningHook(opts: MCTSPlanningHookOpts): PreTurnRunti
   const vault = new AnchorVault()
   let sealed: SealedAnchor | null = null
   let hasRun = false
+  let signal: AbortSignal | undefined
 
   const explore: MCTSPlannerOpts['explore'] = async (_task, idx) => {
-    return opts.callSeedModel(buildSeedPrompt(sealed!, idx))
+    signal?.throwIfAborted()
+    return opts.callSeedModel(buildSeedPrompt(sealed!, idx), signal)
   }
 
   const planner = new MCTSPlanner({
@@ -48,9 +50,12 @@ export function createMCTSPlanningHook(opts: MCTSPlanningHookOpts): PreTurnRunti
 
       const userMsg = opts.getUserMessage()
       if (!userMsg) return
+      signal = ctx.signal
+      signal?.throwIfAborted()
       sealed = vault.seal(userMsg)
 
       const result = await planner.plan(sealed.original, sealed.phrases)
+      signal?.throwIfAborted()
       opts.onResult?.(result)
 
       if (result.allJunk) {

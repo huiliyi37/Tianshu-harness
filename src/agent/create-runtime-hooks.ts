@@ -210,7 +210,7 @@ export interface RuntimeHookDeps {
   /** Returns the original user task for MCTS planning. */
   getInitialUserMessage?: () => string | null
   /** Lightweight seed model call for MCTS planning branches. */
-  callAntiAnchoringSeedModel?: (prompt: string) => Promise<string>
+  callAntiAnchoringSeedModel?: (prompt: string, signal?: AbortSignal) => Promise<string>
   /** Observe MCTS planning result for diagnostics/tests. */
   onAntiAnchoringMCTSResult?: Parameters<typeof createMCTSPlanningHook>[0]['onResult']
 

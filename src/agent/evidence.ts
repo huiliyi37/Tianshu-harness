@@ -1,5 +1,6 @@
 import type { VerificationMetadata } from '../tools/types.js'
 import { buildDeliveryGate } from './delivery-gate.js'
+import { inferBashVerificationScope } from './bash-verification.js'
 
 // wire 侧类型已抽至 evidence-types.ts（叶子，桌面端经 server/ui-shared 共享）；
 // 此处 re-export 保持内核调用方不变。
@@ -213,7 +214,7 @@ export class EvidenceTracker implements EvidenceTrackerPublic {
   private applyVerificationLevels(result: VerificationMetadata): void {
     if (result.status !== 'passed') return
     const level = this.inferVerificationLevel(result.command)
-    const targets = this.inferVerifiedFiles(result.command, level)
+    const targets = this.inferVerifiedFiles(result, level)
     for (const file of targets) {
       if (this.state.filesModified.has(file)) {
         this.state.fileVerificationLevels?.set(file, level)
@@ -222,27 +223,24 @@ export class EvidenceTracker implements EvidenceTrackerPublic {
   }
 
   private inferVerificationLevel(command: string): VerificationLevel {
-    if (/\\btsc\\b|typecheck|--noEmit/.test(command)) return 'typed'
-    if (/\\blint\\b|eslint/.test(command)) return 'linted'
+    if (/\btsc\b|typecheck|--noEmit/.test(command)) return 'typed'
+    if (/\blint\b|eslint/.test(command)) return 'linted'
     return 'tested'
   }
 
-  private inferVerifiedFiles(command: string, level: VerificationLevel): string[] {
+  private inferVerifiedFiles(result: VerificationMetadata, level: VerificationLevel): string[] {
     const modified = [...this.state.filesModified]
-    if (level === 'typed') return modified.filter(f => /\.tsx?$/.test(f))
-    if (level === 'linted') return modified
-    if (command.includes('src/**/__tests__') || command.includes('npm test') || command.includes('run_tests')) return modified
-    // 归一化分隔符：'\\' 是单反斜杠字面量——此处曾误写为 '\\\\'（双反斜杠，
-    // 对单反斜杠路径零效果），Windows 上 normalizedFile 不归一 → base/stem 退化
-    // 为整条路径 → 匹配失败、level 恒 pending（与全仓 evidence-obligation /
-    // obligation-tracker 等的 '\\' 惯例不一致）。回归：evidence.test.ts
-    // 「反斜杠路径归一化」describe。
-    const normalizedCommand = command.replaceAll('\\', '/')
+    if (result.scope === 'full') return level === 'typed' ? modified.filter(f => /\.tsx?$/.test(f)) : modified
+    const targets = result.targetFiles ?? inferBashVerificationScope(result.command).targetFiles ?? []
+    const normalize = (path: string) => path.replaceAll('\\', '/').replace(/^\.\//, '')
+    const normalizedTargets = targets.flatMap(target => {
+      const normalized = normalize(target)
+      const source = normalized.replace(/\/(?:__tests__|tests)\//g, '/').replace(/\.(?:test|spec)(?=\.[^/]+$)/, '')
+      return [normalized, source]
+    })
     return modified.filter(file => {
-      const normalizedFile = file.replaceAll('\\', '/')
-      const base = normalizedFile.split('/').pop() ?? normalizedFile
-      const stem = base.replace(/\.[^.]+$/, '')
-      return normalizedCommand.includes(normalizedFile) || normalizedCommand.includes(base) || normalizedCommand.includes(stem)
+      const normalizedFile = normalize(file)
+      return normalizedTargets.some(target => target === normalizedFile || target.endsWith('/' + normalizedFile))
     })
   }
 

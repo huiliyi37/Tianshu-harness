@@ -939,7 +939,7 @@ describe('executeToolUse', () => {
       config: {
         ...makeDeps().config,
         toolRegistry: {
-          execute: async () => ({ content: 'type error', isError: true }),
+          execute: async () => ({ content: 'type error', isError: true, exitCode: 2 }),
           get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
           needsApproval: () => false,
           resolveName: (n: string) => n,
@@ -960,7 +960,7 @@ describe('executeToolUse', () => {
       type: 'verification',
       command: 'npx tsc --noEmit',
       status: 'failed',
-      meta: { scope: 'full', passed: 0, failed: 0, skipped: 0, exitCode: 1 },
+      meta: { scope: 'full', passed: 0, failed: 0, skipped: 0, exitCode: 2 },
     })
   })
 
@@ -1001,7 +1001,7 @@ describe('executeToolUse', () => {
     assert.equal(last.type, 'verification')
     assert.equal(last.meta.errorClass, 'timeout', 'timeout must reach the ledger as a raw fact')
     assert.equal(last.meta.timedOut, true)
-    assert.equal(last.meta.exitCode, 1)
+    assert.equal(last.meta.exitCode, undefined, 'timeout must not fabricate an exit code')
     assert.equal(last.meta.passed, 0)
     // 若无 errorClass（旧 harness / 仅文案可辨），仍须由文案兜底识别为超时
     assert.match('Tool bash timed out after 120s', /timed out after \d+s/)
@@ -3565,7 +3565,7 @@ describe('deliver_task abort — post-abort commit attribution', () => {
   })
 
   it('touches tool:start and tool:end around execute (stall-observer wiring)', async () => {
-    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-touch-'))
+    const dir = mkdtempSync(join(testTmp(), 'toolpipeline-touch-'))
     try {
       const deps = makeDeps(dir, {
         sessionId: 'touch-wiring-test',
@@ -3597,7 +3597,7 @@ describe('deliver_task abort — post-abort commit attribution', () => {
   })
 
   it('stage touch: pre 段在 trackEdit 前可指认（stall-observer 纵深 2026-09-10）', async () => {
-    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-stage-pre-'))
+    const dir = mkdtempSync(join(testTmp(), 'toolpipeline-stage-pre-'))
     try {
       const { _resetStallObserverForTest, getLastActivity } = await import('../stall-observer.js')
       _resetStallObserverForTest()
@@ -3623,7 +3623,7 @@ describe('deliver_task abort — post-abort commit attribution', () => {
   })
 
   it('stage touch: post 段在 firePostToolUse 前可指认（stall-observer 纵深 2026-09-10）', async () => {
-    const dir = mkdtempSync(join(process.cwd(), '.test-tmp', 'toolpipeline-stage-post-'))
+    const dir = mkdtempSync(join(testTmp(), 'toolpipeline-stage-post-'))
     try {
       const { _resetStallObserverForTest, getLastActivity } = await import('../stall-observer.js')
       _resetStallObserverForTest()

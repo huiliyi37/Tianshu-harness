@@ -4,6 +4,7 @@ import type { ContentBlock } from '../api/types.js'
 import type { ToolCallParams, VerificationMetadata, ToolErrorClass } from '../tools/types.js'
 import type { TurnHarness } from './turn-harness.js'
 import type { EvidenceTrackerPublic } from './evidence.js'
+import { buildBashVerification } from './bash-verification.js'
 import type { TraceStore } from './trace-store.js'
 import type { RepairHintTracker } from './repair-hint.js'
 import type { ImportGraph } from './import-graph.js'
@@ -1418,6 +1419,7 @@ async function executeToolUseInner(
       input: tu.input,
       turn,
       execute: async () => {
+        rawToolResult = undefined
         setActivityPhase(activityKey, 'saving', Date.now() + 30_000)
         await callbacks.beforeToolExecute?.(tu.id, tu.name, tu.input)
         deps.abortSignal?.throwIfAborted()
@@ -1815,51 +1817,26 @@ async function executeToolUseInner(
             })
           }
        } else if (/\b(tsc|typecheck|check|test|jest|vitest|mocha|pytest|eslint|lint|build)\b/.test(cmd) || classifyDeclaredCommand(cmd, loadDeclaredVerify(deps.cwd))) {
-          const testStatus = harnessResult.isError ? 'failed' : 'passed'
-          // Parse test counts from bash output so deliver_task shows real numbers
-          // instead of always "0 pass 0 fail". Supports node:test format
-          // ("ℹ pass N" / "ℹ fail N") and common TAP/jest patterns.
-          const output = typeof harnessResult.content === 'string' ? harnessResult.content : ''
-          const passedMatch = output.match(/ℹ\s+pass\s+(\d+)|✅\s+(\d+)\s+passed|Tests?\s+(\d+)\s+passed/i)
-          const failedMatch = output.match(/ℹ\s+fail\s+(\d+)|❌\s+(\d+)\s+failed|Tests?\s+(\d+)\s+failed/i)
-          const skippedMatch = output.match(/ℹ\s+skip\s+(\d+)/i)
-          const passed = passedMatch ? Number.parseInt(passedMatch[1] ?? passedMatch[2] ?? passedMatch[3] ?? '0', 10) : 0
-          const failed = failedMatch ? Number.parseInt(failedMatch[1] ?? failedMatch[2] ?? failedMatch[3] ?? '0', 10) : 0
-          const skipped = skippedMatch ? Number.parseInt(skippedMatch[1] ?? '0', 10) : 0
-          // A2: bash commands matching a declared verify command get structured
-          // semantics (kind + declared flag) instead of regex-only guesses.
+          const verification = buildBashVerification(rawToolResult?.command ?? cmd, rawToolResult, harnessResult)
           const declaredKind = classifyDeclaredCommand(cmd, loadDeclaredVerify(deps.cwd))
-          // exitCode / errorClass 是「这条命令到底怎么结束的」的原始事实。
-          // 此前只记 passed/failed/skipped，而这三者在输出不含测试计数时被默认
-          // 成 0（typecheck/lint/build 天然没有计数）——下游据此把「没解析到计数」
-          // 误读成「没跑成」，把真实编译错误与超时都归为 tool_invocation_failure，
-          // 并告诉模型「不是代码问题」。这里补齐原始事实，判定策略统一放读取侧
-          // （verification-attribution）。timeout 尤其要留痕：超时不等于执行停止，
-          // 底层进程可能仍在写盘（见 TOOL_TIMEOUT_RECOVERY_HINT）。
-          const exitCode = harnessResult.isError ? 1 : 0
-          const timedOut = harnessResult.errorClass === 'timeout'
-            || /timed out after \d+s/.test(output)
+          const errorClass = rawToolResult?.errorClass ?? (harnessResult.isError ? harnessResult.errorClass : undefined)
+          const timedOut = verification.failureKind === 'timeout'
+          const { command: verificationCommand, status: testStatus, ...verificationMeta } = verification
           deps.taskLedger.record({
             type: 'verification',
-            command: cmd.slice(0, 200),
+            command: verificationCommand,
             status: testStatus,
             meta: {
-              scope: 'full', passed, failed, skipped,
-              exitCode,
-              ...(harnessResult.errorClass ? { errorClass: harnessResult.errorClass } : {}),
+              ...verificationMeta,
+              ...(errorClass ? { errorClass } : {}),
               ...(timedOut ? { timedOut: true } : {}),
               ...(declaredKind ? { declared: true, kind: declaredKind } : {}),
             },
           })
           // bash 跑测试/typecheck/lint 也归零 TDD 门禁——否则 agent 用 bash npm test
           // 而非 run_tests 工具时门禁计数器永远不重置，第 4 次编辑必误报拦截。
-          deps.evidence.trackVerification({
-            command: cmd.slice(0, 200),
-            status: testStatus === 'passed' ? 'passed' : 'failed',
-            scope: 'full',
-            exitCode: harnessResult.isError ? 1 : 0, passed, failed, skipped, durationMs: 0,
-          })
-          deps.destructiveGate?.noteVerification(testStatus === 'passed' ? 'passed' : 'failed')
+          deps.evidence.trackVerification(verification)
+          deps.destructiveGate?.noteVerification(testStatus)
        } else {
           deps.taskLedger.record({ type: 'tool_exec', tool: tu.name, meta: { command: cmd.slice(0, 200) } })
        }

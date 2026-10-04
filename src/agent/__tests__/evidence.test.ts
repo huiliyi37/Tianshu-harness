@@ -3,6 +3,29 @@ import assert from 'node:assert/strict'
 import { EvidenceTracker } from '../evidence.js'
 
 describe('EvidenceTracker delivery status', () => {
+  it('keeps targeted npm and run_tests verifications confined to explicit targets', () => {
+    for (const command of ['npm test -- src/cache.test.ts', 'run_tests cache']) {
+      const tracker = new EvidenceTracker()
+      for (const file of ['src/cache.ts', 'src/billing.ts', 'src/permissions.ts']) tracker.trackFileModified(file)
+      for (let i = 0; i < 3; i++) tracker.trackVerification({ command, status: 'passed', scope: 'targeted', targetFiles: ['src/cache.ts'], exitCode: 0 })
+      assert.equal(tracker.getVerificationSummary().verified, 1, command)
+      assert.equal(tracker.getVerificationSummary().pending, 2, command)
+      tracker.trackFileModified('src/cache.ts')
+      assert.equal(tracker.getVerificationSummary().verified, 0, 'editing invalidates coverage')
+    }
+  })
+
+  it('maps targeted test files to their source without substring coverage', () => {
+    const tracker = new EvidenceTracker()
+    for (const file of ['src/cache.ts', 'src/c.ts', 'other/cache.ts']) tracker.trackFileModified(file)
+    tracker.trackVerification({ command: 'node --test src/__tests__/cache.test.ts', status: 'passed', scope: 'targeted', exitCode: 0 })
+    assert.deepEqual(tracker.getVerificationSummary().files, [
+      { path: 'other/cache.ts', level: 'pending' },
+      { path: 'src/c.ts', level: 'pending' },
+      { path: 'src/cache.ts', level: 'tested' },
+    ])
+  })
+
   it('reports failed verification in the summary', () => {
     const tracker = new EvidenceTracker()
     tracker.trackFileModified('src/agent/loop.ts')

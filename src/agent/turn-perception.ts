@@ -92,7 +92,10 @@ export class TurnPerceptionController {
       pressureResult: input.pressureResult,
       evidenceState: {
         filesModified: input.evidenceState.filesModified.size,
-        verifiedCount: input.evidenceState.verifications.filter(v => v.status === 'passed').length,
+        verifiedCount: [...input.evidenceState.filesModified].filter(file => {
+          const level = input.evidenceState.fileVerificationLevels?.get(file)
+          return level !== undefined && level !== 'pending'
+        }).length,
       },
       toolCallHistory: input.recentToolHistory.map(h => h.tool),
       pheromones: input.loadedPheromones,

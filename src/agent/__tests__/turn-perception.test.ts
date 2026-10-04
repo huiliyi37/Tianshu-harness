@@ -6,7 +6,8 @@ import { createVigorState } from '../vigor.js'
 import { createThetaState } from '../star-event.js'
 import { createTraceStore } from '../trace-store.js'
 import { createPredictionAccumulator } from '../prediction-error.js'
-import type { EvidenceState } from '../evidence.js'
+import { EvidenceTracker, type EvidenceState } from '../evidence.js'
+import { createPerceptionRuntimeHook } from '../hooks/perception-hook.js'
 import type { TelemetryWriter } from '../telemetry-writer.js'
 import type { PrefixFingerprint } from '../../prompt/fingerprint.js'
 
@@ -53,6 +54,28 @@ function makeInput(turn = 1) {
 }
 
 describe('TurnPerceptionController', () => {
+  it('counts distinct verified files instead of successful commands in production perception', async () => {
+    const tracker = new EvidenceTracker()
+    for (const file of ['src/cache.ts', 'src/billing.ts', 'src/permissions.ts']) tracker.trackFileModified(file)
+    const controller = new TurnPerceptionController({
+      cwd: '/tmp/project', maxTurns: 5,
+      runtimeHooks: new RuntimeHookPipeline([createPerceptionRuntimeHook()]),
+      telemetryWriter: { write: () => {}, flush: async () => {} },
+      getRuntimeSnapshot: extra => ({ cwd: '/tmp/project', turn: 1, recentToolHistory: [], sensorium: null, strategy: null, vigor: null, gitChangeRate: 0, season: null, ...extra }),
+      getProviderDegradationRatio: () => 0, addUserMessage: () => {}, requestThetaCheck: () => {},
+      setReasoningEffort: () => {}, getFingerprint: () => fingerprint(),
+    })
+    const perceive = () => controller.perceive({ ...makeInput(), evidenceState: tracker.getState() }, { emitPhaseChange: () => {} })
+    for (let i = 0; i < 3; i++) tracker.trackVerification({ command: 'run_tests cache', status: 'passed', scope: 'targeted', targetFiles: ['src/cache.ts'], exitCode: 0 })
+    const targeted = await perceive()
+    assert.equal(targeted.sensoriumInput.evidenceState.verifiedCount, 1)
+    assert.equal(targeted.sensorium.verificationCoverage, 1 / 3)
+    tracker.trackVerification({ command: 'npm test', status: 'passed', scope: 'full', exitCode: 0 })
+    assert.equal((await perceive()).sensorium.verificationCoverage, 1)
+    tracker.trackFileModified('src/cache.ts')
+    assert.equal((await perceive()).sensoriumInput.evidenceState.verifiedCount, 2)
+  })
+
   it('runs perception hooks, emits star phase, writes telemetry, and adapts theta interval', async () => {
     const snapshots: unknown[] = []
     const phases: string[] = []

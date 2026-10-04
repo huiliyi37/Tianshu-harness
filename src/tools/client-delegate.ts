@@ -49,7 +49,7 @@ export async function landingWriteFile(
   const rel = relative(params.cwd, absPath).split('\\').join('/')
   const delegated = await tryClientApplyEdit(params, rel, oldContent, newContent)
   if (delegated) return { kind: 'delegated', delegated }
-  await writeFileAtomicAsync(absPath, newContent)
+  await writeFileAtomicAsync(absPath, newContent, { preserveMode: true })
   return { kind: 'wroteLocal' }
 }
 

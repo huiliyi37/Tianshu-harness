@@ -1,15 +1,36 @@
-import { writeFileSync, renameSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { writeFileSync, renameSync, unlinkSync, existsSync, mkdirSync, readdirSync, statSync, chmodSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { mkdir, writeFile, rename, unlink, open } from 'node:fs/promises'
+import { mkdir, writeFile, rename, unlink, open, stat, chmod } from 'node:fs/promises'
+
+export interface AtomicWriteOptions {
+  /** Preserve existing POSIX permissions for project-file edits. Private runtime
+   *  state keeps the default 0600, including when replacing an existing file. */
+  preserveMode?: boolean
+}
+
+function ignoreMissingFile(error: unknown): void {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+}
+
+async function existingMode(filePath: string, options: AtomicWriteOptions): Promise<number | undefined> {
+  if (!options.preserveMode) return undefined
+  try { return (await stat(filePath)).mode & 0o777 }
+  catch (error) { ignoreMissingFile(error); return undefined }
+}
 
 /** Publish only after file contents are synced. Directory sync is POSIX-only. */
-export async function writeFileAtomicDurableAsync(filePath: string, data: string | Buffer): Promise<void> {
+export async function writeFileAtomicDurableAsync(filePath: string, data: string | Buffer, options: AtomicWriteOptions = {}): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
+  const mode = await existingMode(filePath, options)
   const temporary = atomicTmpPath(filePath)
   try {
     const file = await open(temporary, 'wx', 0o600)
-    try { await file.writeFile(data); await file.sync() } finally { await file.close() }
+    try {
+      await file.writeFile(data)
+      if (mode !== undefined) await file.chmod(mode)
+      await file.sync()
+    } finally { await file.close() }
     await rename(temporary, filePath)
     if (process.platform !== 'win32') {
       const directory = await open(dirname(filePath), 'r')
@@ -35,9 +56,14 @@ const ORPHAN_TMP_RE = /\.rivet-atomic-[0-9a-f]{8}\.tmp$/
  * then rename (which is atomic on POSIX and APFS). If the process crashes
  * mid-write, the original file is untouched.
  */
-export function writeFileAtomicSync(filePath: string, data: string | Buffer): void {
+export function writeFileAtomicSync(filePath: string, data: string | Buffer, options: AtomicWriteOptions = {}): void {
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  let mode: number | undefined
+  if (options.preserveMode) {
+    try { mode = statSync(filePath).mode & 0o777 }
+    catch (error) { ignoreMissingFile(error) }
+  }
 
   const tmpPath = atomicTmpPath(filePath)
   try {
@@ -45,6 +71,7 @@ export function writeFileAtomicSync(filePath: string, data: string | Buffer): vo
     // sessions) — align with token-store.ts; rename preserves the mode.
     // Buffer payloads (compressed transcripts) skip the utf-8 encoding.
     writeFileSync(tmpPath, data, data instanceof Buffer ? { mode: 0o600 } : { encoding: 'utf-8', mode: 0o600 })
+    if (mode !== undefined) chmodSync(tmpPath, mode)
     renameSync(tmpPath, filePath)
   } catch (err) {
     try { unlinkSync(tmpPath) } catch { /* ignore cleanup failure */ }
@@ -56,12 +83,14 @@ export function writeFileAtomicSync(filePath: string, data: string | Buffer): vo
  * Async version of writeFileAtomicSync — avoids blocking the event loop
  * during large session rewrites (compaction/reset).
  */
-export async function writeFileAtomicAsync(filePath: string, data: string | Buffer): Promise<void> {
+export async function writeFileAtomicAsync(filePath: string, data: string | Buffer, options: AtomicWriteOptions = {}): Promise<void> {
   const dir = dirname(filePath)
   if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+  const mode = await existingMode(filePath, options)
   const tmpPath = atomicTmpPath(filePath)
   try {
     await writeFile(tmpPath, data, data instanceof Buffer ? { mode: 0o600 } : { encoding: 'utf-8', mode: 0o600 })
+    if (mode !== undefined) await chmod(tmpPath, mode)
     await rename(tmpPath, filePath)
   } catch (err) {
     try { await unlink(tmpPath) } catch { /* ignore cleanup failure */ }

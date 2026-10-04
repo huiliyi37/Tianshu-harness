@@ -175,7 +175,7 @@ export const AST_EDIT_TOOL: Tool = {
         if (verify) {
           await trackFileChange(cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'ast_edit' })
         }
-        await writeFileAtomicAsync(fr.file, applyEol(fr.newSource, eol))
+        await writeFileAtomicAsync(fr.file, applyEol(fr.newSource, eol), { preserveMode: true })
 
         // Authoritative post-write verification (python3 ast.parse / esbuild):
         // the ast-grep ERROR-node gate misses some corruption; checkSyntax is the

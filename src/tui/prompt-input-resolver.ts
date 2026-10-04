@@ -10,7 +10,7 @@
  * `slash-commands.ts` 保留同名再导出，main.ts 与既有测试 import 面不变。
  */
 import { resolveCustomCommand } from '../commands/loader.js'
-import { skillRegistry, listSkillFiles } from '../skills/skill-loader.js'
+import { skillRegistry, listSkillFiles, loadProjectSkills } from '../skills/skill-loader.js'
 import { resolveEcosystemWorkflowInput } from '../workflows/ecosystem-workflows.js'
 import { looksLikeFilePath } from './engine/path-like.js'
 
@@ -27,6 +27,9 @@ export function resolveAppPromptInput(
   pluginCommands?: { name: string; file: string }[],
 ): ResolvedPromptInput | null {
   if (!input.startsWith('/')) return { prompt: input }
+  if (cwd) {
+    try { loadProjectSkills(cwd) } catch { /* best-effort */ }
+  }
   const workflow = resolveEcosystemWorkflowInput(input)
   if (workflow) return { prompt: workflow.prompt, requiredTools: workflow.requiredTools }
   const custom = resolveCustomCommand(cwd, input, pluginCommands)
@@ -60,7 +63,7 @@ export function resolveAppPromptInput(
   // 均未命中后的兜底。必须放在 looksLikeFilePath 之前：单段 /name 在
   // isKnownCommand 谓词下会被判成「路径」原样透传，技能解析永远轮不到
   // （多段路径天然不匹配技能名，/etc 类单段路径无同名技能时仍落回路径分支）。
-  const bareSkill = resolveBareSkillPrompt(input)
+  const bareSkill = resolveBareSkillPrompt(input, cwd)
   if (bareSkill !== null) return { prompt: bareSkill }
   // Linux/WSL path like /etc, /mnt, /usr — not a recognized command, pass through
   // as plain text so the agent can handle it (e.g. "look at /etc/hosts").
@@ -93,11 +96,14 @@ function buildSkillPrompt(name: string, userTask: string): string | null {
  * Reserved subcommands (list/install/etc.) and unknown skills return null so
  * they fall back to the slash handler's local behavior or error message.
  */
-function resolveSkillPrompt(input: string, cwd: string): string | null {
+function resolveSkillPrompt(input: string, cwd?: string): string | null {
   const match = input.trim().match(/^\/skill\s+(\S+)(?:\s+(.*))?$/s)
   if (!match) return null
   const name = match[1]!
   if (SKILL_RESERVED_SUBCOMMANDS.has(name.toLowerCase())) return null
+  if (cwd) {
+    try { loadProjectSkills(cwd) } catch { /* best-effort */ }
+  }
   return buildSkillPrompt(name, match[2]?.trim() ?? '')
 }
 
@@ -108,10 +114,13 @@ function resolveSkillPrompt(input: string, cwd: string): string | null {
  * 显式唤起。多段路径天然不匹配（技能名不含 /）；单段路径（/etc）只有用户
  * 真建了同名技能才会被接管——那正是用户意图。
  */
-export function resolveBareSkillPrompt(input: string): string | null {
+export function resolveBareSkillPrompt(input: string, cwd?: string): string | null {
   const match = input.trim().match(/^\/([^\s/]+)(?:\s+(.*))?$/s)
   if (!match) return null
   const name = match[1]!
   if (SKILL_RESERVED_SUBCOMMANDS.has(name.toLowerCase())) return null
+  if (cwd) {
+    try { loadProjectSkills(cwd) } catch { /* best-effort */ }
+  }
   return buildSkillPrompt(name, match[2]?.trim() ?? '')
 }

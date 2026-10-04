@@ -23,7 +23,7 @@ export interface ScopeMaterializeResult {
 function normalizeScopePath(baseCwd: string, filePath: string): string | null {
   if (!isAbsolute(filePath)) return filePath
   const rel = relative(baseCwd, filePath)
-  if (rel === '' || rel.startsWith('..')) return null
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
   return rel
 }
 

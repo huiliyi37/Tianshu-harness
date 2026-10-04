@@ -66,10 +66,11 @@ import { pushFixToPrBranch } from './pr-fix-push.js'
 import { resolveAppPromptInput } from '../tui/prompt-input-resolver.js'
 import { getPaletteCommands } from '../tui/command-palette.js'
 import { RECOMMENDED_MAX_SKILLS } from '../skills/skill-loader.js'
+import { listSkillsForSessionOrDraft, listInstallableSkillsForSessionOrDraft, resolveSlashCommandPrompt } from './session-skills-helper.js'
 import { validatePath } from '../tools/path-validate.js'
 import { convertOfficeToPdf, ConverterUnavailableError, OFFICE_CONVERTIBLE_EXTS } from './file-preview.js'
 import { readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
-import { extname, relative, join, isAbsolute } from 'node:path'
+import { extname, relative, join, isAbsolute, resolve } from 'node:path'
 import type { HookEntry, HookEvent, HooksConfig } from '../hooks/user-hooks-runner.js'
 import { loadHooksConfig, VALID_EVENTS } from '../hooks/user-hooks-runner.js'
 import { buildDistillPrompt } from '../prompt/rpa-distill.js'
@@ -352,6 +353,18 @@ export function buildSessionRoutes(
         return { status: 400, body: { error: docsCheck.error } }
       }
       let prompt = data.prompt
+      let requiredTools: readonly string[] = []
+      if (typeof prompt === 'string' && prompt.trim().startsWith('/')) {
+        const targetCwd = data.cwd ? resolve(data.cwd) : manager.getDefaultCwd()
+        const res = resolveSlashCommandPrompt(prompt, targetCwd)
+        if (res.error) {
+          return { status: 400, body: { error: res.error } }
+        }
+        prompt = res.prompt
+        if (res.requiredTools) {
+          requiredTools = res.requiredTools
+        }
+      }
       // issue #300 — promptText（用户实际输入）与 documents 原文随 createSession
       // 透传：首轮 user 事件即带附件卡片元数据。
       const promptText = docsCheck.documents?.length ? (prompt ?? '') : undefined
@@ -363,7 +376,7 @@ export function buildSessionRoutes(
         cwd: data.cwd,
         workspaceMode: data.workspaceMode as SessionWorkspaceMode | undefined,
         title: data.title,
-        prompt,
+        prompt: undefined,
         images: imagesCheck.images,
         documents: docsCheck.documents,
         promptText,
@@ -380,8 +393,18 @@ export function buildSessionRoutes(
         // 不武装定时器——宿主看不见倒计时就不该被静默自动批准。
         planAutoApproveUi: data.planAutoApproveUi === true,
       })
-      if (__dbg) console.log(`[createSession] +${Date.now() - __t0}ms id=${rec.id} cwd=${data.cwd}`)
-      return { status: 201, body: rec }
+      for (const toolName of requiredTools) {
+        await manager.enableTool(rec.id, toolName)
+      }
+      if (prompt && /@computer\b/i.test(prompt)) {
+        await manager.enableTool(rec.id, 'computer_use')
+      }
+      if (prompt && prompt.trim()) {
+        manager.run(rec.id, prompt, imagesCheck.images, false, undefined, { documents: docsCheck.documents, promptText })
+      }
+      const finalRec = manager.getSession(rec.id) ?? rec
+      if (__dbg) console.log(`[createSession] +${Date.now() - __t0}ms id=${finalRec.id} cwd=${data.cwd}`)
+      return { status: 201, body: finalRec }
     }, apiToken),
 
     // RPA 录制蒸馏 — 桌面端把录制 JSONL 交来，组装蒸馏 prompt 并开一次性
@@ -675,16 +698,19 @@ export function buildSessionRoutes(
       return { status: 200, body: { id: params!.id!, domain: data.key.trim() } }
     }, apiToken),
 
+    // Global / draft skills list
+    'GET /skills': withAuth((_body, _params, query) => {
+      const cwd = typeof query?.cwd === 'string' && query.cwd ? query.cwd : undefined
+      const { skills, loadErrors } = listSkillsForSessionOrDraft(manager, 'draft', cwd)
+      return { status: 200, body: { skills: skills ?? [], loadErrors } }
+    }, apiToken),
+
     // ── PlusMenu: skills toggle ──
     // Read — every loaded skill with its per-session enablement status.
-    'GET /sessions/:id/skills': withAuth((_body, params) => {
-      const skills = manager.listSkills(params!.id!)
+    'GET /sessions/:id/skills': withAuth((_body, params, query) => {
+      const cwd = typeof query?.cwd === 'string' && query.cwd ? query.cwd : undefined
+      const { skills, loadErrors } = listSkillsForSessionOrDraft(manager, params!.id!, cwd)
       if (!skills) return { status: 404, body: { error: 'Session not found' } }
-      // loadErrors: skills that failed to parse from .rivet/skills at session
-      // create (e.g. a malformed installed Claude skill) — so the UI can show
-      // them instead of leaving the user wondering why an "installed" skill
-      // never appears in the list.
-      const loadErrors = manager.getSkillLoadErrors(params!.id!) ?? []
       return { status: 200, body: { skills, loadErrors } }
     }, apiToken),
 
@@ -726,10 +752,10 @@ export function buildSessionRoutes(
 
     // ── Skills install (from .claude/skills) ──
     // Read — candidates installable from project/global .claude/skills.
-    'GET /sessions/:id/skills/installable': withAuth((_body, params) => {
-      const skills = manager.listInstallableSkills(params!.id!)
+    'GET /sessions/:id/skills/installable': withAuth((_body, params, query) => {
+      const cwd = typeof query?.cwd === 'string' && query.cwd ? query.cwd : undefined
+      const { skills, installedCount } = listInstallableSkillsForSessionOrDraft(manager, params!.id!, cwd)
       if (!skills) return { status: 404, body: { error: 'Session not found' } }
-      const installedCount = manager.installedSkillCount(params!.id!) ?? 0
       return { status: 200, body: { skills, installedCount, recommendedMax: RECOMMENDED_MAX_SKILLS } }
     }, apiToken),
 
@@ -935,20 +961,16 @@ export function buildSessionRoutes(
       if (trimmed.startsWith('/')) {
         const record = manager.getSession(params!.id!)
         if (record) {
-          const knownCmds = new Set(getPaletteCommands()
-            .filter(c => c.name.startsWith('/'))
-            .map(c => c.name.slice(1).split(/\s/)[0]!))
-          const resolved = resolveAppPromptInput(trimmed, record.cwd, (name) => knownCmds.has(name))
-          if (resolved === null) {
-            const first = trimmed.split(/\s+/)[0]
+          const res = resolveSlashCommandPrompt(trimmed, record.cwd)
+          if (res.error) {
             return {
               status: 400,
-              body: { error: `Unknown slash command: "${first}". Type a normal message or use the command menu (+).` },
+              body: { error: res.error },
             }
           }
-          prompt = resolved.prompt
+          prompt = res.prompt
           // 桌面端也需挂载 workflow 声明的 EXTENDED 工具（与 TUI main.ts 对齐）。
-          for (const toolName of resolved.requiredTools ?? []) {
+          for (const toolName of res.requiredTools ?? []) {
             await manager.enableTool(params!.id!, toolName)
           }
         }

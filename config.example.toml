@@ -35,8 +35,3 @@ enabled = true
 autoThreshold = 800_000
 autoFloor = 500_000
 model = "deepseek-v4-flash"
-
-[cache]
-enabled = true
-minSystemTokens = 256
-showHitRate = true

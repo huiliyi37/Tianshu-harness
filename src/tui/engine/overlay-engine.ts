@@ -18,8 +18,11 @@
  */
 
 import type { WriteStream } from 'node:tty'
-import { ANSI, cursorTo } from './ansi.js'
-import stripAnsi from 'strip-ansi'
+import { ANSI, ANSI_SEQ_RE, cursorTo } from './ansi.js'
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_SEQ_RE, '')
+}
 
 export type OverlayId = 'starmap' | 'cockpit' | 'chronicle' | 'pager' | 'command-palette' | string
 export interface OverlayMenuHit { index: number; workerId?: string }

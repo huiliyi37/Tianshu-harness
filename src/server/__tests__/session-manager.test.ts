@@ -117,7 +117,7 @@ function makeArtifact(id: string, over: Partial<Artifact> = {}): Artifact {
   }
 }
 
-function makeManager(opts: { watchdogContinueDelayMs?: number } = {}) {
+function makeManager(opts: { watchdogContinueDelayMs?: number; maxEvents?: number; maxEventBytes?: number } = {}) {
   const agents: FakeAgent[] = []
   const manager = new RuntimeSessionManager({
     createAgent: () => {
@@ -129,6 +129,8 @@ function makeManager(opts: { watchdogContinueDelayMs?: number } = {}) {
     // C2 倒计时默认 5s——测试里压到 0（setImmediate+setTimeout(0) 仍被 settle 覆盖），
     // 倒计时行为本身由专门用例以小延迟验证。
     watchdogContinueDelayMs: opts.watchdogContinueDelayMs ?? 0,
+    ...(opts.maxEvents !== undefined ? { maxEvents: opts.maxEvents } : {}),
+    ...(opts.maxEventBytes !== undefined ? { maxEventBytes: opts.maxEventBytes } : {}),
   })
   return { manager, agents }
 }
@@ -2383,4 +2385,72 @@ test('onModelRetry → retry 会话事件（按尝试替换信号）', () => {
   assert.equal(retry?.data.attempt, 1)
   assert.equal(retry?.data.maxAttempts, 2)
   assert.equal(retry?.data.replaceAttempt, true)
+})
+
+// ── issue #315: 长会话内存膨胀（内存环泄漏点 A/B）──────────────────────────
+
+test('#315 A: 环被 delegation 事件淹没时仍按 maxEvents 有界', () => {
+  const { manager, agents } = makeManager({ maxEvents: 10 })
+  const s = manager.createSession({ prompt: 'go' })
+  const cb = agents[0]!.callbacks!
+  // worker activity 流高频产 delegation（每 tool_use / 每 turn / 每 ~120ms 合并的
+  // text 各一条），50 条远超声明的 maxEvents——旧实现「溢出只由非 delegation 承担」，
+  // 环会线性无界增长。
+  for (let i = 0; i < 50; i++) {
+    cb.onDelegationActivity!({
+      workOrderId: `wo:${i}`,
+      parentToolId: 'tool-1',
+      status: 'completed',
+      progressLine: `step ${i}`,
+    })
+  }
+  const evs = manager.getEvents(s.id, 0)!.events
+  assert.ok(evs.length <= 10, `内存环必须回落到 maxEvents=10，实得 ${evs.length}`)
+  // 保留语义：尾部（最新）delegation 仍在，最旧的先被丢弃；非 delegation 优先淘汰。
+  const delegations = evs.filter((e) => e.type === 'delegation')
+  assert.ok(delegations.length > 0, '不能把 delegation 全部丢光')
+  assert.equal(delegations[delegations.length - 1]!.data.workerId, 'wo:49')
+  assert.ok(evs.every((e) => e.type === 'delegation'), '环满时非 delegation 事件应优先被淘汰')
+})
+
+test('#315 A: 环满且有非 delegation 事件时优先丢弃它们', () => {
+  const { manager, agents } = makeManager({ maxEvents: 8 })
+  const s = manager.createSession({ prompt: 'go' })
+  const cb = agents[0]!.callbacks!
+  for (let i = 0; i < 12; i++) {
+    cb.onModelRetry?.({ attempt: i, maxAttempts: 3 }) // 产生 'retry'（非 delegation）
+    cb.onDelegationActivity!({ workOrderId: `wo:${i}`, parentToolId: 'tool-1', status: 'completed' })
+  }
+  const evs = manager.getEvents(s.id, 0)!.events
+  assert.ok(evs.length <= 8, `内存环必须回落到 maxEvents=8，实得 ${evs.length}`)
+  assert.equal(evs.filter((e) => e.type === 'retry').length, 0, '非 delegation 的 retry 应先被淘汰')
+  assert.ok(evs.filter((e) => e.type === 'delegation').length > 0, 'delegation 尽量保留')
+})
+
+test('#315 B: 环补字节预算——超限时最旧条目投影为 seq/type/ts（data 清空）', () => {
+  const big = 'x'.repeat(4000)
+  const budget = 12_000
+  const { manager, agents } = makeManager({ maxEvents: 1000, maxEventBytes: budget })
+  const s = manager.createSession({ prompt: 'go' })
+  const cb = agents[0]!.callbacks!
+  // 终态 tool_result / delegation 单条可接近 1MB；count 上限（5000）挡不住累计。
+  for (let i = 0; i < 10; i++) {
+    cb.onDelegationActivity!({
+      workOrderId: `wo:${i}`,
+      parentToolId: 'tool-1',
+      status: 'completed',
+      progressLine: `${i}:${big}`,
+    })
+  }
+  const evs = manager.getEvents(s.id, 0)!.events
+  const bytes = evs.reduce((n, e) => n + JSON.stringify(e).length, 0)
+  assert.ok(bytes <= budget, `环内字节必须收敛到预算内，实得 ${bytes} > ${budget}`)
+  const delegations = evs.filter((e) => e.type === 'delegation')
+  assert.equal(delegations.length, 10, '字节预算只投影 data，不丢条数')
+  // 最旧一条投影（data 空对象，seq/type/ts 保留，消费方 ev.data.x 得 undefined 不抛错）
+  assert.equal(Object.keys(delegations[0]!.data).length, 0)
+  assert.equal(delegations[0]!.type, 'delegation')
+  assert.equal(typeof delegations[0]!.seq, 'number')
+  // 最新一条完整保留
+  assert.ok(String(delegations[delegations.length - 1]!.data.progressLine).length > 4000)
 })

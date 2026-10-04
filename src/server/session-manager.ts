@@ -128,6 +128,7 @@ export type {
   PlanDraft,
   ForkDestination,
 } from './protocol.js'
+import { enforceRingLimits } from './session-event-ring.js'
 
 // Compile-time drift guards: the wire copies of ApprovalMode / PlanModeState in
 // protocol.ts must stay identical to the runtime definitions. If either side
@@ -766,6 +767,8 @@ export interface RuntimeSessionManagerOptions {
   idGenerator?: () => string
   /** Cap on retained events per session (ring buffer). Default 5000. */
   maxEvents?: number
+  /** 内存环字节预算（issue #315 泄漏点 B）。Default 64 MiB；0 = 关闭。 */
+  maxEventBytes?: number
   /**
    * Cap on how many sessions keep their event log resident at once. Lazy-loaded
    * sessions beyond this (LRU, and only ones with no live agent / not running /
@@ -1311,27 +1314,6 @@ function extractTodoState(input: Record<string, unknown>): TodoStateItem[] | nul
   return items
 }
 
-/**
- * 内存环截尾（M1 修复）：保留尾部窗口，但 delegation 事件豁免——stale 对账
- * （sweepStaleDelegationNodes）与回放依赖它们完整；被截尾的早期 running
- * 节点对账不可见，回放会永久卡「运行中」。delegation 事件量级小（每 worker
- * 2-4 条），豁免增长可控。
- */
-function trimEventRing(events: SessionEvent[], maxEvents: number): SessionEvent[] {
-  if (events.length <= maxEvents) return events
-  const overflow = events.length - maxEvents
-  const kept: SessionEvent[] = []
-  let dropped = 0
-  for (const e of events) {
-    if (dropped < overflow && e.type !== 'delegation') {
-      dropped++
-      continue
-    }
-    kept.push(e)
-  }
-  return kept
-}
-
 export class RuntimeSessionManager {
   private readonly sessions = new Map<string, InternalSession>()
   /** In-flight lazy agent builds (per session id) — ensureAgent is not
@@ -1347,6 +1329,8 @@ export class RuntimeSessionManager {
   private readonly now: () => number
   private readonly idGenerator: () => string
   private readonly maxEvents: number
+  /** 内存环字节预算（issue #315 泄漏点 B）。0 = 关闭。 */
+  private readonly maxEventBytes: number
   private readonly maxLoadedSessions: number
   /** LRU of session ids whose event log is currently resident (oldest first). */
   private readonly loadedOrder: string[] = []
@@ -1404,6 +1388,7 @@ export class RuntimeSessionManager {
     const envMaxEvents = Number(process.env.RIVET_MAX_EVENTS)
     this.maxEvents = opts.maxEvents
       ?? (Number.isFinite(envMaxEvents) && envMaxEvents >= 100 ? Math.floor(envMaxEvents) : 5000)
+    this.maxEventBytes = opts.maxEventBytes ?? (64 * 1024 * 1024)
     this.maxLoadedSessions = opts.maxLoadedSessions ?? 16
     // 审批等待超时：0（默认）= 永不超时——审批卡持久化可回放，无限等优于长
     // 自主任务被误拒；部署侧（无人值守/CI）可用 RIVET_APPROVAL_TIMEOUT_MS
@@ -1711,9 +1696,7 @@ export class RuntimeSessionManager {
       if (e.type === 'artifact') session.knownArtifacts.add(String(e.data.id))
       session.record.updatedAt = Math.max(session.record.updatedAt, e.ts)
     }
-    if (session.events.length > this.maxEvents) {
-      session.events = trimEventRing(session.events, this.maxEvents)
-    }
+    this.enforceRingLimits(session)
     session.record.lastSeq = session.seq
     for (const e of novel) {
       for (const listener of session.listeners) {
@@ -1860,8 +1843,7 @@ export class RuntimeSessionManager {
           pendingApprovals: 0,
         },
         agent: null,
-        // 内存环上限与懒加载路径一致：只保留尾部 maxEvents 进内存。
-        events: events.length > this.maxEvents ? trimEventRing(events, this.maxEvents) : events,
+        events,
         diskFirstSeq: events[0]?.seq,
         eventsLoaded: true,
         seq: maxSeq,
@@ -1884,6 +1866,7 @@ export class RuntimeSessionManager {
         planAutoApproveUi: ps.record.planAutoApproveUi === true,
       }
       this.sessions.set(session.record.id, session)
+      this.enforceRingLimits(session)
       if (wasRunning) {
         session.seq += CRASH_RECOVERY_SEQ_GAP
         // Close out approvals the crash left dangling (see lazy path above) —
@@ -1962,7 +1945,8 @@ export class RuntimeSessionManager {
     // 保留尾部进内存——与活跃会话超过环容量后的行为一致（append 已截尾），
     // 客户端 since=0 重放本来就只拿得到环内尾部。磁盘 events.jsonl 不动，
     // 仍是完整历史的 source of truth。
-    session.events = evs.length > this.maxEvents ? trimEventRing(evs, this.maxEvents) : evs
+    session.events = evs
+    this.enforceRingLimits(session)
   }
 
   /** adoptLoadedEvents 的尾部版：截断已在读取侧完成，被截头部的信息由
@@ -1972,8 +1956,9 @@ export class RuntimeSessionManager {
     if (tail.total > 0) session.diskFirstSeq = tail.diskFirstSeq
     const maxSeq = tail.total > 0 ? tail.lastSeq : session.record.lastSeq
     session.seq = Math.max(session.seq, maxSeq)
-    // 兜底（M1）：tail 实现返回超限普通事件时再压一次；delegation 两处都豁免。
-    session.events = trimEventRing(tail.events, this.maxEvents)
+    // 兜底（M1/#315）：统一收敛（两遍截尾 + 字节预算）。
+    session.events = tail.events
+    this.enforceRingLimits(session)
   }
 
   /**
@@ -5781,9 +5766,8 @@ export class RuntimeSessionManager {
     const maxSeq = eventsPrefix.length > 0 ? eventsPrefix[eventsPrefix.length - 1]!.seq : 0
     child.seq = maxSeq
     child.diskFirstSeq = eventsPrefix[0]?.seq ?? 1
-    child.events = eventsPrefix.length > this.maxEvents
-      ? trimEventRing(eventsPrefix, this.maxEvents)
-      : [...eventsPrefix]
+    child.events = [...eventsPrefix]
+    this.enforceRingLimits(child)
     child.eventsLoaded = true
     for (const ev of eventsPrefix) {
       try { this.persistence?.appendEvent(created.id, ev) } catch { /* best-effort：活状态已就位 */ }
@@ -7039,6 +7023,10 @@ export class RuntimeSessionManager {
     return watermark
   }
 
+  private enforceRingLimits(session: InternalSession): void {
+    session.events = enforceRingLimits(session.events, this.maxEvents, this.maxEventBytes)
+  }
+
   private appendRaw(
     session: InternalSession,
     type: SessionEventType,
@@ -7051,9 +7039,7 @@ export class RuntimeSessionManager {
       ...(session.record.runId ? { runId: session.record.runId, attemptId: session.record.attemptId } : {}),
     }
     session.events.push(stored)
-    if (session.events.length > this.maxEvents) {
-      session.events = trimEventRing(session.events, this.maxEvents)
-    }
+    this.enforceRingLimits(session)
     session.record.lastSeq = session.seq
     session.record.updatedAt = stored.ts
     if (this.persistence) {

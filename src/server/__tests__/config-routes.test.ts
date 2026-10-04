@@ -1823,6 +1823,41 @@ describe('POST /config/providers/test-key — 探测走统一 probeProvider', ()
     assert.equal(authHeader, 'Bearer sk-plan', '火山方舟 Messages 只认 Bearer')
     assert.equal(apiKeyHeader, undefined, '不得同发 x-api-key')
   })
+
+  it('L3 fuzzy 命中的模型透出 inferredIds 供 UI 标注（issue #324）', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    mockModelsResponse({
+      data: [
+        { id: 'deepseek-v4-pro' },
+        { id: 'deepseek-v4-flash-0731' },
+      ],
+    })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test-key', {
+      provider: 'deepseek',
+      apiKey: 'sk-x',
+      baseUrl: 'https://api.deepseek.com/v1',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    assert.deepEqual(
+      (res.body as { inferredIds?: string[] }).inferredIds,
+      ['deepseek-v4-flash-0731'],
+      'POST /config/providers/test-key 响应体须带 inferredIds',
+    )
+  })
+
+  it('无 fuzzy 命中时 inferredIds 透出空数组（issue #324）', async () => {
+    writeConfig(home, { enabled: false, features: {} })
+    mockModelsResponse({ data: [{ id: 'deepseek-v4-pro' }] })
+    const router = createRouter(buildConfigRoutes(TOKEN))
+    const res = await router('POST', '/config/providers/test-key', {
+      provider: 'deepseek',
+      apiKey: 'sk-x',
+      baseUrl: 'https://api.deepseek.com/v1',
+    }, AUTH)
+    assert.equal(res.status, 200)
+    assert.deepEqual((res.body as { inferredIds?: string[] }).inferredIds, [])
+  })
 })
 
 describe('POST /config/providers/match-models（纯本地匹配，零网络）', () => {

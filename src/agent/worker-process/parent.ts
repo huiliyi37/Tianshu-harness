@@ -106,16 +106,28 @@ export function createModeAwareRunner(
 /** 子进程 entry 解析：dist 形态（tsup 镜像源码树）优先，dev 回退 tsx 直跑 .ts。
  *  两者都不存在 → null（公开仓裁剪/tsx 不可用等）。 */
 export function resolveChildEntry(): { execArgs: string[]; script: string } | null {
-  const distUrl = new URL('./child.js', import.meta.url)
-  try {
-    const distPath = fileURLToPath(distUrl)
-    if (existsSync(distPath)) return { execArgs: [], script: distPath }
-  } catch { /* fall through */ }
-  const devUrl = new URL('./child.ts', import.meta.url)
-  try {
-    const devPath = fileURLToPath(devUrl)
-    if (existsSync(devPath)) return { execArgs: ['--import', 'tsx'], script: devPath }
-  } catch { /* fall through */ }
+  const distCandidates = [
+    new URL('./child.js', import.meta.url),
+    new URL('./agent/worker-process/child.js', import.meta.url),
+    new URL('../agent/worker-process/child.js', import.meta.url),
+  ]
+  for (const distUrl of distCandidates) {
+    try {
+      const distPath = fileURLToPath(distUrl)
+      if (existsSync(distPath)) return { execArgs: [], script: distPath }
+    } catch { /* fall through */ }
+  }
+  const devCandidates = [
+    new URL('./child.ts', import.meta.url),
+    new URL('./agent/worker-process/child.ts', import.meta.url),
+    new URL('../agent/worker-process/child.ts', import.meta.url),
+  ]
+  for (const devUrl of devCandidates) {
+    try {
+      const devPath = fileURLToPath(devUrl)
+      if (existsSync(devPath)) return { execArgs: ['--import', 'tsx'], script: devPath }
+    } catch { /* fall through */ }
+  }
   return null
 }
 

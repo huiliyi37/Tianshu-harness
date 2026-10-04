@@ -196,6 +196,36 @@ describe('probeForTestKey', () => {
     const calls = (global.fetch as unknown as ReturnType<typeof mock.fn>).mock.calls
     assert.ok(calls.length >= 1)
   })
+
+  it('L3 fuzzy 命中透出 inferredIds 供 UI 标注——推断值不得静默流入默认值（issue #324）', async () => {
+    global.fetch = mock.fn(async () =>
+      fetchResponse(200, {
+        data: [
+          { id: 'deepseek-v4-pro' },
+          { id: 'deepseek-v4-flash-0731' },
+          { id: 'zz-definitely-unknown-xyz' },
+        ],
+      }),
+    ) as typeof fetch
+
+    const result = await probeForTestKey({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-x' })
+    assert.equal(result.ok, true)
+    // L3 仍在 descriptors 里回填（放行），但必须被点名——消费端据此显示「推断值，请确认」。
+    assert.deepEqual(
+      result.inferredIds,
+      ['deepseek-v4-flash-0731'],
+      'fuzzy 命中须透出 rawId，否则推断值会被静默当实测值用',
+    )
+  })
+
+  it('无 fuzzy 命中时 inferredIds 为空数组——精确命中与未知模型都不算推断（issue #324）', async () => {
+    global.fetch = mock.fn(async () =>
+      fetchResponse(200, { data: [{ id: 'deepseek-v4-pro' }, { id: 'zz-definitely-unknown-xyz' }] }),
+    ) as typeof fetch
+
+    const result = await probeForTestKey({ baseUrl: 'https://api.example.com/v1', apiKey: 'sk-x' })
+    assert.deepEqual(result.inferredIds, [], '没有推断值时透出空数组，而非省略字段')
+  })
 })
 
 describe('matchModelDefaults（纯本地，零网络）', () => {

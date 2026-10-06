@@ -26,9 +26,9 @@ describe('SessionJobs', () => {
     dir = m.dir
   })
 
-  after(() => {
-    store.killAll()
-    rmSync(dir, { recursive: true, force: true })
+  after(async () => {
+    await store.killAllAsync()
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   })
 
   it('spawn returns a running snapshot immediately and lists it', () => {
@@ -164,7 +164,7 @@ describe('SessionJobs', () => {
     const hbDir = mkdtempSync(join(tmpdir(), 'rivet-jobs-hb-'))
     const hbStore = new SessionJobs(join(hbDir, 'jobs'), (s) => beats.push(s), 40)
     try {
-      const snap = hbStore.spawn({ command: "sh -c 'sleep 1'", rawCommand: 'sleep 1', cwd: hbDir, env })
+      const snap = hbStore.spawn({ command: "sh -c 'sleep 1'", rawCommand: 'sleep 1', cwd: dir, env })
       const res = await hbStore.await(snap.id, { timeoutMs: 700 })
       assert.ok(res)
       assert.ok(beats.length >= 2, `等待期间应至少上报 2 次心跳，实际 ${beats.length}`)
@@ -173,8 +173,8 @@ describe('SessionJobs', () => {
       await new Promise((r) => setTimeout(r, 150))
       assert.equal(beats.length, n, 'await resolve 后心跳必须停止')
     } finally {
-      hbStore.killAll()
-      rmSync(hbDir, { recursive: true, force: true })
+      await hbStore.killAllAsync()
+      rmSync(hbDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
     }
   })
 })

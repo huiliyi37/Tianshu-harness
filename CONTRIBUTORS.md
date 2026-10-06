@@ -29,15 +29,15 @@
 | **elysia395** | dsh-wallpaper-engine（agent 自定义壁纸）上游署名与 MIT 声明补全——第三方合规 | [#271](https://github.com/huiliyi37/Tianshu-harness/pull/271) |
 | **JakcyLin** | Windows 卡巴斯基拦截桌面端 sidecar（PDM:Trojan.Win32.Generic）根因分析与规避方案 | [#273](https://github.com/huiliyi37/Tianshu-harness/pull/273) |
 | **googio** | Serply 网页搜索后端接入 | [#277](https://github.com/huiliyi37/Tianshu-harness/pull/277) |
-| **lanlan0811** | tianshu-mcp 操作手册——调度外部 AI-Agent「派活 → 验收 → 返修」闭环的完整用户文档 | [#297](https://github.com/huiliyi37/Tianshu-harness/pull/297) |
+| **lanlan0811** | tianshu-mcp 操作手册——调度外部 AI-Agent「派活 → 验收 → 返修」闭环的完整用户文档 | [#297](https://github.com/huiliyi37/Tianshu-harness/pull/297), [#360](https://github.com/huiliyi37/Tianshu-harness/pull/360) |
 | **KhalilYamber** | tianshu-imbridge 插件——手机 QQ 与天枢双向直连 | [#301](https://github.com/huiliyi37/Tianshu-harness/pull/301) |
 | **Ver-zhzh** | import-graph 漏边修复（父级 `../` 分支正则误写、ESM `.js`→`.ts` 未映射、多行 import / export-from 不识别）；两处安全门绕过修复（敏感文件门 `.env.*.local` 叠加后缀漏判与 `git add` 引号/全局选项/通配形态漏检；危险命令审批 `git push -f` / `git clean -fd(x)` / PowerShell 管道下载执行免审）；goal 模式上下文接力（达阈值自动交接并开新会话，可选默认关闭） | [#309](https://github.com/huiliyi37/Tianshu-harness/pull/309), [#310](https://github.com/huiliyi37/Tianshu-harness/pull/310), [#311](https://github.com/huiliyi37/Tianshu-harness/pull/311), [#312](https://github.com/huiliyi37/Tianshu-harness/pull/312), [#314](https://github.com/huiliyi37/Tianshu-harness/pull/314), [#316](https://github.com/huiliyi37/Tianshu-harness/pull/316), [#326](https://github.com/huiliyi37/Tianshu-harness/pull/326), [#327](https://github.com/huiliyi37/Tianshu-harness/pull/327) |
-| **Lin-Dongg** | headless 续聊修复（-p 消费 --continue/--resume）；视觉判定不再采信 L3 推断值；MiMo v2.6 模型元数据补全 | [#321](https://github.com/huiliyi37/Tianshu-harness/pull/321), [#322](https://github.com/huiliyi37/Tianshu-harness/pull/322), [#323](https://github.com/huiliyi37/Tianshu-harness/pull/323) |
+| **Lin-Dongg** | headless 续聊修复（-p 消费 --continue/--resume）；视觉判定不再采信 L3 推断值；MiMo v2.6 模型元数据补全 | [#321](https://github.com/huiliyi37/Tianshu-harness/pull/321), [#322](https://github.com/huiliyi37/Tianshu-harness/pull/322), [#323](https://github.com/huiliyi37/Tianshu-harness/pull/323), [#362](https://github.com/huiliyi37/Tianshu-harness/pull/362) |
 | **Eternal-dream-MAX** | CLI 交互、布局与配置流程升级——首次外观选择、交互式帮助与 diff 主题预览 | [#330](https://github.com/huiliyi37/Tianshu-harness/pull/330), [#333](https://github.com/huiliyi37/Tianshu-harness/pull/333), [#335](https://github.com/huiliyi37/Tianshu-harness/pull/335), [#336](https://github.com/huiliyi37/Tianshu-harness/pull/336) |
 | **y521188** | fix(mcp): headless loads project MCP config; stdio connect timeout reclassified as protocol（待润色：请人工归纳贡献） | [#354](https://github.com/huiliyi37/Tianshu-harness/pull/354) |
 
 本文件由 `scripts/contributors.ts` 生成与对账（`--check` 只报告差异；`--write` 合并写回）。
-共 31 位外部贡献者 / 207 个 PR，按首次贡献时间排序。
+共 31 位外部贡献者 / 209 个 PR，按首次贡献时间排序。
 **「贡献」列由人工撰写，自动流程只增不删**——既有条目、描述与顺序不会被覆盖。
 PR 编号以 `huiliyi37/Tianshu-harness` 为准（该仓库由 `Tianshu-Tui` 更名而来，历史链接自动重定向）。
 

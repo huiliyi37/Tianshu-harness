@@ -52,8 +52,10 @@ export function validateWorkspaceRoots(input: unknown, cwd?: string): string[] {
     try {
       const path = translateWindowsShellPath(value.trim())
       if (!isAbsolute(path)) throw new Error('Folder path must be absolute')
+      if (protectedDirectory(path))
+        throw new Error('System-protected folder cannot be a project folder')
       const real = realpathSync(path)
-      if (protectedDirectory(path) || protectedDirectory(real))
+      if (protectedDirectory(real))
         throw new Error('System-protected folder cannot be a project folder')
       if (!statSync(real).isDirectory()) throw new Error('Not a folder')
       accessSync(real, constants.R_OK | constants.X_OK)

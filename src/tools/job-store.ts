@@ -4,7 +4,7 @@ import { mkdirSync, createWriteStream, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { track } from './process-tracker.js'
-import { killProcessTree } from './process-kill.js'
+import { killProcessTree, killProcessTreeAsync } from './process-kill.js'
 import {
   getShellCommand,
   WinStreamDecoder,
@@ -269,6 +269,8 @@ class BackgroundJob {
     if (this.status !== 'running' || !this.child) return false
     if (this.lifetimeTimer) { clearTimeout(this.lifetimeTimer); this.lifetimeTimer = null }
     this.status = 'killed'
+    try { this.logStream?.end() } catch { /* best-effort */ }
+    this.logStream = null
     killProcessTree(this.child, 'SIGTERM')
     const child = this.child
     this.killTimer = setTimeout(() => {
@@ -276,6 +278,16 @@ class BackgroundJob {
       killProcessTree(child, 'SIGKILL')
     }, 3000)
     if (typeof this.killTimer.unref === 'function') this.killTimer.unref()
+    return true
+  }
+
+  async killAsync(): Promise<boolean> {
+    if (this.status !== 'running' || !this.child) return false
+    if (this.lifetimeTimer) { clearTimeout(this.lifetimeTimer); this.lifetimeTimer = null }
+    this.status = 'killed'
+    try { this.logStream?.end() } catch { /* best-effort */ }
+    this.logStream = null
+    await killProcessTreeAsync(this.child, 'SIGTERM')
     return true
   }
 
@@ -382,6 +394,10 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
   /** Terminate every running job — call on session close to avoid orphans. */
   killAll(): void {
     for (const job of this.jobs.values()) job.kill()
+  }
+
+  async killAllAsync(): Promise<void> {
+    await Promise.all([...this.jobs.values()].map((job) => job.killAsync()))
   }
 
   /** 淘汰最旧的终态条目，把终态保有量压回上限（见 MAX_TERMINAL_JOBS）。 */

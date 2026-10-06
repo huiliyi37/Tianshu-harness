@@ -432,4 +432,26 @@ describe('getWorkingTreeFiles / getFileDiff (desktop changes tab)', () => {
     assert.ok(paths.includes('src/code.ts'), 'source file should still be visible')
     assert.ok(paths.includes('.rivet/plugin-abc/index.js'), 'ignored file should appear when requested')
   })
+
+  it('renders diff for external absolute path outside cwd (issue #358)', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'rivet-outside-'))
+    const outsideFile = join(outsideDir, 'report.md')
+    try {
+      writeFileSync(outsideFile, '# External Report\nLine 1\n')
+      const diff = await getFileDiff(TMP2, outsideFile)
+      assert.ok(diff.includes('+Line 1'), 'renders addition diff for external absolute file')
+      assert.ok(diff.includes(outsideFile), 'references external path in diff header')
+
+      const base = await getFileAtBase(TMP2, outsideFile)
+      assert.equal(base.exists, false)
+      assert.equal(base.content, '')
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns empty string for non-existent external absolute path', async () => {
+    const diff = await getFileDiff(TMP2, join(tmpdir(), 'non-existent-report-12345.md'))
+    assert.equal(diff, '')
+  })
 })

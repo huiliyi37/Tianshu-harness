@@ -164,12 +164,17 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
       '降级实例不得抢走活锁')
 
     // ── 实例 1 优雅退出 → 必须释放锁 ─────────────────────────────────────
-    first.child.kill('SIGTERM')
+    if (process.platform === 'win32') {
+      await fetch(`http://127.0.0.1:${first.port}/shutdown`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
+    } else {
+      first.child.kill('SIGTERM')
+    }
     const firstCode = await waitForExit(first.child, 30_000)
     assert.equal(firstCode, 0, `实例 1 应优雅退出 code=0，实际 ${firstCode}；stderr=${first.stderr.join('').slice(-400)}`)
-    if (process.platform !== 'win32') {
-      assert.ok(!existsSync(lockPath), '正常退出必须释放锁文件——残留会让下一个实例被判 contended')
-    }
+    assert.ok(!existsSync(lockPath), '正常退出必须释放锁文件——残留会让下一个实例被判 contended')
 
     // ── 实例 3：锁已释放，应立即可接管 ───────────────────────────────────
     const third = spawnServe(root, await freePort())

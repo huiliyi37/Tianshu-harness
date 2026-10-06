@@ -12,6 +12,7 @@ import {
   rmSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   withWorkspaceRoots,
   currentWorkspaceRoots,
@@ -32,7 +33,7 @@ import {
 import type { SessionRecord } from '../protocol.js'
 
 function fixture() {
-  const base = mkdtempSync(join(process.cwd(), '.rivet/artifacts/multi-root-'))
+  const base = mkdtempSync(join(tmpdir(), 'multi-root-'))
   const roots = ['primary', '中文 空格', 'other'].map((name) =>
     join(base, name),
   ) as [string, string, string]
@@ -89,7 +90,7 @@ test('selected folders validate, canonicalize and reject invalid paths before re
 test('same-cwd concurrent sessions isolate extra roots and reject symlink and sensitive escapes', async () => {
   const f = fixture()
   try {
-    symlinkSync(f.roots[2], join(f.roots[1], 'escape'), 'dir')
+    symlinkSync(f.roots[2], join(f.roots[1], 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
     const [a, b] = await Promise.all([
       withWorkspaceRoots(f.roots.slice(0, 2), async () => {
         await new Promise((r) => setTimeout(r, 5))
@@ -154,7 +155,7 @@ test('same-cwd concurrent sessions isolate extra roots and reject symlink and se
     ])
     const frozen = engine.exportFrozenSnapshot()
     assert.ok(JSON.stringify(request).includes('workspace_roots'))
-    assert.ok(JSON.stringify(request).includes(f.roots[1]))
+    assert.ok(JSON.stringify(request).includes(JSON.stringify(f.roots[1]).slice(1, -1)))
     const again = withWorkspaceRoots(f.roots.slice(0, 2), makeEngine)
     again.buildOaiRequest([
       { role: 'user', content: 'Inspect all selected folders' },

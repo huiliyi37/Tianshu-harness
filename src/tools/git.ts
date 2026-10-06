@@ -425,7 +425,22 @@ export function nullDeviceFor(platform: NodeJS.Platform = process.platform): str
 export async function getFileDiff(cwd: string, path: string, baseRef = 'HEAD'): Promise<string> {
   // Guard against path traversal / pathspec injection — pathspec must be relative
   const rel = normalizeProjectRelativePath(cwd, path)
-  if (!rel) throw new Error(`无效文件路径：${path}`)
+  if (!rel) {
+    if (isAbsolute(path)) {
+      try {
+        const stat = await fsStat(path)
+        if (stat.isFile()) {
+          const fallback = await runGitExitCode(['diff', '--no-index', '--', nullDeviceFor(), path], cwd)
+          const out = fallback.stdout
+          if (out && out.trim()) return normalizeNoIndexHeader(out, path)
+        }
+      } catch {
+        // file doesn't exist or unreadable
+      }
+      return ''
+    }
+    throw new Error(`无效文件路径：${path}`)
+  }
   const base = safeBaseRef(baseRef)
   // Tracked changes (modified/deleted/staged) diff cleanly against the base.
   const tracked = await runGitSafe(['diff', base, '--', rel], cwd)
@@ -453,7 +468,12 @@ export async function getFileAtBase(
   baseRef = 'HEAD',
 ): Promise<{ exists: boolean; content: string }> {
   const rel = normalizeProjectRelativePath(cwd, path)
-  if (!rel) throw new Error(`无效文件路径：${path}`)
+  if (!rel) {
+    if (isAbsolute(path)) {
+      return { exists: false, content: '' }
+    }
+    throw new Error(`无效文件路径：${path}`)
+  }
   const base = safeBaseRef(baseRef)
   const shown = await runGitSafe(['show', `${base}:${rel}`], cwd)
   if (!shown.ok) return { exists: false, content: '' }

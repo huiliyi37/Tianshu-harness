@@ -2,8 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, chmodSync, existsSync } from 'node:fs'
+import { join, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createRouter } from '../index.js'
 import { buildSessionRoutes } from '../session-routes.js'
@@ -35,9 +35,18 @@ if (args.includes('POST')) { if(state.uncertain) {console.error('connection time
 console.log('{}');
 });
 `
-  writeFileSync(join(bin, 'gh'), script); chmodSync(join(bin, 'gh'), 0o755)
+  if (process.platform === 'win32') {
+    writeFileSync(join(bin, 'gh.js'), script)
+    const csCode = `using System; using System.Diagnostics; class Program { static int Main(string[] args) { var p = new Process(); p.StartInfo.FileName = ${JSON.stringify(process.execPath)}; p.StartInfo.Arguments = "\\"" + AppDomain.CurrentDomain.BaseDirectory + "gh.js\\" " + string.Join(" ", Array.ConvertAll(args, a => "\\"" + a.Replace("\\"", "\\\\\\\"") + "\\"")); p.StartInfo.UseShellExecute = false; p.Start(); p.WaitForExit(); return p.ExitCode; } }`
+    const csPath = join(bin, 'gh.cs')
+    writeFileSync(csPath, csCode)
+    const csc = ['C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe', 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe'].find(existsSync) ?? 'csc.exe'
+    execFileSync(csc, ['/nologo', `/out:${join(bin, 'gh.exe')}`, csPath])
+  } else {
+    writeFileSync(join(bin, 'gh'), script); chmodSync(join(bin, 'gh'), 0o755)
+  }
   mkdirSync(join(dir, 'data')); writeFileSync(join(dir, 'data', 'config.json'), '{}')
-  process.env.PATH = `${bin}:${oldPath}`; process.env.RIVET_HOME = join(dir, 'data')
+  process.env.PATH = `${bin}${delimiter}${oldPath}`; process.env.RIVET_HOME = join(dir, 'data')
   const manager = { getDefaultCwd: () => dir, listSessions: () => [{ id: 's', cwd: repo }], getSession: () => undefined } as unknown as RuntimeSessionManager
   const router = createRouter(buildSessionRoutes(manager, 'test'))
   const call = (method: string, path: string, body = {}) => router(method, `/git/workbench${path}?cwd=${encodeURIComponent(repo)}&remote=upstream${path === '/pr' ? '&number=1' : ''}`, body, { authorization: 'Bearer test' })

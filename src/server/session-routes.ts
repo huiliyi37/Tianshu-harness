@@ -2365,8 +2365,7 @@ export function buildSessionRoutes(
     'GET /git/diff': withAuth(async (_body, params) => {
       const path = params?.path
       if (!path || typeof path !== 'string') return { status: 400, body: { error: 'Missing path param' } }
-      const diff = await manager.getFileDiff(path)
-      return { status: 200, body: { diff } }
+      return manager.getFileDiff(path).then(diff => ({ status: 200, body: { diff } })).catch(err => ({ status: 400, body: { error: (err as Error).message } }))
     }, apiToken),
 
     // Session-scoped working-tree changes — resolves the session's worktree cwd
@@ -2383,9 +2382,9 @@ export function buildSessionRoutes(
     'GET /sessions/:id/git/diff': withAuth(async (_body, params) => {
       const path = params?.path
       if (!path || typeof path !== 'string') return { status: 400, body: { error: 'Missing path param' } }
-      const diff = await manager.getSessionFileDiff(String(params?.id ?? ''), path)
-      if (diff === null) return { status: 404, body: { error: 'Session not found' } }
-      return { status: 200, body: { diff } }
+      return manager.getSessionFileDiff(String(params?.id ?? ''), path)
+        .then(diff => diff === null ? { status: 404, body: { error: 'Session not found' } } : { status: 200, body: { diff } })
+        .catch(err => ({ status: 400, body: { error: (err as Error).message } }))
     }, apiToken),
 
     // Full file content at the session's task baseline — lets editor clients
@@ -2394,9 +2393,9 @@ export function buildSessionRoutes(
     'GET /sessions/:id/git/file-base': withAuth(async (_body, params) => {
       const path = params?.path
       if (!path || typeof path !== 'string') return { status: 400, body: { error: 'Missing path param' } }
-      const result = await manager.getSessionFileAtBase(String(params?.id ?? ''), path)
-      if (result === null) return { status: 404, body: { error: 'Session not found' } }
-      return { status: 200, body: result }
+      return manager.getSessionFileAtBase(String(params?.id ?? ''), path)
+        .then(result => result === null ? { status: 404, body: { error: 'Session not found' } } : { status: 200, body: result })
+        .catch(err => ({ status: 400, body: { error: (err as Error).message } }))
     }, apiToken),
 
     // Change landing — commit everything in the session cwd (server-direct).

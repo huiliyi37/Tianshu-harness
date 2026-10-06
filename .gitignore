@@ -89,6 +89,7 @@ desktop/.rivet/
 .rivet/test-results.json
 .rivet/checkpoints/
 .rivet/skills/_drafts/
+.rivet/skills/visual-acceptance
 .rivet/Tianshu/
 .rivet/plans/draft-*.md
 

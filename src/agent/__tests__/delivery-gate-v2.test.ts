@@ -50,6 +50,29 @@ describe('delivery-gate-v2 — ownership-aware delivery gate with GREEN/YELLOW/R
     assert.equal(result.canDeliver, true)
   })
 
+  it('returns YELLOW instead of GREEN when baseline is incomplete (issue #369)', () => {
+    const baseline = createWorktreeBaseline({
+      branch: '',
+      head: '',
+      preExistingDirty: [],
+      preExistingUntracked: [],
+      capturedAt: Date.now(),
+      complete: false,
+    })
+    const ledger = createTaskLedger({ taskId: 't-incomplete' })
+    ledger.record({ type: 'file_write', path: 'src/tools/git.ts' })
+    ledger.record({ type: 'verification', command: 'npx tsx --test', status: 'passed' })
+    const ownership = createOwnershipLedger({ baseline, taskLedger: ledger })
+    ownership.autoOwnFromLedger()
+    const attribution = createVerificationAttribution({ ownership })
+    const gate = createDeliveryGateV2({ taskLedger: ledger, ownership, attribution })
+
+    const result = gate.assess([])
+    assert.equal(result.state, 'YELLOW')
+    assert.equal(result.canDeliver, true)
+    assert.ok(result.reason!.includes('该工作区不是 git 仓库（或归属基线未能建立）'))
+  })
+
   it('returns RED when owned files are unverified', () => {
     const { gate } = makeGate(['src/tools/git.ts'])
 

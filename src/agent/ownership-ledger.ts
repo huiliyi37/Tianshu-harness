@@ -65,6 +65,7 @@ export interface OwnershipLedger {
    *  snapshot worktree detaches onto. Distinct from baseline.getBaselineHash()
    *  which is a structural-identity hash for integrity checks. */
   getBaselineHead(): string
+  isBaselineComplete?(): boolean
 }
 
 export function createOwnershipLedger(opts: {
@@ -77,9 +78,17 @@ export function createOwnershipLedger(opts: {
   /** Adopted files — external files force-claimed via adoptFiles (cross-session takeover). */
   const adoptedSet = new Set<string>()
 
+  function isBaselineComplete(): boolean {
+    return baseline.toSnapshot().complete !== false
+  }
+
   function registerOwned(filePath: string): void {
-    // External files can be co-owned (shared worktree scenario)
-    if (baseline.isExternal(filePath)) {
+    // External files can be co-owned (shared worktree scenario).
+    // Only in a complete baseline where the file pre-existed as external does it fall into co-owned.
+    // When the baseline is incomplete (e.g. non-git workspace), files explicitly written/registered
+    // by this session are owned.
+    const isComplete = baseline.toSnapshot().complete !== false
+    if (isComplete && baseline.isExternal(filePath)) {
       coOwnedSet.add(filePath)
       return
     }
@@ -108,11 +117,12 @@ export function createOwnershipLedger(opts: {
         ledgerPaths.add(event.path)
       }
     }
+    const isComplete = baseline.toSnapshot().complete !== false
     for (const f of dirtyFiles) {
       // Already classified — skip
       if (ownedSet.has(f) || coOwnedSet.has(f)) continue
       // Pre-existing in baseline — not ours to auto-own
-      if (baseline.isExternal(f)) continue
+      if (isComplete && baseline.isExternal(f)) continue
       // Must have a ledger trace (file_write/git_action) to auto-own.
       // Files modified by other sessions without our ledger record are not ours.
       if (!ledgerPaths.has(f)) continue
@@ -124,7 +134,8 @@ export function createOwnershipLedger(opts: {
     if (!filePath) return false
     // Adopted files (cross-session takeover) are always considered owned
     if (adoptedSet.has(filePath)) return true
-    if (baseline.isExternal(filePath)) return false
+    const isComplete = baseline.toSnapshot().complete !== false
+    if (isComplete && baseline.isExternal(filePath)) return false
     return ownedSet.has(filePath)
   }
 
@@ -215,5 +226,6 @@ export function createOwnershipLedger(opts: {
     scopeToOwned,
     getOwnershipReport,
     getBaselineHead,
+    isBaselineComplete,
   }
 }

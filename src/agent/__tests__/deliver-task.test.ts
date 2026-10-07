@@ -50,6 +50,7 @@ function makeContext(opts: {
   obligationStore?: import('../evidence-obligation.js').ObligationStore
   claimTracker?: import('../hooks/external-claim-tracking-hook.js').ClaimTracker
   scoutFirewall?: boolean
+  completeBaseline?: boolean
 }) {
   const baseline = createWorktreeBaseline({
     branch: 'feat/b1',
@@ -57,6 +58,7 @@ function makeContext(opts: {
     preExistingDirty: opts.externalFiles ?? [],
     preExistingUntracked: opts.preExistingUntracked ?? [],
     capturedAt: Date.now(),
+    ...(opts.completeBaseline !== undefined ? { complete: opts.completeBaseline } : {}),
   })
   const ledger = createTaskLedger({ taskId: opts.taskId })
   for (const f of opts.ownedFiles) ledger.record({ type: 'file_write', path: f })
@@ -3259,5 +3261,50 @@ describe('issue #356 — 门禁拒绝必须带结构化 errorKind（防文本正
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('Scoped commit failed'))
     assert.equal(result.errorKind, 'delivery_gate', 'issue #356：commit 失败不得缺 errorKind（否则重试会重复进入 commit）')
+  })
+
+  describe('issue #369 — 非 git 工作区 / incomplete baseline 交付门禁与提交拦截', () => {
+    it('非 git 工作区（基线 incomplete）：交付门降级为 YELLOW 并给出明确指引，而非虚假 GREEN', async () => {
+      const { tool, params } = makeContext({
+        taskId: 'non-git-yellow',
+        ownedFiles: ['src/app.ts'],
+        dirtyFiles: ['src/app.ts'],
+        verifications: [{ command: 'npx vitest run', status: 'passed' }],
+        completeBaseline: false,
+        disableReviewDeps: true,
+      })
+
+      const result = await tool.execute({ ...params, input: {} })
+
+      assert.equal(result.isError ?? false, false)
+      assert.match(result.content, /Delivery Gate: YELLOW/)
+      assert.match(result.content, /该工作区不是 git 仓库（或归属基线未能建立）：无法建立归属基线，也无法提交/)
+      assert.match(result.content, /Owned files \(1\):/)
+      assert.match(result.content, /src\/app\.ts/)
+    })
+
+    it('非 git 工作区（基线 incomplete）：commit=true 被立即拦截并报错，不执行 git 提交', async () => {
+      let commitExecuted = false
+      const { tool, params } = makeContext({
+        taskId: 'non-git-commit-blocked',
+        ownedFiles: ['src/app.ts'],
+        dirtyFiles: ['src/app.ts'],
+        verifications: [{ command: 'npx vitest run', status: 'passed' }],
+        completeBaseline: false,
+        commitOwnedFiles: () => {
+          commitExecuted = true
+          return { ok: true, output: 'should never run' }
+        },
+        disableReviewDeps: true,
+      })
+
+      const result = await tool.execute({ ...params, input: { commit: true, message: 'feat: add app' } })
+
+      assert.equal(result.isError, true)
+      assert.equal(result.errorKind, 'delivery_gate')
+      assert.equal(commitExecuted, false, '非 git 工作区绝对不得调用 commit 执行器')
+      assert.match(result.content, /❌ Cannot commit: 该工作区不是 git 仓库（或归属基线未能建立），无法执行 scoped commit。/)
+      assert.match(result.content, /文件改动已保存在工作区中/)
+    })
   })
 })

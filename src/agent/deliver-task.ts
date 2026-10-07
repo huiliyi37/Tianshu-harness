@@ -82,8 +82,7 @@ function runGateAsync(command: string, cwd: string): Promise<{ ok: boolean; deta
     }
   })
 }
-import type { DeliveryGateV2 } from './delivery-gate-v2.js'
-import { filterExternalNoise } from './delivery-gate-v2.js'
+import { filterExternalNoise, type DeliveryGateV2 } from './delivery-gate-v2.js'
 import { summarizeOwnershipHealth } from './ownership-health.js'
 import { classifyChange, createGitDiffProvider, isMechanicalFastPathEnabled } from './change-classification.js'
 import { commitScopedFiles, type ScopedCommitResult } from './scoped-git-commit.js'
@@ -856,27 +855,24 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         // Manual commit mode — user wants to review before committing.
         // Still run the full gate report, just skip the actual git commit.
         if (ctx.autoCommit === false) {
-          lines.push(
-            '',
-            '🛑 自动提交已关闭（agent.delivery.autoCommit = false）。',
-            '以上交付报告与门禁状态仅供参考——变更未提交。',
-            '审查完成后由用户手动执行 git commit。',
-          )
+          lines.push('', '🛑 自动提交已关闭（agent.delivery.autoCommit = false）。', '以上交付报告与门禁状态仅供参考——变更未提交。', '审查完成后由用户手动执行 git commit。')
           return { content: lines.join('\n') }
         }
         // Atomic commit reminder — injected at the exact moment before commit,
         // not in system prompt. Keeps prompt noise low while catching "accidental
         // batch commit" at the most dangerous moment.
         lines.push(
-          '',
-          '<atomic-commit-reminder>',
-          '提交前只确认本次一个逻辑单元：',
-          '1. 是否只包含当前任务文件？',
-          '2. 是否混入外部/他人改动？',
-          '3. 测试与 typecheck 是否对应本逻辑单元？',
-          '4. commit message 是否描述一个原子变更？',
+          '', '<atomic-commit-reminder>', '提交前只确认本次一个逻辑单元：',
+          '1. 是否只包含当前任务文件？', '2. 是否混入外部/他人改动？',
+          '3. 测试与 typecheck 是否对应本逻辑单元？', '4. commit message 是否描述一个原子变更？',
           '</atomic-commit-reminder>',
         )
+
+        if (ctx.ownership.isBaselineComplete && !ctx.ownership.isBaselineComplete()) {
+          lines.push('', '❌ Cannot commit: 该工作区不是 git 仓库（或归属基线未能建立），无法执行 scoped commit。')
+          lines.push('   文件改动已保存在工作区中。如需提交，请先在该目录初始化 git 仓库或在 git 仓库中执行任务。')
+          return { content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
+        }
 
         const forceGate = params.input.force === true
 

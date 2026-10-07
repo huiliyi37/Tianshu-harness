@@ -260,7 +260,7 @@ export function createDeliveryGateV2(opts: {
     return { ownedFilesForGate, coOwnedFiles, historicalOwnedFiles, externalFiles }
   }
 
-  function assess(externalVerifications: VerificationMetadata[], currentDirtyFiles?: string[], currentSnapshotRef?: string, moduleCoverage?: ModuleCoverageInput): DeliveryGateResult {
+  function rawAssess(externalVerifications: VerificationMetadata[], currentDirtyFiles?: string[], currentSnapshotRef?: string, moduleCoverage?: ModuleCoverageInput): DeliveryGateResult {
     const { ownedFilesForGate: ownedFiles, coOwnedFiles, externalFiles } = getGateFiles(currentDirtyFiles)
 
     // Check ownership health for unclassified dirty files
@@ -526,6 +526,19 @@ export function createDeliveryGateV2(opts: {
           attributionClass: 'unverified',
         }
     }
+  }
+
+  function assess(externalVerifications: VerificationMetadata[], currentDirtyFiles?: string[], currentSnapshotRef?: string, moduleCoverage?: ModuleCoverageInput): DeliveryGateResult {
+    const result = rawAssess(externalVerifications, currentDirtyFiles, currentSnapshotRef, moduleCoverage)
+    if (result.state === 'GREEN' && ownership.isBaselineComplete && !ownership.isBaselineComplete()) {
+      return {
+        ...result,
+        state: 'YELLOW',
+        reason: (result.reason ? `${result.reason}\n` : '') +
+          '该工作区不是 git 仓库（或归属基线未能建立）：无法建立归属基线，也无法提交——deliver_task(commit=true) 会失败。文件改动仍然生效，只是交付/提交流程不可用。',
+      }
+    }
+    return result
   }
 
   function getReport(externalVerifications: VerificationMetadata[], currentDirtyFiles?: string[], currentSnapshotRef?: string, moduleCoverage?: ModuleCoverageInput): DeliveryReport {

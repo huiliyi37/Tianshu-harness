@@ -518,3 +518,47 @@ describe('unregisterOwned — 草稿/瞬态产物的对称清理（8784b64b8 审
     assert.equal(ownership.isOwned('never-registered.ts'), false)
   })
 })
+
+describe('incomplete baseline handling (issue #369 — non-git workspace)', () => {
+  it('correctly reports isBaselineComplete as false and owns explicitly written files', () => {
+    const baseline = createWorktreeBaseline({
+      branch: '',
+      head: '',
+      preExistingDirty: [],
+      preExistingUntracked: [],
+      capturedAt: Date.now(),
+      complete: false,
+    })
+    const ledger = createTaskLedger({ taskId: 'non-git-task' })
+    const ownership = createOwnershipLedger({ baseline, taskLedger: ledger })
+
+    assert.equal(ownership.isBaselineComplete?.(), false)
+
+    // In an incomplete baseline, baseline.isExternal() returns true for all paths,
+    // but registerOwned should NOT treat session writes as co-owned.
+    ownership.registerOwned('src/new-work.ts')
+    assert.equal(ownership.isOwned('src/new-work.ts'), true)
+    assert.equal(ownership.isCoOwned('src/new-work.ts'), false)
+    assert.deepEqual(ownership.getOwnedFiles(), ['src/new-work.ts'])
+    assert.deepEqual(ownership.getCoOwnedFiles(), [])
+  })
+
+  it('autoOwnFromBaseline does not skip ledger-recorded files when baseline is incomplete', () => {
+    const baseline = createWorktreeBaseline({
+      branch: '',
+      head: '',
+      preExistingDirty: [],
+      preExistingUntracked: [],
+      capturedAt: Date.now(),
+      complete: false,
+    })
+    const ledger = createTaskLedger({ taskId: 'non-git-task' })
+    ledger.record({ type: 'file_write', path: 'src/written.ts' })
+    const ownership = createOwnershipLedger({ baseline, taskLedger: ledger })
+
+    ownership.autoOwnFromBaseline(['src/written.ts'])
+    assert.equal(ownership.isOwned('src/written.ts'), true)
+    assert.deepEqual(ownership.getOwnedFiles(), ['src/written.ts'])
+  })
+})
+

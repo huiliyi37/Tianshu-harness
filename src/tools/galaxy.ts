@@ -649,11 +649,17 @@ export function createGalaxyTool(coordinator: GalaxyCoordinator): Tool {
         ? resolvePlanConstraints(params.cwd, { planPath, objective })
         : undefined
 
-      // DP 组合法策略：all_required（默认）或 quorum（组级判定）。其他策略
-      // （first_success/majority 等）会把 DP 副本当普通 worker 聚合掉，破坏
-      // 「保留每个副本的结果和证据」的语义，仍拦截。
-      const hasDataParallel = dimensions.some(dimension => dimension.parallelism === 'data')
+      // Galaxy 聚合策略校验：Galaxy 保留所有维度结果（支持 all_required/primary_decides/quorum）。拦截丢弃型策略。
       const isQuorumPolicy = typeof policy === 'object' && policy?.kind === 'quorum'
+      if (policy && policy !== 'all_required' && policy !== 'primary_decides' && !isQuorumPolicy) {
+        const policyName = typeof policy === 'string' ? policy : JSON.stringify(policy)
+        return {
+          content: `星河已拦截：Galaxy 需要保留所有维度的结果以提供完整的多维度视角。\n聚合策略仅支持 all_required（默认）、primary_decides 或 quorum（组级判定）。\n\n当前策略「${policyName}」会选择单一结果并丢弃其他维度，这会导致：\n- 报告维度数与实际请求不符\n- 丢失其他维度的独立见解\n- 误导性的「所有维度通过」结论\n\n如需选择最佳结果，请在 Galaxy 外部评估各维度报告后手动决策。`,
+          isError: true,
+        }
+      }
+      // DP 组合法策略：仅支持 all_required 或 quorum（组级判定），破坏副本结果语义的策略予以拦截。
+      const hasDataParallel = dimensions.some(dimension => dimension.parallelism === 'data')
       if (hasDataParallel && policy && policy !== 'all_required' && !isQuorumPolicy) {
         return {
           content: '星河已拦截：DP 需要保留每个副本的结果和证据，聚合策略仅支持 all_required（默认）或 quorum（组级判定，副本通过数 ≥ k 才采信组结论）。语义分歧由后续审查维度处理。',

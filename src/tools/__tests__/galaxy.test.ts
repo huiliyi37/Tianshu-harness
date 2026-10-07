@@ -703,6 +703,44 @@ describe('GALAXY_TOOL', () => {
     })
     assert.equal(blocked.isError, true)
     assert.ok(blocked.content.includes('拦截'))
+
+    // issue #368: EP 场景下拦截结果丢弃型策略（weighted_confidence / first_success / majority）
+    for (const badPolicy of ['weighted_confidence', 'first_success', 'majority'] as const) {
+      const epBad = await tool.execute({
+        toolUseId: `tu_ep_${badPolicy}`,
+        cwd: '/repo',
+        input: {
+          objective: '多维度分析',
+          dimensions: [
+            { name: 'search', objective: '检索', authority: 'tianji', profile: 'code_scout' },
+            { name: 'plan', objective: '规划', authority: 'tianquan', profile: 'planner' },
+          ],
+          autoReview: false,
+          confirm: true,
+          policy: badPolicy,
+        },
+      })
+      assert.equal(epBad.isError, true, `${badPolicy} 应被拦截`)
+      assert.ok(epBad.content.includes('Galaxy 需要保留所有维度的结果'), `${badPolicy} 应返回明确原因`)
+    }
+
+    // EP 场景下允许 primary_decides
+    const epPrimary = await tool.execute({
+      toolUseId: 'tu_ep_primary',
+      cwd: '/repo',
+      input: {
+        objective: '多维度 primary_decides 场景',
+        dimensions: [
+          { name: 'search', objective: '检索', authority: 'tianji', profile: 'code_scout' },
+          { name: 'plan', objective: '规划', authority: 'tianquan', profile: 'planner' },
+        ],
+        autoReview: false,
+        confirm: true,
+        policy: 'primary_decides',
+      },
+    })
+    assert.equal(epPrimary.isError, undefined)
+    assert.equal(capturedPolicy, 'primary_decides')
   })
 })
 

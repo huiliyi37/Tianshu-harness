@@ -74,6 +74,18 @@ export class IncompleteStreamError extends Error {
   }
 }
 
+/**
+ * OpenAI-protocol terminal `finish_reason` values. Receiving one of these
+ * proves the model finished its turn even when the provider (MiniMax-M3 on
+ * large-context sessions) omits the trailing `data: [DONE]` marker, which
+ * otherwise makes every request fail as an incomplete stream.
+ *
+ * 宽容收尾的安全边界：只有明确收到终态 finish_reason 才放行；仅收到部分
+ * content 却无 finish_reason 的流仍视为真·中途断流（见下文的抛错分支），
+ * 以免「半截回答冒充完整回答」。
+ */
+const TERMINAL_FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'content_filter', 'function_call'])
+
 
 function tryParseToolArguments(raw: string): Record<string, unknown> | null {
   if (raw.trim().length === 0) return {}
@@ -1196,6 +1208,13 @@ export class OpenAIClient implements StreamClient {
     let textReceived = false
     let promotionFired = false
     let toolProgressReceived = false
+    /**
+     * Last terminal (OpenAI-protocol) finish_reason seen on the wire. Set when a
+     * delta carries e.g. `stop` / `tool_calls` / `length` / `content_filter`.
+     * Used at EOF to tolerate providers (MiniMax-M3) that omit `data: [DONE]`
+     * yet signalled a completed turn. Null ⇒ no completion proof ⇒ strict throw.
+     */
+    let terminalFinishReason: string | null = null
     const repetitionGuard = this.config.providerName === 'deepseek'
       ? new ReasoningRepetitionGuard() : undefined
     const processPayload = (payload: string): void => {
@@ -1207,6 +1226,8 @@ export class OpenAIClient implements StreamClient {
       if (metadata.model) identity.responseModel = metadata.model
       if (metadata.system_fingerprint) identity.systemFingerprint = metadata.system_fingerprint
       if (parsed.choices?.[0]?.finish_reason) identity.finishReason = parsed.choices[0].finish_reason
+      const finishReason = parsed.choices?.[0]?.finish_reason
+      if (finishReason && TERMINAL_FINISH_REASONS.has(finishReason)) terminalFinishReason = finishReason
       const delta = parsed?.choices?.[0]?.delta
       if (parsed.choices?.[0] && !delta && !parsed.choices[0].finish_reason && !parsed.usage) return
       // Completed calls leave toolCallBuffer when flushed. Progress remains
@@ -1390,12 +1411,27 @@ export class OpenAIClient implements StreamClient {
       // read/done path, and hard-cap abort can land between reads as well.
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       throwIfHardCapAborted()
-      // A missing terminal marker means the socket/stream ended mid-flight
-      // (proxy idle close, connection reset, provider bug). Settling this as
-      // `complete` loses the abort breadcrumb and lets a partial turn pass as a
-      // finished answer. `error-classifier` maps it to stream_parse so retry and
-      // FallbackStreamClient provider switching both apply.
-      if (!doneMarkerReceived) throw new IncompleteStreamError()
+      // EOF without `data: [DONE]`. Two cases:
+      //
+      // 1. A terminal finish_reason (stop/tool_calls/length/content_filter) was
+      //    already observed — the turn is provably complete; some providers
+      //    (MiniMax-M3 on large-context sessions) simply omit the marker.
+      //    Settle tolerantly so the whole request isn't discarded, but log a
+      //    warning. Safe because finish_reason is only emitted by the model
+      //    once its turn is done — partial content alone does not qualify.
+      // 2. No finish_reason — the socket/stream ended mid-flight (proxy idle
+      //    close, connection reset, provider bug). Settling this as `complete`
+      //    loses the abort breadcrumb and lets a partial turn pass as a
+      //    finished answer. `error-classifier` maps it to stream_parse so retry
+      //    and FallbackStreamClient provider switching both apply.
+      if (!doneMarkerReceived) {
+        if (terminalFinishReason === null) throw new IncompleteStreamError()
+        debugLog(
+          '[openai-client] SSE stream ended without [DONE] marker but a terminal finish_reason was received —'
+          + ` settling tolerantly (provider=${this.config.providerName ?? 'openai'}`
+          + ` model=${identity.responseModel ?? this.config.model} finish_reason=${terminalFinishReason})`,
+        )
+      }
 
       this.flushToolCalls(callbacks, { final: true })
       // 网#1: DeepSeek tool-JSON-in-content fallback

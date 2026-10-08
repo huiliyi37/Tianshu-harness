@@ -208,12 +208,34 @@ test('abort while a read is pending settles the attempt as aborted, not complete
   assert.equal((error as Error).name, 'AbortError')
 })
 
-test('EOF without [DONE] is an incomplete/aborted attempt, never a successful completion', async () => {
+test('EOF without [DONE] but with a terminal finish_reason settles as a successful completion', async () => {
   const openai = client()
   const encoder = new TextEncoder()
   const reader = new ReadableStream<Uint8Array>({
     start(c) {
       c.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":10}}\n\n'))
+      c.close()
+    },
+  }).getReader()
+  const stops: unknown[] = [], aborts: any[] = []
+  const error = await openai.parseStreamFromReader(reader, {
+    onStopReason: (...args) => stops.push(args),
+    onStreamAttemptAborted: info => aborts.push(info),
+  }).then(() => null, (err: Error) => err)
+
+  assert.equal(error, null, 'a terminal finish_reason proves the turn completed even without [DONE]')
+  assert.equal(stops.length, 1, 'the tolerant settle must emit a successful stop reason')
+  assert.equal((stops[0] as any[])[0], 'end_turn')
+  assert.equal((stops[0] as any[])[1].input_tokens, 100)
+  assert.equal(aborts.length, 0, 'a completed turn carries no abort breadcrumb')
+})
+
+test('EOF without [DONE] and without finish_reason is an incomplete/aborted attempt', async () => {
+  const openai = client()
+  const encoder = new TextEncoder()
+  const reader = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}}\n\n'))
       c.close()
     },
   }).getReader()

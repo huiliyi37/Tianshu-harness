@@ -97,6 +97,7 @@ import { routeReviewWorkflow, type ReviewMode, type ReviewOutcome } from '../age
 import type { ChangeSet } from '../agent/review-discipline.js'
 import { HELP_TEXT } from './format/help-text.js'
 import { contractModels } from '../config/contract-models.js'
+import { handleEffortSlash, resolveActiveEffortChoices } from './effort-slash.js'
 
 /**
  * Framework-agnostic mutable ref. Structurally compatible with React's
@@ -173,6 +174,7 @@ export interface SlashHandlerContext {
   claimStoreRef: MutableRefLike<ContextClaimStore | null>
   setReasoningEffort?: (effort: import('../agent/auto-reasoning.js').ReasoningEffort | 'auto') => void
   reasoningEffort?: string
+  effortChoices?: import('../api/provider.js').ReasoningEffortChoice[]
   onDomainChange?: (domainName: string | undefined) => void
   /** T5: bandit promotion state for /status observability. */
   banditState?: import('../server/routes.js').BanditStatusEntry[]
@@ -3377,32 +3379,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   {
     name: '/effort',
     immediate: true,
-    handler(ctx) {
-      const { parts, pushStatic, setIsStreaming, surfacePush } = ctx
-      const cmd = parts[0]!.toLowerCase()
-      const level = parts[1]?.toLowerCase() as 'off' | 'low' | 'medium' | 'high' | 'max' | 'auto' | undefined
-      const valid: Array<'off' | 'low' | 'medium' | 'high' | 'max' | 'auto'> = ['off', 'low', 'medium', 'high', 'max', 'auto']
-      if (!level) {
-        // 无参数 → 重置面板类型后打开交互式选择面板（上下选、回车确认）。
-        // 不重置的话，先开过 /permission 等面板后 choicePanelKind 残留，
-        // 选择面板会按旧类型渲染（PR #29 移植）。
-        pushStatic(createLogEntry({ type: 'system', content: '也可在 /model 面板用 </> 随模型一起调整推理等级（Enter 可随默认持久化）。' }))
-        ctx.setChoicePanelKind?.('effort')
-        surfacePush?.('choice-panel')
-        setIsStreaming(false)
-        return true
-      }
-      if ((valid as string[]).includes(level)) {
-        ctx.setReasoningEffort?.(level)
-        pushStatic(createLogEntry({ type: 'system', content: level === 'auto'
-          ? 'Reasoning effort: auto (autoReasoning picks per task)'
-          : `Reasoning effort set to: ${level}` }))
-      } else {
-        pushStatic(createLogEntry({ type: 'system', content: `Usage: /effort [off|low|medium|high|max|auto]\n\nSet max for full reasoning on every turn. auto lets autoReasoning pick per-task complexity.` }))
-      }
-      setIsStreaming(false)
-      return true
-    },
+    handler: (ctx) => handleEffortSlash(ctx),
   },
   {
     name: '/yes',
@@ -3927,6 +3904,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       surfacePop: () => { app.deactivateOverlay() },
       setReasoningEffort: (effort) => { ctx.agent.setReasoningEffort(effort) },
       reasoningEffort: ctx.agent.getReasoningEffort() ?? ctx.agent.config.reasoningEffort,
+      effortChoices: resolveActiveEffortChoices(ctx.provider, ctx.agent.config.promptEngine.getModel()),
     }
   }
 

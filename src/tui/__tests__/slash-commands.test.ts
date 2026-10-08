@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test'
+﻿import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
@@ -1057,6 +1057,133 @@ describe('/effort', () => {
     }))
 
     assert.equal(kind, 'effort')
+  })
+  it('rejects /effort with unsupported notice when effortChoices is empty', async () => {
+    const logs: string[] = []
+    let panelKind: string | undefined
+    let effortSet: string | undefined
+
+    const handledNoArg = await handleSlashCommand(makeCtx({
+      parts: ['/effort'],
+      effortChoices: [],
+      setChoicePanelKind: (k) => { panelKind = k as any },
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(handledNoArg, true)
+    assert.equal(panelKind, undefined)
+    assert.equal(effortSet, undefined)
+    assert.ok(logs.some(m => m.includes('当前模型不支持推理等级调节')))
+
+    logs.length = 0
+    const handledWithArg = await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'high'],
+      effortChoices: [],
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(handledWithArg, true)
+    assert.equal(effortSet, undefined)
+    assert.ok(logs.some(m => m.includes('当前模型不支持推理等级调节')))
+  })
+
+  it('restricts choices and rejects invalid level with dynamic usage when effortChoices is provided', async () => {
+    const deepseekChoices = [
+      { id: 'off' as const, label: 'Off', wireValue: 'none' },
+      { id: 'low' as const, label: 'Low' },
+      { id: 'high' as const, label: 'High' },
+      { id: 'max' as const, label: 'Max' },
+    ]
+    const logs: string[] = []
+    let effortSet: string | undefined
+
+    // Invalid / unsupported choice on DeepSeek (medium aliases to high, not a direct choice)
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'medium'],
+      effortChoices: deepseekChoices,
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(effortSet, undefined)
+    assert.ok(logs.some(m => m.includes('Usage: /effort [off|low|high|max|auto]')))
+
+    // Valid choices
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'high'],
+      effortChoices: deepseekChoices,
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(effortSet, 'high')
+
+    // Wire alias none maps to internal off
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'none'],
+      effortChoices: deepseekChoices,
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(effortSet, 'off')
+  })
+
+  it('accepts wire alias xhigh for max and rejects unsupported off for Grok', async () => {
+    const grokChoices = [
+      { id: 'low' as const, label: 'Low' },
+      { id: 'medium' as const, label: 'Medium' },
+      { id: 'high' as const, label: 'High' },
+      { id: 'max' as const, label: 'XHigh', wireValue: 'xhigh' },
+    ]
+    const logs: string[] = []
+    let effortSet: string | undefined
+
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'xhigh'],
+      effortChoices: grokChoices,
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(effortSet, 'max')
+    assert.ok(logs.some(m => m === 'Reasoning effort set to: XHigh'))
+
+    logs.length = 0
+    effortSet = undefined
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'off'],
+      effortChoices: grokChoices,
+      setReasoningEffort: (e) => { effortSet = e },
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.equal(effortSet, undefined)
+    assert.ok(logs.some(m => m.includes('Usage: /effort [low|medium|high|max|auto]')))
+  })
+
+  it('omits Set max guidance when model lacks max and guides Enter=session s=default', async () => {
+    const limitedChoices = [
+      { id: 'off' as const, label: 'Off', wireValue: 'none' },
+      { id: 'low' as const, label: 'Low' },
+      { id: 'high' as const, label: 'High' },
+    ]
+    const logs: string[] = []
+
+    // No arg hint
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort'],
+      effortChoices: limitedChoices,
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    assert.ok(logs.some(m => m.includes('Enter 仅应用本会话，s 设为默认')))
+
+    // Invalid arg usage omits 'Set max'
+    logs.length = 0
+    await handleSlashCommand(makeCtx({
+      parts: ['/effort', 'unknown'],
+      effortChoices: limitedChoices,
+      pushStatic: (entry) => logs.push(entry.content),
+    }))
+    const usageMsg = logs.find(m => m.includes('Usage: /effort'))!
+    assert.ok(usageMsg.includes('Usage: /effort [off|low|high|auto]'))
+    assert.ok(!usageMsg.includes('Set max'))
+    assert.ok(usageMsg.includes('auto lets autoReasoning pick per-task complexity.'))
   })
 })
 

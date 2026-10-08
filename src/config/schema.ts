@@ -21,6 +21,8 @@ export const modelCapabilitiesSchema = z.object({
   effortFormat: z.enum(['reasoning_effort', 'output_config', 'none']).optional(),
   /** Per-effort-level ceiling — values above are clamped (e.g. {max:'high'}). */
   effortCap: z.record(z.string(), z.string()).optional(),
+  /** Native effort values advertised by this model's /models metadata. */
+  effortLevels: z.array(z.string().min(1)).optional(),
   /** Provider separates reasoning into a `reasoning_content` response field. */
   reasoningSplit: z.boolean().optional(),
   /** Field name carrying the thinking budget inside the thinking block (Claude: 'budget_tokens'). */
@@ -50,12 +52,7 @@ export const providerCapabilitiesSchema = z.object({
   prefixCache: z.enum(['deepseek-native', 'anthropic-cache-control', 'none']).optional(),
   prefixCompletion: z.boolean().optional(),
   // Model-level semantic fields (shared shape with modelCapabilitiesSchema).
-  thinkingBlock: z.enum(['enabled', 'adaptive', 'none']).optional(),
-  effortFormat: z.enum(['reasoning_effort', 'output_config', 'none']).optional(),
-  effortCap: z.record(z.string(), z.string()).optional(),
-  reasoningSplit: z.boolean().optional(),
-  thinkingBudgetField: z.enum(['budget_tokens']).optional(),
-  preservedThinkingProtocol: z.boolean().optional(),
+  ...modelCapabilitiesSchema.removeDefault().shape,
 }).default({})
 
 /** Conservative fallback when a model's context window is unknown. */

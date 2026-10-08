@@ -89,6 +89,8 @@ import { createModeAwareRunner, workerIsolationEnabled, workerIsolationMode } fr
 import type { ResolvedReviewOverride } from './agent/review-model-override.js'
 import { createAuthProvider } from './auth/registry.js'
 import { resolveCapabilities } from './api/provider.js'
+import { resolveInitialReasoningEffort } from './agent/runtime-effort.js'
+export { resolveInitialReasoningEffort }
 import { canonicalizeModelId } from './api/model-aliases.js'
 import { contractModels } from './config/contract-models.js'
 import { resolveModelRef } from './config/provider-keys.js'
@@ -945,9 +947,7 @@ export function createAgentRuntime(deps: {
       id: currentModel.id,
       maxTokens: currentModel.maxTokens,
       contextWindow: currentModel.contextWindow,
-      // 用户显式 defaultEffort（/model 面板随「设为默认」持久化）压过 preset 默认档；
-      // 未配置时沿用 preset/模型的 reasoningEffort（auto-reasoning 仍可在其上动态调）。
-      reasoningEffort: config.agent.defaultEffort ?? currentModel.reasoningEffort,
+      reasoningEffort: resolveInitialReasoningEffort(config.agent.defaultEffort ?? currentModel.reasoningEffort, resolveCapabilities(provider.name, provider.capabilities, currentModel.capabilities)),
       supportsVision: currentModel.supportsVision,
     },
     cwd,

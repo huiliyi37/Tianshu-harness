@@ -135,7 +135,7 @@ import { truncateToDisplayWidth, displayWidth, ambiguousWideEnabled } from '../w
 import { boxCharsFor, boxInnerWidth } from '../box-chars.js'
 import { useAsciiGlyphs } from '../term-caps.js'
 import { appendHistoryAsync, nextHistoryAfterSubmit } from '../history.js'
-import { renderPager, renderStarmap, renderCommandPalette, followListWindow, renderChronicle, renderTasks, renderDomainPicker, renderDomainGenesisCard, genesisCardMaxScroll, renderModelPicker, renderThemePicker, renderChoicePanel, renderPlanPicker, renderConnect, renderInitFlow, MODEL_PICKER_EFFORT_LEVELS, stepModelPickerEffort, type ModelPickerEffort } from '../format/overlay.js'
+import { renderPager, renderStarmap, renderCommandPalette, followListWindow, renderChronicle, renderTasks, renderDomainPicker, renderDomainGenesisCard, genesisCardMaxScroll, renderModelPicker, renderThemePicker, renderChoicePanel, renderPlanPicker, renderConnect, renderInitFlow, MODEL_PICKER_EFFORT_LEVELS, stepModelPickerEffort, normalizeModelPickerEffort, type ModelPickerEffort } from '../format/overlay.js'
 import type { PagerData, StarmapData, PaletteData, ChronicleData, TasksData, TasksGroup, TasksWorkerRow, DomainPickerData, ModelPickerData, ThemePickerData, ChoicePanelData, PlanPickerData, ChoiceEntry, ConnectOverlayData, InitOverlayData } from '../format/overlay.js'
 import { ConnectFlow, DIY_PENDING_KEY_REF, type ConnectCommit, type ConnectProviderRef, type ConnectStepResult } from '../connect-flow.js'
 import { VisionOnboardingFlow, type VisionCandidate, type VisionOnboardingRequest, type VisionOnboardingResult } from '../vision-onboarding-flow.js'
@@ -2433,14 +2433,18 @@ export class TuiApp {
       }
       case 'model-picker': {
         this.overlayController.resetNav()
-        const entries = this.overlayController.getData()?.modelPickerData?.().entries ?? []
+        const data = this.overlayController.getData()?.modelPickerData?.()
+        const entries = data?.entries ?? []
         const curIdx = entries.findIndex(e => e.current)
         if (curIdx >= 0) this.overlayController.nav().modelPickerIndex = curIdx
+        const selectedIndex = curIdx >= 0 ? curIdx : 0
+        const selectedEntry = entries[selectedIndex]
         // effort draft 初始化为当前生效档（CC 对标：面板内 </> 调整，提交才生效）
-        const cur = this.metricsGlanceController.reasoningEffortProvider?.()
+        const cur = data?.effort?.value ?? this.metricsGlanceController.reasoningEffortProvider?.()
         const init = (MODEL_PICKER_EFFORT_LEVELS as readonly string[]).includes(cur ?? '') ? cur as ModelPickerEffort : 'auto'
-        this.modelPickerEffortDraft = init
-        this.modelPickerEffortInitial = init
+        const normalized = normalizeModelPickerEffort(init, selectedEntry)
+        this.modelPickerEffortDraft = normalized
+        this.modelPickerEffortInitial = normalized
         return this.overlay.activate(id)
       }
       case 'theme-picker': {
@@ -3850,38 +3854,60 @@ export class TuiApp {
       const count = data?.entries.length ?? 0
       const cur = this.overlayController.nav().modelPickerIndex
       if (key.name === 'down') {
-        if (count > 0) { this.overlayController.nav().modelPickerIndex = (cur + 1) % count; this.overlay.rerender() }
+        if (count > 0) {
+          const next = (cur + 1) % count
+          this.overlayController.nav().modelPickerIndex = next
+          const nextEntry = data?.entries[next]
+          if (this.modelPickerEffortDraft) {
+            this.modelPickerEffortDraft = normalizeModelPickerEffort(this.modelPickerEffortDraft, nextEntry)
+          }
+          this.overlay.rerender()
+        }
         return true
       }
       if (key.name === 'up') {
-        if (count > 0) { this.overlayController.nav().modelPickerIndex = (cur - 1 + count) % count; this.overlay.rerender() }
+        if (count > 0) {
+          const next = (cur - 1 + count) % count
+          this.overlayController.nav().modelPickerIndex = next
+          const nextEntry = data?.entries[next]
+          if (this.modelPickerEffortDraft) {
+            this.modelPickerEffortDraft = normalizeModelPickerEffort(this.modelPickerEffortDraft, nextEntry)
+          }
+          this.overlay.rerender()
+        }
         return true
       }
+      const curEntry = count > 0 ? data?.entries[cur] : undefined
+      const isCurEffortSupported = curEntry ? curEntry.effortSupported !== false : false
       // </> effort 步进（CC 对标）：循环切换档位 draft；选中模型不支持时不响应
       // （渲染层 supported 判定按当前选中条目——翻到不支持模型后 effort 行自然灰化）。
-      if ((c === '<' || c === '>') && data?.effort?.supported !== false) {
-        this.modelPickerEffortDraft = stepModelPickerEffort(this.modelPickerEffortDraft ?? 'auto', c)
+      if ((c === '<' || c === '>') && isCurEffortSupported) {
+        this.modelPickerEffortDraft = stepModelPickerEffort(
+          this.modelPickerEffortDraft ?? 'auto',
+          c,
+          curEntry?.effortLevels,
+        )
         this.overlay.rerender()
         return true
       }
-      // 提交语义（CC 对标）：Enter=设为默认（持久化）、s=仅本会话。
+      // 提交语义（CC 对标）：Enter=仅本会话、s=设为默认（持久化）。
       // effort 只在有显式改动（draft ≠ 打开时初值）时随提交传递。
-      const effortChange = this.modelPickerEffortDraft !== undefined
-        && this.modelPickerEffortDraft !== this.modelPickerEffortInitial
-        ? this.modelPickerEffortDraft
+      const isDifferentModel = curEntry ? curEntry.current === false : false
+      const effortChange = isCurEffortSupported
+        ? (isDifferentModel
+            ? this.modelPickerEffortDraft
+            : (this.modelPickerEffortDraft !== this.modelPickerEffortInitial ? this.modelPickerEffortDraft : undefined))
         : undefined
       if (key.name === 'return') {
-        const entry = count > 0 ? data?.entries[cur] : undefined
-        if (entry && this.overlayController.getModelPickerExec()) {
-          this.overlayController.getModelPickerExec()?.(entry.provider, entry.id, effortChange)
+        if (curEntry && this.overlayController.getModelPickerExec()) {
+          this.overlayController.getModelPickerExec()?.(curEntry.provider, curEntry.id, effortChange)
         }
         this.deactivateOverlay()
         return true
       }
       if (c === 's') {
-        const entry = count > 0 ? data?.entries[cur] : undefined
-        if (entry && this.overlayController.getModelPickerSaveDefaultExec()) {
-          this.overlayController.getModelPickerSaveDefaultExec()?.(entry.provider, entry.id, effortChange)
+        if (curEntry && this.overlayController.getModelPickerSaveDefaultExec()) {
+          this.overlayController.getModelPickerSaveDefaultExec()?.(curEntry.provider, curEntry.id, effortChange)
         }
         this.deactivateOverlay()
         return true
@@ -7146,7 +7172,7 @@ export class TuiApp {
     themePickerData?: () => ThemePickerData
     choicePanelData?: () => ChoicePanelData
     planPickerData?: () => PlanPickerData
-  }, paletteExec?: (index: number) => void, rewindExec?: (messageIndex: number, mode: RewindMode) => void, chronicleExec?: (id: string) => void, domainPickerExec?: (key: string) => void, modelPickerExec?: (provider: string, modelId: string) => void, domainPickerSaveDefaultExec?: (key: string) => void, modelPickerSaveDefaultExec?: (provider: string, modelId: string) => void, themePickerExec?: (key: string) => void, themePickerSaveDefaultExec?: (key: string) => void, choicePanelExec?: (id: string) => void, connectExec?: (commit: ConnectCommit, summary: string) => boolean | void, planPickerExec?: (slug: string) => void, initExec?: (commit: InitCommit, summary: string) => void): void {
+  }, paletteExec?: (index: number) => void, rewindExec?: (messageIndex: number, mode: RewindMode) => void, chronicleExec?: (id: string) => void, domainPickerExec?: (key: string) => void, modelPickerExec?: (provider: string, modelId: string, effort?: string) => void, domainPickerSaveDefaultExec?: (key: string) => void, modelPickerSaveDefaultExec?: (provider: string, modelId: string, effort?: string) => void, themePickerExec?: (key: string) => void, themePickerSaveDefaultExec?: (key: string) => void, choicePanelExec?: (id: string) => void, connectExec?: (commit: ConnectCommit, summary: string) => boolean | void, planPickerExec?: (slug: string) => void, initExec?: (commit: InitCommit, summary: string) => void): void {
     this.overlayController.setData(overlayData)
     this.overlayController.setPaletteExec(paletteExec)
     this.overlayController.setRewindExec(rewindExec)

@@ -603,20 +603,41 @@ export interface ModelPickerEntry {
   provider: string
   current: boolean
   contextWindow?: number
-  /** 选中模型是否支持推理等级调节（resolveCapabilities effortFormat !== 'none'）。
+  /** 选中模型是否支持推理等级调节（resolveCapabilities effortFormat !== 'none').
    *  缺省 = 支持（与 openai-client 的非 'none' 即发送语义一致）。 */
   effortSupported?: boolean
+  effortLevels?: readonly ModelPickerEffort[]
+  effortLabels?: Partial<Record<ModelPickerEffort, string>>
+  defaultEffort?: ModelPickerEffort
 }
 
 /** 推理等级档位（CC 对标 effort 行的取值域）。'auto' 为 UI 哨兵=未显式钉档。 */
 export const MODEL_PICKER_EFFORT_LEVELS = ['auto', 'off', 'low', 'medium', 'high', 'max'] as const
 export type ModelPickerEffort = (typeof MODEL_PICKER_EFFORT_LEVELS)[number]
 
-/** effort 档位循环步进（`>` 向重档、`<` 向轻档，末端回绕）。纯函数供测试。 */
-export function stepModelPickerEffort(current: ModelPickerEffort, dir: '>' | '<'): ModelPickerEffort {
-  const seq = MODEL_PICKER_EFFORT_LEVELS
+/** effort 档位循环步进（> 向重档、< 向轻档，末端回绕）。纯函数供测试。 */
+export function stepModelPickerEffort(
+  current: ModelPickerEffort,
+  dir: '>' | '<',
+  levels: readonly ModelPickerEffort[] = MODEL_PICKER_EFFORT_LEVELS,
+): ModelPickerEffort {
+  const seq = levels && levels.length > 0 ? levels : MODEL_PICKER_EFFORT_LEVELS
   const at = Math.max(0, seq.indexOf(current))
   return seq[(at + (dir === '>' ? 1 : seq.length - 1)) % seq.length] ?? 'auto'
+}
+
+/** 根据模型的推理能力限制校验并归一化 effort 档位。 */
+export function normalizeModelPickerEffort(
+  draft: ModelPickerEffort,
+  entry?: ModelPickerEntry,
+): ModelPickerEffort {
+  if (!entry || entry.effortSupported === false) return 'auto'
+  const levels = entry.effortLevels ?? MODEL_PICKER_EFFORT_LEVELS
+  if (levels.includes(draft)) return draft
+  if (entry.defaultEffort && levels.includes(entry.defaultEffort)) {
+    return entry.defaultEffort
+  }
+  return 'auto'
 }
 
 export interface ModelPickerData {
@@ -942,8 +963,10 @@ export function renderTasks(
 export function renderModelPicker(data: ModelPickerData, width: number, height: number, theme: RivetTheme): OverlayMenuLines {
   const lines = createMenuLines()
   lines.push(formatBorder(width, theme, 'subtle'), renderTabBar('model', width, theme))
+  const sel = Math.max(0, Math.min(data.selectedIndex, data.entries.length - 1))
+  const current = data.entries[sel]
   const hints: Array<[string, string]> = [['←/→', '切换'], ['↑↓', '选择'], ['Enter', '本会话'], ['s', '设为默认']]
-  if (data.effort?.supported) hints.push(['</>', '推理等级'])
+  if (data.effort?.supported && current?.effortSupported !== false) hints.push(['</>', '推理等级'])
   hints.push(['Esc', '取消'])
   const footer = hintRows(hints, width, theme)
   if (height < lines.length + footer.length + 1) lines.shift()
@@ -951,7 +974,6 @@ export function renderModelPicker(data: ModelPickerData, width: number, height: 
   if (roomy) lines.push(padLine('', width, theme), padLine(color('选择模型', theme.secondary, { bold: true }), width, theme), padLine(color('Enter 仅应用本会话；s 保存为用户默认。', theme.muted), width, theme), padLine('', width, theme))
   const detailRows = roomy ? 4 + (data.effort ? 2 : 0) : 0
   const listRows = Math.max(1, height - lines.length - footer.length - detailRows - 1)
-  const sel = Math.max(0, Math.min(data.selectedIndex, data.entries.length - 1))
   const start = followListWindow(sel, data.entries.length, listRows)
   const innerWidth = Math.max(1, width - frameInset(width) * 2)
   const nameWidth = Math.min(44, Math.max(12, innerWidth - 29))
@@ -964,10 +986,18 @@ export function renderModelPicker(data: ModelPickerData, width: number, height: 
     lines.menuRows.set(lines.length + 1, { index: i })
     lines.push(padLine(numberedChoice(name + meta, i, selected, theme), width, theme))
   }
-  const current = data.entries[sel]
   if (roomy && current) {
     lines.push(padLine('', width, theme), padLine(color(`上下文：${current.contextWindow ? current.contextWindow.toLocaleString() + ' tokens' : '未知'}`, theme.muted), width, theme), padLine(color(`当前选择：${current.id}`, theme.secondary), width, theme), padLine(color(`连接：${current.provider}`, theme.muted), width, theme))
-    if (data.effort) lines.push(padLine('', width, theme), padLine(color(data.effort.supported ? `● ${data.effort.value === 'auto' ? 'auto（按任务自动）' : data.effort.value + ' effort'}  </> 调整` : '○ 此模型不支持推理等级调节', theme.muted), width, theme))
+    if (data.effort) {
+      if (data.effort.supported && current.effortSupported !== false) {
+        const draft = normalizeModelPickerEffort(data.effort.value, current)
+        const effName = current.effortLabels?.[draft] ?? draft
+        const displayEffort = draft === 'auto' ? (effName === 'auto' ? 'auto（按任务自动）' : effName) : `${effName} effort`
+        lines.push(padLine('', width, theme), padLine(color(`● ${displayEffort}  </> 调整`, theme.muted), width, theme))
+      } else {
+        lines.push(padLine('', width, theme), padLine(color('○ 此模型不支持推理等级调节', theme.muted), width, theme))
+      }
+    }
   }
   if (lines.length + footer.length < height) lines.push(padLine('', width, theme))
   lines.push(...footer)

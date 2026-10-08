@@ -146,6 +146,30 @@ describe('renderModelPicker effort row', () => {
     assert.doesNotMatch(text, /effort/)
     assert.doesNotMatch(text, /推理等级/)
   })
+
+  it('renders wire spelling label from effortLabels', () => {
+    const data: ModelPickerData = {
+      entries: [{
+        ...baseEntries[0]!,
+        effortLevels: ['auto', 'low', 'high', 'max'],
+        effortLabels: { max: 'XHigh' },
+      }],
+      selectedIndex: 0,
+      effort: { value: 'max', supported: true },
+    }
+    const text = lines0(renderModelPicker(data, 80, 20, theme))
+    assert.match(text, /● XHigh effort/)
+  })
+
+  it('renders valid normalized draft when incompatible draft is passed', () => {
+    const data: ModelPickerData = {
+      entries: [{ ...baseEntries[0]!, effortLevels: ['auto', 'low'], defaultEffort: 'low' }],
+      selectedIndex: 0,
+      effort: { value: 'max', supported: true },
+    }
+    const text = lines0(renderModelPicker(data, 80, 20, theme))
+    assert.match(text, /● low effort/)
+  })
 })
 
 describe('stepModelPickerEffort', () => {
@@ -159,6 +183,16 @@ describe('stepModelPickerEffort', () => {
     assert.equal(stepModelPickerEffort('off', '<'), 'auto')
     assert.equal(stepModelPickerEffort('medium', '<'), 'low')
     assert.equal(stepModelPickerEffort('auto', '<'), 'max')
+  })
+
+  it('steps with restricted levels and wraps around', () => {
+    const levels = ['auto', 'low', 'high', 'max'] as const
+    assert.equal(stepModelPickerEffort('auto', '>', levels as any), 'low')
+    assert.equal(stepModelPickerEffort('low', '>', levels as any), 'high')
+    assert.equal(stepModelPickerEffort('max', '>', levels as any), 'auto')
+    assert.equal(stepModelPickerEffort('high', '<', levels as any), 'low')
+    assert.equal(stepModelPickerEffort('low', '<', levels as any), 'auto')
+    assert.equal(stepModelPickerEffort('auto', '<', levels as any), 'max')
   })
 })
 

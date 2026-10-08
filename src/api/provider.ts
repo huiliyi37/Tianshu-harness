@@ -1,5 +1,6 @@
 import type { Usage } from './types.js'
 import type { ProviderCapabilitiesConfig, ProviderProtocol } from '../config/schema.js'
+import type { ReasoningEffort } from '../agent/auto-reasoning.js'
 
 /**
  * Describes what a provider supports and how to adapt requests/responses.
@@ -20,6 +21,8 @@ export interface ProviderCapabilities {
   thinkingBudgetField?: 'budget_tokens'
   /** Per-provider effort ceiling — values above this cap are clamped (Codex: max→xhigh, Kimi: max→high) */
   effortCap?: Record<string, string>
+  /** Native supported values; undefined falls back to the existing wire mappings. */
+  effortLevels?: string[]
   /** DeepSeek preserved-thinking wire protocol: assistant tool-call turns must echo
    *  `reasoning_content`, and the Chinese-thinking system suffix applies. Declared by
    *  providers whose wire format is DeepSeek-derived (DeepSeek, MiMo; pro spark via
@@ -400,6 +403,7 @@ function applyOverrides(
   if (overrides.thinkingBlock !== undefined) base.thinkingBlockType = overrides.thinkingBlock
   if (overrides.effortFormat !== undefined) base.effortFormat = overrides.effortFormat
   if (overrides.effortCap !== undefined) base.effortCap = { ...overrides.effortCap }
+  if (overrides.effortLevels !== undefined) base.effortLevels = [...overrides.effortLevels]
   if (overrides.reasoningSplit !== undefined) base.reasoningSplit = overrides.reasoningSplit
   if (overrides.thinkingBudgetField !== undefined) base.thinkingBudgetField = overrides.thinkingBudgetField
   if (overrides.preservedThinkingProtocol !== undefined) base.preservedThinkingProtocol = overrides.preservedThinkingProtocol
@@ -444,6 +448,19 @@ export function resolveCapabilities(
   applyOverrides(base, providerOverrides)
   applyOverrides(base, modelOverrides)
 
+  // Reuse the wire clamp map so automatic as well as manual choices respect /models.
+  if (base.effortLevels?.length) {
+    for (const level of INTERNAL_EFFORT_LEVELS) {
+      const normalized = normalizeReasoningEffort(level, base)
+      const wire = resolveWireEffort(normalized, base.effortCap)
+      if (normalized !== level && wire && base.effortLevels.includes(wire)) {
+        base.effortCap = { ...base.effortCap, [level]: wire }
+      }
+    }
+  } else if (base.effortLevels?.length === 0) {
+    base.effortFormat = 'none'
+  }
+
   return base
 }
 
@@ -471,6 +488,8 @@ export function resolveEffortSupported(
   modelCapabilities?: ProviderCapabilitiesConfig,
 ): boolean {
   if (provider.protocol === 'openai-responses') return true
+  // The native Gemini client updates thinkingBudget at runtime (including zero for Off).
+  if (provider.protocol === 'gemini') return provider.thinking !== 'disabled'
   const caps = resolveCapabilities(providerName, provider.capabilities, modelCapabilities)
   // Anthropic 协议默认没有 reasoning_effort；只有显式声明 output_config 通道的
   // 端点（如火山方舟 /api/plan Messages）才放行，其余仍走 budget_tokens 固定换算。
@@ -503,4 +522,45 @@ export function resolveWireEffort(
   const mapped = effortCap?.[effort]
   if (mapped) return mapped
   return effort === 'off' ? undefined : effort
+}
+
+const INTERNAL_EFFORT_LEVELS: readonly ReasoningEffort[] = ['off', 'low', 'medium', 'high', 'max']
+
+/** Keep runtime state aligned with clamps already applied to the wire parameter. */
+export function normalizeReasoningEffort(effort: ReasoningEffort, caps: ProviderCapabilities): ReasoningEffort {
+  const wire = resolveWireEffort(effort, caps.effortCap)
+  if (wire === 'none') return 'off'
+  const normalized = INTERNAL_EFFORT_LEVELS.includes(wire as ReasoningEffort) ? wire as ReasoningEffort : effort
+  if (normalized === 'off' || !caps.effortLevels || caps.effortLevels.includes(wire ?? normalized)) return normalized
+  const supported = INTERNAL_EFFORT_LEVELS.filter(level => level !== 'off'
+    && caps.effortLevels!.includes(resolveWireEffort(level, caps.effortCap) ?? level))
+  return [...supported].reverse().find(level => INTERNAL_EFFORT_LEVELS.indexOf(level) <= INTERNAL_EFFORT_LEVELS.indexOf(normalized))
+    ?? supported[0] ?? normalized
+}
+
+export interface ReasoningEffortChoice {
+  id: ReasoningEffort
+  label: string
+  wireValue?: string
+}
+
+/** Distinct live controls for this model, using the same protocol and clamps as requests. */
+export function resolveEffortChoices(
+  providerName: string,
+  provider: { protocol?: ProviderProtocol; thinking?: 'enabled' | 'disabled'; capabilities?: ProviderCapabilitiesConfig },
+  modelCapabilities?: ProviderCapabilitiesConfig,
+): ReasoningEffortChoice[] {
+  if (!resolveEffortSupported(providerName, provider, modelCapabilities)) return []
+  const caps = resolveCapabilities(providerName, provider.capabilities, modelCapabilities)
+  if (caps.effortLevels?.length === 0) return []
+  return INTERNAL_EFFORT_LEVELS.flatMap(id => {
+    if (normalizeReasoningEffort(id, caps) !== id) return []
+    const wireValue = resolveWireEffort(id, caps.effortCap)
+    if (id !== 'off' && caps.effortLevels && !caps.effortLevels.includes(wireValue ?? id)) return []
+    // Omitting a parameter is not proof that thinking can be disabled.
+    if (id === 'off' && !wireValue && caps.thinkingBlockType === 'none' && provider.protocol !== 'gemini') return []
+    const name = id === 'off' ? 'off' : wireValue ?? id
+    const label = name === 'xhigh' ? 'XHigh' : name[0]!.toUpperCase() + name.slice(1)
+    return [{ id, label, ...(wireValue ? { wireValue } : {}) }]
+  })
 }

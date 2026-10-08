@@ -28,15 +28,32 @@ assertStagedRuntimeIntact(dirname(fileURLToPath(import.meta.url)))
 
 import { bootstrapInteractiveSession, createShutdownHandler, switchAgentRuntime, restorePlanModeFromMeta, getOrCreateSessionId, wasSessionResumed, initializeMcp } from './bootstrap.js'
 import type { BootstrapContext, RuntimeRefs } from './bootstrap.js'
-import { resolveCapabilities } from './api/provider.js'
+import { resolveCapabilities, resolveEffortChoices, normalizeReasoningEffort } from './api/provider.js'
+import type { ModelPickerEntry } from './tui/format/overlay.js'
 import { createExitFuse } from './platform/exit-fuse.js'
 
-/** /model 面板带来的 effort 应用（s=仅会话；Enter 路径先应用再随默认持久化）。
- *  值域校验内联——面板 draft 是封闭枚举，防御性兜底而非业务校验。 */
+/** Apply the picker draft against the successfully selected model's live controls. */
 function applyPickerEffort(ctx: BootstrapContext, e: string | undefined): void {
   if (!e) return
-  const valid = ['auto', 'off', 'low', 'medium', 'high', 'max'] as const
-  if ((valid as readonly string[]).includes(e)) ctx.agent.setReasoningEffort(e as (typeof valid)[number])
+  const { choices } = activeModelEffort(ctx)
+  if (choices.length === 0) return
+  if (e === 'auto') ctx.agent.setReasoningEffort('auto')
+  else {
+    const choice = choices.find(c => c.id === e)
+    if (choice) ctx.agent.setReasoningEffort(choice.id)
+  }
+}
+
+function activeModelEffort(ctx: BootstrapContext) {
+  const model = contractModels(ctx.provider).find(m => m.id === ctx.agent.config.promptEngine.getModel())
+  const caps = resolveCapabilities(ctx.provider.name, ctx.provider.capabilities, model?.capabilities)
+  return { caps, choices: resolveEffortChoices(ctx.provider.name, ctx.provider, model?.capabilities) }
+}
+
+const EFFORT_DESCRIPTIONS = {
+  off: '关闭思考，快速响应。', low: '轻量推理，适合简单查询和读取文件。',
+  medium: '标准编码，适合常规改动和添加测试。', high: '认真推理，适合复杂重构和 bug 修复。',
+  max: '深度推理，适合架构设计、安全审查和根因排查。',
 }
 import { maybePrintStaticPromptCacheWarning } from './cli/prompt-version-warning.js'
 import { HELP_TEXT } from './cli/help-text.js'
@@ -940,7 +957,10 @@ async function main() {
   }
   tuiApp.setDomainSyncProvider(() => ctx!.agent.getSessionDomain()?.name ?? undefined)
   // 实时思考强度：优先 agent 当前生效 effort（auto-reasoning 动态调整），回退 config floor。
-  tuiApp.setReasoningEffortProvider(() => ctx!.agent.getReasoningEffort() ?? ctx!.agent.config.reasoningEffort)
+  tuiApp.setReasoningEffortProvider(() => {
+    const effort = ctx!.agent.getReasoningEffort() ?? ctx!.agent.config.reasoningEffort
+    return effort ? normalizeReasoningEffort(effort, activeModelEffort(ctx!).caps) : undefined
+  })
 
   // ── GlanceBar 密度默认档 + 可脚本化 statusline 接线 ─────────────
   if (ctx!.config.ui?.glanceDensity) tuiApp.glanceDensity = ctx!.config.ui.glanceDensity
@@ -1239,24 +1259,35 @@ async function main() {
     modelPickerData: () => {
       const activeModelId = ctx?.agent.config.promptEngine.getModel()
       const activeProvider = ctx?.provider.name
-      const entries: { id: string; provider: string; current: boolean; contextWindow: number; effortSupported: boolean }[] = []
+      const entries: ModelPickerEntry[] = []
       // 只显示用户已保存的 provider（userSaved）——内置预设舰队不进切换器。
       for (const [provName, prov] of Object.entries(ctx?.config.provider.providers ?? {})) {
         if (!prov.userSaved) continue
         for (const m of contractModels(prov)) {
+          const choices = resolveEffortChoices(provName, prov, m.capabilities)
           entries.push({
             id: m.id,
             provider: provName,
             current: isCurrentModelSelection(provName, m.id, activeProvider, activeModelId),
             contextWindow: m.contextWindow,
-            // effort 行可用性（CC 对标）：effortFormat 'none' = 模型不吃推理等级信号
-            effortSupported: resolveCapabilities(provName, prov.capabilities, m.capabilities).effortFormat !== 'none',
+            effortSupported: choices.length > 0,
+            effortLevels: ['auto', ...choices.map(c => c.id)],
+            effortLabels: Object.fromEntries(choices.map(c => [c.id, c.label])),
+            defaultEffort: m.reasoningEffort
+              ? normalizeReasoningEffort(m.reasoningEffort, resolveCapabilities(provName, prov.capabilities, m.capabilities))
+              : 'auto',
           })
         }
       }
       return {
         entries,
         selectedIndex: 0,
+        effort: {
+          value: ctx?.agent.config.autoReasoning && !ctx.agent.userReasoningOverride
+            ? 'auto' as const
+            : normalizeReasoningEffort(ctx?.agent.getReasoningEffort() ?? ctx?.agent.config.reasoningEffort ?? 'high', ctx ? activeModelEffort(ctx).caps : resolveCapabilities('')),
+          supported: ctx ? activeModelEffort(ctx).choices.length > 0 : false,
+        },
       }
     },
     themePickerData: () => {
@@ -1333,15 +1364,12 @@ async function main() {
           selectedIndex: 0,
         }
       }
-      const current = ctx?.agent.getReasoningEffort() ?? ctx?.agent.config.reasoningEffort ?? 'high'
+      const active = ctx ? activeModelEffort(ctx) : undefined
+      const current = normalizeReasoningEffort(ctx?.agent.getReasoningEffort() ?? ctx?.agent.config.reasoningEffort ?? 'high', active?.caps ?? resolveCapabilities(''))
       const isAuto = ctx?.agent.config.autoReasoning && !ctx?.agent.userReasoningOverride
       const entries: Array<{ id: string; label: string; description: string; recommended?: boolean; current?: boolean }> = [
-        { id: 'auto', label: 'Auto', description: '按任务复杂度自动选档（架构/安全/根因→max，重构/调试→high，查看→low）', recommended: isAuto, current: isAuto },
-        { id: 'max', label: 'Max', description: '完整推理链。最深度思考，适合架构设计、安全审查、根因排查', current: !isAuto && current === 'max' },
-        { id: 'high', label: 'High', description: '认真推理。复杂重构、bug 修复、功能实现', current: !isAuto && current === 'high' },
-        { id: 'medium', label: 'Medium', description: '标准编码。常规改动、添加测试', current: !isAuto && current === 'medium' },
-        { id: 'low', label: 'Low', description: '轻量推理。简单查询、读取文件', current: !isAuto && current === 'low' },
-        { id: 'off', label: 'Off', description: '关闭思考。最快响应，纯执行', current: !isAuto && current === 'off' },
+        ...(active?.choices.length ? [{ id: 'auto', label: 'Auto', description: '按任务复杂度在模型支持的档位内自动选档。', recommended: isAuto, current: isAuto }] : []),
+        ...[...(active?.choices ?? [])].reverse().map(c => ({ id: c.id, label: c.label, description: EFFORT_DESCRIPTIONS[c.id], current: !isAuto && current === c.id })),
       ]
       return { title: '推理强度 / Reasoning Effort', choices: entries, selectedIndex: Math.max(0, entries.findIndex(e => e.current)) }
     },
@@ -1400,8 +1428,7 @@ async function main() {
     }
     if (midSession) tuiApp.commitStatic(DOMAIN_SWITCH_CACHE_WARNING)
   }, /* modelPickerExec: */ (provider: string, modelId: string, effort?: string) => {
-    // Model Picker s 键回调：仅本会话切换（不落盘）。effort 有显式改动时一并生效。
-    applyPickerEffort(ctx!, effort)
+    // Enter applies to this session; apply effort only after the target runtime exists.
     try { ctx!.agent.abort() } catch {}
     const res = switchAgentRuntime(ctx!, modelId, provider)
     if (res.ok && res.modelName) {
@@ -1438,7 +1465,7 @@ async function main() {
     }
     if (midSession) tuiApp.commitStatic(DOMAIN_SWITCH_CACHE_WARNING)
   }, /* modelPickerSaveDefaultExec: */ (provider: string, modelId: string, effort?: string) => {
-    // Model Picker Enter 键回调（CC 对标主键）：切换模型 + 设为默认并持久化。
+    // s applies the model and persists it as the default.
     // effort 有显式改动时：会话即时生效 + 随默认持久化（'auto' = 清字段回自动）。
     try { ctx!.agent.abort() } catch {}
     const res = switchAgentRuntime(ctx!, modelId, provider)
@@ -1449,6 +1476,7 @@ async function main() {
       tuiApp.commitStatic(`Model switched to: ${res.modelName}`)
     } else {
       tuiApp.commitStatic(`⚠️ Model switch failed: ${res.error ?? 'unknown error'}`)
+      return
     }
     // 成功必须出声：s 与 Enter 此前的可见反馈完全相同（都只有
     // "Model switched to: X"），用户无从判断"设为默认"到底有没有落盘，
@@ -1605,8 +1633,11 @@ async function main() {
       return
     }
     // Effort 选择面板回车回调。
-    ctx!.agent.setReasoningEffort(id as import('./agent/auto-reasoning.js').ReasoningEffort | 'auto')
-    const label = id === 'auto' ? 'Auto（按任务复杂度自动选档）' : id
+    const choices = activeModelEffort(ctx!).choices
+    const choice = choices.find(c => c.id === id)
+    if (choices.length === 0 || (id !== 'auto' && !choice)) return
+    ctx!.agent.setReasoningEffort(id === 'auto' ? 'auto' : choice!.id)
+    const label = id === 'auto' ? 'Auto（按任务复杂度自动选档）' : choice!.label
     tuiApp.commitStatic(`Reasoning effort → ${label}`)
   }, /* connectExec: */ (commit, summary) => {
     // Connect 向导提交回调：写盘 → 重载 → 内存回填 → 即时切到新默认模型。

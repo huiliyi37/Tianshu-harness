@@ -1558,7 +1558,7 @@ export class AgentLoop {
     // 用户已显式选档（/effort max 等）→ 程序化调整（perception strategy、
     // autoReasoning 档位）不得覆盖，保护显式用户意图。
     if (source === 'programmatic' && this.userReasoningOverride) return
-    this.reasoningEffort.set(effort)
+    this.reasoningEffort.set(effort, source)
   }
 
   shadowEffortTelemetry(

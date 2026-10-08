@@ -23,7 +23,7 @@ import { providerIdentityHeaders } from './caller-identity.js'
 // silently rejects any protocol added to PROVIDER_PROTOCOL_VALUES, which is
 // exactly how 'gemini' first broke this file's callers.
 import type { ProviderProtocol } from '../config/schema.js'
-import { type ModelAliasEntry, type ModelAliasMetadata } from './model-aliases.js'
+import type { ModelAliasEntry } from './model-aliases.js'
 import { matchModelId } from './model-id-matcher.js'
 import { ENRICHED_ALIAS_TABLE } from './model-meta-kb.js'
 import { beginCallAudit } from './call-audit.js'
@@ -85,6 +85,9 @@ export interface CapabilityHints {
 
 /** Per-model metadata surfaced by rich models endpoints (DashScope 原生形态)。 */
 export interface ProbedModelInfo {
+  /** Native thinking levels and default from rich OpenAI-compatible model cards. */
+  effortLevels?: string[]
+  defaultEffort?: string
   contextWindow?: number
   maxOutputTokens?: number
   maxReasoningTokens?: number
@@ -379,6 +382,11 @@ async function fetchModelList(options: ProbeOptions, errors: string[]): Promise<
       const info: ProbedModelInfo = {}
       if (Number.isSafeInteger(entry.context_window) && entry.context_window > 0) info.contextWindow = entry.context_window
       if (Number.isSafeInteger(entry.max_output_tokens) && entry.max_output_tokens > 0) info.maxOutputTokens = entry.max_output_tokens
+      const levels = entry.effort?.supported_levels
+      if (Array.isArray(levels) && levels.every((level: unknown) => typeof level === 'string' && level.length > 0)) {
+        info.effortLevels = [...new Set<string>(levels)]
+        if (info.effortLevels.includes(entry.effort.default_level)) info.defaultEffort = entry.effort.default_level
+      }
       if (Object.keys(info).length) infos[entry.id] = info
     }
     return { ids, ...(Object.keys(infos).length ? { infos } : {}) }
@@ -798,31 +806,4 @@ export async function probeProvider(options: ProbeOptions): Promise<ProbeReport>
   return report
 }
 
-/**
- * 探测元数据 → 临时别名表条目：端点自报的规格是权威的，合成条目让发现的模型
- * 直接命中匹配（带真实 contextWindow/maxTokens），不落 L4 手填。已在别名表中的
- * 条目不覆盖——preset 元数据含 pricing / effort 等人工配置，优先保留。
- */
-export function aliasTableWithProbeInfos(
-  infos: Record<string, ProbedModelInfo> | undefined,
-  base: readonly ModelAliasEntry[] = ENRICHED_ALIAS_TABLE,
-): readonly ModelAliasEntry[] {
-  if (!infos || Object.keys(infos).length === 0) return base
-  const known = new Set(base.map(e => e.canonicalId))
-  const synthetic: ModelAliasEntry[] = []
-  for (const [id, info] of Object.entries(infos)) {
-    if (known.has(id)) continue
-    const metadata: ModelAliasMetadata = {}
-    if (info.contextWindow !== undefined) metadata.contextWindow = info.contextWindow
-    if (info.maxOutputTokens !== undefined) metadata.maxTokens = info.maxOutputTokens
-    // 端点声明推理 token 上限 → 思考输出走独立通道（百炼实测 reasoning_content）。
-    if (info.maxReasoningTokens !== undefined) metadata.capabilities = { reasoningSplit: true }
-    // 端点声明该模型出图（DashScope response_modality 含 Image 而不含 Text）→ 标记随
-    // 合成条目进入别名表。此前只透传规格字段，这个能力位在探测→保存链的首站就被丢掉，
-    // 生图模型因此永远进不了生图槽的可选池（D3）。
-    if (info.supportsImageGen) metadata.supportsImageGen = true
-    if (Object.keys(metadata).length === 0) continue
-    synthetic.push({ canonicalId: id, aliases: [], metadata })
-  }
-  return synthetic.length > 0 ? [...base, ...synthetic] : base
-}
+export { aliasTableWithProbeInfos } from './model-probe-enrichment.js'

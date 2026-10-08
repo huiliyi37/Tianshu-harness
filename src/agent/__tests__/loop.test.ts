@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { ContextClaimStore } from '../../context/claim-store.js'
 import { PlaybookStore } from '../playbook-store.js'
 import { PrewarmCache } from '../prewarm.js'
+import { SkillManagement } from '../../skills/skill-management.js'
 import type { StreamCallbacks } from '../../api/stream-client.js'
 import type { StreamClient } from '../../api/stream-client.js'
 import type { ContentBlock, Message } from '../../api/types.js'
@@ -2413,5 +2414,47 @@ describe('AgentLoop — setReasoningEffort 调用来源分流（2026-07-25 advis
       'perception → routeRoutineEffort → setReasoningEffort 是程序化路径；' +
       '此前它每轮把 override 置真，自第 2 轮起永久架空关键词 autoReasoning',
     )
+  })
+
+  it('user 路径下显式 Low/Off 绕过 reasoningFloor，programmatic 路径仍受 floor 保护', () => {
+    // User-installed skills are unrelated to this effort regression.
+    const skillList = mock.method(SkillManagement.prototype, 'list', () => ({ skills: [] }))
+    try {
+    const session = new SessionContext()
+    const registry = new ToolRegistry()
+    registry.register(READ_FILE_TOOL)
+    const clientEfforts: string[] = []
+    const client: StreamClient = {
+      ...mockClient([makeTextBlock('ok')]),
+      setReasoningEffort: (effort: string) => { clientEfforts.push(effort) },
+    }
+    const agent = new AgentLoop({
+      client,
+      promptEngine: makeEngine(),
+      toolRegistry: registry,
+      maxTurns: 2,
+      contextWindow: 1_000_000,
+      autoReasoning: false,
+      reasoningFloor: 'high',
+      compact: { enabled: false, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
+    }, session, TEST_CWD)
+
+    // programmatic setting 'low' should be clamped to 'high'
+    agent.setReasoningEffort('low', 'programmatic')
+    assert.equal(agent.getReasoningEffort(), 'high')
+    assert.equal(clientEfforts.at(-1), 'high')
+
+    // user setting 'low' should bypass reasoningFloor
+    agent.setReasoningEffort('low', 'user')
+    assert.equal(agent.getReasoningEffort(), 'low')
+    assert.equal(clientEfforts.at(-1), 'low')
+
+    // user setting 'off' should bypass reasoningFloor
+    agent.setReasoningEffort('off', 'user')
+    assert.equal(agent.getReasoningEffort(), 'off')
+    assert.equal(clientEfforts.at(-1), 'off')
+    } finally {
+      skillList.mock.restore()
+    }
   })
 })

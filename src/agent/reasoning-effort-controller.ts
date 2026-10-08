@@ -43,7 +43,13 @@ export interface ReasoningEffortDeps {
 export class ReasoningEffortController {
   constructor(private readonly deps: ReasoningEffortDeps) {}
 
-  set(effort: ReasoningEffort): void {
+  set(effort: ReasoningEffort, source: 'user' | 'programmatic' = 'programmatic'): void {
+    if (source === 'user') {
+      this.deps.setConfigReasoningEffort(effort)
+      this.deps.setClientReasoningEffort(effort)
+      this.recordAudit(effort, effort)
+      return
+    }
     const floor = this.deps.getReasoningFloor()
     const rank: Record<string, number> = { off: 0, low: 1, medium: 2, high: 3, max: 4 }
     const effective = (floor && (rank[effort] ?? 2) < (rank[floor] ?? 0)) ? floor as ReasoningEffort : effort

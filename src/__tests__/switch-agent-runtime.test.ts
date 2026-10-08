@@ -1,4 +1,4 @@
-/**
+﻿/**
  * switchAgentRuntime — 模型切换查找/错误路径测试。
  *
  * 仅覆盖 createAgentRuntime 之前可确定性断言的分支（未找到模型 / 缺少 API key），
@@ -9,6 +9,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveProviderForModel, switchAgentRuntime } from '../bootstrap.js'
 import type { BootstrapContext } from '../bootstrap.js'
+import { resolveInitialReasoningEffort } from '../bootstrap.js'
+import { resolveCapabilities } from '../api/provider.js'
 
 function makeCtx(providers: Record<string, unknown>, currentName = 'p1'): BootstrapContext {
   return {
@@ -75,4 +77,30 @@ test('模型存在但缺 key：报 API key 而非 not found（未找到分支不
   assert.equal(res.ok, false)
   assert.doesNotMatch(res.error ?? '', /not found/i)
   assert.match(res.error ?? '', /API key/i)
+})
+
+test('resolveInitialReasoningEffort preserves undefined when no effort configured', () => {
+  const caps = resolveCapabilities('deepseek')
+  assert.equal(resolveInitialReasoningEffort(undefined, caps), undefined)
+})
+
+test('resolveInitialReasoningEffort normalizes DeepSeek aliases (medium -> high, off -> off)', () => {
+  const caps = resolveCapabilities('deepseek')
+  assert.equal(resolveInitialReasoningEffort('medium', caps), 'high')
+  assert.equal(resolveInitialReasoningEffort('off', caps), 'off')
+  assert.equal(resolveInitialReasoningEffort('low', caps), 'low')
+  assert.equal(resolveInitialReasoningEffort('high', caps), 'high')
+  assert.equal(resolveInitialReasoningEffort('max', caps), 'max')
+})
+
+test('resolveInitialReasoningEffort normalizes Grok unsupported off -> low and preserves max', () => {
+  const caps = resolveCapabilities('grok')
+  assert.equal(resolveInitialReasoningEffort('off', caps), 'low')
+  assert.equal(resolveInitialReasoningEffort('max', caps), 'max')
+})
+
+test('resolveInitialReasoningEffort normalizes StepFun max -> high and off -> low', () => {
+  const caps = resolveCapabilities('stepfun')
+  assert.equal(resolveInitialReasoningEffort('max', caps), 'high')
+  assert.equal(resolveInitialReasoningEffort('off', caps), 'low')
 })

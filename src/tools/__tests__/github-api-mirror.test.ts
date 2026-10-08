@@ -18,6 +18,10 @@ import type { MirrorsConfig } from '../../config/schema.js'
 
 const API_PATH = '/repos/o/r/releases/latest'
 
+/** Non-empty first proxy: narrows `noUncheckedIndexedAccess`'s `string | undefined`. */
+const PROXY0 = GITHUB_API_PROXIES[0]
+assert(PROXY0, 'GITHUB_API_PROXIES must not be empty')
+
 /** Minimal MirrorsConfig factory (only the fields this module reads). */
 function mirrorConfig(over: Partial<MirrorsConfig> = {}): MirrorsConfig {
   return {
@@ -62,9 +66,9 @@ describe('resolveGithubApiUrl', () => {
   it('falls back to a proxy when direct fails', async () => {
     const url = await resolveGithubApiUrl(API_PATH, {
       config: mirrorConfig(),
-      fetchFn: fetchOkFor([GITHUB_API_PROXIES[0]]),
+      fetchFn: fetchOkFor([PROXY0]),
     })
-    assert.equal(url, `${GITHUB_API_PROXIES[0]}${GITHUB_API_DIRECT}${API_PATH}`)
+    assert.equal(url, `${PROXY0}${GITHUB_API_DIRECT}${API_PATH}`)
   })
 
   // (b') direct times out (abort) → proxy still wins.
@@ -84,7 +88,7 @@ describe('resolveGithubApiUrl', () => {
       fetchFn: slow,
       timeoutMs: 30,
     })
-    assert.ok(url.startsWith(GITHUB_API_PROXIES[0]))
+    assert.ok(url.startsWith(PROXY0))
   })
 
   // (c) everything fails → fail-open to direct, no throw.
@@ -110,7 +114,7 @@ describe('resolveGithubApiUrl', () => {
       config: mirrorConfig({ enabled: true, github: 'kkgithub' }),
       fetchFn: counting,
     })
-    assert.equal(url, `${GITHUB_API_PROXIES[0]}${GITHUB_API_DIRECT}${API_PATH}`)
+    assert.equal(url, `${PROXY0}${GITHUB_API_DIRECT}${API_PATH}`)
     assert.equal(calls, 0, 'user-explicit path must not probe')
   })
 
@@ -120,7 +124,7 @@ describe('resolveGithubApiUrl', () => {
     const counting = (async (url: string | URL) => {
       calls += 1
       const u = String(url)
-      if (u.includes(GITHUB_API_PROXIES[0])) return new Response('{}', { status: 200 })
+      if (u.includes(PROXY0)) return new Response('{}', { status: 200 })
       throw new Error('down')
     }) as unknown as typeof fetch
 
@@ -129,7 +133,7 @@ describe('resolveGithubApiUrl', () => {
       fetchFn: counting,
     })
     const callsAfterFirst = calls
-    assert.ok(first.startsWith(GITHUB_API_PROXIES[0]))
+    assert.ok(first.startsWith(PROXY0))
 
     const second = await resolveGithubApiUrl(API_PATH, {
       config: mirrorConfig(),

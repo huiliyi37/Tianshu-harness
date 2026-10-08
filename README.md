@@ -313,16 +313,17 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 
 ## ⚙️ 支持的模型
 
-| 提供商 | 认证方式 | 旗舰模型 |
+| 提供商 | 认证方式 | 接入模型示例 |
 |--------|----------|----------|
-| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp（视觉） |
+| DeepSeek | API key | deepseek-flash（1M ctx，DeepSeek-V4.1-Flash，原生多模态视觉）, deepseek-v4-pro（1M ctx，DeepSeek-V4-Pro-0813，旗舰推理） |
 | DeepSeek Spark（Pro 专属） | API key | deepseek-v4-flash（轻量推理 + 锚点缓存通道） |
 | Claude | API key（通过 `cc-switch` 代理） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（视觉）, glm-5.2 |
 | Codex (GPT-5.6) | OAuth PKCE（ChatGPT 订阅） | gpt-5.6-sol |
 | Grok (xAI) | API key | grok-4.6 (500K ctx, 视觉, 推理档 low/medium/high/xhigh) |
-| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro |
+| MiniMax | API key | MiniMax-M3（视觉）, MiniMax-M2.7 |
+| MiMo | API key | mimo-v2.5-pro（预设 2.5；支持配置/发现最新具备视觉能力的 MiMo V2.6 Flash / Pro） |
+| Kimi Code | API key | k3（1M ctx，视觉）, k3-256k, kimi-for-coding |
 | Gemini (Google) | API key（原生协议直连） | gemini-3.8-flash (1M ctx), gemini-3.5-flash, gemini-3.1-pro-preview |
 
 另支持任意 OpenAI 兼容自定义端点（Ollama / vLLM 等）。会话内 `/model` 随时切换；识图桥、生图端点、子代理分模型路由等见 [Provider 配置手册](docs/user-guide-provider-config.md) 与 [识图能力手册](docs/user-guide-vision.md)。

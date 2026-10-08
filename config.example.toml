@@ -1,5 +1,6 @@
-# ~/.opencode/config.toml
-# Rivet configuration
+# Legacy TOML sample from earlier Rivet versions.
+# Current Tianshu reads config.json; use config.example.json and
+# docs/user-guide-provider-config.md for the supported configuration schema.
 
 [provider]
 default = "deepseek"

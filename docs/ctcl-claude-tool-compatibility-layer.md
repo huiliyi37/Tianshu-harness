@@ -41,11 +41,11 @@ Claude Code → cliproxy (:8891) → CTCL (:8893) → 上游模型 API
 cliproxy 的 `config.yaml` 中，需要 CTCL 的 provider 将 `base-url` 指向 `http://127.0.0.1:8893/anthropic`：
 
 ```yaml
-# 示例：DeepSeek V4 Flash 通过 CTCL
+# 示例：DeepSeek Flash 通过 CTCL
 - api-key: sk-xxx
   base-url: http://127.0.0.1:8893/anthropic
   models:
-    - name: deepseek-v4-flash
+    - name: deepseek-flash
       alias: claude-hiku-4
 
 # 示例：MiMo 通过 CTCL

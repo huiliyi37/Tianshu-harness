@@ -17,26 +17,26 @@
       "skipAuto": true,
       "mechanicalFastPath": true,
       "profiles": {
-        "reviewer": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-        "adversarial_verifier": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-        "verifier": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-        "patcher": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-        "code_scout": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-        "doc_scout": { "provider": "deepseek", "model": "deepseek-v4-flash" },
+        "reviewer": { "provider": "deepseek", "model": "deepseek-flash" },
+        "adversarial_verifier": { "provider": "deepseek", "model": "deepseek-flash" },
+        "verifier": { "provider": "deepseek", "model": "deepseek-flash" },
+        "patcher": { "provider": "deepseek", "model": "deepseek-flash" },
+        "code_scout": { "provider": "deepseek", "model": "deepseek-flash" },
+        "doc_scout": { "provider": "deepseek", "model": "deepseek-flash" },
         "council_expert": { "provider": "deepseek", "model": "deepseek-v4-pro" }
       }
     },
     "council": {
       "seats": [
         { "authority": "tianquan", "charter": "架构与正确性", "provider": "deepseek", "model": "deepseek-v4-pro" },
-        { "authority": "tianfu", "charter": "风险与边界", "provider": "glm", "model": "glm-4.6" },
+        { "authority": "tianfu", "charter": "风险与边界", "provider": "glm", "model": "glm-5.3" },
         { "authority": "tianxuan", "charter": "实现可行性", "provider": "deepseek", "model": "deepseek-v4-pro" }
       ]
     }
   },
   "workers": {
     "profiles": {
-      "cheap-flash": { "provider": "deepseek", "model": "deepseek-v4-flash" },
+      "cheap-flash": { "provider": "deepseek", "model": "deepseek-flash" },
       "capable": { "provider": "deepseek", "model": "deepseek-v4-pro" }
     },
     "routing": {
@@ -51,6 +51,6 @@
     "autoThreshold": 800000,
     "autoFloor": 500000,
     "provider": "deepseek",
-    "model": "deepseek-v4-flash"
+    "model": "deepseek-flash"
   }
 }

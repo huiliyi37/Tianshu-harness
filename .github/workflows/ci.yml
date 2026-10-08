@@ -16,7 +16,7 @@ jobs:
       pull-requests: read
     strategy:
       matrix:
-        # engines 钉 24.1.0 且 .npmrc engine-strict=true,低于 24 会在 npm ci 直接被拒
+        # package.json engines 要求 Node >=24；低于 24 会在 npm ci 被 engine-strict 拒绝
         node-version: [24]
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24

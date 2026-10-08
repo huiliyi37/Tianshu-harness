@@ -120,7 +120,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 
 前缀缓存已接近稳态上限后，成本优化转向 DeepSeek API 思考 token 侧——对按输出 token 计费的推理模型，降低 verbose reasoning 是 ROI 最高的杠杆。
 
-- **默认 reasoningEffort** —— DeepSeek 4.1 两个模型（Flash / V4 Pro）默认均为 `high`（2026-10-05：Flash 从 `medium` 升到 `high`——medium 对 agent 任务的执行落地不足，而 `max` 在 4.1 Flash 上过度推理；桌面新会话输入框默认档同为 `high`）。已有显式配置的用户不受影响（`reasoningFloor` 保护）。
+- **默认 reasoningEffort** —— DeepSeek 两个主力模型（Flash 档 DeepSeek-V4.1-Flash / Pro 档 DeepSeek-V4-Pro）默认均为 `high`（2026-10-05：Flash 从 `medium` 升到 `high`——medium 对 agent 任务的执行落地不足，而 `max` 在 4.1 Flash 上过度推理；桌面新会话输入框默认档同为 `high`）。已有显式配置的用户不受影响（`reasoningFloor` 保护）。
 - **effort 路由（默认开启）** —— 低复杂度 + 高置信度的例行轮自动降一档 reasoning effort，从不升档。`RIVET_EFFORT_ROUTING=0` 关闭。
 - **Compact 走 flash 侧路** —— 修复了压缩未配 provider 时仍走主模型的 bug，自动从主 provider 推断 flash 端点。
 - **Doom-loop 自动收束** —— 检测到重复工具调用时，动态 appendix 注入更严格的 output-style 约束，减少无谓思考 token 消耗。`RIVET_TERSE=0` 关闭。
@@ -524,7 +524,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | 命令 | 说明 |
 |------|------|
 | `/model [name\|list]` | 显示或切换模型/提供商 |
-| `/effort [off\|low\|medium\|high\|max\|auto]` | 控制推理深度（无参数弹出选择面板）。默认 `high`（Pro）/ `medium`（Flash），例行轮自动降档；手动设 `max` 永不被降级 |
+| `/effort [off\|low\|medium\|high\|max\|auto]` | 控制推理深度（无参数弹出选择面板）。默认均为 `high`（Pro / Flash），例行轮自动降档；手动设 `max` 永不被降级 |
 | `/permission [supervise\|auto\|unattended\|manual\|yolo\|allow\|deny\|bash\|remove\|reset\|test]` | 权限模式：监督 / 自动 / 全自动 |
 | `/yes [off]` `/yolo [off]` | 一键全自动，两者同语义（`off` 回到自动）—— 持久化为默认，重启后仍生效 |
 | `/domain [list\|<name>\|auto\|off]` | 查看或切换星域人格 |
@@ -803,4 +803,4 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 
 **回答被中途截断了（显示「输出已达 token 上限」）怎么办？** 说明这一轮输出达到了模型的 `maxTokens` 上限、内容被截断——但**已输出的部分全部保留在对话历史里**，直接发「继续」让模型接着往下写即可（不丢内容，也无需重述）。长回答频繁被截断时，自建 / 本地部署的模型可在 provider 配置里调大 `maxTokens`。
 
-**429 / 额度不足怎么办？** 桌面端 Insights 面板可查 DeepSeek 余额与欠费状态；降低成本可 `/effort` 降推理深度档，或 `/model` 换 flash 档（如 `deepseek-v4-flash`）。若该服务商频繁 429，可按「重试与速率限制」章节（[Provider 配置手册](user-guide-provider-config.md)）调整重试次数、退避曲线或开启客户端限速。
+**429 / 额度不足怎么办？** 桌面端 Insights 面板可查 DeepSeek 余额与欠费状态；降低成本可 `/effort` 降推理深度档，或 `/model` 换 flash 档（如 `deepseek-flash`）。若该服务商频繁 429，可按「重试与速率限制」章节（[Provider 配置手册](user-guide-provider-config.md)）调整重试次数、退避曲线或开启客户端限速。

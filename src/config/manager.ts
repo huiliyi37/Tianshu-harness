@@ -2378,9 +2378,9 @@ Examples:
   rivet config set-vision-auto-bridge on
   rivet config set-default-model glm:glm-5.2
   rivet config add-model deepseek my-vision-model 128000 32000 --vision
-  rivet config set-model-vision deepseek deepseek-v4-pro on
+  rivet config set-model-vision deepseek deepseek-flash on
   rivet config set-url mimo https://token-plan-sgp.xiaomimimo.com/v1
-  rivet config set-model minimax MiniMax-M2.8 300000 64000 m28
+  rivet config set-model minimax MiniMax-M3 1000000 64000
   rivet config mcp add-stdio fs npx -y @modelcontextprotocol/server-filesystem /tmp`)
 }
 

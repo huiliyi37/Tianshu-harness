@@ -36,7 +36,7 @@
 | `codex` | `gpt-5.6-sol` |
 | `ccswitch` | `glm-5.2`（别名 `cc-glm`） |
 
-DeepSeek 当前默认档 `deepseek-flash` **原生支持识图**，配图即用、无需任何设置；`deepseek-v4-flash` 是纯文本档，但同 provider 下有 `deepseek-flash`，同 provider 自动桥会选中它——DeepSeek 用户配了 key 就能读图，两条路都不用手动配桥。
+DeepSeek 当前默认档 `deepseek-flash`（DeepSeek-V4.1-Flash）**原生支持识图**，配图即用、无需任何设置；若主控切到纯文本档（如 `deepseek-v4-pro`），同 provider 下有 `deepseek-flash`，同 provider 自动桥会自动选中它做识图桥——DeepSeek 用户配了 key 就能读图，两条路都不用手动配桥。
 
 自定义 provider / 自己加的模型必须在那条 model 上手写 `"supportsVision": true`，否则天枢按纯文本模型对待。这个字段是**按模型**声明的，不是按 provider——同一个 provider 下文本模型和多模态模型混编是常态。
 

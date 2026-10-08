@@ -45,7 +45,7 @@
 
 ### 実際のエンジニアリング作業のための AI エージェントランタイム
 
-> **天枢**は TypeScript で書かれたコーディングエージェントのランタイムです。**ターミナル TUI** と**デスクトップ GUI** が同一カーネルを共有し、モデルが質問に答えるだけでなく、認知的ガードレール・マルチエージェントオーケストレーション・DeepSeek V4 のプレフィックスキャッシュ向けに設計された低コストの長大セッションを備え、多段階のコーディング作業を継続的に完遂できるようにします。
+> **天枢**は TypeScript で書かれたコーディングエージェントのランタイムです。**ターミナル TUI** と**デスクトップ GUI** が同一カーネルを共有し、モデルが質問に答えるだけでなく、認知的ガードレール・マルチエージェントオーケストレーション・DeepSeek V4 / V4.1 のプレフィックスキャッシュ向けに設計された低コストの長大セッション（現行の Flash および Pro モデルをサポート）を備え、多段階のコーディング作業を継続的に完遂できるようにします。
 
 - **ターミナル × デスクトップ、一つのカーネル** —— 純 ANSI 自前 TUI（`tianshu`）と Tauri デスクトップ（macOS / Windows / Linux）が同一エージェントカーネルを共有。両端で能力は一致し、利用シーンに応じて切り替えられます。
 - **認知仮想マシン（CVM）** —— 5 大フェーズにまたがる 75 のランタイムフックが、モデル出力と実際のアクションの間に観測可能で修正可能な認知レイヤーを挟みます（[A/B 実証](docs/CVM运行时对Agent模型的实证影响.md)）。
@@ -337,7 +337,7 @@ DeepSeek はキャッシュミスに 50× の料金を課します。天枢の�
 
 プレフィックスキャッシュが定常上限に達した後、コスト最適化は DeepSeek API の思考 token 側に移ります——出力 token 課金の推論モデルでは verbose reasoning の削減が ROI 最高のレバーです。
 
-- **デフォルト reasoningEffort の降格** —— DeepSeek V4 Pro は `max` → `high`、Flash は `max` → `medium`。明示設定済みユーザーは影響なし（`reasoningFloor` 保護）。
+- **デフォルト reasoningEffort の調整** —— DeepSeek 主力モデル（Pro / Flash）のデフォルトはいずれも `high`（Flash は `medium` から `high` へ引き上げ）。明示設定済みユーザーは影響なし（`reasoningFloor` 保護）。
 - **effort ルーティング（デフォルト有効）** —— 低複雑度＋高確信度のルーチンターンは reasoning effort を自動で 1 段下げ、決して上げない。`RIVET_EFFORT_ROUTING=0` でオフ。
 - **Compact は flash 側路で** —— 圧縮時に provider 未設定でも主モデルを走らせてしまうバグを修正し、主 provider から flash エンドポイントを自動推定。
 - **Doom-loop 自動収束** —— 繰り返しツール呼び出しを検出すると、動的 appendix がより厳しい output-style 制約を注入し、無駄な思考 token 消費を削減。`RIVET_TERSE=0` でオフ。
@@ -718,15 +718,16 @@ OpenAI 形式のテキスト→画像エンドポイント（SiliconFlow / OpenA
 
 ### マルチプロバイダー＋適応的ルーティング
 
-| プロバイダー | 認証方式 | フラッグシップモデル |
+| プロバイダー | 認証方式 | 接続モデルの例 |
 |--------|----------|----------|
-| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp（ビジュアル） |
+| DeepSeek | API key | deepseek-flash（1M ctx、DeepSeek-V4.1-Flash、ネイティブビジュアル）, deepseek-v4-pro（1M ctx、DeepSeek-V4-Pro-0813） |
 | DeepSeek Spark（Pro 専用） | API key（`DEEPSEEK_SPARK_API_KEY`） | deepseek-v4-flash（軽量推論＋アンカーキャッシュチャネル） |
 | Claude | API key（`cc-switch` プロキシ経由） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（ビジュアル）, glm-5.2 |
 | Codex (GPT-5.6) | OAuth PKCE（ChatGPT サブスクリプション） | gpt-5.6-sol |
-| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro |
+| MiniMax | API key | MiniMax-M3（ビジュアル）, MiniMax-M2.7 |
+| MiMo | API key | mimo-v2.5-pro（プリセット 2.5；ビジュアル対応の最新 MiMo V2.6 Flash / Pro も検出・追加可能） |
+| Kimi Code | API key | k3（1M ctx、ビジュアル）, k3-256k, kimi-for-coding |
 
 セッション内では `/model <name>` でいつでもプロバイダーを切替。
 
@@ -842,7 +843,7 @@ tianshu config set-approval auto-safe       # デフォルト段階を永続化
 | コマンド | 説明 |
 |------|------|
 | `/model [name\|list]` | モデル/プロバイダーを表示または切替 |
-| `/effort [off\|low\|medium\|high\|max\|auto]` | 推論深度を制御（引数なしで選択パネル表示）。デフォルト `high`（Pro）/ `medium`（Flash）、ルーチンターンは自動降格。手動で `max` にしたものは決して降格されない |
+| `/effort [off\|low\|medium\|high\|max\|auto]` | 推論深度を制御（引数なしで選択パネル表示）。デフォルトはいずれも `high`（Pro / Flash）、ルーチンターンは自動降格。手動で `max` にしたものは決して降格されない |
 | `/permission [supervise\|auto\|unattended\|manual\|yolo\|allow\|deny\|bash\|remove\|reset\|test]` | 権限モード：監督 / 自動 / 全自動 |
 | `/yes [off]` `/yolo [off]` | ワンクリック全自動。両者は同じ意味（`off` で自動に戻る）——デフォルトとして永続化され、再起動後も有効 |
 | `/domain [list\|<name>\|auto\|off]` | 星域ペルソナを表示または切替 |

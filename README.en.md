@@ -41,7 +41,7 @@
 
 ### A coding-agent runtime for real engineering work
 
-> **Tianshu** is a TypeScript coding-agent runtime: one agent kernel shared by a **terminal TUI** and a **desktop GUI**. It is built to let models do continuous multi-step engineering work — with cognitive guardrails, multi-agent orchestration, and a DeepSeek V4 prefix-cache-friendly design for cost-efficient long sessions.
+> **Tianshu** is a TypeScript coding-agent runtime: one agent kernel shared by a **terminal TUI** and a **desktop GUI**. It is built to let models do continuous multi-step engineering work — with cognitive guardrails, multi-agent orchestration, and a DeepSeek V4 / V4.1 prefix-cache-friendly design (supporting current Flash and Pro models) for cost-efficient long sessions.
 
 - **One kernel, two surfaces** — a pure-ANSI terminal TUI (`tianshu`) and a Tauri desktop app (macOS / Windows / Linux) share the same agent core, so capabilities stay consistent across interfaces.
 - **Cognitive Virtual Machine (CVM)** — 75 runtime hooks across 5 lifecycle phases put an observable, correctable cognitive layer between model output and real tool actions ([A/B evidence](docs/CVM运行时对Agent模型的实证影响.md)).
@@ -667,13 +667,14 @@ Registration steps and parameters are covered under “Image generation” in [M
 
 | Provider | Auth | Notable Models |
 |----------|------|----------------|
-| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp (vision) |
+| DeepSeek | API key | deepseek-flash (1M ctx, DeepSeek-V4.1-Flash, native vision), deepseek-v4-pro (1M ctx, DeepSeek-V4-Pro-0813) |
 | DeepSeek Spark (Pro only) | API key (`DEEPSEEK_SPARK_API_KEY`) | deepseek-v4-flash (lightweight reasoning + anchored cache channel) |
 | Claude | API key (via `cc-switch` proxy) | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM (Zhipu) | API key | glm-5.3 (1M ctx), glm-5.3-flash (vision), glm-5.2 |
 | Codex (GPT-5.6) | OAuth PKCE (ChatGPT subscription) | gpt-5.6-sol |
-| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro |
+| MiniMax | API key | MiniMax-M3 (vision), MiniMax-M2.7 |
+| MiMo | API key | mimo-v2.5-pro (preset 2.5; V2.6 Flash / Pro with vision can be discovered/added) |
+| Kimi Code | API key | k3 (1M ctx, vision), k3-256k, kimi-for-coding |
 
 Switch providers inside a session with `/model <name>`.
 

@@ -37,8 +37,8 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 **怎么修**：
 
 - 余额不足 → 去服务商控制台充值后重试。
-- 纯限流 → 稍等片刻重发；持续 429 用 `/model` 切轻量档模型（如 deepseek-v4-flash）。
-- 长期降成本：`/effort` 降推理强度（档位 off/low/medium/high/max/auto，多数 pro 档模型默认 high、flash 档默认 medium）；并关注缓存命中率——命中与未命中的 input 单价差可达 50 倍，见本文第 8 节与 [observability-harness](../reference/observability-harness.md)。
+- 纯限流 → 稍等片刻重发；持续 429 用 `/model` 切轻量档模型（如 deepseek-flash）。
+- 长期降成本：`/effort` 降推理强度（档位 off/low/medium/high/max/auto，Pro 与 Flash 档模型默认均为 high，例行轮可自动降档）；并关注缓存命中率——命中与未命中的 input 单价差可达 50 倍，见本文第 8 节与 [observability-harness](../reference/observability-harness.md)。
 
 ## 3. API key / 认证失败
 

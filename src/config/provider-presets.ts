@@ -36,7 +36,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   deepseek: {
     key: 'deepseek',
     label: 'DeepSeek',
-    description: '官方 DeepSeek：1M 上下文。默认 DeepSeek 4.1 Flash（deepseek-flash），深度推理可切 Pro',
+    description: '官方 DeepSeek：1M 上下文。默认 V4.1 Flash（deepseek-flash），Pro 档为 V4-Pro-0813（deepseek-v4-pro）',
     // 2026-10-04：官方定价表只列 deepseek-flash（版本 DeepSeek-V4.1-Flash，有视觉）
     // 与 deepseek-v4-pro。deepseek-v4-flash 已下线，旧名仍可调用但由 V4.1 Flash 承接。
     // 默认档与首模型改为实际模型名 deepseek-flash。别名 4.1-flash / deepseek-4.1-flash
@@ -81,7 +81,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         {
           // 官方 2026-09-13 改口径：继续提供服务，不下线。
           id: 'deepseek-v4-pro',
-          description: '旗舰推理档，1M 上下文',
+          description: 'DeepSeek V4-Pro-0813：Pro 推理档，1M 上下文',
           contextWindow: 1_000_000,
           maxTokens: 256_000,
           // Cost default: high (not max). Routine turns can step down further via
@@ -370,7 +370,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   mimo: {
     key: 'mimo',
     label: 'MiMo',
-    description: '小米 MiMo：1M 上下文，性价比推理',
+    description: '小米 MiMo Token Plan：预设保留 V2.5 系列，V2.6 型号可从接口列表添加',
     defaultModelId: 'mimo-v2.5-pro',
     keyUrl: 'https://mimo.mi.com/',
     provider: {
@@ -390,7 +390,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
       models: [
         {
           id: 'mimo-v2.5-pro',
-          description: 'MiMo 旗舰推理档',
+          description: 'MiMo V2.5 Pro：旧版预设推理型号，1M 上下文',
           contextWindow: 1_000_000,
           maxTokens: 128000,
           tier: 'strong',
@@ -398,7 +398,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         },
         {
           id: 'mimo-v2.5',
-          description: 'MiMo 轻量廉价档',
+          description: 'MiMo V2.5：旧版预设型号，1M 上下文',
           contextWindow: 1_000_000,
           maxTokens: 128000,
           tier: 'cheap',
@@ -411,7 +411,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   'mimo-api': {
     key: 'mimo-api',
     label: 'MiMo API (新)',
-    description: '小米 MiMo 按量 API，超速档',
+    description: '小米 MiMo 按量 API：预设为 V2.5 Pro UltraSpeed，V2.6 型号可从接口列表添加',
     defaultModelId: 'mimo-v2.5-pro-ultraspeed',
     keyUrl: 'https://mimo.mi.com/',
     provider: {
@@ -431,7 +431,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
       models: [
         {
           id: 'mimo-v2.5-pro-ultraspeed',
-          description: 'MiMo 超速档',
+          description: 'MiMo V2.5 Pro UltraSpeed：旧版预设超速型号',
           contextWindow: 1_000_000,
           maxTokens: 128000,
           tier: 'strong',
@@ -444,7 +444,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   minimax: {
     key: 'minimax',
     label: 'MiniMax',
-    description: 'MiniMax：多档模型，旗舰带视觉',
+    description: 'MiniMax：M2.7 均衡档（默认）与 M3 多模态档（1M 上下文）',
     defaultModelId: 'MiniMax-M2.7',
     keyUrl: 'https://platform.minimaxi.com/',
     provider: {
@@ -464,7 +464,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
       models: [
         {
           id: 'MiniMax-M2.7',
-          description: 'MiniMax 均衡档',
+          description: 'MiniMax M2.7：均衡档，204.8K 上下文',
           contextWindow: 204_800,
           maxTokens: 64000,
           tier: 'balanced',
@@ -472,7 +472,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         },
         {
           id: 'MiniMax-M3',
-          description: 'MiniMax 旗舰，视觉支持',
+          description: 'MiniMax M3：1M 上下文，支持图片与视频输入',
           contextWindow: 1_000_000,
           maxTokens: 64000,
           tier: 'strong',
@@ -566,7 +566,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   openai: {
     key: 'openai',
     label: 'OpenAI',
-    description: 'OpenAI 官方 API：GPT-5.6 系列（Sol 旗舰 / Terra 均衡 / Luna 轻量）',
+    description: 'OpenAI 官方 API：内置 GPT-5.6 系列预设（Sol / Terra / Luna）；其他型号可从接口添加',
     defaultModelId: 'gpt-5.6-sol',
     keyUrl: 'https://platform.openai.com/api-keys',
     provider: {
@@ -763,7 +763,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
       models: [
         {
           id: 'claude-opus-4-8',
-          description: 'Claude 最强推理',
+          description: 'Claude Opus 4.8：代理预设推理档',
           contextWindow: 1_000_000,
           maxTokens: 128000,
           reasoningEffort: 'max',
@@ -796,7 +796,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         },
         {
           id: 'gpt-5.6',
-          description: 'GPT 最新旗舰',
+          description: 'GPT-5.6：代理预设型号',
           contextWindow: 200_000,
           maxTokens: 128_000,
           reasoningEffort: 'max',
@@ -804,7 +804,7 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         },
         {
           id: 'gpt-5.5',
-          description: 'GPT 旗舰',
+          description: 'GPT-5.5：代理预设型号',
           contextWindow: 200_000,
           maxTokens: 128_000,
           reasoningEffort: 'high',

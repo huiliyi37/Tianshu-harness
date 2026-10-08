@@ -337,7 +337,7 @@ DeepSeek은 캐시 미스에 50× 비용을 부과합니다. 天枢의 프롬프
 
 프리픽스 캐시가 정상 상태 상한에 근접하면 비용 최적화는 DeepSeek API 사고 token 쪽으로 옮겨갑니다——출력 token 단위 과금의 추론 모델에서는 verbose reasoning을 줄이는 것이 ROI가 가장 높은 레버입니다.
 
-- **기본 reasoningEffort 하향** —— DeepSeek V4 Pro는 `max` → `high`, Flash는 `max` → `medium`. 이미 명시적 구성을 둔 사용자는 영향이 없습니다（`reasoningFloor` 보호）.
+- **기본 reasoningEffort** —— DeepSeek V4-Pro-0813와 V4.1-Flash의 기본값은 모두 `high`입니다. 이미 명시적 구성을 둔 사용자는 영향이 없습니다（`reasoningFloor` 보호）.
 - **effort 라우팅（기본 켜짐）** —— 낮은 복잡도 + 높은 확신도의 일상 턴은 reasoning effort를 한 단계 자동 하향하며, 올리는 일은 없습니다. `RIVET_EFFORT_ROUTING=0`으로 끄기.
 - **Compact는 flash 사이드 경유** —— 압축 시 provider가 구성되지 않았는데도 메인 모델로 가던 버그를 수정하고, 메인 provider에서 flash 엔드포인트를 자동 추론합니다.
 - **Doom-loop 자동 수습** —— 반복되는 도구 호출을 감지하면 동적 appendix로 더 엄격한 output-style 제약을 주입해 불필요한 사고 token 소모를 줄입니다. `RIVET_TERSE=0`으로 끄기.
@@ -718,15 +718,16 @@ OpenAI 형식의 텍스트→이미지 엔드포인트（SiliconFlow, OpenAI Ima
 
 ### 다중 제공자 + 적응형 라우팅
 
-| 제공자 | 인증 방식 | 플래그십 모델 |
+| 제공자 | 인증 방식 | 연결 모델 예시 |
 |--------|----------|----------|
-| DeepSeek | API key | deepseek-v4-pro (1M ctx), deepseek-v4-flash, deepseek-v4-flash-vision-exp（비전） |
+| DeepSeek | API key | deepseek-flash（1M ctx, DeepSeek-V4.1-Flash, 비전）, deepseek-v4-pro（1M ctx, DeepSeek-V4-Pro-0813） |
 | DeepSeek Spark（Pro 전용） | API key（`DEEPSEEK_SPARK_API_KEY`） | deepseek-v4-flash（경량 추론 + 앵커 캐시 채널） |
 | Claude | API key（`cc-switch` 프록시 경유） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（지푸） | API key | glm-5.3 (1M ctx), glm-5.3-flash（비전）, glm-5.2 |
 | Codex (GPT-5.6) | OAuth PKCE（ChatGPT 구독） | gpt-5.6-sol |
-| MiniMax | API key | MiniMax-M3, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro |
+| MiniMax | API key | MiniMax-M3（비전）, MiniMax-M2.7 |
+| MiMo | API key | mimo-v2.5-pro（기존 V2.5 프리셋; V2.6 Flash / Pro는 모델 목록에서 추가 가능） |
+| Kimi Code | API key | k3（1M ctx, 비전）, k3-256k, kimi-for-coding |
 
 세션 안에서 `/model <name>`으로 언제든 제공자를 전환할 수 있습니다.
 
@@ -1240,4 +1241,3 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 ## 감사의 말
 
 - 데스크톱 앱의 "사용자 지정 배경화면과 영역별 유리" 기능 **디자인**은 <a href="https://github.com/elysia395/dsh-wallpaper-engine">dsh-wallpaper-engine</a>(MIT License)을 참고했습니다. 구현은 천수가 독자적으로 작성한 것이며 상류 코드를 포함하지 않습니다. 참고 범위와 라이선스 전문은 <a href="THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>를 참조하세요.
-

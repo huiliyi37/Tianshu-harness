@@ -10,18 +10,18 @@ related: [../user-guide-provider-config.md]
 # 为已有服务商添加模型（/connect 加模型流程）
 
 > 适用场景：某个服务商（如 DeepSeek）已经配好 API Key 与服务地址，只想**再挂一个模型**上去——不用重复填 URL 和密钥。
-> 本文以在 CLI 端接入 DeepSeek 内测模型 `deepseek-v4.1-flash-expires-on-0910` 为例；同一套步骤适用于任意已配置服务商的任意模型。
+> 本文以在 CLI 端已有配置仅包含 Pro 档（`deepseek-v4-pro`）的前提下，为 DeepSeek 服务商追加官方 Flash 模型 `deepseek-flash`（DeepSeek-V4.1-Flash）为例；同一套步骤适用于任意已配置服务商的任意模型。
 
 ```mermaid
 flowchart TD
   A["/connect"] --> B["选择「为已有服务商添加模型…」"]
   B --> C["选择服务商 DeepSeek"]
-  C --> D["输入模型型号<br/>deepseek-v4.1-flash-expires-on-0910"]
+  C --> D["输入模型型号<br/>deepseek-flash"]
   D --> E["输入最大上下文长度<br/>1000000"]
   E --> F{"支持视觉（识图）？"}
   F -->|是| G["写入 config.json<br/>已为 DeepSeek 添加模型 …"]
   G --> H["重启 CLI"]
-  H --> I["/model deepseek-v4.1-flash-expires-on-0910"]
+  H --> I["/model deepseek-flash"]
 ```
 
 ---
@@ -30,11 +30,9 @@ flowchart TD
 
 | 项 | 要求 |
 |---|---|
-| 服务商已配置 | DeepSeek 已通过 `/connect` 或 `rivet config setup deepseek --key-env DEEPSEEK_API_KEY` 配好——`/model list` 里能看到 DeepSeek |
-| 账号权限 | 该 DeepSeek 账号已开通 / 受邀该内测模型的访问权限，否则调用会返回 404 / 无权访问 |
+| 服务商已配置 | DeepSeek 已通过 `/connect` 或 `rivet config setup deepseek --key-env DEEPSEEK_API_KEY` 配好，且当前仅配有 Pro 档（`deepseek-v4-pro`）——`/model list` 里能看到 DeepSeek |
+| 账号权限 | 该 DeepSeek 账号 API Key 正常可用且有余额 |
 | CLI 版本 | tianshu-tui **v3.0.0 起**提供「为已有服务商添加模型」分支 |
-
-> ⚠️ `deepseek-v4.1-flash-expires-on-0910` 是 DeepSeek 的**内测模型**，型号名里的 `expires-on-0910` 表示其可用期到 2026-09-10 前后。到期后该型号会失效，届时用同样步骤换挂一个新内测型号，或 `/model` 切回正式型号即可，不必删除配置。
 
 ---
 
@@ -56,10 +54,10 @@ flowchart TD
 
 ### 4. 填写模型型号
 
-标题为「输入模型型号」，输入：
+标题为「输入模型型号」，输入官方模型 ID：
 
 ```
-deepseek-v4.1-flash-expires-on-0910
+deepseek-flash
 ```
 
 ### 5. 填写最大上下文长度
@@ -78,14 +76,14 @@ deepseek-v4.1-flash-expires-on-0910
 
 标题为「这个模型支持视觉（识图）吗？」，选 **是（多模态，可识图）**。
 
-> 选「是」后该模型会进入「识图」配置的候选，可用来做识图桥；纯文本模型选「否」。选完即提交，界面提示 `已为 DeepSeek 添加模型 deepseek-v4.1-flash-expires-on-0910`。
+> 选「是」后该模型会进入「识图」配置的候选，可用来做识图桥（`deepseek-flash` 原生支持多模态识图）；纯文本模型选「否」。选完即提交，界面提示 `已为 DeepSeek 添加模型 deepseek-flash`。
 
 ### 7. 重启 CLI 并切换模型
 
 回到对话框后**重启 CLI 端**，重新进入后执行：
 
 ```
-/model deepseek-v4.1-flash-expires-on-0910
+/model deepseek-flash
 ```
 
 即完成接入。
@@ -99,7 +97,7 @@ deepseek-v4.1-flash-expires-on-0910
 同样的操作可以用一条命令完成，适合脚本 / 远程配置：
 
 ```bash
-rivet config add-model deepseek deepseek-v4.1-flash-expires-on-0910 1000000 64000 --vision
+rivet config add-model deepseek deepseek-flash 1000000 64000 --vision
 ```
 
 参数依次为 `<服务商> <模型 ID> [上下文长度] [最大输出] [--vision]`；省略后两项时默认 `1000000` / `64000`，`--vision` 标记为可识图。
@@ -117,7 +115,12 @@ rivet config add-model deepseek deepseek-v4.1-flash-expires-on-0910 1000000 6400
       "deepseek": {
         "models": [
           {
-            "id": "deepseek-v4.1-flash-expires-on-0910",
+            "id": "deepseek-v4-pro",
+            "contextWindow": 1000000,
+            "maxTokens": 384000
+          },
+          {
+            "id": "deepseek-flash",
             "contextWindow": 1000000,
             "maxTokens": 64000,
             "supportsVision": true
@@ -129,14 +132,13 @@ rivet config add-model deepseek deepseek-v4.1-flash-expires-on-0910 1000000 6400
 }
 ```
 
-- TUI 里 `/model list` 能看到 `deepseek-v4.1-flash-expires-on-0910`。
+- TUI 里 `/model list` 能看到 `deepseek-flash`。
 - 终端里 `rivet config providers` 可查看该 provider 下已登记的模型。
 
 ---
 
 ## 注意事项
 
-- **内测模型有时效**：型号名带 `expires-on-0910`，到期后调用会失败；届时用 `/connect` 再挂一个新型号，或 `/model` 切回 `deepseek-v4-pro` / `deepseek-v4-flash`。
 - **上下文长度是压缩阈值**：填 `1000000` 表示按 1M 窗口规划自动压缩点，不是「一定要用满 1M」。
 - **最大输出默认 64000**：加模型分支不单独询问最大输出，落盘为 `min(64000, 上下文长度)`；要改可手编 `~/.rivet/config.json` 或用 `rivet config set-model`。
 - **多模态只影响识图路由**：标记 `supportsVision` 不会让所有对话都走视觉，只是让它进入「识图」候选。
@@ -149,7 +151,7 @@ rivet config add-model deepseek deepseek-v4.1-flash-expires-on-0910 1000000 6400
 |---|---|
 | 列表里没有「为已有服务商添加模型…」 | 还没有任何已配置的服务商——先走一次正常 `/connect` 配好 DeepSeek |
 | `/model` 里看不到新型号 | 重启 CLI；仍看不到则 `rivet config providers` 确认是否写盘成功 |
-| 调用报 404 / 无权访问 | 账号未开通该内测模型，或型号名拼错——照服务商控制台的准确型号名填 |
+| 调用报 404 / 无权访问 | 型号名拼错或账号欠费——照服务商官方准确型号名填（如 deepseek-flash） |
 | 频繁触发上下文压缩 | 上下文长度填小了，改回 `1000000`（或该型号官方真实值） |
 
 ---

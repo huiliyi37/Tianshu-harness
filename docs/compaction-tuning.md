@@ -8,14 +8,14 @@
 
 ## 1. 把压缩路由到廉价模型（`compact.provider` + `compact.model`）
 
-压缩是一次**一次性、无工具**的纯总结任务。用主力贵模型来做既费 token，又因为压缩请求的前缀和主对话不同而**挤掉主对话的热前缀缓存**（GLM/DeepSeek 缓存争抢卡顿的诱因之一）。把它路由到便宜模型（如 Flash），用独立 provider/client = 独立服务端缓存：
+压缩是一次**一次性、无工具**的纯总结任务。用主力贵模型来做既费 token，又因为压缩请求的前缀和主对话不同而**挤掉主对话的热前缀缓存**（GLM/DeepSeek 缓存争抢卡顿的诱因之一）。把它路由到便宜模型（如 Flash，官方 ID `deepseek-flash`；旧别名 `deepseek-v4-flash` 亦兼容），用独立 provider/client = 独立服务端缓存：
 
 ```json
 {
   "compact": {
     "enabled": true,
     "provider": "deepseek",
-    "model": "deepseek-v4-flash"
+    "model": "deepseek-flash"
   }
 }
 ```

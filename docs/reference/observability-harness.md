@@ -202,6 +202,9 @@ read_file → git → grep ×12 → read_file → read_file → todo → bash �
 
 ### 复算本文数字
 
+以下成本示例用于复算本文原始记录，保留当时的计费单价。当前 DeepSeek 已采用分时价格，
+新会话的成本估算请以[官方模型与价格文档](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)为准。
+
 ```bash
 cd ~/.rivet/sessions/<slug>/<sessionId>
 

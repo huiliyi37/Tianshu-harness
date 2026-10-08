@@ -12,13 +12,16 @@ Provider 是「模型接入点」——你告诉天枢从哪里调用模型、�
 
 | Provider | 对应模型 | 协议 | 认证方式 | Context Window | 特点 |
 |----------|----------|------|----------|----------------|------|
-| `deepseek` | DeepSeek V4 Pro / Flash | OpenAI-compatible | API Key | 1M tokens | 原生前缀缓存，Cache Hit 可达 90%+ |
+| `deepseek` | DeepSeek 4.1 Flash / V4 Pro | OpenAI-compatible | API Key | 1M tokens | 原生前缀缓存，Cache Hit 可达 90%+ |
 | `opencode-go` | DeepSeek / MiMo / GLM / Kimi 等开源模型 | OpenAI-compatible | API Key | 1M tokens | OpenCode Go 订阅服务，首月 $5，每月 $10 |
 | `opencode-go-anthropic` | Qwen / MiniMax 等开源模型 | Anthropic Messages | API Key | 1M tokens | OpenCode Go 的 Anthropic 协议端点，支持 cache_control |
 | `glm` | 智谱 GLM-5.3 / GLM-5.3-Flash / GLM-5.2 | OpenAI-compatible | API Key | 1M tokens | 支持 thinking |
 | `mimo` | 小米 MiMo-v2.5-Pro | OpenAI-compatible | API Key | 1M tokens | 支持 thinking，prefix cache |
-| `minimax` | MiniMax M3 / M2.7 | OpenAI-compatible | API Key | 204.8K tokens | 需过滤 `top_k/metadata/cache_control` 参数 |
+| `minimax` | MiniMax M3 / M2.7 | OpenAI-compatible | API Key | 1M (M3) / 204.8K (M2.7) | 需过滤 `top_k/metadata/cache_control` 参数 |
 | `codex` | GPT-5.6 (ChatGPT 订阅) | Codex Responses | OAuth PKCE | 1M tokens | 使用 ChatGPT 订阅（非 API 计费），自动 token 刷新 |
+
+> 本表描述本仓内置预设，不是供应商最新完整模型目录。可用型号以各端点的模型列表为准；
+> OpenAI 当前系列见[官方模型文档](https://developers.openai.com/api/docs/models)，本次文档更新不更改内置默认型号。
 
 > 📌 上表 `codex` 行为**预设默认**（直连 ChatGPT OAuth）。本机实际已把 codex 改走本地
 > **cliproxy 账号池**（GPT-5.5 / `claude-opus-4-5`）——配置、排障、账号池维护与自动刷新
@@ -59,7 +62,7 @@ rivet config setup glm --key sk-xxxx --default
 rivet config setup mimo --key-env MIMO_API_KEY --url https://token-plan-sgp.xiaomimimo.com/v1
 
 # 配置 MiniMax 指定模型参数
-rivet config setup minimax --key-env MINIMAX_API_KEY --model MiniMax-M2.8 --alias m28 --context-window 300000 --max-tokens 64000 --default
+rivet config setup minimax --key-env MINIMAX_API_KEY --model MiniMax-M3 --alias m3 --context-window 1000000 --max-tokens 64000 --default
 
 # 配置 Codex（OAuth，无需 API Key）
 rivet config setup codex --default
@@ -93,10 +96,10 @@ rivet config set-url mimo https://token-plan-sgp.xiaomimimo.com/v1
 
 ```bash
 # 最小参数
-rivet config set-model deepseek deepseek-v4-flash
+rivet config set-model deepseek deepseek-flash
 
 # 完整参数
-rivet config set-model minimax MiniMax-M2.8 300000 64000 m28
+rivet config set-model minimax MiniMax-M3 1000000 64000 m3
 ```
 
 #### `rivet config set-key <provider> <key>`
@@ -139,7 +142,7 @@ Providers:
   deepseek (default)
     baseUrl: https://api.deepseek.com/v1
     apiKey: env(DEEPSEEK_API_KEY)
-    models: v4-pro, v4-flash
+    models: deepseek-flash, deepseek-v4-pro
   glm
     baseUrl: https://open.bigmodel.cn/api/coding/paas/v4
     apiKey: env(ZHIPU_API_KEY)
@@ -233,17 +236,17 @@ rivet config show | jq '.provider'
 
 **推荐场景**：通用编程任务、长会话、追求极致性价比。
 
-DeepSeek V4 Pro 支持原生前缀缓存，在长时间对话中 Cache Hit 可达 90%+，显著降低 API 成本。
+DeepSeek V4 Pro 与 4.1 Flash 支持原生前缀缓存，在长时间对话中 Cache Hit 可达 90%+，显著降低 API 成本。
 
 ```bash
 rivet config setup deepseek --key-env DEEPSEEK_API_KEY --default
 ```
 
 可选模型：
-- `deepseek-v4-pro`（默认）：完整 thinking，`reasoningEffort: max`
-- `deepseek-v4-flash`：快速响应，`reasoningEffort: high`
+- `deepseek-flash`（默认）：版本 DeepSeek-V4.1-Flash，1M 上下文，原生多模态（图像输入），快速响应，`reasoningEffort: high`
+- `deepseek-v4-pro`：版本 DeepSeek-V4-Pro-0813，旗舰深度推理，1M 上下文，`reasoningEffort: high`
 
-> **配置参数**：上下文 1000000（1M tokens），最大输出 384000（384K tokens）。请照[官方文档](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)的真实值填写，填小了会导致推理被截断、agent 频繁停止。
+> **配置参数与模型版本**：按[官方文档与定价表](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)，官方当前在售模型 ID 为 `deepseek-flash`（DeepSeek-V4.1-Flash）与 `deepseek-v4-pro`（DeepSeek-V4-Pro-0813）。上下文 1000000（1M tokens），官方最大输出 384K；天枢预设请求上限 256000（可以在官方上限内调整）。旧模型 ID `deepseek-v4-flash` 虽然在官方服务端仍可作为别名调用，但底层旧模型已退役并由 V4.1 Flash 承接；建议统一使用 `deepseek-flash`。
 
 ### OpenCode Go（开源模型订阅服务）
 
@@ -286,7 +289,7 @@ HTTP 400 {"type":"error","error":{"type":"MissingSessionID",
 
 | Provider Key | 协议 | 端点 | 适用模型 |
 |--------------|------|------|----------|
-| `opencode-go` | OpenAI Chat Completions | `/v1/chat/completions` | DeepSeek V4 Pro/Flash, MiMo-V2.5/V2.5-Pro, GLM-5.2, Kimi K2.5/K2.6 |
+| `opencode-go` | OpenAI Chat Completions | `/v1/chat/completions` | 内置预设示例：DeepSeek V4 Pro/Flash、GLM-5.2、Kimi K3；实际型号以网关列表为准 |
 | `opencode-go-anthropic` | Anthropic Messages | `/v1/messages` | Qwen3.5/3.6/3.7, MiniMax M2.5/M2.7 |
 
 > **注意**：手工配置时 `name` 可设为 `"anthropic"`（schema 会据此默认 `protocol: "anthropic"`），也可自行命名并显式写 `protocol: "anthropic"`。两种方式都会路由到 `/v1/messages`；内置预设采用后者。
@@ -323,7 +326,7 @@ rivet config setup opencode-go --key sk-xxxx --default
           { "id": "deepseek-v4-flash", "alias": "go-ds4f", "contextWindow": 1000000, "maxTokens": 64000, "reasoningEffort": "high" },
           { "id": "mimo-v2.5-pro", "alias": "go-mimo", "contextWindow": 1000000, "maxTokens": 64000, "reasoningEffort": "max" },
           { "id": "glm-5.2", "alias": "go-glm", "contextWindow": 1000000, "maxTokens": 64000, "reasoningEffort": "high" },
-          { "id": "kimi-k2.6", "alias": "go-kimi", "contextWindow": 1000000, "maxTokens": 64000, "reasoningEffort": "high" }
+          { "id": "kimi-k3", "alias": "go-kimi", "contextWindow": 1000000, "maxTokens": 64000, "reasoningEffort": "high" }
         ],
         "unsupported": ["stream_options"]
       },
@@ -360,9 +363,13 @@ rivet config setup opencode-go --key sk-xxxx --default
 | 每周 | $30 |
 | 每月 | $60 |
 
-额度以美元计价，不同模型消耗不同（如 MiMo-V2.5 便宜，允许更多请求；GLM-5.1 较贵，允许较少请求）。
+额度以美元计价，不同模型消耗不同；当前套餐额度和计价规则请以 [OpenCode Go 官方说明](https://opencode.ai/docs/go/)为准。
 
-#### 当前可用模型（2026-06）
+#### 网关模型示例与当前列表
+
+以下保留本仓配置示例使用的网关型号，并补充当前预设中的 Kimi K3；不是最新完整目录。
+[OpenCode Go 官方说明](https://opencode.ai/docs/go/)现已列出 MiMo V2.6、GLM-5.3 等新型号。
+使用时以接口返回的模型 ID 为准，不能将其他官方端点的改名规则直接套到中转站。
 
 | 模型 | 协议 | 模型 ID |
 |------|------|---------|
@@ -371,7 +378,7 @@ rivet config setup opencode-go --key sk-xxxx --default
 | MiMo-V2.5 | OpenAI | `mimo-v2.5` |
 | MiMo-V2.5-Pro | OpenAI | `mimo-v2.5-pro` |
 | GLM-5.2 | OpenAI | `glm-5.2` |
-| Kimi K2.5 | OpenAI | `kimi-k2.5` |
+| Kimi K3 | OpenAI | `kimi-k3` |
 | Kimi K2.6 | OpenAI | `kimi-k2.6` |
 | Qwen3.7 Max | Anthropic | `qwen3.7-max` |
 | Qwen3.6 Plus | Anthropic | `qwen3.6-plus` |
@@ -496,11 +503,14 @@ rivet config setup glm --key-env ZHIPU_API_KEY
 rivet config setup mimo --key-env MIMO_API_KEY --default
 ```
 
-小米 MiMo 支持类似 DeepSeek 的前缀缓存策略 `prefixCache: deepseek-native`。
+小米 MiMo 支持类似 DeepSeek 的前缀缓存策略 `prefixCache: deepseek-native`。内置预设当前提供 `mimo-v2.5-pro` / `mimo-v2.5`；[小米官方模型列表](https://mimo.mi.com/docs/quick-start/summary/model)已提供 V2.6，并公告 V2.5 Pro / V2.5 将于 2026-10-21 10:00（北京时间）弃用。V2.6 可从接口列表添加；预设与识图候选的完善建议见 [issue #386](https://github.com/huiliyi37/Tianshu-harness/issues/386)，尚需维护者处理。
 
 ### MiniMax
 
 **推荐场景**：MiniMax 自有模型接入。
+
+[官方模型列表](https://platform.minimaxi.com/docs/api-reference/models/openai/list-models)列出
+`MiniMax-M3`、`MiniMax-M2.7` 等型号；本文命令示例使用已收录的 M3，内置默认仍为 M2.7。
 
 ```bash
 rivet config setup minimax --key-env MINIMAX_API_KEY
@@ -941,7 +951,7 @@ rivet config providers  # 应该只显示内置 Provider
     "council": {
       "seats": [
         { "authority": "tianquan", "charter": "架构与正确性", "provider": "deepseek", "model": "deepseek-v4-pro" },
-        { "authority": "tianfu",   "charter": "风险与边界",   "provider": "glm",      "model": "glm-4.6" },
+        { "authority": "tianfu",   "charter": "风险与边界",   "provider": "glm",      "model": "glm-5.3" },
         { "authority": "tianxuan", "charter": "实现可行性",   "provider": "deepseek", "model": "deepseek-v4-pro" }
       ]
     }
@@ -960,14 +970,14 @@ rivet config providers  # 应该只显示内置 Provider
 
 ### 上下文压缩走廉价模型（`compact.provider` + `compact.model`）
 
-上下文压缩（把变长的历史蒸馏成摘要）本身是一次**一次性、无工具**的纯总结任务，没必要用主力贵模型来做——而且压缩请求和主对话的前缀不同，在主 provider 上跑还会**挤掉主对话的热前缀缓存**（GLM/DeepSeek 缓存争抢卡顿的诱因之一）。把它路由到一个便宜模型（如 Flash），用独立 provider/client = 独立服务端缓存，既省钱又不碰主缓存：
+上下文压缩（把变长的历史蒸馏成摘要）本身是一次**一次性、无工具**的纯总结任务，没必要用主力贵模型来做——而且压缩请求和主对话的前缀不同，在主 provider 上跑还会**挤掉主对话的热前缀缓存**（GLM/DeepSeek 缓存争抢卡顿的诱因之一）。把它路由到一个便宜模型（如 Flash，官方 ID `deepseek-flash`；旧别名 `deepseek-v4-flash` 亦兼容），用独立 provider/client = 独立服务端缓存，既省钱又不碰主缓存：
 
 ```json
 {
   "compact": {
     "enabled": true,
     "provider": "deepseek",
-    "model": "deepseek-v4-flash"
+    "model": "deepseek-flash"
   }
 }
 ```

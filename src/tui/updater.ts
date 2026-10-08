@@ -28,9 +28,10 @@ import { ProxyAgent } from 'undici'
 import type { Dispatcher } from 'undici'
 import { resolveProxyForUrl } from '../tools/net/proxy-resolver.js'
 import { NPM_MIRRORS } from '../tools/mirror-env.js'
+import { resolveGithubApiUrl } from '../tools/github-api-mirror.js'
+import type { MirrorsConfig } from '../config/schema.js'
 
 const NPM_REGISTRY_URL = 'https://registry.npmjs.org'
-const GITHUB_API_URL = 'https://api.github.com/repos'
 const UPDATE_CHECK_TIMEOUT_MS = 5_000
 // 旧值 24h 会导致用户安装新版本后一整天都看不到更新横幅。
 // npm 发布频率下 1h 足够及时，又不会过度请求 registry。
@@ -373,8 +374,11 @@ export function getGitHubRepo(root: string): { owner: string; repo: string } | n
 export async function fetchGitHubLatestVersion(
   owner: string,
   repo: string,
+  opts?: { config?: MirrorsConfig },
 ): Promise<LatestVersionInfo | null> {
-  const url = `${GITHUB_API_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/latest`
+  // issue #365：经 github-api-mirror 解析国内可用前缀（直连/代理竞速，fail-open）。
+  const apiPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/latest`
+  const url = await resolveGithubApiUrl(apiPath, { config: opts?.config })
   const res = await fetchWithRetry(url, {
     headers: {
       Accept: 'application/vnd.github+json',

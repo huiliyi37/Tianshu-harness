@@ -111,15 +111,19 @@ export function injectProviderKeys(providers: Record<string, ProviderConfig>): v
   const raw = { provider: { providers } } as unknown as Record<string, unknown>
   if (migrateDeepseekVisionExpRetirement(raw)) stale = true
   if (migrateDeepseekV4FlashRetirement(raw)) stale = true
-  for (const [name, provider] of Object.entries(providers)) {
-    for (const key of provider.keys ?? []) {
-      key.models = key.models.map(model => {
+ for (const [name, provider] of Object.entries(providers)) {
+   for (const key of provider.keys ?? []) {
+      for (let i = 0; i < key.models.length; i++) {
+        const model = key.models[i]
+        if (!model) continue
         const repaired = backfillModelFromPreset(name, model)
-        if (repaired !== model) stale = true
-        return repaired
-      })
-    }
-    const fromFile = file?.providers[name]
+        if (repaired !== model) {
+          key.models[i] = repaired
+          stale = true
+        }
+      }
+   }
+   const fromFile = file?.providers[name]
     const effective = provider.keys
     if (effective && effective.length > 0) {
       toPersist.providers[name] = effective

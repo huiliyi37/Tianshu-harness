@@ -91,7 +91,6 @@ import { createAuthProvider } from './auth/registry.js'
 import { resolveCapabilities } from './api/provider.js'
 import { canonicalizeModelId } from './api/model-aliases.js'
 import { contractModels } from './config/contract-models.js'
-import { resolveModelRef } from './config/provider-keys.js'
 import { DelegationCoordinator } from './agent/coordinator.js'
 import { ProviderHealthTracker } from './agent/provider-health.js'
 import { effectiveBanditMode, resolveBanditPromotion } from './agent/bandit-promotion.js'
@@ -1435,66 +1434,9 @@ export interface SwitchModelResult {
   contextWindow?: number
 }
 
-/** 跨 provider 解析模型 + 凭证（switchAgentRuntime 与 resume 原模型恢复共用）。
- *  模型不在任何 provider → null；找到但 API key 缺失 → { error }（oauth 免 key）；
- *  命中且凭证就绪 → 完整解析（provider/apiKey/auth 已按目标 provider 摆正）。 */
-export interface ResolvedModelTarget {
-  provider: ProviderConfig
-  providerName: string
-  apiKey: string
-  auth: AuthProvider | undefined
-  modelId: string
-  contextWindow?: number
-}
-export function resolveProviderForModel(ctx: Pick<BootstrapContext, 'config' | 'provider' | 'apiKey' | 'auth'>, modelId: string, targetProvider?: string): ResolvedModelTarget | { error: string } | null {
-  // Accept the `provider:modelId` / `provider:alias` form used by desktop
-  // session records. Before this parse, "deepseek:deepseek-v4-flash" never
-  // matched any provider model entry (id was compared with the prefix still
-  // attached) — the same false negative behind the 2026-09-08 resume failure.
-  // 首段只有确是已配置 provider 时才当前缀拆（#313：`cn:glm-5.3-flash` 整串是模型 id）。
-  const { provider: pinnedProvider, modelRef } = resolveModelRef(ctx.config.provider.providers, modelId, targetProvider)
-  const providerFilter = targetProvider ?? pinnedProvider
-  if (!modelRef) return null
+import { resolveProviderForModel, type ResolvedModelTarget, type ModelResolutionContext } from './bootstrap/model-resolution.js'
+export { resolveProviderForModel, type ResolvedModelTarget, type ModelResolutionContext }
 
-  for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
-    if (providerFilter && provName !== providerFilter) continue
-    // 上面注释承诺的这个 form 是「provider:modelId / provider:alias」——所以末段也经别名表
-    // 归一再比（与 provider-keys.findModelOwner、main.ts 的解析同一口径）。此前只做精确比，
-    // `/model deepseek:v4-flash` 这类短名一律落空，表现为 "not found in any provider" 的
-    // 硬报错，而不是静默回退。精确命中优先、归一补位——别名 key 可能是池内某模型的真实 id。
-    // 池子同样取契约层（keys 池并集）：本函数是 /model 切换与 startup resume 的入口，
-    // 只读顶层快照会让「只在 key 池里」的模型永远解析不到。
-    const contractPool = contractModels(prov)
-    const wanted = canonicalizeModelId(modelRef)
-    const found = contractPool.find(m => m.id === modelRef)
-      ?? (wanted !== modelRef ? contractPool.find(m => m.id === wanted) : undefined)
-    if (!found) continue
-    let provider = ctx.provider
-    let apiKey = ctx.apiKey
-    let auth = ctx.auth
-    if (prov.auth?.type === 'oauth') {
-      if (provName !== ctx.provider.name) {
-        provider = prov
-        apiKey = ''
-        auth = createAuthProvider(prov.auth, process.env, prov.apiKey)
-      }
-    } else {
-      const provKey = prov.apiKey ?? process.env[prov.apiKeyEnv ?? ''] ?? (() => {
-        try { return resolveApiKey(prov) } catch { return undefined }
-      })()
-      if (!provKey) {
-        return { error: `API key not set for ${provName}. Set ${prov.apiKeyEnv ?? 'apiKey'} in config or environment.` }
-      }
-      if (provName !== ctx.provider.name || provKey !== apiKey) {
-        provider = prov
-        apiKey = provKey
-        auth = undefined
-      }
-    }
-    return { provider, providerName: provName, apiKey, auth, modelId: found.id, contextWindow: found.contextWindow }
-  }
-  return null
-}
 
 /**
  * 跨 provider 查找并切换模型 —— 重建 AgentLoop（与 React main.tsx 的 useMemo 重建同构，

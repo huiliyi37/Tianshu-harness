@@ -901,7 +901,7 @@ test('B3: custom entry asks the wire protocol first (step 1 / 9)', () => {
   assert.equal(view.kind, 'choice')
   assert.match(view.title, /协议/)
   assert.equal(view.stepLabel, '步骤 1 / 9')
-  assert.deepEqual(view.options?.map(o => o.id), ['openai', 'anthropic', 'openai-responses'])
+  assert.deepEqual(view.options?.map(o => o.id), ['openai', 'anthropic', 'openai-responses', 'gemini'])
   assert.equal(flow.submitChoice('ghost').kind, 'error')
   assert.equal(flow.submitChoice('openai').kind, 'next')
   assert.equal(flow.view().stepLabel, '步骤 2 / 9')
@@ -1934,4 +1934,75 @@ test('E3: probe modelInfos materialize specs for discovered models — no D2 man
   assert.equal(model?.contextWindow, 1_000_000)
   assert.equal(model?.maxTokens, 131_072)
   assert.deepEqual(model?.capabilities, { reasoningSplit: true })
+})
+
+test('B3: gemini protocol flows through probe, placeholder, and commit', () => {
+  const flow = new ConnectFlow()
+  flow.submitChoice('custom')
+  const protocolView = flow.view()
+  assert.ok(protocolView.options?.some(o => o.id === 'gemini'))
+  assert.equal(flow.submitChoice('gemini').kind, 'next')
+  const urlView = flow.view()
+  assert.match(urlView.subtitle ?? '', /Gemini/)
+  assert.equal(urlView.placeholder, 'https://generativelanguage.googleapis.com/v1beta')
+  flow.submitInput('https://generativelanguage.googleapis.com/v1beta')
+  const probe = flow.submitInput('AIzaSyExampleKey')
+  assert.equal(probe.kind, 'probe')
+  if (probe.kind !== 'probe') return
+  assert.equal(probe.protocol, 'gemini')
+  flow.applyProbe(report({ models: ['gemini-3.8-flash'] }))
+  flow.submitChoice('continue')
+  flow.confirm()
+  flow.submitChoice('none')
+  flow.submitInput('gemini-custom')
+  const result = flow.submitChoice('save')
+  assert.equal(result.kind, 'commit')
+  if (result.kind !== 'commit' || result.commit.mode !== 'custom') return
+  assert.equal(result.commit.protocol, 'gemini')
+})
+
+test('custom flow with existing provider name attaches updateExisting and synchronizes default key', () => {
+  const existingProviders = [
+    { name: 'my-relay', label: 'My Relay', modelCount: 2 },
+  ]
+  const flow = new ConnectFlow(existingProviders)
+  toProbe(flow, { url: 'https://api.example.com/v1', key: 'sk-custom' })
+  flow.applyProbe(report({ models: ['deepseek-v4-pro'] }))
+  flow.submitChoice('continue')
+  flow.confirm()
+  flow.submitChoice('none')
+
+  flow.submitInput('my-relay')
+
+  const confirmView = flow.view()
+  assert.equal(confirmView.kind, 'choice')
+  assert.match(confirmView.subtitle ?? '', /更新已有服务商/)
+  assert.match(confirmView.subtitle ?? '', /同步默认 Key/)
+
+  const result = flow.submitChoice('save')
+  assert.equal(result.kind, 'commit')
+  if (result.kind !== 'commit' || result.commit.mode !== 'custom') {
+    throw new Error('expected custom commit')
+  }
+  assert.equal(result.commit.providerName, 'my-relay')
+  assert.equal(result.commit.updateExisting, true)
+  assert.match(result.summary, /更新.*my-relay/)
+  assert.match(result.summary, /同步默认 Key/)
+})
+
+test('custom flow diy-name step subtitle acknowledges updating existing provider when suggested name exists', () => {
+  const existingProviders = [
+    { name: 'example-com', label: 'Example Com', modelCount: 1 },
+  ]
+  const flow = new ConnectFlow(existingProviders)
+  toProbe(flow, { url: 'https://api.example.com/v1', key: 'sk-custom' })
+  flow.applyProbe(report({ models: ['deepseek-v4-pro'] }))
+  flow.submitChoice('continue')
+  flow.confirm()
+  flow.submitChoice('none')
+
+  const nameView = flow.view()
+  assert.equal(nameView.kind, 'input')
+  assert.match(nameView.subtitle ?? '', /更新.*服务商/)
+  assert.match(nameView.subtitle ?? '', /同步默认 Key/)
 })

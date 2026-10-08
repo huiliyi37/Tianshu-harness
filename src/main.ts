@@ -29,6 +29,7 @@ assertStagedRuntimeIntact(dirname(fileURLToPath(import.meta.url)))
 import { bootstrapInteractiveSession, createShutdownHandler, switchAgentRuntime, restorePlanModeFromMeta, getOrCreateSessionId, wasSessionResumed, initializeMcp } from './bootstrap.js'
 import type { BootstrapContext, RuntimeRefs } from './bootstrap.js'
 import { resolveCapabilities } from './api/provider.js'
+import { persistConnectCommit, resolveConnectRuntimeSelection } from './tui/connect-apply.js'
 import { createExitFuse } from './platform/exit-fuse.js'
 
 /** /model 面板带来的 effort 应用（s=仅会话；Enter 路径先应用再随默认持久化）。
@@ -43,7 +44,7 @@ import { HELP_TEXT } from './cli/help-text.js'
 import { formatVersionLine } from './cli/version.js'
 import { applyEarlyCliEnv, routeEarlyCli } from './cli/early-routing.js'
 import { getOnboardingState, markWelcomeGuideShown, shouldShowWelcomeGuide } from './onboarding.js'
-import { loadConfig as loadRivetConfig, setupProvider, registerProvider, upsertProviderModel, removeProvider, setDefaultProvider, setUiConfig, setApprovalMode as persistApprovalDefault, setDefaultDomainConfig, setDefaultModelConfig } from './config/manager.js'
+import { loadConfig as loadRivetConfig, removeProvider, setDefaultProvider, setUiConfig, setApprovalMode as persistApprovalDefault, setDefaultDomainConfig, setDefaultModelConfig } from './config/manager.js'
 import { isProFeatureEnabled } from './config/pro-license.js'
 import type { GoalTracker as GoalTrackerInstance } from './agent/goal-tracker.js'
 import { createUpdateGoalTool } from './tools/update-goal.js'
@@ -1612,21 +1613,7 @@ async function main() {
     // Connect 向导提交回调：写盘 → 重载 → 内存回填 → 即时切到新默认模型。
     // 返回 false = 写盘失败——app 侧据此保留草稿（恢复场景下输入不作废）。
     try {
-      if (commit.mode === 'preset') {
-        setupProvider(commit.setup)
-      } else if (commit.mode === 'add-model') {
-        upsertProviderModel(commit.providerName, commit.model)
-      } else {
-        registerProvider({
-          providerName: commit.providerName,
-          baseUrl: commit.baseUrl,
-          ...(commit.apiKey ? { apiKey: commit.apiKey } : {}),
-          protocol: commit.protocol,
-          models: commit.models,
-          makeDefault: commit.makeDefault,
-          ...(commit.advanced ? { advanced: commit.advanced } : {}),
-        })
-      }
+      persistConnectCommit(commit)
     } catch (e) {
       tuiApp.commitStatic(`⚠️ 配置保存失败: ${e instanceof Error ? e.message : String(e)}`)
       return false
@@ -1646,11 +1633,12 @@ async function main() {
       const fresh = loadRivetConfig()
       if (ctx) {
         ctx.config.provider = fresh.provider
-        const prov = fresh.provider.providers[fresh.provider.default]
-        const modelAlias = prov && (contractModels(prov)[0]?.id)
-        if (modelAlias) {
+        const selection = resolveConnectRuntimeSelection(commit, fresh, {
+          provider: ctx.provider.name, model: ctx.agent.config.promptEngine.getModel(),
+        })
+        if (selection) {
           try { ctx.agent.abort() } catch { /* idle */ }
-          const res = switchAgentRuntime(ctx, modelAlias)
+          const res = switchAgentRuntime(ctx, selection.model, selection.provider)
           if (res.ok && res.modelName) {
             tuiApp.setModelInfo(res.modelName, res.contextWindow)
             attachJobSubscription()

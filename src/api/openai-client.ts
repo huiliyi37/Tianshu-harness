@@ -922,7 +922,7 @@ export class OpenAIClient implements StreamClient {
       // Resolve auth headers: AuthProvider takes precedence over static apiKey
       const authHeaders = this.config.auth
         ? await this.config.auth.getHeaders()
-        : { 'Authorization': `Bearer ${this.config.apiKey}` }
+        : this.config.apiKey ? { 'Authorization': `Bearer ${this.config.apiKey}` } : {}
 
       // Pre-first-byte timeout prevents fetch from hanging forever when the
       // server accepts the connection but never sends response headers. Uses the

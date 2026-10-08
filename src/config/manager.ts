@@ -14,7 +14,8 @@ import { normalizeBaseUrl } from '../api/endpoint-map.js'
 import { backfillPresetModelFields, migratePresetModelBackfill } from './preset-model-backfill.js'
 import { migrateProviderToKeys, keyRefFor, defaultKeyOf, keyRefReferrers, applyProviderCredential, alignModelsWithDefaultKey, writeModelsToDefaultKey } from './provider-keys.js'
 import { injectProviderKeys, stripProviderKeys, writeProviderKeysFile, providerKeysPath } from './provider-keys-store.js'
-import { assertDefaultModelRef } from './contract-models.js'
+import { assertDefaultModelRef, contractModels } from './contract-models.js'
+import { upsertProviderPoolModel, addProviderPoolModel, removeProviderPoolModel } from './provider-models.js'
 import { migrateDeepseekVisionExpRetirement, migrateDeepseekV4FlashRetirement } from './preset-model-retirement.js'
 import { migrateInvalidWorkerTiers } from './worker-tier-repair.js'
 import { writeSecret, readSecret, deleteSecret } from './secrets-store.js'
@@ -1942,6 +1943,7 @@ export interface SetupProviderOptions {
   apiKey?: string
   apiKeyEnv?: string
   baseUrl?: string
+  protocol?: ProviderProtocol
   model?: ModelConfig
   /** 批量模型回填（免密钥 preset 探测路径）——每项走与 model 相同的合并语义。 */
   models?: Array<Partial<ModelConfig> & { id: string }>
@@ -2018,15 +2020,7 @@ export function upsertProviderModel(providerName: string, model: ModelConfig, op
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
   model = clampModelTokens(model)
-  const existingIndex = provider.models.findIndex(item => item.id === model.id)
-  const existing = existingIndex >= 0 ? provider.models[existingIndex] : undefined
-  if (existing) provider.models[existingIndex] = mergeModelUpdate(existing, model)
-  else provider.models.push(model)
-  if (options.preferred) {
-    const preferredIndex = provider.models.findIndex(item => item.id === model.id)
-    const preferred = provider.models.splice(preferredIndex, 1)[0]
-    if (preferred) provider.models.unshift(preferred)
-  }
+  upsertProviderPoolModel(provider, model, mergeModelUpdate, options.preferred)
   provider.userSaved = true
   saveConfig(cfg)
 }
@@ -2087,6 +2081,7 @@ export function setupProvider(options: SetupProviderOptions): void {
   if (options.baseUrl) {
     next.baseUrl = resolveProviderBaseUrl(options.baseUrl)
   }
+  if (options.protocol !== undefined) next.protocol = options.protocol
   // 池形态下请求端读的是默认 key 的槽——顶层写了不同步过去，就是「重连后模型/凭据
   // 看起来存上了、实际仍走旧的」（2026-10-08 收编公开仓 PR #381）。
   if (options.apiKey) applyProviderCredential(next, { providerName: options.providerName })
@@ -2253,7 +2248,7 @@ export function addModel(providerName: string, model: ModelConfig): void {
   const cfg = loadConfig()
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
-  provider.models.push(model)
+  addProviderPoolModel(provider, clampModelTokens(model))
   provider.userSaved = true
   saveConfig(cfg)
 }
@@ -2263,23 +2258,7 @@ export function removeModel(providerName: string, modelId: string): void {
   const provider = cfg.provider.providers[providerName]
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
 
-  // 先检查 modelId 是否存在——不存在时应尽早报错，不要被下游的"最后一个模型"
-  // 检查拦截，否则报错文案会误导用户。
-  if (!provider.models.some(m => m.id === modelId)) {
-    throw new Error(`Model "${modelId}" not found in provider "${providerName}"`)
-  }
-
-  // 禁止移除最后一个模型——预设 provider 删除后会从 DEFAULT_CONFIG 恢复全部预设模型，
-  // 导致用户之前手动移除的模型全部回来；自定义 provider 删除后则彻底消失。
-  // 用户应通过「移除 Provider」按钮删除整个 provider。
-  if (provider.models.length <= 1) {
-    throw new Error(
-      `Cannot remove the last model from "${providerName}". ` +
-      `Remove the provider instead, or add another model first.`,
-    )
-  }
-
-  provider.models = provider.models.filter(m => m.id !== modelId)
+  removeProviderPoolModel(provider, modelId)
   // 删除是编辑行为——打 userSaved 标记，让 migratePresetModelBackfill 尊重
   // 删减（否则下次 loadConfig 会把删除的预设模型回流，删除被静默撤销）。
   provider.userSaved = true
@@ -2289,7 +2268,7 @@ export function removeModel(providerName: string, modelId: string): void {
 export function listModels(providerName: string): ModelConfig[] {
   const provider = getProvider(providerName)
   if (!provider) throw new Error(`Provider "${providerName}" not found`)
-  return provider.models
+  return contractModels(provider)
 }
 
 // --- CLI entry point ---

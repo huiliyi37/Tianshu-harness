@@ -11,6 +11,14 @@
 import { findPresetModel } from './provider-presets.js'
 import type { ModelConfig } from './schema.js'
 
+/** A vendor preset may be repointed to a gateway with its own valid model IDs. */
+function isOfficialDeepseek(provider: Record<string, unknown> | undefined): boolean {
+  if (!provider || provider.baseUrl === undefined) return true // Inherits the official default.
+  if (typeof provider.baseUrl !== 'string') return false
+  try { return new URL(provider.baseUrl).hostname === 'api.deepseek.com' }
+  catch { return false }
+}
+
 /** 把退役条目在**顶层快照**与**每个权威 key 池**（`keys[].models`）里一并处理——
  *  选择器与请求端读的是后者，只改顶层等于没改（2026-10-08 收编公开仓 PR #381）。
  *  语义：池里已有替代档 → 删掉退役条目；没有 → 就地改名（保留用户调过的窗口与字段）。
@@ -148,6 +156,7 @@ export function migrateDeepseekVisionExpRetirement(raw: Record<string, unknown>)
   const provider = raw.provider as Record<string, unknown> | undefined
   const providers = provider?.providers as Record<string, unknown> | undefined
   const ds = providers?.['deepseek'] as Record<string, unknown> | undefined
+  if (!isOfficialDeepseek(ds)) return false
   if (retireProviderModel(ds, RETIRED, REPLACEMENT)) changed = true
 
   const agent = raw.agent as Record<string, unknown> | undefined
@@ -201,6 +210,7 @@ export function migrateDeepseekV4FlashRetirement(raw: Record<string, unknown>): 
   const provider = raw.provider as Record<string, unknown> | undefined
   const providers = provider?.providers as Record<string, unknown> | undefined
   const ds = providers?.['deepseek'] as Record<string, unknown> | undefined
+  if (!isOfficialDeepseek(ds)) return false
   if (retireProviderModel(ds, RETIRED, REPLACEMENT)) changed = true
 
   const redirectRef = (value: string): string | undefined => {

@@ -18,6 +18,8 @@ import { dirname, join } from 'node:path'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { rivetHome, userConfigPath } from './paths.js'
 import { providerKeySchema, type ProviderKeyConfig, type ProviderConfig } from './schema.js'
+import { migrateDeepseekVisionExpRetirement, migrateDeepseekV4FlashRetirement } from './preset-model-retirement.js'
+import { backfillModelFromPreset } from './preset-model-backfill.js'
 
 /** 文件形状版本：与 secrets-store 的 `version: 1` 同规。 */
 export const PROVIDER_KEYS_FILE_VERSION = 1
@@ -103,6 +105,21 @@ export function injectProviderKeys(providers: Record<string, ProviderConfig>): v
   for (const [name, provider] of Object.entries(providers)) {
     const fromFile = file?.providers[name]
     if (fromFile && fromFile.length > 0) provider.keys = fromFile
+  }
+  // config.json migrations ran before the external pools were injected. Repair
+  // the actual selector/request source now, so an old pool cannot revive retired IDs.
+  const raw = { provider: { providers } } as unknown as Record<string, unknown>
+  if (migrateDeepseekVisionExpRetirement(raw)) stale = true
+  if (migrateDeepseekV4FlashRetirement(raw)) stale = true
+  for (const [name, provider] of Object.entries(providers)) {
+    for (const key of provider.keys ?? []) {
+      key.models = key.models.map(model => {
+        const repaired = backfillModelFromPreset(name, model)
+        if (repaired !== model) stale = true
+        return repaired
+      })
+    }
+    const fromFile = file?.providers[name]
     const effective = provider.keys
     if (effective && effective.length > 0) {
       toPersist.providers[name] = effective

@@ -11,6 +11,41 @@
 import { findPresetModel } from './provider-presets.js'
 import type { ModelConfig } from './schema.js'
 
+/** Rename retired entries in both the legacy snapshot and each authoritative key pool. */
+function retireProviderModel(prov: Record<string, unknown> | undefined, retiredId: string, replacementId: string): boolean {
+  if (!prov) return false
+  let changed = false
+  const rewrite = (target: Record<string, unknown>): void => {
+    if (!Array.isArray(target.models)) return
+    let hasReplacement = target.models.some(m =>
+      !!m && typeof m === 'object' && (m as { id?: unknown }).id === replacementId,
+    )
+    let local = false
+    const models: unknown[] = []
+    for (const item of target.models) {
+      if (!item || typeof item !== 'object' || (item as { id?: unknown }).id !== retiredId) {
+        models.push(item)
+        continue
+      }
+      local = true
+      if (hasReplacement) continue
+      models.push({ ...item, id: replacementId })
+      hasReplacement = true
+    }
+    if (local) {
+      target.models = models
+      changed = true
+    }
+  }
+  rewrite(prov)
+  if (Array.isArray(prov.keys)) {
+    for (const key of prov.keys) {
+      if (key && typeof key === 'object') rewrite(key as Record<string, unknown>)
+    }
+  }
+  return changed
+}
+
 /**
  * 重定向前保证 REPLACEMENT 在契约池中可达（2026-10-06，开源仓 3.28 用户反馈族）。
  *
@@ -93,7 +128,7 @@ function ensureReplacementInPool(
  * 回退 models[0]（本轮已在 bootstrap/main 两处补了该回退的告警，但仍应避免发生）。
  *
  * 边界：只动 deepseek provider 下 id 完全等于该型号的条目——用户在别的 provider 下
- * 自建的同名模型（第三方中转）不受影响；删空了则不删（空 models 过不了 schema 校验）。
+ * 自建的同名模型（第三方中转）不受影响；只剩退役档时改名，保留用户调过的窗口。
  * 幂等：删干净、改到位之后返回 false。Mutates `raw` in place.
  * Returns true if any value was changed.
  */
@@ -106,14 +141,7 @@ export function migrateDeepseekVisionExpRetirement(raw: Record<string, unknown>)
   const provider = raw.provider as Record<string, unknown> | undefined
   const providers = provider?.providers as Record<string, unknown> | undefined
   const ds = providers?.['deepseek'] as Record<string, unknown> | undefined
-  const models = ds?.models as Array<Record<string, unknown>> | undefined
-  if (Array.isArray(models)) {
-    const kept = models.filter(m => (m as { id?: unknown })?.id !== RETIRED)
-    if (kept.length !== models.length && kept.length > 0) {
-      ds!.models = kept
-      changed = true
-    }
-  }
+  if (retireProviderModel(ds, RETIRED, REPLACEMENT)) changed = true
 
   const agent = raw.agent as Record<string, unknown> | undefined
   if (agent) {
@@ -163,42 +191,10 @@ export function migrateDeepseekV4FlashRetirement(raw: Record<string, unknown>): 
 
   const isRetired = (name: unknown): boolean => name === RETIRED || name === RETIRED_ALIAS
 
-  const rewriteModels = (models: unknown): unknown[] | undefined => {
-    if (!Array.isArray(models)) return undefined
-    const hasReplacement = models.some(m =>
-      !!m && typeof m === 'object' && (m as { id?: unknown }).id === REPLACEMENT,
-    )
-    let local = false
-    const next: unknown[] = []
-    for (const item of models) {
-      if (!item || typeof item !== 'object') { next.push(item); continue }
-      const m = item as Record<string, unknown>
-      if (m.id !== RETIRED) { next.push(item); continue }
-      local = true
-      if (hasReplacement) continue
-      next.push({ ...m, id: REPLACEMENT })
-    }
-    if (!local || next.length === 0) return undefined
-    changed = true
-    return next
-  }
-
   const provider = raw.provider as Record<string, unknown> | undefined
   const providers = provider?.providers as Record<string, unknown> | undefined
   const ds = providers?.['deepseek'] as Record<string, unknown> | undefined
-  if (ds) {
-    const rewritten = rewriteModels(ds.models)
-    if (rewritten) ds.models = rewritten
-    const keys = ds.keys
-    if (Array.isArray(keys)) {
-      for (const key of keys) {
-        if (!key || typeof key !== 'object') continue
-        const slot = key as Record<string, unknown>
-        const keyModels = rewriteModels(slot.models)
-        if (keyModels) slot.models = keyModels
-      }
-    }
-  }
+  if (retireProviderModel(ds, RETIRED, REPLACEMENT)) changed = true
 
   const redirectRef = (value: string): string | undefined => {
     const parts = value.split(':')

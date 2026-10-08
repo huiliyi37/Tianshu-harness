@@ -2087,15 +2087,29 @@ export function setupProvider(options: SetupProviderOptions): void {
   if (options.baseUrl) {
     next.baseUrl = resolveProviderBaseUrl(options.baseUrl)
   }
+  const defaultKey = defaultKeyOf(next)
   if (options.apiKey) {
     next.keyRef = options.providerName
     ;(next as unknown as { apiKey?: string | null }).apiKey = null
     ;(next as unknown as { apiKeyEnv?: string | null }).apiKeyEnv = null
+    if (defaultKey) {
+      defaultKey.keyRef = options.providerName
+      defaultKey.apiKey = undefined
+      defaultKey.apiKeyEnv = undefined
+    }
   }
   if (options.apiKeyEnv) {
     next.apiKeyEnv = options.apiKeyEnv
     ;(next as unknown as { apiKey?: string | null }).apiKey = null
     ;(next as unknown as { keyRef?: string | null }).keyRef = null
+    if (defaultKey) {
+      defaultKey.apiKeyEnv = options.apiKeyEnv
+      defaultKey.keyRef = undefined
+      defaultKey.apiKey = undefined
+    }
+  }
+  if (defaultKey && (options.model || options.models)) {
+    next.models = structuredClone(defaultKey.models)
   }
   if (options.model) {
     const model = clampModelTokens(options.model)
@@ -2143,6 +2157,9 @@ export function setupProvider(options: SetupProviderOptions): void {
       }
       next.models = merged
     }
+  }
+  if (defaultKey && (options.model || options.models)) {
+    defaultKey.models = structuredClone(next.models)
   }
   cfg.provider.providers[options.providerName] = next
   next.userSaved = true

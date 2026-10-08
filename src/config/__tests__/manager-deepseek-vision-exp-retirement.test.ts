@@ -132,6 +132,8 @@ describe('deepseek-v4-flash-vision-exp 退役 — loadConfig 端到端', () => {
         },
       },
     }))
-    assert.equal(loadConfig().provider.providers.deepseek!.models.length, 1, '空 models 过不了 schema 校验，宁可留一张坏卡')
+    const models = loadConfig().provider.providers.deepseek!.models
+    assert.equal(models.length, 1, '改名保留唯一模型，不制造空池')
+    assert.equal(models[0]!.id, 'deepseek-flash')
   })
 })

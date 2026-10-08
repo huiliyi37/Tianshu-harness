@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 /**
  * log-locations.ts — 日志落点的单一事实源。
  *
@@ -193,7 +194,7 @@ export function statLogLocations(locations: readonly LogLocation[]): LogLocation
       const st = statSync(loc.path)
       if (st.isDirectory()) {
         let entries = 0
-        try { entries = readdirSync(loc.path).length } catch { entries = 0 }
+        try { entries = readdirSync(loc.path).filter(name => !isFilesystemMetadata(name)).length } catch { entries = 0 }
         return { ...loc, exists: true, bytes: 0, entries, mtimeMs: st.mtimeMs }
       }
       return { ...loc, exists: true, bytes: st.size, mtimeMs: st.mtimeMs }
@@ -216,7 +217,7 @@ export function statLogLocations(locations: readonly LogLocation[]): LogLocation
 export function latestSessionId(sessionDir: string): string | undefined {
   try {
     const files = readdirSync(sessionDir).filter(f =>
-      f.endsWith('.jsonl') && !f.includes('.claims.') && !f.startsWith('worker-'))
+      !isFilesystemMetadata(f) && f.endsWith('.jsonl') && !f.includes('.claims.') && !f.startsWith('worker-'))
     let best: { id: string; mtime: number } | undefined
     for (const f of files) {
       const id = f.slice(0, -'.jsonl'.length)

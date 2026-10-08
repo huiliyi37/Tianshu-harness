@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
 import { captureCommitVersion } from '../commit-version.js'
 import { commitScopedFiles } from '../scoped-git-commit.js'
 
@@ -24,6 +24,7 @@ describe('commitScopedFiles', () => {
     git(['init'])
     git(['config', 'user.email', 'test@test.com'])
     git(['config', 'user.name', 'Test'])
+    writeFileSync(join(TMP, '.gitignore'), '._*\n.DS_Store\n')
     writeFileSync(join(TMP, 'owned.txt'), 'base owned')
     writeFileSync(join(TMP, 'other.txt'), 'base other')
     git(['add', '.'])
@@ -55,7 +56,7 @@ describe('commitScopedFiles', () => {
 
     const result = commitScopedFiles({ cwd: TMP, files: ['owned.txt'], message: 'fix: scoped commit' })
 
-    assert.equal(result.ok, true)
+    assert.equal(result.ok, true, result.output)
     const committedFiles = git(['show', '--name-only', '--pretty=format:', 'HEAD']).split('\n').filter(Boolean)
     assert.deepEqual(committedFiles, ['owned.txt'])
     const status = git(['status', '--porcelain'])
@@ -69,7 +70,7 @@ describe('commitScopedFiles', () => {
 
     const result = commitScopedFiles({ cwd: TMP, files: ['new-owned.txt'], message: 'fix: scoped new file' })
 
-    assert.equal(result.ok, true)
+    assert.equal(result.ok, true, result.output)
     const committedFiles = git(['show', '--name-only', '--pretty=format:', 'HEAD']).split('\n').filter(Boolean)
     assert.deepEqual(committedFiles, ['new-owned.txt'])
     const status = git(['status', '--porcelain'])
@@ -121,7 +122,10 @@ describe('commitScopedFiles', () => {
     writeFileSync(lockPath, '')
     // The main thread blocks in sleepSync during backoff, so the lock must be
     // cleared by an external process — simulates the other git process exiting.
-    spawnSync('sh', ['-c', `(sleep 2; rm -f "${lockPath}") &`], { encoding: 'utf-8' })
+    const releaser = spawn(process.execPath, ['-e',
+      "setTimeout(() => { try { require('node:fs').unlinkSync(process.argv[1]) } catch {} }, 2000)", lockPath],
+    { stdio: 'ignore', detached: true })
+    releaser.unref()
 
     const result = commitScopedFiles({ cwd: TMP, files: ['owned.txt'], message: 'fix: retried through lock' })
 

@@ -89,6 +89,7 @@ export interface RawSessionEvent {
  *  里仍然需要的那点信息」，避免调用方为了拿它们而要求全量。 */
 export interface RawEventsTail {
   delegationState?: DelegationSnapshot
+  pendingQueueLaneIds?: string[]
   /** 尾部 maxEvents 条（日志更短时即全部）。 */
   events: RawSessionEvent[]
   /** 磁盘日志最早 seq（空日志为 0）——前端据此判断头部是否被截。 */

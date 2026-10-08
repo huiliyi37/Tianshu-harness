@@ -172,7 +172,7 @@ describe('CompactBoundaryCoordinator reclaim gate (2026-07-16 cost-aware reclaim
 
   const perTokenExactPrefix = deriveCompactionProfile({ contextWindow: 1_000, billing: 'per-token', cache: 'exact-prefix' })
 
-  function makeGated(opts: { msgs: OaiMessage[]; pendingStale?: boolean; window?: number }) {
+  function makeGated(opts: { msgs: OaiMessage[]; pendingStale?: boolean; window?: number; archive?: boolean }) {
     const decisions: ReclaimDecisionRecord[] = []
     const harness = makeCoord({
       getContextWindow: () => opts.window ?? 1_000,
@@ -181,6 +181,7 @@ describe('CompactBoundaryCoordinator reclaim gate (2026-07-16 cost-aware reclaim
         contextWindow: opts.window ?? 1_000, billing: 'per-token', cache: 'exact-prefix',
       }),
       onReclaimDecision: d => { decisions.push(d) },
+      archiveForRecovery: opts.archive ? async candidates => new Map(candidates.map(candidate => [candidate.index, `fictional_${candidate.index}`])) : undefined,
     })
     if (opts.pendingStale) harness.calls.pendingStaleCompact = true
     return { ...harness, decisions }
@@ -223,7 +224,7 @@ describe('CompactBoundaryCoordinator reclaim gate (2026-07-16 cost-aware reclaim
       )),
       { role: 'tool', tool_call_id: 'read_file_big', content: 'b'.repeat(210_000) } as OaiMessage,
     ]
-    const t = makeGated({ msgs, window: 1_000_000 })
+    const t = makeGated({ msgs, window: 1_000_000, archive: true })
     await t.coord.runCompaction(5, { memory: { heapUsedBytes: 90, memoryLimitBytes: 100 } })
     assert.equal(t.calls.replaceMessages, 1, 'force path is not blocked by the reclaim gate')
     const micro = t.decisions.find(d => d.action === 'micro')
@@ -241,7 +242,7 @@ describe('CompactBoundaryCoordinator reclaim gate (2026-07-16 cost-aware reclaim
       )),
       { role: 'tool', tool_call_id: 'read_file_big', content: 'b'.repeat(210_000) } as OaiMessage,
     ]
-    const t = makeGated({ msgs, window: 1_000_000 })
+    const t = makeGated({ msgs, window: 1_000_000, archive: true })
     // 0.80 heap: above the 0.75 1M threshold, below the 0.85 emergency band.
     await t.coord.runCompaction(0, { memory: { heapUsedBytes: 80, memoryLimitBytes: 100 } })
     assert.equal(t.calls.replaceMessages, 0, 'non-force sub-floor micro must not commit')
@@ -411,4 +412,17 @@ describe('CompactBoundaryCoordinator T9 (provider cost-aware quality compaction)
     await t.coord.runCompaction(0, null)
     assert.equal(t.partialCalls(), 1, 'ceiling override triggers without phase change')
   })
+})
+
+// An absent archive adapter must never enable the legacy lossy transform.
+it('heap compaction preserves unarchived semantic observations when no archive callback exists', async () => {
+  const content = 'head\n' + 'fictional details\n'.repeat(30) + 'UNIQUE_OBSERVATION\n' + 'tail\n'.repeat(30)
+  const messages: OaiMessage[] = [{ role: 'user', content: 'initial task' }, { role: 'assistant', content: 'ack' },
+    { role: 'tool', tool_call_id: 'read_file_fixture', content }]
+  for (let i = 0; i < 5; i++) messages.push({ role: 'user', content: `next ${i}` }, { role: 'assistant', content: 'ack' })
+  let current = messages
+  const { coord } = makeCoord({ getContextWindow: () => 64_000, getMessages: () => current, getEstimatedTokens: () => 1000,
+    replaceMessages: next => { current = next } })
+  await coord.runCompaction(0, { memory: { heapUsedBytes: 90, memoryLimitBytes: 100 } })
+  assert.equal(current[2]?.content, content)
 })

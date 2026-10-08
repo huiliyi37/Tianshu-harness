@@ -259,13 +259,13 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.140.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.6.0"
   },
   "dependencies": {
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.16",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.7",
     "undici": "^8.3.0"

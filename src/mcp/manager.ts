@@ -18,8 +18,8 @@ import { readSubAgentWorkspacePolicy, subAgentScratchRoot, workspaceDeclarationF
 import { classifyMcpError, describeTransportLoss } from './failure-classifier.js'
 import { createTransport, StdioConnectError, type TransportResult } from './transport-factory.js'
 import { LogRingBuffer } from './log-buffer.js'
-import { getNetworkConfig } from '../config/manager.js'
 import type { McpNetworkConfig } from './stdio-env.js'
+import { readNetworkConfigSafe, withTimeout, formatConnectError } from './connection-utils.js'
 import { HealthChecker, type HealthState } from './health-check.js'
 
 const DEFAULT_MCP_TIMEOUT_MS = 60_000
@@ -29,43 +29,9 @@ const DEFAULT_MCP_TIMEOUT_MS = 60_000
 const AWAITING_APPROVAL: McpConnectionState['status'] = 'awaiting-approval'
 const APPROVAL_DENIED: McpConnectionState['status'] = 'denied'
 
-/** network 配置读取失败（坏 config.json）不应阻断 MCP 连接——配置错误由
- *  配置加载自己的报错通道负责，这里降级为「无应用代理」。 */
-function readNetworkConfigSafe(): McpNetworkConfig | undefined {
-  try {
-    const net = getNetworkConfig()
-    return { proxy: net.proxy || undefined, noProxy: net.noProxy || undefined }
-  } catch {
-    return undefined
-  }
-}
 const NETWORK_RETRY_DELAY_MS = 800
 const RECONNECT_MAX_ATTEMPTS = 3
 const RECONNECT_BACKOFF_BASE_MS = 2_000
-
-function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
-    promise.then(
-      value => { clearTimeout(timer); resolve(value) },
-      error => { clearTimeout(timer); reject(error) },
-    )
-  })
-}
-
-function formatConnectError(err: unknown, stderrTail: string, context?: { transport?: 'stdio' | 'remote' }): string {
-  const base = err instanceof Error ? err.message : String(err)
-  // 分类必须拿到 stderr——否则这里拼进去的是通用建议，而同一个 state 上的
-  // errorHint 却是细分结果，两个字段对同一故障给出不同诊断。
-  const classified = classifyMcpError(err, { ...context, stderr: stderrTail })
-  const parts = [base]
-  if (stderrTail) {
-    const compact = stderrTail.replace(/\n+/g, ' | ').slice(0, 500)
-    parts.push(`stderr: ${compact}`)
-  }
-  if (classified.suggestion) parts.push(classified.suggestion)
-  return parts.join(' — ')
-}
 
 // 断连诊断 describeTransportLoss 已迁至 failure-classifier.ts（沿接缝拆分，守行数红线）。
 
@@ -110,6 +76,7 @@ export class McpManager {
   // In-flight connect promises per serverId — prevents concurrent connect attempts
   // for the same server (e.g. reconcile + REST API hot-add racing).
   private connectLocks: Map<string, Promise<Tool[]>> = new Map()
+  private connectionGenerations = new Map<string, number>()
   // Shared across all wrappers: first use of each connector requires explicit opt-in.
   private connectorConsent: McpConnectorConsent = createMcpConnectorConsent()
   /**
@@ -290,6 +257,11 @@ export class McpManager {
   async shutdown(): Promise<void> {
     // Stop all health checks first
     this.healthChecker.shutdown()
+    for (const serverId of this.connectLocks.keys()) {
+      this.connectionGenerations.set(serverId, (this.connectionGenerations.get(serverId) ?? 0) + 1)
+      this.suppressReconnect.add(serverId)
+    }
+    await Promise.allSettled(this.connectLocks.values())
 
     // 抑制重连必须**先于** close：关 transport 会触发 onclose 钩子，不抑制的话
     // 钩子会把子进程重新拉起来——shutdown 反倒制造出一个新进程，把短命进程
@@ -348,6 +320,10 @@ export class McpManager {
 
   /** Shut down a single server by id — for the REST API restart/remove flow. */
   async shutdownServer(serverId: string): Promise<void> {
+    this.connectionGenerations.set(serverId, (this.connectionGenerations.get(serverId) ?? 0) + 1)
+    this.suppressReconnect.add(serverId)
+    const connecting = this.connectLocks.get(serverId)
+    if (connecting) await connecting.catch(() => {})
     // Clear pending reconnect timer for this server.
     const timer = this.reconnectTimers.get(serverId)
     if (timer) { clearTimeout(timer); this.reconnectTimers.delete(serverId) }
@@ -379,10 +355,12 @@ export class McpManager {
    * @returns tools newly registered for this server (empty on failure)
    */
   async connectAndDiscover(serverId: string, serverConfig: McpServerConfig): Promise<Tool[]> {
+    if (serverConfig.disabled) return []
     const existing = this.connectLocks.get(serverId)
     if (existing) return existing
 
-    const promise = this._connectAndDiscover(serverId, serverConfig, /*attempt*/ 0).finally(() => {
+    const generation = this.connectionGenerations.get(serverId) ?? 0
+    const promise = this._connectAndDiscover(serverId, serverConfig, /*attempt*/ 0, generation).finally(() => {
       // Release the lock once the attempt completes (success or failure).
       this.connectLocks.delete(serverId)
     })
@@ -394,7 +372,10 @@ export class McpManager {
     serverId: string,
     serverConfig: McpServerConfig,
     attempt: number,
+    generation: number,
   ): Promise<Tool[]> {
+    const isCurrent = () => (this.connectionGenerations.get(serverId) ?? 0) === generation
+    if (!isCurrent()) return []
     const transport: McpTransportType = serverConfig.command ? 'stdio' : 'streamableHttp'
     // issue #215 — 连接级审批门：拦在 **spawn 之前**。三个连接入口
     // （initialize / reconcileFromConfig / REST 热加）都经 _connectAndDiscover，
@@ -416,6 +397,11 @@ export class McpManager {
     let stderrTail = ''
     try {
       const server = await this._connectServer(serverId, serverConfig)
+      if (!isCurrent()) {
+        this.suppressReconnect.add(serverId)
+        try { await server.transport.close() } catch { /* best-effort */ }
+        return []
+      }
       stderrTail = server.stderrTail?.() ?? ''
       this.connections.set(serverId, server)
 
@@ -425,6 +411,12 @@ export class McpManager {
         this.tools = this.tools.filter((t) => !t.definition.name.startsWith(prefix))
 
         const mcpTools = await this._discoverTools(serverId, server)
+        if (!isCurrent()) {
+          this.suppressReconnect.add(serverId)
+          try { await server.transport.close() } catch { /* best-effort */ }
+          this.connections.delete(serverId)
+          return []
+        }
 
         // 清单快照门（rug pull 防线 ①，见 tool-inventory.ts）：注册前 diff——变更在
         // gate 宿主拦截待批（断开+不注册）；fail-open 宿主放行 + 变更标记（③）。
@@ -534,6 +526,7 @@ export class McpManager {
         throw err
       }
     } catch (err) {
+      if (!isCurrent()) return []
       if (err instanceof StdioConnectError) {
         stderrTail = err.stderrTail
         if (stderrTail) this.logBuffers.get(serverId)?.push({ ts: Date.now(), stream: 'stderr', text: stderrTail })
@@ -545,7 +538,7 @@ export class McpManager {
       // One automatic backoff retry for transient/network failures.
       if (classified.retryable && attempt === 0) {
         await new Promise((r) => setTimeout(r, NETWORK_RETRY_DELAY_MS))
-        return this._connectAndDiscover(serverId, serverConfig, attempt + 1)
+        return this._connectAndDiscover(serverId, serverConfig, attempt + 1, generation)
       }
       this.states.set(serverId, {
         serverId,
@@ -727,7 +720,7 @@ export class McpManager {
     const timer = setTimeout(async () => {
       this.reconnectTimers.delete(serverId)
       try {
-        await this._connectAndDiscover(serverId, cfg, /*attempt*/ 0)
+        await this.connectAndDiscover(serverId, cfg)
         // 重连成功后把工具面推给宿主：manager 这边恢复了，宿主那边的会话若还是
         // 崩之前的列表（或已清空），用户看到的仍是「工具没了」。
         this.onToolsChanged?.(this.getAllTools())

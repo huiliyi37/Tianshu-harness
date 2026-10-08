@@ -465,10 +465,12 @@ export class SessionContext {
     const reasoning = sanitizeForJsonTransport(blocks.filter(b => b.type === 'thinking').map(b => b.thinking).join(''))
     const toolCalls: OaiToolCall[] = blocks
       .filter((b): b is ContentBlock & { type: 'tool_use' } => b.type === 'tool_use')
-      .map(b => ({ id: b.id, type: 'function' as const, function: { name: b.name, arguments: stableStringify(b.input) } }))
+      .map(b => ({ id: b.id, type: 'function' as const, function: { name: b.name, arguments: stableStringify(b.input) },
+        ...(b.providerMetadata ? { providerMetadata: b.providerMetadata } : {}) }))
     // Intercept large tool call arguments before they enter oaiMessages.
     // IMPORTANT: operates on the stringified arguments only — never touches b.input.
-    const processedCalls = this.argProcessors.processToolCalls(toolCalls)
+    const processedCalls = toolCalls.map(call => call.providerMetadata?.gemini?.thoughtSignature
+      ? call : this.argProcessors.processToolCalls([call])[0]!)
 
     // issue #217：记录 tool_use_id → 工具名，供 addToolResults 判定来源可信度。
     for (const b of blocks) {

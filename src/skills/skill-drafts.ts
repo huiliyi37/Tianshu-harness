@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { existsSync, readFileSync, readdirSync, rmSync, realpathSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { stringify } from 'yaml'
@@ -16,10 +17,14 @@ export class SkillDrafts {
   }
   list(context: SkillContext) {
     const dir = join(this.management.root(context), '_drafts')
-    return existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith('.md')).map(name => {
-      const content = this.read(context, name)
-      try { const skill = parseSkillMarkdown(content, name); return { name: name.slice(0, -3), description: skill.description, content } }
-      catch (e) { return { name: name.slice(0, -3), description: '', content, error: String(e) } }
+    return existsSync(dir) ? readdirSync(dir).filter(n =>
+      !isFilesystemMetadata(n) && !n.startsWith('_') && isSafeFileName(n) && n.endsWith('.md')).map(name => {
+      let content = ''
+      try {
+        content = this.read(context, name)
+        const skill = parseSkillMarkdown(content, name)
+        return { name: name.slice(0, -3), description: skill.description, content }
+      } catch (e) { return { name: name.slice(0, -3), description: '', content, error: String(e) } }
     }) : []
   }
   read(context: SkillContext, name: string) { return readFileSync(this.path(context, name), 'utf8') }

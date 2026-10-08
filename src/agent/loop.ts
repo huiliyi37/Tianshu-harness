@@ -2422,6 +2422,7 @@ export class AgentLoop {
     await drainSidePathUsage(this)
     await this._persistDrain?.()
     await this.persist?.drainFrozenSnapshots()
+    await this.stigmergyStore.flush()
   }
 
   async runPostSession(callbacks: AgentCallbacks): Promise<void> {

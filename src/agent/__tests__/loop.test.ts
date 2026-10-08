@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { ContextClaimStore } from '../../context/claim-store.js'
 import { PlaybookStore } from '../playbook-store.js'
 import { PrewarmCache } from '../prewarm.js'
+import { ArtifactStore } from '../../artifact/store.js'
 import type { StreamCallbacks } from '../../api/stream-client.js'
 import type { StreamClient } from '../../api/stream-client.js'
 import type { ContentBlock, Message } from '../../api/types.js'
@@ -818,19 +819,18 @@ describe('AgentLoop — error handling', () => {
 
 
 describe('AgentLoop — compact policy', () => {
-  it('compacts on small context windows without legacy absolute-threshold approval', async () => {
+  it('compacts on small context windows without legacy absolute-threshold approval', async t => {
     const client = mockClient([makeTextBlock('done')])
     const registry = new ToolRegistry()
     const session = new SessionContext()
     const historyMessage = 'x'.repeat(12_000 * 4)
     // Reclaim-gate era (8582c7df): the fixture must contain genuinely
-    // compactable content — micro compact only truncates oversized tool
-    // results, and an all-text history produces an unchanged candidate that
-    // the gate correctly refuses to commit. Mirrors the fixture shape in
-    // compaction-controller.test.ts.
-    session.replaceMessages(Array.from({ length: 8 }, (_, i) => (
-      { role: 'tool', tool_call_id: `read_file_${i}`, content: historyMessage } as OaiMessage
-    )))
+    // Valid call/result pairs keep the fixture compactable after API preflight.
+    session.replaceMessages(Array.from({ length: 8 }, (_, i): OaiMessage[] => [
+      { role: 'assistant', content: '', tool_calls: [{ id: `read_file_${i}`, type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' } }] },
+      { role: 'tool', tool_call_id: `read_file_${i}`, content: historyMessage },
+    ]).flat())
     const agent = new AgentLoop({
       client,
       promptEngine: makeEngine(),
@@ -839,6 +839,9 @@ describe('AgentLoop — compact policy', () => {
       contextWindow: 128_000,
       compact: { enabled: true, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
     }, session)
+    const artifactDir = mkdtempSync(join(tmpdir(), 'rivet-loop-compact-'))
+    t.after(() => rmSync(artifactDir, { recursive: true, force: true }))
+    agent.artifactStore = new ArtifactStore(artifactDir, 'small-window')
 
     await agent.run('continue', {
       onTextDelta: () => {},
@@ -853,6 +856,13 @@ describe('AgentLoop — compact policy', () => {
 
     assert.ok(session.getCompactEvents().length > 0)
     assert.equal(session.getCompactEvents().at(-1)?.tier, 1)
+    const archive = agent.artifactStore.list().find(item => item.tool === 'compact-history')
+    assert.ok(archive, 'discarded tool bytes have a real recovery archive')
+    const reopened = new ArtifactStore(artifactDir, 'small-window')
+    const raw = await reopened.readRaw(archive.id)
+    assert.ok(raw?.includes(historyMessage), 'original bytes survive reopening the artifact store')
+    assert.ok(session.getMessages().some(message => message.role === 'tool'
+      && message.content.includes(`[artifact:${archive.id}]`)))
   })
 
 

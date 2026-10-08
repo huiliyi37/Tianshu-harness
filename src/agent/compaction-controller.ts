@@ -3,6 +3,9 @@ import type { Usage } from '../api/types.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import { CACHE_ANCHOR_MESSAGES, summaryOutputBudgetChars } from '../compact/constants.js'
 import { microCompactOai, estimateOaiTokens } from '../compact/micro.js'
+import { collectMicroArchiveCandidates } from '../compact/boundary-archive.js'
+import { findSafeSplitPoint } from './compaction-split.js'
+export { findSafeSplitPoint } from './compaction-split.js'
 import { deriveCompactionProfile, cacheKindFromProviderProfile, type CompactionProfile, type CompactionAction } from '../compact/compaction-profile.js'
 import { estimateReclaim, buildReclaimDecision, type ReclaimDecisionRecord } from '../compact/reclaim-estimate.js'
 
@@ -110,50 +113,6 @@ export function extractWriteActionChain(trajectory: TrajectoryEntry[]): string[]
       const failed = e.status === 'failed' || e.status === 'retried-failed'
       return `[T${e.turn}] ${e.tool} ${e.target}${failed ? ' (FAIL)' : ''}`
     })
-}
-
-/**
- * Find a safe split point that doesn't cut through a tool_calls ↔ tool group.
- *
- * The OpenAI-compatible API requires every assistant message with tool_calls
- * to be immediately followed by matching tool messages. If tryPartialCompact
- * splits between an assistant(tool_calls) and its tool results, the resulting
- * message list becomes invalid and the API returns an error.
- *
- * This function walks backward from the desired split point to ensure we
- * split only at group boundaries: a tool call group (assistant + its tool
- * results) stays together in either oldZone or recentZone, not split across.
- */
-export function findSafeSplitPoint(
-  messages: OaiMessage[],
-  desiredSplit: number,
-  minSplit: number,
-): number {
-  let sp = desiredSplit
-
-  // Walk backward while the message at sp is a tool — its owning assistant
-  // must be before sp, so we move sp before that assistant to keep the group intact.
-  let iterations = 0
-  while (sp > minSplit && sp < messages.length && messages[sp]?.role === 'tool') {
-    if (++iterations > 100) break // safety valve
-    const toolCallId = (messages[sp] as unknown as Record<string, unknown>).tool_call_id as string | undefined
-    if (!toolCallId) break
-    let found = false
-    for (let i = sp - 1; i >= 0; i--) {
-      const msg = messages[i]
-      if (msg?.role === 'assistant') {
-        const toolCalls = (msg as unknown as Record<string, unknown>).tool_calls as Array<{ id: string }> | undefined
-        if (toolCalls?.some(tc => tc.id === toolCallId)) {
-          sp = i // move split before the assistant that owns this tool
-          found = true
-          break
-        }
-      }
-    }
-    if (!found) break // orphaned tool with no matching assistant — shouldn't happen
-  }
-
-  return sp
 }
 
 export type HandoffToolStatus = TrajectoryEntry['status'] | 'running'
@@ -620,7 +579,7 @@ export class CompactionController {
     }
 
     try {
-      const { messages: compacted } = this.compactMessages(messages, estimatedTokens)
+      const { messages: compacted } = await this.compactMessages(messages, estimatedTokens)
 
       // Reclaim gate (2026-07-16 plan task 2): the candidate must prove it
       // reclaims enough context to be worth the prefix-cache rebuild before
@@ -943,11 +902,17 @@ export class CompactionController {
     return null
   }
 
-  private compactMessages(
+  private async compactMessages(
     messages: OaiMessage[],
     tokenCount: number,
-  ): { messages: OaiMessage[] } {
-    return microCompactOai(messages, this.deps.contextWindow, tokenCount)
+  ): Promise<{ messages: OaiMessage[] }> {
+    const candidates = collectMicroArchiveCandidates(messages, this.deps.contextWindow)
+    const refs = new Map<number, string>()
+    if (candidates.length > 0) {
+      const archive = await this.archiveDiscardedHistory(candidates.map(candidate => messages[candidate.index]!), 'micro-compact')
+      if (archive) for (const candidate of candidates) refs.set(candidate.index, archive.id)
+    }
+    return microCompactOai(messages, this.deps.contextWindow, tokenCount, refs)
   }
 
   private isAbortRequested(): boolean {

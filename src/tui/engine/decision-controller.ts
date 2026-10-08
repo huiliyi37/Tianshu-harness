@@ -193,6 +193,11 @@ export class DecisionController {
       } else { item.editor.handleKey(key.name, key.char, !!key.ctrl, !!key.meta, !!key.shift); this.host.changed() }
       return true
     }
+    if (key.name === 'ctrl_e' && item.kind === 'plan') {
+      this.host.participate()
+      this.host.preview(item.info.slug)
+      return true
+    }
     if (key.ctrl || key.meta || key.name.startsWith('ctrl_') || key.name === 'shift_tab') return false
     if (key.name === 'escape' || key.name === 'tab') { this.collapse(); return true }
     if (['up', 'down', 'left', 'right', 'pageup', 'pagedown', 'return'].includes(key.name) || /^[1-9vf ]$/i.test(key.char)) this.host.participate()

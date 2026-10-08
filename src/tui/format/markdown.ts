@@ -458,13 +458,13 @@ export function highlightCodeLineNumber(renderedLine: string, theme: RivetTheme)
   return renderedLine
 }
 
-function formatCodeBlock(language: string | undefined, content: string, columns: number, theme: RivetTheme): string[] {
+function formatCodeBlock(language: string | undefined, content: string, columns: number, theme: RivetTheme, fullDocument = false): string[] {
   const lines = content.split('\n')
   const langConfig = language ? keywordsForLang(language) : null
   const keywords = langConfig?.keywords ?? null
   const caseInsensitive = langConfig?.caseInsensitive ?? false
 
-  const MAX_CODE_LINES = 60
+  const MAX_CODE_LINES = fullDocument ? Infinity : 60
   const truncated = lines.length > MAX_CODE_LINES
   const visible = truncated ? lines.slice(0, MAX_CODE_LINES) : lines
 
@@ -491,7 +491,7 @@ function formatCodeBlock(language: string | undefined, content: string, columns:
   return result
 }
 
-function formatBlock(block: Block, columns: number, theme: RivetTheme): string[] {
+function formatBlock(block: Block, columns: number, theme: RivetTheme, fullDocument = false, wrapText = true): string[] {
   const result: string[] = []
 
   switch (block.type) {
@@ -503,7 +503,7 @@ function formatBlock(block: Block, columns: number, theme: RivetTheme): string[]
       break
     }
     case 'code':
-      result.push(...formatCodeBlock(block.language, block.content, columns, theme))
+      result.push(...formatCodeBlock(block.language, block.content, columns, theme, fullDocument))
       break
     case 'math': {
       const mathLines = latexToBlock(block.content)
@@ -527,7 +527,8 @@ function formatBlock(block: Block, columns: number, theme: RivetTheme): string[]
           ? color(marker, theme.warning, { bold: true }) : color('◇', theme.secondary)
         const prefix = `${indent}${bullet} `
         const continuation = ' '.repeat(displayWidth(prefix, { ambiguousAsWide: ambiguousWideEnabled() }))
-        result.push(...wrapReadingText(`${prefix}${highlightCodeLineNumber(itemAnsi, theme)}`, proseColumns(columns), continuation))
+        const text = `${prefix}${highlightCodeLineNumber(itemAnsi, theme)}`
+        result.push(...(wrapText ? wrapReadingText(text, proseColumns(columns), continuation) : [text]))
       })
       break
     }
@@ -541,7 +542,16 @@ function formatBlock(block: Block, columns: number, theme: RivetTheme): string[]
       const tableLines = block.content.split('\n')
       const dataLines = tableLines.filter(l => !/^\|?[\s-:|]+\|?$/.test(l.trim()))
       const cells = dataLines.map(line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => formatInlineToAnsi(parseInline(cell.trim().replace(/\\\|/g, '|')), theme)))
-      result.push(...renderTable(cells, columns, theme))
+      if (wrapText) result.push(...renderTable(cells, columns, theme))
+      else {
+        // Document previews retain each cell as a logical row, even on narrow screens.
+        const [headers = [], ...rows] = cells
+        for (const [index, row] of rows.entries()) {
+          if (index > 0) result.push('')
+          for (const [column, cell] of row.entries()) result.push(`${headers[column] ?? column + 1}: ${cell}`)
+        }
+        if (!rows.length) result.push(headers.join(' · '))
+      }
       break
     }
     case 'paragraph':
@@ -560,7 +570,7 @@ function formatBlock(block: Block, columns: number, theme: RivetTheme): string[]
     }
   }
 
-  return ['paragraph', 'blockquote'].includes(block.type)
+  return wrapText && ['paragraph', 'blockquote'].includes(block.type)
     ? result.flatMap(line => wrapReadingText(line, proseColumns(columns, 0)))
     : result
 }
@@ -573,6 +583,10 @@ export interface FormatMarkdownInput {
   language?: string
   /** 终端宽度 */
   columns: number
+  /** Document viewers retain complete code blocks instead of the inline 60-line excerpt. */
+  fullDocument?: boolean
+  /** Viewers can wrap logical rows themselves while retaining search/read anchors. */
+  wrapText?: boolean
 }
 
 /**
@@ -608,11 +622,8 @@ export function formatMarkdown(input: FormatMarkdownInput, theme: RivetTheme): s
   if (!hasMarkdown(input.text)) {
     for (const line of input.text.split('\n')) {
       const gitFormatted = tryFormatGitCommitLine(line, theme)
-      if (gitFormatted) {
-        result.push(...wrapReadingText(gitFormatted, proseColumns(input.columns, 0)))
-      } else {
-        result.push(...wrapReadingText(highlightCodeLineNumber(line, theme), proseColumns(input.columns, 0)))
-      }
+      const text = gitFormatted ?? highlightCodeLineNumber(line, theme)
+      result.push(...(input.wrapText === false ? [text] : wrapReadingText(text, proseColumns(input.columns, 0))))
     }
   } else {
     // 完整 Markdown 解析
@@ -621,7 +632,7 @@ export function formatMarkdown(input: FormatMarkdownInput, theme: RivetTheme): s
       // 块间留白：标题 / 段落 / 列表 / 代码块互不粘连。**只加在 markdown 路径**——
       // 纯文本快速路径的逐行紧凑排布是刻意的（工具输出与逐行文本撑开会翻倍）。
       if (result.length > 0) result.push('')
-      result.push(...formatBlock(block, input.columns, theme))
+      result.push(...formatBlock(block, input.columns, theme, input.fullDocument, input.wrapText))
     }
   }
 

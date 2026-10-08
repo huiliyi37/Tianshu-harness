@@ -23,7 +23,7 @@ import {
   unlinkSync,
   existsSync,
   mkdirSync,
-  linkSync,
+  statSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -101,17 +101,14 @@ function readLock(path: string): RepoLockInfo | null {
 
 type CreateResult = { ok: true } | { ok: false; reason: 'exists' } | { ok: false; reason: 'error'; message: string }
 
-/** O_EXCL create; publish via hard-link so readers never see a half-written file. */
+/** Exclusive creation also works on volumes without hard links (e.g. ExFAT).
+ * Readers leave incomplete owner records alone until their stale lease expires. */
 function createExclusive(path: string, info: RepoLockInfo): CreateResult {
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`
   try {
-    writeFileSync(tmp, JSON.stringify(info), { encoding: 'utf-8', flag: 'wx' })
-    linkSync(tmp, path)
-    unlinkSync(tmp)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(info), { encoding: 'utf-8', flag: 'wx' })
     return { ok: true }
   } catch (error) {
-    try { unlinkSync(tmp) } catch { /* best-effort */ }
     if (errorCode(error) === 'EEXIST') return { ok: false, reason: 'exists' }
     return { ok: false, reason: 'error', message: error instanceof Error ? error.message : String(error) }
   }
@@ -171,12 +168,15 @@ export class RepoLock {
       this.held = true
       return true
     }
-    if (created.reason === 'error') return false
+    if (created.reason === 'error') throw new Error(`RepoLock cannot create ${this.lockPath}: ${created.message}`)
 
     const owner = readLock(this.lockPath)
     if (!owner) {
-      // Corrupt/unreadable lock — treat as reclaimable.
-      try { unlinkSync(this.lockPath) } catch { /* raced */ }
+      // Another process may have created the file but not finished its write.
+      // Only reclaim malformed records after the publication lease expires.
+      try {
+        if (Date.now() - statSync(this.lockPath).mtimeMs >= this.staleMs) unlinkSync(this.lockPath)
+      } catch { /* raced or unreadable: fail closed */ }
       return false
     }
     if (this.isOwn(owner)) {

@@ -110,16 +110,21 @@ describe('SessionJobs', () => {
   })
 
   it('emits started and exit events; writes a log file', async () => {
+    const local = makeStore()
     const events: JobEvent[] = []
-    store.on('event', (ev: JobEvent) => events.push(ev))
-    const snap = store.spawn({ command: 'echo hi-there', rawCommand: 'echo hi-there', cwd: dir, env })
-    await store.await(snap.id, { timeoutMs: 5000 })
-    // exit event may be followed by a final flush; poll briefly for it.
-    await new Promise((r) => setTimeout(r, 50))
-    const kinds = events.filter((e) => e.job.id === snap.id).map((e) => e.kind)
-    assert.ok(kinds.includes('started'), 'expected a started event')
-    assert.ok(kinds.includes('exit'), 'expected an exit event')
-    assert.ok(existsSync(join(dir, 'jobs', `${snap.id}.log`)), 'expected a log file on disk')
+    local.store.on('event', (ev: JobEvent) => events.push(ev))
+    try {
+      const snap = local.store.spawn({ command: 'echo hi-there', rawCommand: 'echo hi-there', cwd: local.dir, env })
+      await local.store.await(snap.id, { timeoutMs: 5000 })
+      await local.store.killAllAsync()
+      const kinds = events.filter((e) => e.job.id === snap.id).map((e) => e.kind)
+      assert.ok(kinds.includes('started'), 'expected a started event')
+      assert.ok(kinds.includes('exit'), 'expected an exit event')
+      assert.ok(existsSync(join(local.dir, 'jobs', `${snap.id}.log`)), 'expected a log file on disk')
+    } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
+    }
   })
 
   it('killAll terminates every running job', async () => {
@@ -140,10 +145,12 @@ describe('SessionJobs', () => {
       if (event.kind === 'exit') exits.push(event.job.id)
     })
     try {
-      const a = local.store.spawn({ command: "sh -c 'echo BEFORE-KILL; sleep 30'", rawCommand: 'long job', cwd: local.dir, env })
-      await local.store.await(a.id, { pattern: 'BEFORE-KILL', timeoutMs: 5000 })
+      const a = local.store.spawn({ command: "node -e \"console.log('BEFORE-KILL'); setTimeout(()=>{},30000)\"", rawCommand: 'long job', cwd: local.dir, env })
+      const ready = await local.store.await(a.id, { pattern: 'BEFORE-KILL', timeoutMs: 5000 })
+      assert.equal(ready?.matched, true, ready?.tail)
+      assert.equal(ready?.job.status, 'running')
       local.store.kill(a.id) // Already killed does not mean its handles are closed.
-      const b = local.store.spawn({ command: "sh -c 'sleep 30'", rawCommand: 'immediate kill', cwd: local.dir, env })
+      const b = local.store.spawn({ command: 'node -e "setTimeout(()=>{},30000)"', rawCommand: 'immediate kill', cwd: local.dir, env })
       await local.store.killAllAsync()
       assert.ok(exits.includes(a.id) && exits.includes(b.id), 'both child close events must precede async cleanup return')
       assert.ok(local.store.list().every(job => job.status === 'killed' && job.endedAt !== undefined))
@@ -151,6 +158,32 @@ describe('SessionJobs', () => {
       rmSync(local.dir, { recursive: true }) // Windows must have no open log handles.
       await local.store.killAllAsync() // Idempotent after successful cleanup.
     } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('honors the configured Windows job launcher instead of bypassing it', async () => {
+    const local = makeStore()
+    const previous = process.env.RIVET_JOB_LAUNCHER
+    // A real Node executable rejects the launcher's --cwd contract. That rejection
+    // proves the configured executable was invoked, without faking a native helper.
+    process.env.RIVET_JOB_LAUNCHER = process.execPath
+    try {
+      const job = local.store.spawn({ command: 'node -e "console.log(\'UNWRAPPED-JOB-MARKER\')"', rawCommand: 'launcher contract', cwd: local.dir, env })
+      const result = await local.store.await(job.id, { timeoutMs: 5000 })
+      assert.equal(result?.timedOut, false)
+      if (process.platform === 'win32') {
+        assert.notEqual(result?.job.exitCode, 0)
+        assert.match(result!.tail, /--cwd/)
+        assert.doesNotMatch(result!.tail, /UNWRAPPED-JOB-MARKER/)
+      } else {
+        assert.equal(result?.job.exitCode, 0)
+        assert.match(result!.tail, /UNWRAPPED-JOB-MARKER/)
+      }
+    } finally {
+      if (previous === undefined) delete process.env.RIVET_JOB_LAUNCHER
+      else process.env.RIVET_JOB_LAUNCHER = previous
       await local.store.killAllAsync()
       rmSync(local.dir, { recursive: true, force: true })
     }

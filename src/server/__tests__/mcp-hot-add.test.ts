@@ -180,3 +180,38 @@ test('POST /mcp/servers accepts an absolute cwd', async () => {
     assert.equal(res.status, 200, JSON.stringify(res.body))
   })
 })
+
+for (const connecting of [false, true]) {
+  test(`POST /mcp/servers disables a ${connecting ? 'connecting' : 'connected'} server before acknowledging`, async () => {
+    await withTempHome(async () => {
+      const mgr = new McpManager({ enabled: true, servers: {} })
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      let closed = 0
+      mgr['_connectServer'] = async serverId => {
+        if (connecting) await gate
+        return { client: {} as any, transport: { close: async () => { closed++ } }, transportType: 'stdio', serverId }
+      }
+      mgr['_discoverTools'] = async () => [{ name: 'fixture', description: 'Fictional', inputSchema: { type: 'object' as const, properties: {} } }]
+      try {
+        const connection = mgr.connectAndDiscover('fixture', { command: 'fictional' })
+        if (!connecting) await connection
+        const routes = buildMcpRoutes({ getMcpManager: () => mgr, apiToken: 'fixture-auth' })
+        const disable = routes['POST /mcp/servers']!({ serverId: 'fixture', command: 'fictional', disabled: true }, undefined, { authorization: 'Bearer fixture-auth' })
+        release()
+        const response = await disable
+        await connection
+        assert.equal(response.status, 200)
+        assert.equal(mgr.getConnection('fixture'), undefined)
+        assert.equal(mgr.getToolsForServer('fixture').length, 0)
+        assert.ok(closed > 0, 'the fictional external transport was closed')
+        assert.equal((response.body as { pending: boolean }).pending, false)
+        const { loadConfig } = await import('../../config/manager.js')
+        assert.equal(loadConfig().mcp.servers.fixture?.disabled, true)
+      } finally {
+        release()
+        await mgr.shutdown()
+      }
+    })
+  })
+}

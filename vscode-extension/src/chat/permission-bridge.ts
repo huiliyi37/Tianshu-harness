@@ -57,24 +57,27 @@ export class PermissionBridge {
   private readonly states = new Map<string, SessionState>()
 
   /**
-   * 同步一次 UI 档位并给出应执行的动作（不自行调用 sidecar——可测）。
+   * 同步一次 UI 档位，调用方提供的写入成功后才提交覆盖状态。
    * @param sessionId - sidecar 会话 id。
    * @param level - 本次请求携带的 permissionLevel（可能缺省）。
    * @param readCurrentMode - 读取 sidecar 当前档位（仅首次覆盖时调用一次）。
-   * @returns `{kind:'set',mode}` 需要调 `setApprovalMode`；`{kind:'none'}` 无需动作。
+   * @param setMode - 等待 sidecar 确认写入；失败抛出以保留重试依据。
+   * @returns 已确认的档位变更；`{kind:'none'}` 无需动作。
    */
   async sync(
     sessionId: string,
     level: string | undefined,
     readCurrentMode: () => Promise<ApprovalMode | undefined>,
+    setMode: (mode: ApprovalMode) => Promise<void>,
   ): Promise<PermissionBridgeAction> {
     const mode = levelToMode(level)
     if (mode === 'none') return { kind: 'none' }
     const state = this.states.get(sessionId) ?? {}
     if (level === state.lastSynced) return { kind: 'none' }
     if (mode === 'restore') {
-      state.lastSynced = level
       const original = state.original
+      if (original !== undefined) await setMode(original)
+      state.lastSynced = level
       delete state.original
       this.states.set(sessionId, state)
       return original === undefined ? { kind: 'none' } : { kind: 'set', mode: original }
@@ -86,8 +89,9 @@ export class PermissionBridge {
         state.original = undefined
       }
     }
-    state.lastSynced = level
     this.states.set(sessionId, state)
+    await setMode(mode)
+    state.lastSynced = level
     return { kind: 'set', mode }
   }
 

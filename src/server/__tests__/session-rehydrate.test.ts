@@ -82,6 +82,67 @@ function ev(seq: number, type: SessionEvent['type'], data: Record<string, unknow
   return { seq, ts: 100 + seq, type, data }
 }
 
+for (const lazy of [false, true]) {
+  test(`${lazy ? 'lazy' : 'eager'} restart explicitly cancels accepted queue entries`, () => {
+    const durable = new LazyMemoryPersistence()
+    const first = new RuntimeSessionManager({ createAgent: () => new NoopAgent(), persistence: durable })
+    const record = first.createSession({ cwd: '/fictional/workspace' })
+    const session = (first as unknown as { sessions: Map<string, { running: boolean; record: SessionRecord }> }).sessions.get(record.id)!
+    session.running = true
+    session.record.status = 'running'
+    const accepted = first.queue(record.id, 'fictional accepted follow-up')
+    assert.equal(typeof accepted, 'object')
+    const laneId = (accepted as { laneId: string }).laneId
+    const seed = durable.loadAll()
+    const adapter = lazy ? new LazyMemoryPersistence(seed) : new MemoryPersistence(seed)
+    const restored = new RuntimeSessionManager({ createAgent: () => new NoopAgent(), persistence: adapter })
+    const replay = restored.getEvents(record.id, 0)!.events
+    const terminals = replay.filter(event => event.type === 'queue_status' && event.data.laneId === laneId)
+    assert.equal(terminals.length, 1)
+    assert.deepEqual(terminals[0]!.data, { laneId, status: 'retracted', reason: 'sidecar-restart' })
+    assert.equal(restored.queuedAttachmentUsage(record.id)!.images, 0)
+    restored.getEvents(record.id, 0)
+    assert.equal(restored.getEvents(record.id, 0)!.events.filter(event => event.type === 'queue_status').length, 1)
+  })
+}
+
+test('legacy queue pending echoes get a restart terminal without changing already merged entries', () => {
+  const seed: PersistedSession[] = [{
+    record: { id: 'legacy-queue', status: 'completed', createdAt: 1, updatedAt: 5, cwd: '/fictional/workspace', lastSeq: 3, pendingApprovals: 0 },
+    events: [ev(1, 'queue_pending', { laneId: 'closed', text: 'fictional' }), ev(2, 'queue_status', { laneId: 'closed', status: 'merged' }), ev(3, 'queue_pending', { laneId: 'open', text: 'fictional follow-up' })],
+  }]
+  const restored = new RuntimeSessionManager({ createAgent: () => new NoopAgent(), persistence: new LazyMemoryPersistence(seed) })
+  const replay = restored.getEvents('legacy-queue', 0)!.events
+  assert.deepEqual(replay.filter(event => event.type === 'queue_status').map(event => event.data), [
+    { laneId: 'closed', status: 'merged' }, { laneId: 'open', status: 'retracted', reason: 'sidecar-restart' },
+  ])
+})
+
+for (const asyncRead of [false, true]) {
+  test(`external producer queue stays pending during repeated ${asyncRead ? 'async' : 'sync'} viewer reads`, async () => {
+    const durable = new LazyMemoryPersistence()
+    const reader = new RuntimeSessionManager({ createAgent: () => new NoopAgent(), persistence: durable, externalScanMs: 0, idleAgentTtlMs: 0 })
+    const producer = new RuntimeSessionManager({ createAgent: () => new NoopAgent(), persistence: durable, externalScanMs: 0, idleAgentTtlMs: 0 })
+    const record = producer.createSession({ cwd: '/fictional/workspace' })
+    const session = (producer as unknown as { sessions: Map<string, { running: boolean; record: SessionRecord; queueLane: Array<{ status: string }> }> }).sessions.get(record.id)!
+    session.running = true
+    session.record.status = 'running'
+    assert.equal(typeof producer.queue(record.id, 'fictional active producer follow-up'), 'object')
+    const beforeEvents = structuredClone(durable.events.get(record.id))
+    const beforeRecord = structuredClone(durable.records.get(record.id))
+    await Promise.all((reader as unknown as { adoptExternalSessions(): Promise<void>[] }).adoptExternalSessions())
+    if (asyncRead) (durable as SessionPersistenceAdapter).loadEventsAsync = async id => durable.loadEvents(id)
+    for (let pass = 0; pass < 3; pass++) {
+      if (asyncRead) await reader.getEventsAsync(record.id, 0)
+      else reader.getEvents(record.id, 0)
+      assert.equal(reader.getSession(record.id)!.status, 'running')
+    }
+    assert.equal(session.queueLane[0]!.status, 'queued')
+    assert.deepEqual(durable.events.get(record.id), beforeEvents)
+    assert.deepEqual(durable.records.get(record.id), beforeRecord)
+  })
+}
+
 test('rehydrate restores sessions and replays their event tail', async () => {
   const seed: PersistedSession[] = [{
     record: {

@@ -206,7 +206,7 @@ function arcStyle(index: number) {
 </script>
 
 <template>
-  <section id="stars" class="relative overflow-hidden bg-bg-primary px-6 py-24 lg:py-32">
+  <section id="stars" class="relative isolate overflow-hidden bg-bg-primary px-6 py-24 lg:py-32">
     <div class="pointer-events-none absolute inset-0">
       <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:72px_72px]" />
       <div class="absolute inset-0 bg-[radial-gradient(ellipse_70%_40%_at_50%_8%,rgba(250,204,21,0.14),transparent_65%),radial-gradient(ellipse_44%_36%_at_84%_42%,rgba(34,211,238,0.14),transparent_70%),radial-gradient(ellipse_42%_36%_at_12%_58%,rgba(16,185,129,0.12),transparent_70%)]" />

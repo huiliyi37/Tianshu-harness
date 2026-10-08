@@ -5,8 +5,6 @@ status: active
 date: 2026-09-26
 related:
   - docs/known-issues/README.md
-  - docs/known-issues/2026-09-23-windows-antivirus-interception.md
-  - docs/known-issues/2026-09-10-windows-installer-file-lock.md
   - docs/guides/troubleshooting.md
 ---
 
@@ -80,7 +78,7 @@ related:
 `%TEMP%\tianshu-update-hook.log` 显示，升级时预检的杀进程三步全部失败（`taskkill` 拒绝访问、
 `killed=0`），随后 `PurgeStagedRuntimes` 因文件仍被占用而删不干净，覆盖安装写不进去，安装中止——
 自修复始终没有机会补回文件。这正是"安装器/更新脚本被主防拦下"在同一条链路里的表现
-（现象 B，见 `2026-09-23-windows-antivirus-interception.md`）。
+（现象 B，见 [公开故障排查指南](../guides/troubleshooting.md)）。
 
 > 与作者原稿的表述差异（按本仓代码校正）：`PurgeStagedRuntimes` 是 **无条件整体重铺**
 > （为消灭跨版本残留遮蔽，issue #77），并非"检测到结构漂移才触发"；日志里的

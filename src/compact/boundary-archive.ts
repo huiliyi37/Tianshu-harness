@@ -1,6 +1,7 @@
 import type { OaiMessage } from '../api/oai-types.js'
-import { CACHE_ANCHOR_MESSAGES, compactThresholds, staleRoundThresholds } from './constants.js'
+import { CACHE_ANCHOR_MESSAGES, staleRoundThresholds } from './constants.js'
 import { ARTIFACT_MARKER_REGEX } from './recovery-ref.js'
+import { microToolRewriteIndices } from './micro.js'
 
 /**
  * W1-A3: compact-boundary archive adapter (data side).
@@ -56,18 +57,16 @@ export function collectStaleArchiveCandidates(
   return out
 }
 
-/** Candidates the micro-compact truncation stub would cut without a recovery ref. */
+/** Candidates either micro-compact lossy branch would cut without a recovery ref. */
 export function collectMicroArchiveCandidates(
   messages: OaiMessage[],
   contextWindow: number,
 ): RecoveryArchiveCandidate[] {
-  const previewChars = Math.max(1_200, compactThresholds(contextWindow).toolResultMaxTokens)
   const out: RecoveryArchiveCandidate[] = []
-  for (let idx = 0; idx < messages.length; idx++) {
+  for (const idx of microToolRewriteIndices(messages, contextWindow)) {
     const msg = messages[idx]!
     if (msg.role !== 'tool') continue
     if (typeof msg.content !== 'string') continue
-    if (msg.content.length <= previewChars) continue
     if (hasTrailingMarker(msg.content)) continue
     out.push({ index: idx, content: msg.content, toolCallId: msg.tool_call_id })
   }

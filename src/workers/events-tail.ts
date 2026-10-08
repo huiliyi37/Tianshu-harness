@@ -54,6 +54,7 @@ class EventHeap {
 export class TailAccumulator {
   private readonly ordinary: EventHeap
   private readonly delegationState = new DelegationStateIndex()
+  private readonly queueState = new Map<string, { seq: number; order: number; pending: boolean }>()
   private artifacts: Array<{ seq: number; order: number; id: string }> = []
   private total = 0
   private firstSeq = Infinity
@@ -75,6 +76,11 @@ export class TailAccumulator {
     if (event.type === 'artifact') this.artifacts.push({ seq: event.seq, order, id: String(event.data.id) })
     const item = { event, order }
     this.delegationState.add(event)
+    const laneId = event.data?.laneId
+    if (typeof laneId === 'string' && (event.type === 'queue_pending' || event.type === 'queue_status')) {
+      const previous = this.queueState.get(laneId)
+      if (!previous || previous.seq <= event.seq) this.queueState.set(laneId, { seq: event.seq, order, pending: event.type === 'queue_pending' })
+    }
     this.ordinary.add(item)
   }
 
@@ -84,6 +90,8 @@ export class TailAccumulator {
     return {
       events,
       ...(this.total > 0 ? { delegationState: this.delegationState.snapshot() } : {}),
+      ...(this.total > 0 ? { pendingQueueLaneIds: [...this.queueState].filter(([, state]) => state.pending)
+        .sort((a, b) => a[1].seq - b[1].seq || a[1].order - b[1].order).map(([id]) => id) } : {}),
       diskFirstSeq: this.total === 0 ? 0 : this.firstSeq,
       lastSeq: this.total === 0 ? 0 : this.lastSeq,
       artifactIds: this.artifacts.map(a => a.id),

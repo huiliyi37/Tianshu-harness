@@ -93,6 +93,8 @@ export class StigmergyStore {
   private _cache: Pheromone[] | null = null
   /** True when cache has unsaved mutations. */
   private _dirty = false
+  private _revision = 0
+  private _inFlight: Promise<void> | null = null
   /** Debounce timer for batched writes. */
   private _flushTimer: ReturnType<typeof setTimeout> | null = null
   /** Debounce interval: batch writes within this window. */
@@ -143,23 +145,26 @@ export class StigmergyStore {
   private _markDirty(entries: Pheromone[]): void {
     this._cache = entries
     this._dirty = true
+    this._revision++
     if (this._flushTimer) clearTimeout(this._flushTimer)
     this._flushTimer = setTimeout(() => {
       this._flushTimer = null
       if (this._dirty && this._cache !== null) {
-        void this._persist(this._cache)
+        void this.flush().catch(() => { /* flush reports failure and retains dirty entries */ })
       }
     }, this._flushDelayMs)
   }
 
   /** Write entries to disk atomically and clear dirty flag. */
-  private async _persist(entries: Pheromone[]): Promise<void> {
-    if (!this.filePath) { this._dirty = false; return } // memory-only mode: nothing to persist
-    await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFileAtomicAsync(this.filePath, JSON.stringify(entries, null, 2))
+  private async _persist(entries: Pheromone[], revision: number): Promise<void> {
+    const filePath = this.filePath
+    if (!filePath) { this._dirty = false; return } // memory-only mode: nothing to persist
+    const snapshot = JSON.stringify(entries, null, 2)
+    await mkdir(dirname(filePath), { recursive: true })
+    await writeFileAtomicAsync(filePath, snapshot)
     // 写成功才清 dirty——先清再写的话，EPERM 类失败会静默丢弃 pending
     // 信息素，shutdown 的 flushSync 也失去重试依据。
-    this._dirty = false
+    if (this._revision === revision) this._dirty = false
   }
 
   // ── Public API ───────────────────────────────────────────────
@@ -175,9 +180,15 @@ export class StigmergyStore {
       clearTimeout(this._flushTimer)
       this._flushTimer = null
     }
-    if (this._dirty && this._cache !== null) {
-      await this._persist(this._cache)
-    }
+    while (this._inFlight) await this._inFlight
+    if (!this._dirty || this._cache === null) return
+    const write = this._persist(this._cache, this._revision)
+    this._inFlight = write
+    try { await write }
+    catch (error) {
+      console.error(`[stigmergy] persistence failed (${String(error)}); pending pheromones retained for flush retry`)
+      throw error
+    } finally { this._inFlight = null }
   }
 
   /**
@@ -202,13 +213,8 @@ export class StigmergyStore {
 
   /** Persist pheromones to disk immediately (bypasses debounce). */
   async save(entries: Pheromone[]): Promise<void> {
-    this._cache = entries
-    this._dirty = false
-    if (this._flushTimer) {
-      clearTimeout(this._flushTimer)
-      this._flushTimer = null
-    }
-    await this._persist(entries)
+    this._markDirty(entries)
+    await this.flush()
   }
 
   /** Force-flush pending writes and invalidate cache (e.g. for cross-session sync). */

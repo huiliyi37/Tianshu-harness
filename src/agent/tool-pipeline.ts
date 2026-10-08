@@ -1936,7 +1936,7 @@ async function executeToolUseInner(
     // Claim extraction + conflict detection
     if (deps.config.contextClaimStore && deps.sessionId) {
       const existingPaths = new Set(
-        deps.config.contextClaimStore.listClaims({ kind: ['file_observation'] })
+        deps.config.contextClaimStore.listActiveClaims().filter(c => c.kind === 'file_observation')
           .flatMap(c => c.evidence.filter(e => e.path).map(e => e.path!)),
       )
       const proposals = extractClaimsFromToolResult(

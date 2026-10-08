@@ -23,13 +23,13 @@ import {
   mkdirSync,
   linkSync,
   lstatSync,
-  renameSync,
   rmdirSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { hostname as osHostname } from 'node:os'
 import { isMainThread } from 'node:worker_threads'
+import { publishLockDirectoryExclusive } from './lock-filesystem.js'
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -161,9 +161,8 @@ function publishDirectoryLock(path: string, tmpPath: string, info: LockInfo): Cr
   try {
     mkdirSync(directory)
     writeFileSync(join(directory, 'owner.json'), JSON.stringify(info, null, 2), { flag: 'wx' })
-    // POSIX rename refuses to replace a nonempty directory or a regular file.
     // Prepare everything before publication: readers never see a partial owner.
-    renameSync(directory, path)
+    publishLockDirectoryExclusive(directory, path)
     return { ok: true }
   } catch (error) {
     if (['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EPERM', 'EACCES'].includes(errorCode(error) ?? '') && existsSync(path)) {

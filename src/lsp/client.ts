@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import type { LspDiagnostic } from './manager.js'
 import { hasServerForFile } from './server-registry.js'
-import { runTypecheckShared } from './typecheck-cache.js'
+import { isCacheableOutcome, runTypecheckShared } from './typecheck-cache.js'
 
 export interface LspCheckResult {
   diagnostics: Diagnostic[]
@@ -78,10 +78,10 @@ export async function runTypeCheck(cwd: string, filePath: string, timeoutMs = 12
   const result = await runTscShared(tscPath, cwd, timeoutMs)
 
   // tsc writes diagnostics to stdout when --pretty false (not stderr).
-  // Exit code 0 = no errors; exit code 1 = type errors found; exit code 2+ = crash/panic.
-  // We treat exit 0 and exit 1 as "ran ok" (the compiler completed).
-  // Signal / timeout / spawn failure → ranOk = false.
-  const ranOk = result.status === 0 || result.status === 1
+  // TypeScript ExitStatus: 0 = success; 1/2 = completed with diagnostics
+  // (outputs skipped/generated). Completion does not mean the typecheck passed.
+  // Signal / timeout / spawn failure and all other statuses remain inconclusive.
+  const ranOk = isCacheableOutcome(result)
   const output = result.stdout + result.stderr
 
   const allDiagnostics = ranOk ? parseDiagnosticOutput(output, 'ts') : []

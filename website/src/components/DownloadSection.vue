@@ -17,9 +17,9 @@ interface Platform {
 }
 
 const platforms: Platform[] = [
-  { icon: Apple, name: 'macOS', ext: '.dmg', href: 'https://github.com/huiliyi37/Tianshu-Tui/releases/latest', available: true },
-  { icon: WindowsIcon, name: 'Windows', ext: '.exe', href: 'https://github.com/huiliyi37/Tianshu-Tui/releases/latest', available: true },
-  { icon: LinuxIcon, name: 'Linux', ext: '.AppImage', href: 'https://github.com/huiliyi37/Tianshu-Tui/releases/latest', available: false },
+  { icon: Apple, name: 'macOS', ext: '.dmg', href: 'https://github.com/huiliyi37/Tianshu-harness/releases/latest', available: true },
+  { icon: WindowsIcon, name: 'Windows', ext: '.exe', href: 'https://github.com/huiliyi37/Tianshu-harness/releases/latest', available: true },
+  { icon: LinuxIcon, name: 'Linux', ext: '.AppImage', href: 'https://github.com/huiliyi37/Tianshu-harness/releases/latest', available: true },
 ]
 
 const desktopFeatures = [

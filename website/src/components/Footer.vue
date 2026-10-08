@@ -29,7 +29,7 @@ const currentYear = new Date().getFullYear()
           {{ t('footer.quickstart') }}
         </a>
         <a
-          href="https://github.com/huiliyi37/Tianshu-Tui/blob/main/CONTRIBUTING.md"
+          href="https://github.com/huiliyi37/Tianshu-harness/blob/main/CONTRIBUTING.md"
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-text-primary transition-colors"
@@ -37,7 +37,7 @@ const currentYear = new Date().getFullYear()
           {{ t('footer.contributing') }}
         </a>
         <a
-          href="https://github.com/huiliyi37/Tianshu-Tui/blob/main/LICENSE"
+          href="https://github.com/huiliyi37/Tianshu-harness/blob/main/LICENSE"
           target="_blank"
           rel="noopener noreferrer"
           class="hover:text-text-primary transition-colors"
@@ -47,7 +47,7 @@ const currentYear = new Date().getFullYear()
       </nav>
 
       <a
-        href="https://github.com/huiliyi37/Tianshu-Tui"
+        href="https://github.com/huiliyi37/Tianshu-harness"
         target="_blank"
         rel="noopener noreferrer"
         class="text-text-secondary hover:text-text-primary transition-colors"

@@ -1,10 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, createWriteStream, type WriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { track } from './process-tracker.js'
-import { killProcessTree } from './process-kill.js'
+import { killProcessTree, spawnShell } from './process-kill.js'
 import {
   getShellCommand,
   WinStreamDecoder,
@@ -149,7 +149,7 @@ class BackgroundJob {
     }
 
     debugLog(`[job-spawn] id=${this.id} kind=${shell.kind} cwd=${this.opts.cwd}`)
-    const child = track(spawn(shell.cmd, [...shell.args, commandToRun], {
+    const child = track(spawnShell(shell, commandToRun, {
       cwd: this.opts.cwd,
       env: this.opts.env,
       stdio: ['ignore', 'pipe', 'pipe'],

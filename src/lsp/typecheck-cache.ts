@@ -159,13 +159,14 @@ const MAX_CACHE_ENTRIES = 16
 const WAIT_POLL_MS = 200
 
 /**
- * 只有「tsc 真正跑完」的结果可以缓存：0 = 无错，1 = 有类型错误，两者都是编译器
- * 给出的结论。其余（null = 超时/被信号杀、2+ = 崩溃）是 **inconclusive**——
+ * 只有「tsc 真正跑完」的结果可以缓存：TypeScript ExitStatus 的 0 = 无错，
+ * 1/2 = 诊断存在、输出跳过/生成，都属于编译器结论，有诊断不等于检查通过。
+ * 其余（null = 超时/被信号杀，其他状态 = 不完整/未知）是 **inconclusive**——
  * 缓存它等于把一次偶发超时固化成所有并发会话的共识，交付门禁会就此长期 fail-open。
  * 与 typecheck-gate 的进程内 memo 同一条纪律。
  */
 export function isCacheableOutcome(outcome: TscRunOutcome): boolean {
-  return outcome.status === 0 || outcome.status === 1
+  return outcome.status === 0 || outcome.status === 1 || outcome.status === 2
 }
 
 const defaultNow = () => Date.now()

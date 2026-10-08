@@ -387,9 +387,16 @@ describe('sanitizeEnv', () => {
   })
 
   it('preserves PATH and HOME', () => {
-    const result = sanitizeEnv(process.env)
-    assert.ok(result.PATH, 'PATH should be preserved')
-    assert.ok(result.HOME, 'HOME should be preserved')
+    const env = { PATH: '/fixture/bin', HOME: '/fixture/home' }
+    assert.deepEqual(sanitizeEnv(env), env)
+  })
+
+  it('preserves Windows environment key casing without requiring Unix HOME', () => {
+    const env = { Path: 'C:\\fixture\\bin', USERPROFILE: 'C:\\Users\\fixture',
+      HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\fixture', ComSpec: 'C:\\Windows\\System32\\cmd.exe' }
+    const result = sanitizeEnv(env)
+    assert.deepEqual(result, env)
+    assert.equal(Object.hasOwn(result, 'HOME'), false)
   })
 
   it('strips vars with TOKEN in name', () => {
@@ -506,4 +513,3 @@ describe('typecheck 形态的 timeout 下限', () => {
     }
   })
 })
-

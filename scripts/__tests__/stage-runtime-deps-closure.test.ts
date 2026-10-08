@@ -121,3 +121,24 @@ test('staged product metadata does not replace the source or npm installation ro
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+
+test('staging excludes filesystem metadata while preserving real dependency files', () => {
+  const root = fixture()
+  try {
+    const pkg = join(root, 'node_modules', 'esbuild')
+    writeFileSync(join(pkg, '._metadata-only.js'), 'filesystem metadata')
+    writeFileSync(join(pkg, '.DS_Store'), 'filesystem metadata')
+    const sqlite = join(root, 'node_modules', 'better-sqlite3', 'lib')
+    writeFileSync(join(sqlite, '._metadata-only.js'), 'filesystem metadata')
+    const result = stage(root)
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.equal(existsSync(join(root, 'dist', 'node_modules', 'better-sqlite3', 'lib', '._metadata-only.js')), false)
+    const staged = join(root, 'dist', 'node_modules', 'esbuild')
+    assert.ok(existsSync(join(staged, 'index.js')), 'real dependency remains staged')
+    assert.equal(existsSync(join(staged, '._metadata-only.js')), false, 'AppleDouble must not be copied')
+    assert.equal(existsSync(join(staged, '.DS_Store')), false, 'Finder metadata must not be copied')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

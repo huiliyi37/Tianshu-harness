@@ -344,8 +344,13 @@ export async function startServer(
 
       const body = await readBody(req)
       if (body === BODY_TOO_LARGE) {
-        res.writeHead(413, { 'Content-Type': 'application/json', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}) })
+        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}) })
         res.end(JSON.stringify({ error: 'Request body too large' }))
+        return
+      }
+      if (body === INVALID_JSON) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}) })
+        res.end(JSON.stringify({ error: 'Invalid JSON request body' }))
         return
       }
 
@@ -412,6 +417,7 @@ export async function startServer(
 }
 
 const BODY_TOO_LARGE = Symbol('body-too-large')
+const INVALID_JSON = Symbol('invalid-json')
 
 type ReadBodyResult = unknown | typeof BODY_TOO_LARGE
 
@@ -427,11 +433,13 @@ function normalizeHeaders(req: IncomingMessage): Record<string, string> {
 async function readBody(req: IncomingMessage): Promise<ReadBodyResult> {
   const chunks: Buffer[] = []
   let total = 0
-  for await (const chunk of req) {
+  // Leaving an ordinary async iterator destroys its stream. Keep the response
+  // channel alive long enough to deliver 413, then close that HTTP connection.
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const buffer = chunk as Buffer
     total += buffer.length
     if (total > MAX_BODY_BYTES) {
-      req.destroy()
+      req.resume()
       return BODY_TOO_LARGE
     }
     chunks.push(buffer)
@@ -442,6 +450,6 @@ async function readBody(req: IncomingMessage): Promise<ReadBodyResult> {
     return JSON.parse(raw)
   } catch (err) {
     serverLogger.warn('Invalid JSON request body', { ...errorContext(err) })
-    return {}
+    return INVALID_JSON
   }
 }

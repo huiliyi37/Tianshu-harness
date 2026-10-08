@@ -32,7 +32,7 @@ class BlockCollector {
   readonly block: BlockSummary
   private hash = createHash('sha256')
   constructor(start: number) {
-    this.block = { start, end: start, rawHash: '', total: 0, ordinary: 0, firstSeq: null, lastSeq: null, delegations: [], artifacts: [] }
+    this.block = { start, end: start, rawHash: '', total: 0, ordinary: 0, firstSeq: null, lastSeq: null, delegations: [], artifacts: [], queueTransitions: [] }
   }
   add(raw: Buffer, offset: number, event: RawSessionEvent | undefined): void {
     const b = this.block
@@ -44,6 +44,7 @@ class BlockCollector {
     if (event.type === 'delegation') b.delegations.push({ seq: event.seq, offset, length: raw.length })
     else b.ordinary++
     if (event.type === 'artifact') b.artifacts.push({ seq: event.seq, offset, id: String(event.data.id) })
+    if (event.type === 'queue_pending' || event.type === 'queue_status') b.queueTransitions.push({ seq: event.seq, offset, length: raw.length })
   }
   finish(): BlockSummary { this.block.rawHash = this.hash.digest('hex'); return this.block }
 }
@@ -161,6 +162,7 @@ async function readIndexedSnapshot(handle: EventFile, file: string, source: Sour
     const b = loaded.blocks[i]!
     if (wanted > 0 && b.total > 0) { selected.add(i); wanted -= b.total }
     if (b.delegations.length) selected.add(i)
+    if (b.queueTransitions.length) selected.add(i)
   }
   const tail = new TailAccumulator(maxEvents, options.maxEventBytes)
   const lifecycle = new DelegationStateIndex()

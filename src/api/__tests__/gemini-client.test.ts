@@ -405,6 +405,7 @@ describe('GeminiClient thought-signature replay', () => {
     // Turn 1 — the model returns a functionCall carrying a thought signature.
     // Capture the id this client generated for it; that id is the join key.
     let callId = ''
+    let callMetadata: import('../oai-types.js').ToolCallProviderMetadata | undefined
     const originalFetch = globalThis.fetch
     try {
       globalThis.fetch = (async () => sseResponse([
@@ -413,7 +414,7 @@ describe('GeminiClient thought-signature replay', () => {
       await client.stream(body({ messages: [{ role: 'user', content: 'list files' }] }), {
         onTextDelta: () => {},
         onThinkingDelta: () => {},
-        onContentBlock: b => { if (b.type === 'tool_use') callId = b.id },
+        onContentBlock: b => { if (b.type === 'tool_use') { callId = b.id; callMetadata = b.providerMetadata } },
         onStopReason: () => {},
         onError: e => { throw e },
       })
@@ -433,6 +434,7 @@ describe('GeminiClient thought-signature replay', () => {
           content: null,
           tool_calls: [{
             id: callId,
+            providerMetadata: callMetadata,
             type: 'function',
             function: { name: 'glob', arguments: '{"pattern":"*.md"}' },
           }],

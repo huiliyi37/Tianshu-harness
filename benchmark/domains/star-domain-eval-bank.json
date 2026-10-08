@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "note": "公开示例候选题。尚未冻结 oracle，也未运行模型对比；不得计作 ready/validated 或引用为模型能力证据。原开发仓评测与记录不随公开仓分发。",
+  "tasks": [
+    {
+      "id": "terminal-paste-fragments",
+      "title": "分段终端输入审批诊断",
+      "status": "candidate",
+      "taskType": "diagnosis",
+      "difficulty": "hard",
+      "symptom": "审批面板聚焦时，终端分段发送粘贴标记后，粘贴数字可能被当作审批快捷键。定位触发条件并修复，保持普通按键和取消行为。",
+      "contractGiven": false,
+      "environment": {
+        "kind": "git-revert",
+        "baseRef": "b615c997dfa554908dd3bdb34bf376577b881cff"
+      },
+      "grader": {
+        "command": "node --import tsx --test src/tui/engine/__tests__/input-handler.test.ts",
+        "referenceTests": [
+          "src/tui/engine/__tests__/input-handler.test.ts"
+        ],
+        "expected": "green",
+        "mustNotTouch": [
+          "src/tui/engine/__tests__/input-handler.test.ts"
+        ]
+      },
+      "timeoutMs": 300000,
+      "tags": [
+        "public-candidate"
+      ],
+      "provenance": {
+        "source": "doc-candidate",
+        "evidence": []
+      },
+      "validatedRuns": []
+    },
+    {
+      "id": "worker-continuation-cancel",
+      "title": "worker 自动续跑取消诊断",
+      "status": "candidate",
+      "taskType": "diagnosis",
+      "difficulty": "hard",
+      "symptom": "只读 worker 达到轮次预算后自动续跑，界面仍显示工作但单工停止和指导失效。检查运行生命周期并修复，不影响其他 worker。",
+      "contractGiven": false,
+      "environment": {
+        "kind": "git-revert",
+        "baseRef": "b615c997dfa554908dd3bdb34bf376577b881cff"
+      },
+      "grader": {
+        "command": "node --import tsx --test src/agent/__tests__/worker-continuation-integration.test.ts",
+        "referenceTests": [
+          "src/agent/__tests__/worker-continuation-integration.test.ts"
+        ],
+        "expected": "green",
+        "mustNotTouch": [
+          "src/agent/__tests__/worker-continuation-integration.test.ts"
+        ]
+      },
+      "timeoutMs": 300000,
+      "tags": [
+        "public-candidate"
+      ],
+      "provenance": {
+        "source": "doc-candidate",
+        "evidence": []
+      },
+      "validatedRuns": []
+    }
+  ]
+}

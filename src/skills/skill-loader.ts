@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 /**
  * Skill loader — progressive disclosure (Claude Code / Codex parity).
  *
@@ -121,7 +122,7 @@ export class SkillRegistry {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       // Skip `_`-prefixed entries (e.g. `_drafts/`): auto-distilled skill drafts
       // are review-only and must never enter the discovery block / frozen prefix.
-      if (entry.name.startsWith('_')) continue
+      if (entry.name.startsWith('_') || isFilesystemMetadata(entry.name)) continue
       try {
         if (entry.isFile() && entry.name.endsWith('.md')) {
           const skillFile = join(dir, entry.name)
@@ -699,6 +700,7 @@ export function countInstalledSkills(cwd: string): number {
   }
   let count = 0
   for (const e of entries) {
+    if (e.name.startsWith('_') || isFilesystemMetadata(e.name)) continue
     if (e.isDirectory()) {
       if (existsSync(join(dir, e.name, 'SKILL.md'))) count++
     } else if (e.isFile() && e.name.endsWith('.md')) {
@@ -773,6 +775,7 @@ export function seedBundledSkillsFrom(src: string, cwd: string): string[] {
   const destDir = join(cwd, '.rivet', 'skills')
   const seeded: string[] = []
   for (const e of entries) {
+    if (e.name.startsWith('_') || isFilesystemMetadata(e.name)) continue
     try {
       const isFlat = e.isFile() && e.name.endsWith('.md')
       if (!e.isDirectory() && !isFlat) continue

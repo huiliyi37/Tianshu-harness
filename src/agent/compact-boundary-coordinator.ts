@@ -295,7 +295,7 @@ export class CompactBoundaryCoordinator {
         const before = this.deps.getMessages()
         const contextWindow = this.deps.getContextWindow()
         // W1-A3: same archive-before-rewrite discipline for the heap micro-compact.
-        let microRefs: ReadonlyMap<number, string> | undefined
+        let microRefs: ReadonlyMap<number, string> = new Map()
         if (this.deps.archiveForRecovery) {
           const candidates = collectMicroArchiveCandidates(before, contextWindow)
           microRefs = candidates.length > 0

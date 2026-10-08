@@ -1,7 +1,13 @@
+/** Local protocol metadata travels with its call through history and restore. */
+export interface ToolCallProviderMetadata {
+  gemini?: { thoughtSignature: string }
+}
+
 /** OpenAI function call in assistant message. */
 export interface OaiToolCall {
   id: string
   type: 'function'
+  providerMetadata?: ToolCallProviderMetadata
   function: {
     name: string
     /** JSON string. */
@@ -243,4 +249,10 @@ export function wireOaiMessage(message: OaiMessage): OaiMessage {
   if (message.role !== 'user' || !message.origin) return message
   const { origin: _origin, ...wire } = message
   return wire
+}
+
+/** OpenAI-compatible transports must not serialize other providers' metadata. */
+export function stripOaiProviderMetadata(message: OaiMessage): OaiMessage {
+  if (message.role !== 'assistant' || !message.tool_calls?.some(call => call.providerMetadata)) return message
+  return { ...message, tool_calls: message.tool_calls.map(({ providerMetadata: _, ...call }) => call) }
 }

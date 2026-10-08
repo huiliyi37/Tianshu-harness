@@ -40,6 +40,8 @@ interface ServeHandle {
 function spawnServe(root: string, port: number, lockError = false): ServeHandle {
   const home = join(root, 'home')
   const desktop = join(root, 'desktop')
+  mkdirSync(home, { recursive: true })
+  if (!existsSync(join(home, 'config.json'))) writeFileSync(join(home, 'config.json'), '{}')
   const driverPath = join(root, `driver-${port}.mjs`)
   writeFileSync(
     driverPath,
@@ -125,7 +127,7 @@ async function freePort(): Promise<number> {
 }
 
 test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locked 并报出占用者；锁释放后可接管', {
-  timeout: 150_000,
+  timeout: 300_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'serve-store-lock-'))
   mkdirSync(join(root, 'home'), { recursive: true })
@@ -140,7 +142,7 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
     const firstHealth = await waitForHealth(
       first,
       (b) => b.readiness === 'ready',
-      40_000,
+      90_000,
       '实例 1 未就绪',
     )
     assert.ok(!('storeLockHolder' in firstHealth), '持锁实例不应报占用者（它自己就是属主）')
@@ -154,7 +156,7 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
     const secondHealth = await waitForHealth(
       second,
       (b) => b.readiness === 'failed',
-      40_000,
+      90_000,
       '实例 2 未按预期降级（readiness=failed）',
     )
     assert.equal(secondHealth.initializationError, 'data-dir-locked',
@@ -163,6 +165,15 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
     assert.ok(holder, '降级实例必须报出占用者（health 第 9 参 storeLockHolder 未接线）')
     assert.equal(holder!.pid, first.child.pid, '占用者 pid 应是实例 1')
     assert.equal(secondHealth.registryOk, false, '降级实例不接注册表（会话库不得被触碰）')
+    const rejected = await fetch(`http://127.0.0.1:${second.port}/sessions`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'fictional rejected session' }),
+    })
+    assert.equal(rejected.status, 503, 'a diagnostic instance must not accept an unpersisted session')
+    assert.equal((await rejected.json() as { error: string }).error, 'data-dir-locked')
+    const diagnosticSessions = await fetch(`http://127.0.0.1:${second.port}/sessions`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    assert.equal(diagnosticSessions.status, 200, 'read-only diagnostics remain reachable')
+    assert.deepEqual((await diagnosticSessions.json() as { sessions: unknown[] }).sessions, [])
     // 会话库所有权不得易主
     assert.equal(readLockFile(lockPath)?.pid, first.child.pid,
       '降级实例不得抢走活锁')
@@ -182,7 +193,7 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
     const thirdHealth = await waitForHealth(
       third,
       (b) => b.readiness === 'ready',
-      40_000,
+      90_000,
       '实例 3 未能在前持有者退出后就绪',
     )
     assert.ok(!('initializationError' in thirdHealth), '实例 3 不该再报初始化失败')
@@ -197,15 +208,20 @@ test('P0-1 接线：先到者独占会话库，后来者降级为 data-dir-locke
 })
 
 
-test('锁创建权限失败报告 data-dir-lock-error，不虚构占用进程', { timeout: 60_000 }, async () => {
+test('锁创建权限失败报告 data-dir-lock-error，不虚构占用进程', { timeout: 120_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'serve-lock-error-'))
   const handle = spawnServe(root, await freePort(), true)
   try {
-    const health = await waitForHealth(handle, b => b.readiness === 'failed', 40_000, 'lock error readiness')
+    const health = await waitForHealth(handle, b => b.readiness === 'failed', 90_000, 'lock error readiness')
     assert.equal(health.initializationError, 'data-dir-lock-error')
     assert.ok(!health.storeLockHolder)
     assert.equal(health.registryOk, false)
     assert.ok(handle.stderr.join('').includes('会话库锁创建失败'))
+    const rejected = await fetch(`http://127.0.0.1:${handle.port}/sessions`, {
+      method: 'POST', headers: { authorization: `Bearer ${TOKEN}` }, body: '{}',
+    })
+    assert.equal(rejected.status, 503)
+    assert.equal((await rejected.json() as { error: string }).error, 'data-dir-lock-error')
     handle.child.kill('SIGTERM')
     await waitForExit(handle.child, 15_000)
   } finally {

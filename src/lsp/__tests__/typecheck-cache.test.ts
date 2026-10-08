@@ -137,9 +137,12 @@ describe('结果缓存', () => {
 
   it('只有跑完的结果可缓存——超时被缓存等于让门禁长期 fail-open', () => {
     assert.equal(isCacheableOutcome({ status: 0, stdout: '', stderr: '' }), true, '0 = 无错')
-    assert.equal(isCacheableOutcome({ status: 1, stdout: '', stderr: '' }), true, '1 = 有类型错误，同样是结论')
+    assert.equal(isCacheableOutcome({ status: 1, stdout: '', stderr: '' }), true, '1 = 诊断存在、输出跳过')
+    assert.equal(isCacheableOutcome({ status: 2, stdout: '', stderr: '' }), true, '2 = 诊断存在、编译完成')
     assert.equal(isCacheableOutcome({ status: null, stdout: '', stderr: '' }), false, 'null = 超时/被杀')
-    assert.equal(isCacheableOutcome({ status: 2, stdout: '', stderr: '' }), false, '2+ = 崩溃')
+    for (const status of [3, 4, 255]) {
+      assert.equal(isCacheableOutcome({ status, stdout: '', stderr: '' }), false, `${status} 不构成完成的类型检查`)
+    }
   })
 })
 
@@ -221,16 +224,19 @@ describe('runTypecheckShared 编排', () => {
     assert.equal(second.stdout, 'run-2')
   })
 
-  it('超时结果不写缓存，下次仍然真跑', async () => {
-    let runs = 0
-    const call = () => runTypecheckShared({
-      cwd: repo,
-      cacheDir,
-      run: async () => { runs++; return { status: null, stdout: '', stderr: 'killed' } },
-    })
-    await call()
-    await call()
-    assert.equal(runs, 2, '一次超时不该被后来者当成结论复用')
+  it('超时与未知状态不写缓存，下次仍然真跑', async () => {
+    for (const status of [null, 3, 4, 255]) {
+      let runs = 0
+      const call = () => runTypecheckShared({
+        cwd: repo,
+        cacheDir,
+        variant: `inconclusive-${status}`,
+        run: async () => { runs++; return { status, stdout: 'partial', stderr: 'inconclusive' } },
+      })
+      await call()
+      await call()
+      assert.equal(runs, 2, `${status} 不该被后来者当成结论复用`)
+    }
   })
 
   it('tsc 运行期间源码被改动则不写缓存——那份结果对应哪个版本已不可知', async () => {

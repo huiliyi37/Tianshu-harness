@@ -69,7 +69,7 @@ for (const code of [0, 1, undefined]) {
     const answers: any[] = []
     const execution = { commandLine: { value: 'false', confidence: 2, isTrusted: true }, cwd: undefined,
       async *read() { yield 'command output' } }
-    const shellIntegration = { executeCommand: () => execution }
+    const shellIntegration = { cwd: { fsPath: root }, executeCommand: () => execution }
     const terminal = { exitStatus: undefined, shellIntegration, show() {} }
     const { DelegationExecutor } = load('src/delegation/executor.ts', {
       vscode: { window: {
@@ -82,7 +82,7 @@ for (const code of [0, 1, undefined]) {
       './codelens.js': { DelegateCodeLensProvider: class {} },
     })
     const executor = new DelegationExecutor(async () => undefined, root)
-    Object.assign(executor, { hasShellIntegration: true, sessionId: 'A', terminal,
+    Object.assign(executor, { hasShellIntegration: true, sessionId: 'A', terminal, terminalCwd: root,
       client: { answerDelegation: async (_id: string, _request: string, answer: unknown) => answers.push(answer) } })
     const done = executor.onEvent({ type: 'tool_delegate', data: { requestId: 'request', kind: 'terminal_exec', payload: { command: 'false' } } })
     await tick()
@@ -104,7 +104,7 @@ function delegationFixture(edit = false) {
   let documentReady!: (doc: any) => void, applied = 0
   const document = new Promise((resolve) => { documentReady = resolve })
   const execution = { async *read() { yield 'origin output' } }
-  const shellIntegration = { executeCommand(command: string) { executed.push(command); return execution } }
+  const shellIntegration = { cwd: { fsPath: root }, executeCommand(command: string) { executed.push(command); return execution } }
   const terminal = { exitStatus: undefined, show() {} }
   const { DelegationExecutor } = load('src/delegation/executor.ts', {
     vscode: {
@@ -124,7 +124,7 @@ function delegationFixture(edit = false) {
   const client = (name: string) => ({ answerDelegation: async (sessionId: string, requestId: string, answer: any) => answers.push({ name, sessionId, requestId, answer }) })
   const a = client('A'), b = client('B')
   const executor = new DelegationExecutor(async () => a, root)
-  Object.assign(executor, { hasShellIntegration: true, terminal, client: a, sessionId: 'A' })
+  Object.assign(executor, { hasShellIntegration: true, terminal, terminalCwd: root, client: a, sessionId: 'A' })
   return { executor, a, b, answers, executed, pending, execution, applied: () => applied,
     switchSession(id: string) { executor.detach(); Object.assign(executor, { client: id === 'A' ? a : b, sessionId: id }) },
     ready() { for (const cb of changes) cb({ terminal, shellIntegration }) },
@@ -425,7 +425,7 @@ for (const outcome of ['success', 'failure']) {
     let oldLists = 0
     const operation = new Promise<void>((resolve) => { releaseRewind = resolve })
     const oldClient = { rewind: () => operation, listRewindPoints: async () => { oldLists++; return { points: [] } } }
-    const currentClient = { listRewindPoints: () => new Promise((resolve, reject) => { resolveList = resolve; rejectList = reject }) }
+    const currentClient = { subscribe: () => () => {}, listRewindPoints: () => new Promise((resolve, reject) => { resolveList = resolve; rejectList = reject }) }
     let selectedClient: unknown = oldClient
     const { CockpitProvider } = load('src/views/cockpit-provider.ts', { vscode: {} })
     const provider = new CockpitProvider({}, async () => selectedClient, root)
@@ -440,7 +440,7 @@ for (const outcome of ['success', 'failure']) {
     if (outcome === 'success') resolveList({ points: [{ label: 'current client' }] })
     else rejectList(new Error('current failure'))
     await currentList
-    assert.deepEqual(messages.map((m) => [m.type, m.sessionId, m.points[0]?.label]), [['rewindPoints', 'A', outcome === 'success' ? 'current client' : undefined]])
+    assert.deepEqual(messages.filter(m => m.type === 'rewindPoints').map((m) => [m.type, m.sessionId, m.points[0]?.label]), [['rewindPoints', 'A', outcome === 'success' ? 'current client' : undefined]])
     assert.equal(oldLists, 0)
   })
 }
@@ -560,6 +560,7 @@ function extensionFixture(opts: { runtime?: string; delayedHealth?: boolean; del
     './sidecar/launcher.js': launcher, './sidecar/client.js': { SidecarClient: class {} },
     './views/cockpit-provider.js': { CockpitProvider: class {
       constructor(_uri: unknown, get: any) { getClient = get }
+      replaceClient() {}
       notifySidecarState(state: string) { states.push(state) }
     } },
     './views/changes-view.js': { registerChangesView: () => ({}) }, './views/launcher-view.js': { registerLauncherView() {} },

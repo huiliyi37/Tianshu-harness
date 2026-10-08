@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 /**
  * Worker 结果的磁盘存储（~/.rivet/subagents/）——最新副本 / 逐轮归档 / 指纹
  * 副本的落盘、读取、列举与 LRU 淘汰。
@@ -45,7 +46,7 @@ function legacyKeyDiffers(orderId: string): boolean {
 export function evictOldSubagentResults(dir: string, limit = MAX_SUBAGENT_RESULTS): string[] {
   let files: string[]
   try {
-    files = readdirSync(dir).filter(f => f.endsWith('.json'))
+    files = readdirSync(dir).filter(f => !isFilesystemMetadata(f) && f.endsWith('.json'))
   } catch {
     return []
   }

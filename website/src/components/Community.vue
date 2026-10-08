@@ -15,21 +15,21 @@ const cards = [
     title: 'community.github',
     desc: 'community.github_desc',
     btn: 'community.github_btn',
-    href: 'https://github.com/huiliyi37/Tianshu-Tui',
+    href: 'https://github.com/huiliyi37/Tianshu-harness',
   },
   {
     icon: BookOpen,
     title: 'community.docs',
     desc: 'community.docs_desc',
     btn: 'community.docs_btn',
-    href: 'https://github.com/huiliyi37/Tianshu-Tui/tree/main/docs',
+    href: 'https://github.com/huiliyi37/Tianshu-harness/tree/main/docs',
   },
   {
     icon: MessageCircle,
     title: 'community.discuss',
     desc: 'community.discuss_desc',
     btn: 'community.discuss_btn',
-    href: 'https://github.com/huiliyi37/Tianshu-Tui/discussions',
+    href: 'https://github.com/huiliyi37/Tianshu-harness/discussions',
   },
 ]
 </script>

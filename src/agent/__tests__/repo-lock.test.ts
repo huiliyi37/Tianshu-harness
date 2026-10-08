@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir, hostname } from 'node:os'
 import { RepoLock, isPidAlive, worktreeRegistryLockPath } from '../repo-lock.js'
@@ -21,6 +21,25 @@ afterEach(() => {
 })
 
 describe('RepoLock', () => {
+  it('acquires on filesystems without hard-link support', () => {
+    const lockPath = join(makeDir(), 'portable.lock')
+    const lock = new RepoLock({ lockPath, maxWaitMs: 100, retryMs: 5 })
+    lock.acquire()
+    assert.equal(lock.isHeld(), true)
+    assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).pid, process.pid)
+    lock.release()
+    assert.equal(existsSync(lockPath), false)
+  })
+
+  it('does not reclaim an owner record still being published', () => {
+    const lockPath = join(makeDir(), 'publishing.lock')
+    writeFileSync(lockPath, '')
+    const lock = new RepoLock({ lockPath, staleMs: 10_000, maxWaitMs: 30, retryMs: 5 })
+    assert.throws(() => lock.acquire(), /timeout/)
+    assert.equal(readFileSync(lockPath, 'utf8'), '')
+    assert.equal(lock.isHeld(), false)
+  })
+
   it('acquires and releases, leaving no lock file behind', () => {
     const lockPath = join(makeDir(), 'sub', 'r.lock')
     const lock = new RepoLock({ lockPath })
@@ -116,6 +135,8 @@ describe('RepoLock', () => {
   it('recovers from a corrupt lock file', () => {
     const lockPath = join(makeDir(), 'r.lock')
     writeFileSync(lockPath, '{ not json')
+    const staleTime = new Date(Date.now() - 60_000)
+    utimesSync(lockPath, staleTime, staleTime)
     const lock = new RepoLock({ lockPath, maxWaitMs: 500, retryMs: 10 })
     lock.acquire()
     assert.ok(lock.isHeld())

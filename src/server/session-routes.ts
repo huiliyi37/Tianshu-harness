@@ -1736,6 +1736,7 @@ export function buildSessionRoutes(
       const existing = await manager.getEventsAsync(id, since)
       if (__dbg) console.log(`[stream] getEventsAsync +${Date.now() - __t0}ms events=${existing?.events.length ?? 0} id=${id} since=${since} t=${__t0}`)
       if (!existing) return { status: 404, body: { error: 'Session not found' } }
+      if (res.destroyed || res.writableEnded) return { status: 200, handled: true }
 
       // Tear down BOTH on peer death (write throws → onDead) and on the normal
       // response 'close'. Without the onDead path a half-dead socket kept the
@@ -1751,6 +1752,7 @@ export function buildSessionRoutes(
         dependencies.sseRegistry?.unregister(sse)
       }
       const sse = new SseStream(res, cleanup, allowedCorsOrigin(headers ?? {}))
+      sse.onResponseClose(cleanup)
       // 登记进活跃连接集合：关停链 closeAll() 主动发 done 帧 + end（sse-registry.ts）。
       dependencies.sseRegistry?.register(sse)
       // 冷热双通道：回放最前发 replay_window 合成元事件（不落盘、seq=0），
@@ -1795,6 +1797,7 @@ export function buildSessionRoutes(
         }
       }
       await sendReplayTimeSliced(res, sse, replayEvents)
+      if (sse.isClosed()) return { status: 200, handled: true }
       let catchingUp = true
       let lastCatchupSeq = existing.lastSeq
       const deferredLive: Array<{ type: string; seq: number }> = []
@@ -1840,10 +1843,6 @@ export function buildSessionRoutes(
       // unref so the timer never keeps the process (or a test) alive on its own.
       keepalive = setInterval(() => sse.ping(), 30_000)
       if (typeof keepalive.unref === 'function') keepalive.unref()
-      res.on('close', () => {
-        cleanup()
-        sse.close()
-      })
       return { status: 200, handled: true }
     }, apiToken),
 

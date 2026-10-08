@@ -15,7 +15,9 @@ test('real PR routes qualify repository, anchor reviews, reject stale heads and 
   const repo = join(dir, 'repo'), bin = join(dir, 'bin'), statePath = join(dir, 'fixture.json'), callsPath = join(dir, 'calls.jsonl')
   mkdirSync(repo); mkdirSync(bin)
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
-  git('init', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid'); git('commit', '--allow-empty', '-m', 'init'); git('remote', 'add', 'upstream', 'git@github.com:owner/repo.git')
+  git('init', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), '._*\n.DS_Store\n')
+  git('commit', '--allow-empty', '-m', 'init'); git('remote', 'add', 'upstream', 'git@github.com:owner/repo.git')
   const sha = 'a'.repeat(40)
   const setState = (extra = {}) => writeFileSync(statePath, JSON.stringify({ sha, ...extra }))
   setState()
@@ -45,7 +47,9 @@ class Program {
     p.StartInfo.Arguments = quote + AppDomain.CurrentDomain.BaseDirectory + "gh.cjs" + quote + " "
       + string.Join(" ", Array.ConvertAll(args, a => quote + a.Replace(quote, slash + quote) + quote));
     p.StartInfo.UseShellExecute = false; p.StartInfo.CreateNoWindow = true;
-    p.Start(); p.WaitForExit(); return p.ExitCode;
+    p.StartInfo.RedirectStandardInput = true;
+    p.Start(); p.StandardInput.Write(Console.In.ReadToEnd()); p.StandardInput.Close();
+    p.WaitForExit(); return p.ExitCode;
   }
 }`
     const csPath = join(bin, 'gh.cs')
@@ -99,7 +103,8 @@ class Program {
     assert.equal((preview.body as any).headRepository, 'fork/renamed')
     assert.ok(calls().some(c => c.args.includes('repos/fork/renamed/commits/feature')))
     const creation = { action: 'create', remote: 'upstream', head: 'fork:feature', headRepository: 'fork/renamed', base: 'main', title: 'Selected PR', body: 'Description', draft: true, version: (await repositorySnapshot(repo)).repository.version, headSha: sha, baseSha: 'b'.repeat(40), operationId: randomUUID(), confirm: true }
-    assert.equal((await call('POST', '/pr-action', creation)).status, 200)
+    const creationResult = await call('POST', '/pr-action', creation)
+    assert.equal(creationResult.status, 200, JSON.stringify(creationResult.body))
     const created = calls().filter(c => c.args.includes('repos/owner/repo/pulls') && c.args.includes('POST')).at(-1)
     assert.equal(JSON.parse(created.input).head_repo, 'renamed')
     setState({ sha: 'c'.repeat(40) })

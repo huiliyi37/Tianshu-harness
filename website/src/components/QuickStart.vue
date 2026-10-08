@@ -12,7 +12,7 @@ const { t } = useI18n()
 const installSteps = [
   {
     title: 'quickstart.step1_title',
-    code: 'git clone https://github.com/huiliyi37/Tianshu-Tui.git\ncd Tianshu-Tui\nnpm install && npm run build',
+    code: 'git clone https://github.com/huiliyi37/Tianshu-harness.git\ncd Tianshu-harness\nnpm install && npm run build',
   },
   {
     title: 'quickstart.step2_title',
@@ -78,7 +78,7 @@ async function copy(code: string, index: number) {
         <p class="text-xs sm:text-sm text-text-secondary">
           {{ t('quickstart.docs_hint') }}
           <a
-            href="https://github.com/huiliyi37/Tianshu-Tui/blob/main/docs/user-guide.md"
+            href="https://github.com/huiliyi37/Tianshu-harness/blob/main/docs/user-guide.md"
             target="_blank"
             rel="noopener noreferrer"
             class="text-accent-glow hover:underline"

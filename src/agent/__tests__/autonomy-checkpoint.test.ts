@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import promises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { setImmediate as tick } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop } from '../loop.js'
@@ -11,6 +14,7 @@ import { READ_FILE_TOOL } from '../../tools/read-file.js'
 import type { StreamCallbacks, StreamClient } from '../../api/stream-client.js'
 import type { AgentCallbacks, ApprovalMode, AutonomyCheckpointInfo } from '../loop-types.js'
 import { buildProgressDigest } from '../loop-factory.js'
+import { StigmergyStore } from '../../context/stigmergy.js'
 
 // C3 (Auto 模式检查点): in auto-safe mode the run pauses after
 // `checkpointEveryTurns` turns with a progress digest. YOLO and manual
@@ -64,6 +68,7 @@ function makeCallbacks(checkpoints: AutonomyCheckpointInfo[]): AgentCallbacks {
 function makeAgent(client: StreamClient, opts: {
   checkpointEveryTurns?: number
   approvalMode?: ApprovalMode
+  stigmergyStore?: StigmergyStore
 }): AgentLoop {
   const registry = new ToolRegistry()
   registry.register(READ_FILE_TOOL)
@@ -76,6 +81,7 @@ function makeAgent(client: StreamClient, opts: {
     compact: { enabled: false, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
     ...(opts.checkpointEveryTurns !== undefined ? { checkpointEveryTurns: opts.checkpointEveryTurns } : {}),
     ...(opts.approvalMode ? { approvalMode: opts.approvalMode } : {}),
+    ...(opts.stigmergyStore ? { stigmergyStore: opts.stigmergyStore } : {}),
   }, new SessionContext(), TEST_CWD)
 }
 
@@ -203,6 +209,33 @@ describe('TurnOrchestrator: autonomy checkpoint (C3)', () => {
     assert.equal(checkpoints[0]!.paused, true)
     assert.ok(checkpoints[0]!.digest.includes('已执行'), 'digest was generated')
   })
+})
+
+it('Agent persistence drain waits for accepted pheromones before settling', async () => {
+  const path = join(TEST_CWD, 'drained-pheromones.json'), store = new StigmergyStore(path)
+  const agent = makeAgent(makeToolClient(0), { stigmergyStore: store })
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const original = promises.rename
+  let settled = false
+  promises.rename = async (source, target) => {
+    if (target === path) { entered(); await gate }
+    return original(source, target)
+  }
+  syncBuiltinESMExports()
+  let drain: Promise<void> | undefined
+  try {
+    await store.deposit({ path: 'accepted.ts', signal: 'entry-point', strength: 0.4 })
+    drain = agent.drainPersistWrites().then(() => { settled = true })
+    await started; await tick()
+    assert.equal(settled, false, 'Agent drain cannot return while pheromone publication is in flight')
+    release(); await drain
+    assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].path, 'accepted.ts')
+  } finally {
+    release(); await drain; await store.flush()
+    promises.rename = original; syncBuiltinESMExports()
+  }
 })
 
 it('最后一个可用轮注入「最终轮」警告(轮次预算硬预警,其余轮不注入)', async () => {

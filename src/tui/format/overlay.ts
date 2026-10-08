@@ -83,6 +83,8 @@ export function renderTabBar(activeTab: 'domain' | 'model' | 'theme', width: num
 export interface PagerData {
   /** 要显示的文本内容 */
   content: string
+  /** Optional logical-text search mapped to rendered rows (document soft wrapping). */
+  searchRows?: (query: string) => number[]
   /** 当前页码（0-based） */
   page: number
   /** Exact rendered row offset; when supplied it takes precedence over page. */
@@ -208,10 +210,13 @@ export function renderPager(data: PagerData, width: number, height: number, them
       lines.push(padLine('', width, theme))
     }
   } else if (mode === 'search' || mode === 'results') {
+    const matchedRows = data.searchRows?.(data.searchQuery ?? '') ?? []
     for (let i = 0; i < pageLines.length; i++) {
       const line = pageLines[i]!
       if (data.searchQuery && lineMatchesQuery(line, data.searchQuery)) {
         lines.push(highlightMatch(line, data.searchQuery, width, theme))
+      } else if (matchedRows.includes(start + i)) {
+        lines.push(padLine(color(line, theme.primary, { bold: true }), width, theme))
       } else {
         lines.push(padLine(line, width, theme))
       }

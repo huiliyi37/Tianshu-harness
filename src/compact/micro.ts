@@ -23,6 +23,9 @@ function compactToolMessage(
   archiveRan?: boolean,
 ): { msg: OaiMessage; changed: boolean } {
   if (msg.role !== 'tool') return { msg, changed: false }
+  const markerMatch = msg.content.match(ARTIFACT_MARKER_REGEX)
+  // An archive failure must preserve the original before either lossy branch.
+  if (archiveRan && !markerMatch && !recoveryRefId) return { msg, changed: false }
 
   const toolName = msg.tool_call_id ? extractToolNameFromId(msg.tool_call_id) : undefined
 
@@ -40,10 +43,6 @@ function compactToolMessage(
 
   const previewChars = Math.max(1_200, compactThresholds(contextWindow).toolResultMaxTokens)
   if (msg.content.length <= previewChars) return { msg, changed: false }
-  const markerMatch = msg.content.match(ARTIFACT_MARKER_REGEX)
-  // Fail-open: when an archive pass ran but this marker-less message has no
-  // ref (save failed), keep the original — never cut unrecoverable content.
-  if (archiveRan && !markerMatch && !recoveryRefId) return { msg, changed: false }
   const marker = markerMatch
     ? markerMatch[0].trimEnd()
     : recoveryRefId ? `[artifact:${recoveryRefId}]` : undefined
@@ -51,6 +50,16 @@ function compactToolMessage(
   const stub = `<microcompacted tool_result original_chars="${msg.content.length}">\n${msg.content.slice(0, previewChars)}\n</microcompacted tool_result>${tail}`
   if (stub.length >= msg.content.length) return { msg, changed: false }
   return { msg: { ...msg, content: stub }, changed: true }
+}
+
+/** Use the transform itself to identify lossy tool rewrites before archival. */
+export function microToolRewriteIndices(messages: OaiMessage[], contextWindow: number): number[] {
+  const ages = computeTurnAges(messages)
+  const indices: number[] = []
+  for (let index = 0; index < messages.length; index++) {
+    if (compactToolMessage(messages[index]!, contextWindow, ages.get(index)).changed) indices.push(index)
+  }
+  return indices
 }
 
 function extractToolNameFromId(toolCallId: string): string | undefined {
@@ -234,8 +243,17 @@ export function microCompactOai(
   const tier2RecentStart = Math.max(0, shortened.length - KEEP_RECENT_MESSAGES)
   const rounds = groupIntoRoundsOai(shortened)
   const removeIndexes = new Set<number>()
+  let lastUserIndex = -1
+  for (let i = shortened.length - 1; i >= 0; i--) {
+    if (shortened[i]?.role === 'user') { lastUserIndex = i; break }
+  }
+  const hasSignedCurrentTurn = shortened.slice(lastUserIndex + 1).some(msg => msg.role === 'assistant'
+    && msg.tool_calls?.some(call => call.providerMetadata?.gemini?.thoughtSignature))
 
   for (const round of rounds) {
+    if (hasSignedCurrentTurn && round.endMessageIndex > lastUserIndex) continue
+    // Removing a tool round would also remove its only recovery pointer.
+    if (recoveryRefs !== undefined && shortened.slice(round.startMessageIndex, round.endMessageIndex).some(msg => msg.role === 'tool')) continue
     if (round.startMessageIndex >= anchorEnd && round.endMessageIndex <= tier2RecentStart && round.apiInvariant === 'ok') {
       const roundTokens = round.tokenEstimate
       if (currentTokens - roundTokens <= contextWindow * 0.7) continue

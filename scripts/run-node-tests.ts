@@ -52,13 +52,13 @@ await mkdir(PROJECT_TMP, { recursive: true })
 // （docx / pdfkit / pptxgenjs / mammoth），入口是插件 package.json 的 `npm test`
 // （`cd plugins/<name> && npm ci && npm test`）。纳入本 runner 会让未装插件依赖的
 // 环境（公开仓 CI）恒红——宁可不收，也不收一个必然红的门禁。
-const TEST_GLOBS = ['src/**/*.test.ts', 'scripts/**/*.test.ts', 'plugins/**/*.test.mjs']
+const TEST_GLOBS = ['src/**/*.test.ts', 'scripts/**/*.test.ts', 'scripts/**/*.test.mjs', 'plugins/**/*.test.mjs']
 
 const files: string[] = []
 for await (const file of glob(TEST_GLOBS)) {
   const normalized = file.replace(/\\/g, '/')
   // scripts/cloudflare-update-worker 等嵌套包一旦 npm install 就会带进 node_modules
-  if (normalized.includes('/node_modules/')) continue
+  if (normalized.includes('/node_modules/') || normalized.split('/').some(part => part.startsWith('._'))) continue
   const isIntegration = normalized.includes('/integration/')
   if (integrationOnly && !isIntegration) continue
   if (unitOnly && isIntegration) continue

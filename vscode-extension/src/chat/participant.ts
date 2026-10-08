@@ -34,6 +34,11 @@ interface ActiveTurn {
   settle(event: ChatTurnEvent): void
 }
 
+interface RequestOwnership {
+  sessionId?: string
+  abort?: () => void
+}
+
 /**
  * 注册 `@tianshu` participant，把 sidecar 事件桥进聊天视图。
  *
@@ -43,8 +48,9 @@ interface ActiveTurn {
 export class TianshuChatParticipant implements vscode.Disposable {
   private readonly participant: vscode.ChatParticipant
   private activeTurn: ActiveTurn | undefined
+  private requestOwner: RequestOwnership | undefined
+  private cancelRequest: (() => void) | undefined
   private sessionId: string | undefined
-  private pendingCreate: Promise<string> | undefined
   /** 单例订阅的代际守卫（见 subscription-gate.ts）。 */
   private readonly gate = new SubscriptionGate()
   /** chat UI 权限档位 → sidecar 审批档的覆盖状态机（见 permission-bridge.ts）。 */
@@ -74,6 +80,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
 
   /** 注销 participant 并丢弃进行中的轮与订阅。 */
   dispose(): void {
+    this.cancelRequest?.()
     this.activeTurn = undefined
     this.unsubscribeCurrent?.()
     this.unsubscribeCurrent = undefined
@@ -170,7 +177,51 @@ export class TianshuChatParticipant implements vscode.Disposable {
     context: vscode.ChatContext,
     stream: vscode.ChatResponseStream,
     token: vscode.CancellationToken,
-  ): Promise<void> {
+  ): Promise<vscode.ChatResult | void> {
+    if (this.requestOwner !== undefined || this.activeTurn !== undefined) {
+      stream.markdown('上一个回答还在进行中——等它结束或点停止后再提问。')
+      return
+    }
+    const owner: RequestOwnership = {}
+    this.requestOwner = owner
+    let cancelled = false
+    let resolveCancellation!: (result: vscode.ChatResult | void) => void
+    const cancellation = new Promise<vscode.ChatResult | void>((resolve) => { resolveCancellation = resolve })
+    const cancelRequest = () => {
+      if (cancelled) return
+      cancelled = true
+      if (this.requestOwner === owner) {
+        const turn = this.activeTurn
+        turn?.timeout.dispose()
+        turn?.settle({ kind: 'end', reason: 'aborted' })
+        this.activeTurn = undefined
+        this.requestOwner = undefined
+      }
+      owner.abort?.()
+      resolveCancellation(owner.sessionId ? { metadata: { tianshuSessionId: owner.sessionId } } : undefined)
+    }
+    this.cancelRequest = cancelRequest
+    let cancelSubscription: vscode.Disposable | undefined
+    const current = () => !cancelled && this.requestOwner === owner
+    try {
+      cancelSubscription = token.onCancellationRequested(cancelRequest)
+      if (token.isCancellationRequested) cancelRequest()
+      if (!current()) return await cancellation
+      return await Promise.race([this.runRequest(request, context, stream, owner, current), cancellation])
+    } finally {
+      cancelSubscription?.dispose()
+      if (this.requestOwner === owner) this.requestOwner = undefined
+      if (this.cancelRequest === cancelRequest) this.cancelRequest = undefined
+    }
+  }
+
+  private async runRequest(
+    request: vscode.ChatRequest,
+    context: vscode.ChatContext,
+    stream: vscode.ChatResponseStream,
+    owner: RequestOwnership,
+    current: () => boolean,
+  ): Promise<vscode.ChatResult | void> {
     let client: SidecarClient
     try {
       client = await this.getClient()
@@ -179,34 +230,39 @@ export class TianshuChatParticipant implements vscode.Disposable {
       stream.markdown(`天枢内核未就绪：${message}`)
       return
     }
-    if (this.activeTurn !== undefined) {
-      stream.markdown('上一个回答还在进行中——等它结束或点停止后再提问。')
-      return
-    }
+    if (!current()) return
 
     // 立即的活性反馈：建会话、发 prompt 到首 token 可能数秒，期间聊天视图是空的。
     stream.progress('天枢思考中…')
 
     let sessionId: string
     try {
-      sessionId = await this.resolveSession(client, context)
+      sessionId = await this.resolveSession(client, context, current)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.log(`[chat] session resolve failed: ${message}`)
       stream.markdown(`无法准备天枢会话：${message}`)
       return
     }
+    if (!current()) return
+    owner.sessionId = sessionId
 
-    // chat UI 权限档位 → sidecar 会话审批档（仅变化时调用；失败不阻塞消息投递）。
-    await this.syncPermissionLevel(client, sessionId, request.permissionLevel)
+    try {
+      await this.syncPermissionLevel(client, sessionId, request.permissionLevel)
+    } catch (error) {
+      stream.markdown(`权限同步失败，消息尚未发送：${error instanceof Error ? error.message : String(error)}`)
+      return { metadata: { tianshuSessionId: sessionId } }
+    }
+    if (!current()) return
 
     // chat 的模型选择 → 内核会话模型（选中真实模型时；占位壳/同值跳过）。
     await this.syncModelChoice(client, sessionId, request.model?.id)
+    if (!current()) return
 
     // 订阅管理：单例 + 代际（见 subscription-gate.ts——subscribe 的取消不中止
     // 在途投递，per-turn 订阅会留下继续投递的连接，同一事件成倍重复）。
     const acquired = this.gate.acquire(sessionId)
-    if (!acquired.reuse) {
+    if (!acquired.reuse || !this.unsubscribeCurrent) {
       this.unsubscribeCurrent?.()
       this.unsubscribeCurrent = undefined
       let since: number
@@ -217,7 +273,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
         stream.markdown(`无法读取天枢会话状态：${message}`)
         return
       }
-      if (!this.gate.isCurrent(acquired.generation)) return
+      if (!current() || !this.gate.isCurrent(acquired.generation)) return
       const generation = acquired.generation
       this.unsubscribeCurrent = client.subscribe(
         sessionId,
@@ -247,16 +303,17 @@ export class TianshuChatParticipant implements vscode.Disposable {
     const turn: ActiveTurn = { sessionId, stream, sawText: false, timeout, settle }
     this.activeTurn = turn
 
-    const cancel = token.onCancellationRequested(() => {
+    owner.abort = () => {
       void client.abort(sessionId).catch((error: unknown) => {
         this.log(`[chat] cancel failed: ${error instanceof Error ? error.message : String(error)}`)
       })
-    })
+    }
 
     timeout.arm()
 
     try {
       const queued = await client.queue(sessionId, request.prompt)
+      if (!current()) return { metadata: { tianshuSessionId: sessionId } }
       if (queued === 'idle') {
         await client.prompt(sessionId, request.prompt)
       }
@@ -278,47 +335,45 @@ export class TianshuChatParticipant implements vscode.Disposable {
       stream.markdown(`发送失败：${message}`)
     } finally {
       timeout.dispose()
-      cancel.dispose()
       if (this.activeTurn === turn) this.activeTurn = undefined
     }
+    return { metadata: { tianshuSessionId: sessionId } }
   }
 
   /**
-   * 把聊天会话映射到 sidecar 会话。`ChatRequest` 不带会话 id，能用的判别只有
-   * context 历史与本对象记忆的 id：无历史的新对话开新会话，其后同一对话的
-   * 每个 prompt 复用它。
+   * 由宿主保存的 response metadata 恢复对应 sidecar 会话；缺少身份的历史
+   * 开新会话，避免继承另一原生聊天的上下文。
    */
-  private async resolveSession(client: SidecarClient, context: vscode.ChatContext): Promise<string> {
-    if (context.history.length === 0) {
-      this.sessionId = undefined
-      this.toolInputs.clear()
+  private async resolveSession(client: SidecarClient, context: vscode.ChatContext, current: () => boolean = () => true): Promise<string> {
+    let resolved: string | undefined
+    for (const turn of [...context.history].reverse()) {
+      if (!('result' in turn) || turn.participant !== PARTICIPANT_ID) continue
+      const id: unknown = turn.result.metadata?.tianshuSessionId
+      if (typeof id === 'string' && id.length > 0) { resolved = id; break }
     }
-    if (this.sessionId !== undefined) return this.sessionId
-    this.pendingCreate ??= this.createSession(client)
-    try {
-      this.sessionId = await this.pendingCreate
-      return this.sessionId
-    } finally {
-      this.pendingCreate = undefined
-    }
+    resolved ??= await this.createSession(client)
+    if (!current()) return resolved
+    if (this.sessionId !== resolved) this.toolInputs.clear()
+    this.sessionId = resolved
+    return resolved
   }
 
   /**
    * chat UI 权限档位下行到 sidecar 会话（见 permission-bridge.ts）：仅显式
-   * 档位变化时调 `setApprovalMode`；失败只记日志——档位是增强，不应阻塞消息。
+   * 档位变化时调 `setApprovalMode`，服务端确认后才记录同步结果。
    */
   private async syncPermissionLevel(client: SidecarClient, sessionId: string, level: string | undefined): Promise<void> {
     try {
       const action = await this.permission.sync(sessionId, level, async () => {
         const record = await client.getSession(sessionId)
         return record.approvalMode
-      })
+      }, async mode => { await client.setApprovalMode(sessionId, mode) })
       if (action.kind === 'set') {
-        await client.setApprovalMode(sessionId, action.mode)
         this.log(`[chat] approval mode synced: ${action.mode} (ui-level=${String(level)})`)
       }
     } catch (error) {
       this.log(`[chat] approval mode sync failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
     }
   }
 

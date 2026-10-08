@@ -6,7 +6,7 @@ import { assertCompleteAttachments } from './attachment-integrity.js'
 import { UsageSettlement } from './usage-settlement.js'
 import type { StreamClient, WireDivergence } from './stream-client.js'
 import type { StreamCallbacks } from './stream-client.js'
-import { normalizeOaiMessage, oaiMessagesHaveImageParts, stripOaiImageParts } from './oai-types.js'
+import { normalizeOaiMessage, oaiMessagesHaveImageParts, stripOaiImageParts, stripOaiProviderMetadata } from './oai-types.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { proRegistry } from './pro-registry.js'
 import { estimateOaiTokens } from '../compact/micro.js'
@@ -502,7 +502,7 @@ export class OpenAIClient implements StreamClient {
       && opts?.suppressStickyPreserve !== true
     const isPreservedThinking = this.config.thinking === 'enabled'
       && (stickyPreserved || opts?.preserveReasoning === true)
-    return messages.map(m => {
+    return messages.map(stripOaiProviderMetadata).map(m => {
       if (m.role !== 'assistant') return m
       const hasToolCalls = Array.isArray((m as any).tool_calls) && (m as any).tool_calls.length > 0
       // DeepSeek preserved-thinking: tool-call turns must echo reasoning_content.

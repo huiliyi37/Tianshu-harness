@@ -44,9 +44,9 @@ type InboundMsg =
   | { type: 'openFile'; path: string; line?: number }
   | { type: 'listProviders' }
   | { type: 'setupProvider'; providerName: string; apiKey: string; baseUrl?: string; custom?: boolean; modelId?: string }
-  | { type: 'readPlan'; sessionId: string; slug: string }
-  | { type: 'planDecision'; sessionId: string; slug: string; decision: 'approve' | 'reject'; comment?: string; selectedApproach?: string }
-  | { type: 'editPlan'; sessionId: string; slug: string; content: string }
+  | { type: 'readPlan'; sessionId: string; slug: string; revision?: number }
+  | { type: 'planDecision'; sessionId: string; slug: string; decision: 'approve' | 'reject'; comment?: string; selectedApproach?: string; revision?: number }
+  | { type: 'editPlan'; sessionId: string; slug: string; content: string; revision?: number }
   | { type: 'setPlanMode'; sessionId: string; state: 'planning' | 'off' }
   | { type: 'setAskMode'; sessionId: string; state: 'asking' | 'off' }
   | { type: 'copyText'; text: string }
@@ -127,7 +127,7 @@ export class CockpitProvider {
     try {
       const client = await this.getClient()
       if (msg.type === 'listRewindPoints' && generation !== this.subscriptionGeneration) return
-      this.client = client
+      this.replaceClient(client)
       switch (msg.type) {
         case 'ready':
         case 'listSessions': {
@@ -360,16 +360,16 @@ export class CockpitProvider {
         }
         case 'readPlan': {
           const plan = await client.readPlan(msg.sessionId, msg.slug)
-          this.post({ type: 'plan', sessionId: msg.sessionId, plan })
+          this.post({ type: 'plan', sessionId: msg.sessionId, plan, revision: msg.revision })
           break
         }
         case 'planDecision': {
           try {
             if (msg.decision === 'approve') await client.approvePlan(msg.sessionId, msg.slug, msg.selectedApproach)
             else await client.rejectPlan(msg.sessionId, msg.slug, msg.comment)
-            this.post({ type: 'planDecisionResult', sessionId: msg.sessionId, slug: msg.slug, decision: msg.decision, ok: true })
+            this.post({ type: 'planDecisionResult', sessionId: msg.sessionId, slug: msg.slug, decision: msg.decision, ok: true, revision: msg.revision })
           } catch (err) {
-            this.post({ type: 'planDecisionResult', sessionId: msg.sessionId, slug: msg.slug, decision: msg.decision, ok: false, message: (err as Error).message })
+            this.post({ type: 'planDecisionResult', sessionId: msg.sessionId, slug: msg.slug, decision: msg.decision, ok: false, message: (err as Error).message, revision: msg.revision })
           }
           break
         }
@@ -377,10 +377,10 @@ export class CockpitProvider {
           try {
             await client.editPlan(msg.sessionId, msg.slug, msg.content)
             const plan = await client.readPlan(msg.sessionId, msg.slug)
-            this.post({ type: 'plan', sessionId: msg.sessionId, plan })
-            this.post({ type: 'planEditResult', sessionId: msg.sessionId, slug: msg.slug, ok: true })
+            this.post({ type: 'plan', sessionId: msg.sessionId, plan, revision: msg.revision })
+            this.post({ type: 'planEditResult', sessionId: msg.sessionId, slug: msg.slug, ok: true, revision: msg.revision })
           } catch (err) {
-            this.post({ type: 'planEditResult', sessionId: msg.sessionId, slug: msg.slug, ok: false, message: (err as Error).message })
+            this.post({ type: 'planEditResult', sessionId: msg.sessionId, slug: msg.slug, ok: false, message: (err as Error).message, revision: msg.revision })
           }
           break
         }
@@ -506,6 +506,13 @@ export class CockpitProvider {
     this.post({ type: 'sidecarState', state, detail })
   }
 
+  replaceClient(client: SidecarClient): void {
+    if (this.client === client) return
+    this.client = client
+    if (this.activeSessionId && this.panel) this.attachSession(this.activeSessionId)
+    else this.teardownBridge()
+  }
+
   /** 编辑器右键「发送到天枢」→ 座舱输入框追加文本。 */
   insertToComposer(text: string): void {
     this.post({ type: 'insertText', text })
@@ -518,7 +525,7 @@ export class CockpitProvider {
   async submitPrompt(text: string): Promise<void> {
     try {
       const client = await this.getClient()
-      this.client = client
+      this.replaceClient(client)
       if (!this.activeSessionId) {
         const rec = await client.createSession({ cwd: this.workspaceCwd, prompt: text })
         this.attachSession(rec.id)

@@ -3,7 +3,17 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { SessionRegistry, _setBackendForTest, _resetBackendForTest } from '../session-registry.js'
+
+function exitedChildPid(): number {
+  const child = spawnSync(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true, timeout: 10_000 })
+  assert.equal(child.status, 0, child.error?.message)
+  assert.ok(child.pid > 0)
+  assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' })
+  return child.pid
+}
 
 describe('SessionRegistry', () => {
   let dbDir: string
@@ -75,10 +85,8 @@ describe('SessionRegistry', () => {
 
   describe('detectCrashedSessions', () => {
     it('returns sessions whose pid is not running', () => {
-      // PID 99999 is almost certainly not running
       registry.register('dead-sess', '/project')
-      // Manually update to a dead PID
-      registry.updatePid('dead-sess', 99999)
+      registry.updatePid('dead-sess', exitedChildPid())
       const crashed = registry.detectCrashedSessions()
       assert.equal(crashed.length, 1)
       assert.equal(crashed[0]!.id, 'dead-sess')
@@ -92,7 +100,7 @@ describe('SessionRegistry', () => {
 
     it('reaps crashed sessions', () => {
       registry.register('dead-sess', '/project')
-      registry.updatePid('dead-sess', 99999)
+      registry.updatePid('dead-sess', exitedChildPid())
       const crashed = registry.detectCrashedSessions()
       assert.equal(crashed.length, 1)
       // After reaping, should be gone
@@ -102,9 +110,8 @@ describe('SessionRegistry', () => {
 
   describe('createWithReap（收编公开仓 PR #110：sidecar 启动收割幽灵独占锁）', () => {
     it('reaps crashed sessions on create and releases their exclusive claims', async () => {
-      // 播种：一个已死会话（pid 99999 几乎不可能存活）持有 src/index.ts 的独占 claim
       registry.register('sess-dead', '/project')
-      registry.updatePid('sess-dead', 99999)
+      registry.updatePid('sess-dead', exitedChildPid())
       assert.equal(registry.acquireClaim('sess-dead', 'src/index.ts', 'exclusive'), true)
 
       let reapedIds: string[] = []
@@ -198,7 +205,7 @@ describe('SessionRegistry', () => {
   describe('reapStaleClaims', () => {
     it('reclaims files held by dead sessions', () => {
       registry.register('dead-sess', '/project')
-      registry.updatePid('dead-sess', 99999)
+      registry.updatePid('dead-sess', exitedChildPid())
       registry.acquireClaim('dead-sess', 'src/foo.ts', 'exclusive')
 
       const reclaimed = registry.reapStaleClaims()
@@ -216,6 +223,33 @@ describe('SessionRegistry', () => {
 
       const reclaimed = registry.reapStaleClaims()
       assert.equal(reclaimed.length, 0)
+    })
+
+    it('retains a live child claim and releases it only after the child exits', { timeout: 10_000 }, async t => {
+      const child = spawn(process.execPath, ['-e', 'process.on("message", () => process.exit(0)); process.send("ready")'], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
+      })
+      t.after(async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return
+        const exited = once(child, 'exit')
+        child.kill()
+        await exited
+      })
+      await once(child, 'message')
+      registry.register('child-sess', '/project')
+      registry.updatePid('child-sess', child.pid!)
+      registry.acquireClaim('child-sess', 'src/child.ts', 'exclusive')
+      assert.deepEqual(registry.detectCrashedSessions(), [])
+      assert.deepEqual(registry.reapStaleClaims(), [])
+      assert.equal(registry.claimLiveness('src/child.ts')?.ownerAlive, true)
+      assert.equal(registry.acquireClaim('other-sess', 'src/child.ts', 'exclusive'), false)
+
+      const exited = once(child, 'exit')
+      child.send('exit')
+      await exited
+      assert.deepEqual(registry.reapStaleClaims(), ['src/child.ts'])
+      assert.equal(registry.listActive().some(s => s.id === 'child-sess'), false)
+      assert.equal(registry.acquireClaim('other-sess', 'src/child.ts', 'exclusive'), true)
     })
   })
 
@@ -304,12 +338,13 @@ describe('SessionRegistry', () => {
     })
 
     it('reports ownerAlive=false for a dead owner pid', () => {
+      const deadPid = exitedChildPid()
       registry.register('dead-sess', '/project')
-      registry.updatePid('dead-sess', 99999)
+      registry.updatePid('dead-sess', deadPid)
       registry.acquireClaim('dead-sess', 'src/foo.ts', 'exclusive')
       const live = registry.claimLiveness('src/foo.ts')
       assert.ok(live)
-      assert.equal(live.ownerPid, 99999)
+      assert.equal(live.ownerPid, deadPid)
       assert.equal(live.ownerAlive, false)
     })
   })

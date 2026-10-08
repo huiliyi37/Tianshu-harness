@@ -79,7 +79,7 @@ function toggleLocale() {
         <Button
           variant="ghost"
           size="lg"
-          href="https://github.com/huiliyi37/Tianshu-Tui"
+          href="https://github.com/huiliyi37/Tianshu-harness"
           target="_blank"
           rel="noopener noreferrer"
           class="rounded-full text-white/70 hover:bg-white/10 hover:text-white"
@@ -89,7 +89,7 @@ function toggleLocale() {
         </Button>
         <Button
           size="lg"
-          href="https://github.com/huiliyi37/Tianshu-Tui/releases"
+          href="https://github.com/huiliyi37/Tianshu-harness/releases"
           target="_blank"
           rel="noopener noreferrer"
           class="rounded-full bg-white text-bg-primary hover:bg-white/90"
@@ -133,11 +133,11 @@ function toggleLocale() {
             <Globe class="mr-2 h-5 w-5" />
             {{ locale === 'zh' ? 'Switch to English' : '切换到中文' }}
           </Button>
-          <Button variant="outline" size="lg" class="w-full" href="https://github.com/huiliyi37/Tianshu-Tui" target="_blank" rel="noopener noreferrer">
+          <Button variant="outline" size="lg" class="w-full" href="https://github.com/huiliyi37/Tianshu-harness" target="_blank" rel="noopener noreferrer">
             <Github class="mr-2 h-5 w-5" />
             GitHub
           </Button>
-          <Button size="lg" class="w-full" href="https://github.com/huiliyi37/Tianshu-Tui/releases" target="_blank" rel="noopener noreferrer">
+          <Button size="lg" class="w-full" href="https://github.com/huiliyi37/Tianshu-harness/releases" target="_blank" rel="noopener noreferrer">
             <Download class="mr-2 h-5 w-5" />
             {{ t('download.btn') }}
           </Button>

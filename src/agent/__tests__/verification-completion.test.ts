@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { prepareCompletionCapture } from '../../tools/test-completion.js'
 import { classifyVerificationCommand, shellWord } from '../../tools/verification-command.js'
 import { inferBashVerificationScope } from '../bash-verification.js'
@@ -16,11 +16,17 @@ import { runVerification } from './helpers/verification-pipeline-fixture.js'
 import type { VerificationMetadata } from '../../tools/types.js'
 
 const repo = resolve(import.meta.dirname, '../../..')
-const loader = pathToFileURL(join(repo, 'node_modules/tsx/dist/loader.mjs')).href
+const loader = 'tsx'
+function receiptDirectory(command: string): string {
+  const path = command.match(/--test-reporter=([^'"]+\.mjs)/)?.[1]
+  assert.ok(path, 'completion capture must register its reporter')
+  return join(path.startsWith('file:') ? fileURLToPath(path) : path, '..')
+}
 function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), 'completion-proof-'))
   execFileSync('git', ['init', '-q'], { cwd })
   execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '--allow-empty', '-qm', 'fixture'], { cwd })
+  writeFileSync(join(cwd, '.gitignore'), '._*\n.DS_Store\nnode_modules/\n')
   const write = (file: string, source: string) => { mkdirSync(join(cwd, file, '..'), { recursive: true }); writeFileSync(join(cwd, file), source) }
   write('feature.js', 'export const feature = 1;')
   write('src/alpha.test.ts', "import {test} from 'node:test'; test('alpha',()=>{}); test('delayed',async()=>{await new Promise(r=>setTimeout(r,20))});")
@@ -29,7 +35,7 @@ function fixture() {
   return { cwd, write, dispose: () => rmSync(cwd, { recursive: true, force: true }) }
 }
 function execute(cwd: string, command: string) {
-  const capture = prepareCompletionCapture(command, cwd)
+  const capture = prepareCompletionCapture(command, cwd, process.platform === 'win32' ? 'cmd' : 'bash')
   assert.ok(capture, command)
   try {
     const result = spawnSync(capture.command, { cwd, shell: true, encoding: 'utf8', env: { ...process.env, ...capture.env }, timeout: 15_000 })
@@ -67,6 +73,21 @@ it('actual completion covers glob targets, not discovery or same-name files in a
   } finally { f.dispose() }
 })
 
+it('filesystem metadata beside completion receipts does not count as another runner', () => {
+  const f = fixture()
+  const capture = prepareCompletionCapture('node --test src/alpha.test.ts', f.cwd, process.platform === 'win32' ? 'cmd' : 'bash')!
+  try {
+    const result = spawnSync(capture.command, { cwd: f.cwd, shell: true, encoding: 'utf8', env: { ...process.env, ...capture.env }, timeout: 15_000 })
+    assert.equal(result.status, 0, result.stderr || result.error?.message)
+    writeFileSync(join(receiptDirectory(capture.command), '._another.start'), 'filesystem metadata')
+    const coverage = capture.read(result.status!)!
+    assert.equal(coverage.workspaceChanged, false)
+    assert.equal(coverage.executionComplete, true)
+    assert.equal(coverage.complete, true)
+    assert.deepEqual(coverage.files.map(file => file.path), ['src/alpha.test.ts'])
+  } finally { capture.dispose(); f.dispose() }
+})
+
 it('a transparent rtk proxy may drop all presentation output without losing proof', { skip: process.platform === 'win32' }, () => {
   const f = fixture()
   try {
@@ -84,7 +105,12 @@ it('zero, skipped, todo and failed files cannot discharge obligations', () => {
   try {
     for (const [name, body] of [['empty', ''], ['skip', "test.skip('skip',()=>{});"], ['todo', "test.todo('todo');"], ['fail', "test('fail',()=>{throw Error('red')});"], ['cancel', "test('cancel',async()=>await new Promise(()=>{}));"]]) {
       f.write(`src/${name}.test.ts`, "import {test} from 'node:test';" + body)
-      const { meta } = execute(f.cwd, `node --import ${loader} --test src/${name}.test.ts`)
+      const { meta, result } = execute(f.cwd, `node --import ${loader} --test ${name === 'cancel' ? '--test-timeout=200 ' : ''}src/${name}.test.ts`)
+      assert.equal(result.error, undefined, `${name}: runner must settle before fixture cleanup`)
+      if (name === 'cancel') {
+        assert.equal(meta.coverage?.executionComplete, true, name)
+        assert.equal(meta.coverage?.totals?.cancelled, 1)
+      }
       assert.deepEqual(assessImpactedTestCoverage([`src/${name}.test.ts`], [meta], () => true).uncovered, [`src/${name}.test.ts`], name)
     }
     assert.equal(prepareCompletionCapture(`node --test --test-name-pattern=x src/alpha.test.ts`, f.cwd), undefined)
@@ -94,7 +120,7 @@ it('zero, skipped, todo and failed files cannot discharge obligations', () => {
 it('missing/foreign completion receipts, changed snapshots and timeouts fail closed', () => {
   const f = fixture()
   try {
-    const capture = prepareCompletionCapture(`node --import ${loader} --test src/alpha.test.ts`, f.cwd)!
+    const capture = prepareCompletionCapture(`node --import ${loader} --test src/alpha.test.ts`, f.cwd, process.platform === 'win32' ? 'cmd' : 'bash')!
     assert.equal(capture.read(0)?.complete, false, 'discovery without execution')
     const result = spawnSync(capture.command, { cwd: f.cwd, shell: true, env: { ...process.env, ...capture.env }, encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr)
@@ -104,10 +130,8 @@ it('missing/foreign completion receipts, changed snapshots and timeouts fail clo
     assert.equal(capture.read(-1)?.complete, false, 'timeout')
     f.write('feature.js', 'export const feature = 1;')
     assert.equal(capture.read(0)?.complete, true, 'fresh again before foreign-receipt check')
-    const directory = capture.command.match(/file:\/\/([^']+\.mjs)/)?.[1]
-    assert.ok(directory)
-    const dir = join(decodeURI(directory), '..')
-    const receiptName = readdirSync(dir).find(n => n.endsWith('.json') && n !== 'seal.json')!
+    const dir = receiptDirectory(capture.command)
+    const receiptName = readdirSync(dir).find(n => !n.startsWith('._') && n.endsWith('.json') && n !== 'seal.json')!
     const path = join(dir, receiptName)
     const receipt = JSON.parse(readFileSync(path, 'utf8'))
     receipt.runId = 'previous-run'
@@ -125,6 +149,26 @@ it('bash and run_tests carry proof through tool pipeline, ledger and EvidenceTra
     const effective = getEffectiveVerifications(run.ledger.getVerifications()).effective
     assert.equal(effective[0]?.coverage?.complete, true, tool)
     assert.deepEqual(assessImpactedTestCoverage(['good.test.mjs'], effective, () => true).uncovered, [], tool)
+  }
+})
+
+it('bash and run_tests preserve completion proof under a Unicode temporary directory', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'completion-中文-'))
+  const key = process.platform === 'win32' ? 'TEMP' : 'TMPDIR'
+  const previous = process.env[key]
+  process.env[key] = directory
+  try {
+    for (const tool of ['bash', 'run_tests'] as const) {
+      const run = await runVerification(tool === 'bash' ? 'node --test good.test.mjs' : 'good.test.mjs', false, false, { tool })
+      assert.equal(run.actual.verification?.exitCode, 0, run.actual.content)
+      assert.equal(run.actual.verification?.coverage?.executionComplete, true, tool)
+      assert.equal(run.actual.verification?.coverage?.complete, true, tool)
+      assert.deepEqual(run.actual.verification?.coverage?.files.map(file => file.path), ['good.test.mjs'], tool)
+    }
+  } finally {
+    if (previous === undefined) delete process.env[key]
+    else process.env[key] = previous
+    rmSync(directory, { recursive: true, force: true })
   }
 })
 

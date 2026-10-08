@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadPlatformAuth, savePlatformAuth, clearPlatformAuth } from '../deepseek-platform-auth.js'
@@ -22,10 +22,14 @@ const currentCost = { data: [{ currency: 'CNY', series: [
   { model: 'test-model', buckets: [{ time: 1790812800, cost: '0.025' }] },
 ] }] }
 
-test('isolated auth route, reader and platform requests share storage and expose no credentials', async () => {
+test('isolated auth route, reader and platform requests share storage and expose no credentials', async t => {
   const previousHome = process.env.RIVET_HOME
   const previousFetch = globalThis.fetch
   const home = mkdtempSync(join(tmpdir(), 'insights-auth-'))
+  const modeProbe = join(home, 'permission-probe')
+  writeFileSync(modeProbe, '', { mode: 0o600 })
+  const supportsPosixModes = process.platform !== 'win32' && (statSync(modeProbe).mode & 0o777) === 0o600
+  if (!supportsPosixModes) t.diagnostic('Filesystem does not enforce POSIX modes; auth storage assertions still run')
   const headers = { authorization: 'Bearer test-sidecar-auth' }
   try {
     const router = createRouter(buildConfigRoutes('test-sidecar-auth'))
@@ -37,7 +41,7 @@ test('isolated auth route, reader and platform requests share storage and expose
       assert.equal(saved.status, 200)
       assert.deepEqual(loadPlatformAuth(), { token: 'fake-account-fixture', cookies: 'fixture=yes' })
       assert.deepEqual((await router('GET', '/config/deepseek/auth', {}, headers)).body, { loggedIn: true })
-      if (process.platform !== 'win32') assert.equal(statSync(join(rivetHome(), 'deepseek-platform-auth.json')).mode & 0o777, 0o600)
+      if (supportsPosixModes) assert.equal(statSync(join(rivetHome(), 'deepseek-platform-auth.json')).mode & 0o777, 0o600)
       globalThis.fetch = async (_url, options) => {
         assert.equal((options?.headers as Record<string, string>).Authorization, 'Bearer fake-account-fixture')
         return new Response(JSON.stringify({ biz_code: 0, biz_data: { biz_code: 40003 } }))

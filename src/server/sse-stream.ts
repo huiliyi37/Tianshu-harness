@@ -40,12 +40,13 @@ export class SseStream {
   }
 
   send(event: string, data: unknown): void {
-    if (this._closed) return
+    if (this.isClosed()) return
     // A peer that has already gone away makes `res.write` throw (EPIPE/
     // ERR_STREAM_DESTROYED). Treat that as a close rather than crashing the
     // server: a dead viewer must never take down the process.
     try {
       this.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+      if (this.res.destroyed || this.res.writableEnded) this.markDead()
     } catch {
       this.markDead()
     }
@@ -71,9 +72,10 @@ export class SseStream {
    * socket so we can stop the keepalive timer.
    */
   ping(): void {
-    if (this._closed) return
+    if (this.isClosed()) return
     try {
       this.res.write(': ping\n\n')
+      if (this.res.destroyed || this.res.writableEnded) this.markDead()
     } catch {
       this.markDead()
     }
@@ -81,11 +83,16 @@ export class SseStream {
 
   /** True once the stream has been closed (locally or by a dead peer). */
   isClosed(): boolean {
+    if (this.res.destroyed || this.res.writableEnded) this.markDead()
     return this._closed
   }
 
+  onResponseClose(cleanup: () => void): void {
+    this.res.on('close', () => { cleanup(); this.close() })
+  }
+
   close(): void {
-    if (this._closed) return
+    if (this.isClosed()) return
     this._closed = true
     try {
       this.res.write('event: done\ndata: {}\n\n')

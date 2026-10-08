@@ -28,7 +28,7 @@ export type ChatItem =
   | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreate: number }
   /** 自动档检查点 / 看门狗暂停。paused=true 出「继续」按钮。 */
   | { kind: 'checkpoint'; variant: 'autonomy' | 'watchdog'; turns?: number; digest?: string; paused: boolean }
-  | { kind: 'queue'; text: string; laneId: string; status: 'queued' | 'steered' | 'delivered' | 'merged' }
+  | { kind: 'queue'; text: string; laneId: string; status: 'queued' | 'steered' | 'delivered' | 'merged' | 'cancelled' }
 
 export interface TodoItem {
   id: string
@@ -247,6 +247,12 @@ export function reduceEvent(state: ChatState, ev: SessionEvent): ChatState {
       const idx = items.findIndex((it) => it.kind === 'queue' && it.laneId === laneId)
       if (idx < 0) return state
       if (status === 'retracted') {
+        if (d.reason === 'sidecar-restart') {
+          const next = [...items]
+          const current = next[idx]
+          if (current?.kind === 'queue') next[idx] = { ...current, status: 'cancelled' }
+          return { ...state, items: next }
+        }
         return { ...state, items: items.filter((_, i) => i !== idx) }
       }
       if (status !== 'steered' && status !== 'merged') return state

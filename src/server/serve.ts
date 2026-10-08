@@ -15,6 +15,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { assertSecureBind, readServeTlsArgs } from './serve-transport.js'
 import type { ServerOptions as TlsServerOptions } from 'node:https'
 import { startServer } from './index.js'
+import { guardRuntimeRoutes } from './runtime-route-guard.js'
 import { loadProModule, resolvePresetLabel } from '../api/pro-registry.js'
 import { resolveEffortSupported } from '../api/provider.js'
 import { desktopDir, desktopSessionsDir } from '../config/paths.js'
@@ -973,7 +974,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     },
   }
 
-  const routes = new Proxy(createRoutes(state, {
+  const routes = guardRuntimeRoutes(createRoutes(state, {
     startPrompt: (prompt) => {
       const rec = sessions.createSession({
         title: prompt.trim().slice(0, 80),
@@ -1003,16 +1004,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       }
     },
     sseRegistry,
-  }), {
-    get(target, key: string) {
-      const handler = target[key]
-      if (typeof handler !== 'function') return handler
-      return (...args: Parameters<typeof handler>) => {
-        if (sessions.isUpdateRestartPreparing() && !key.startsWith('GET ') && !['POST /shutdown', 'POST /runtime/update-cancel', 'POST /runtime/update-prepare'].includes(key)) return { status: 409, body: { error: 'UPDATE_PREPARING' } }
-        return handler(...args)
-      }
-    },
-  })
+  }), () => ({ ownsSessionStore, initializationError, updatePreparing: sessions.isUpdateRestartPreparing() }))
 
   // Multi-session routes (M0.5 → M3): /sessions/*. R3 rollback routes consult
   // the live registry to build an OwnershipGuard, so thread it in via getter.

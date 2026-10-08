@@ -211,6 +211,8 @@ export async function runWorkerSessionOop(
   let settled = false
   let watchdogTimer: ReturnType<typeof setTimeout> | undefined
   let killTimer: ReturnType<typeof setTimeout> | undefined
+  let steerTimer: ReturnType<typeof setInterval> | undefined
+  const parentDrain = config.onSteerDrain
   let killStage: 'none' | 'term' | 'kill' = 'none'
   // settle 时摘除 abort 监听（见下方 abort 接线处的说明）
   let detachAbort: (() => void) | undefined
@@ -219,6 +221,8 @@ export async function runWorkerSessionOop(
     if (watchdogTimer) clearTimeout(watchdogTimer)
     if (killTimer) clearTimeout(killTimer)
     detachAbort?.()
+    if (steerTimer) clearInterval(steerTimer)
+    config.onSteerDrain = parentDrain
   }
 
   const killLadder = (reason: string): void => {
@@ -294,12 +298,21 @@ export async function runWorkerSessionOop(
       prefixProof: run.prefixProof,
     })
 
+    const forwardSteer = (): string | null => {
+      if (settled) return null
+      const text = parentDrain?.() ?? null
+      if (text) {
+        try { stdin.write(encodeFrame({ t: 'steer', text })) } catch { /* closed pipe */ }
+      }
+      return text
+    }
     const decoder = createFrameDecoder()
     stdout.on('data', (chunk: string) => {
       for (const msg of decoder.feed(chunk) as ChildMessage[]) {
         if (settled) continue
         switch (msg.t) {
           case 'activity':
+            forwardSteer()
             armWatchdog()
             config.onActivity?.(msg.kind, msg.detail)
             break
@@ -311,6 +324,7 @@ export async function runWorkerSessionOop(
             config.mailbox?.send(msg.msg)
             break
           case 'tick':
+            forwardSteer()
             armWatchdog()
             break
           case 'log':
@@ -357,16 +371,12 @@ export async function runWorkerSessionOop(
       }
     }
 
-    // steer 桥：coordinator 的 onSteerDrain 在父侧排空队列 → 转发子进程。
-    if (config.onSteerDrain) {
-      const parentDrain = config.onSteerDrain
-      config.onSteerDrain = () => {
-        const text = parentDrain()
-        if (text) {
-          try { stdin.write(encodeFrame({ t: 'steer', text })) } catch { /* best-effort */ }
-        }
-        return text
-      }
+    // The child cannot invoke a parent callback. Drain even while a slow tool
+    // produces no activity; settlement stops this downlink and restores config.
+    if (parentDrain) {
+      config.onSteerDrain = forwardSteer
+      steerTimer = setInterval(forwardSteer, 100)
+      steerTimer.unref?.()
     }
 
     armWatchdog()

@@ -30,7 +30,7 @@
  * pack-native.js.
  */
 import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
-import { dirname, join, relative, isAbsolute } from 'node:path'
+import { basename, dirname, join, relative, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { isForeignPlatformPackage, parsePlatformPackage, resolveTargetPlatform } from './runtime-platform-filter.js'
@@ -51,6 +51,11 @@ const destModules = join(repoRoot, 'dist', 'node_modules')
 // Root packages that must be resolvable at runtime in the packaged sidecar.
 // 单一数据源：scripts/external-deps.js RUNTIME_BUNDLED（含每包注释）。
 const ROOTS = [...RUNTIME_BUNDLED]
+
+function includeStagedPath(file) {
+  const name = basename(file)
+  return !name.startsWith('._') && name !== '.DS_Store'
+}
 
 function pkgDir(name, from = repoRoot) {
   const require = createRequire(join(from, 'package.json'))
@@ -161,7 +166,7 @@ while (queue.length > 0) {
   const dest = join(destModules, relative(srcModules, src))
   mkdirSync(dirname(dest), { recursive: true })
   // dereference symlinks so the staged tree is self-contained.
-  cpSync(src, dest, { recursive: true, dereference: true })
+  cpSync(src, dest, { recursive: true, dereference: true, filter: includeStagedPath })
   copied++
 
   for (const dep of readDeps(src)) queue.push({ ...dep, from: src })
@@ -321,7 +326,7 @@ function stageBetterSqlite3Wrapper() {
   // Only the pure-JS wrapper: lib/ + package.json (main → lib/index.js).
   // Deliberately NOT copying build/Release, bindings, prebuild-install — the
   // native binary is loaded via nativeBinding from dist/native/.
-  cpSync(join(src, 'lib'), join(dest, 'lib'), { recursive: true, dereference: true })
+  cpSync(join(src, 'lib'), join(dest, 'lib'), { recursive: true, dereference: true, filter: includeStagedPath })
   cpSync(join(src, 'package.json'), join(dest, 'package.json'))
   console.log('✅ Staged better-sqlite3 JS wrapper (lib + package.json, %dKB) → dist/node_modules/better-sqlite3', Math.round(dirSizeMb(dest) * 1024) || 1)
 

@@ -28,13 +28,9 @@
  *
  *   HTTP 400 Function call is missing a thought_signature in functionCall parts.
  *
- * (Reproduced against `gemini-3.5-flash` / `gemini-3.8-flash`: the first tool
- * turn succeeds, the follow-up 400s.) The internal `OaiMessage` shape has no
- * slot for provider-private part metadata, so this client retains the
- * signature keyed by the tool-call id it generated itself and re-attaches it on
- * replay. That is process-scoped: a session resumed in a fresh process loses
- * the map and falls back to the 400. Persisting it on the assistant message is
- * the proper fix and is tracked separately.
+ * Signatures are persisted on assistant calls and replayed by fresh clients.
+ * Gemini validates primarily the current tool turn after the last user input;
+ * missing metadata in older legacy history does not imply a new user turn fails.
  */
 
 import { ProxyAgent } from 'undici'
@@ -163,10 +159,6 @@ export class GeminiClient implements StreamClient {
   private readonly proxyDispatcher: ProxyAgent | undefined
   private reasoningEffort: string | undefined
   private thinking: 'enabled' | 'disabled'
-  /** tool_call id → thoughtSignature. Bounded; see the module header for why
-   *  this lives on the client rather than on the persisted message. */
-  private readonly signatureByCallId = new Map<string, string>()
-  private static readonly SIGNATURE_CACHE_LIMIT = 128
 
   constructor(private config: GeminiClientConfig) {
     this.proxyDispatcher = config.proxy ? new ProxyAgent(config.proxy) : undefined
@@ -371,30 +363,20 @@ export class GeminiClient implements StreamClient {
     return body
   }
 
-  /** Assistant text + tool calls → `role:'model'` parts. Re-attaches any
-   *  thoughtSignature this client captured for the same call id. */
+  /** Assistant text + tool calls → `role:'model'` parts, including persisted signatures. */
   private assistantParts(msg: OaiAssistantMessage, nameByCallId: Map<string, string>): GeminiPart[] {
     const parts: GeminiPart[] = []
     const text = typeof msg.content === 'string' ? msg.content : ''
     if (text) parts.push({ text })
     for (const call of msg.tool_calls ?? []) {
       nameByCallId.set(call.id, call.function.name)
-      const signature = this.signatureByCallId.get(call.id)
+      const signature = call.providerMetadata?.gemini?.thoughtSignature
       parts.push({
         functionCall: { name: call.function.name, args: parseArgs(call) },
         ...(signature ? { thoughtSignature: signature } : {}),
       })
     }
     return parts
-  }
-
-  private rememberSignature(callId: string, signature: string | undefined): void {
-    if (!signature) return
-    if (this.signatureByCallId.size >= GeminiClient.SIGNATURE_CACHE_LIMIT) {
-      const oldest = this.signatureByCallId.keys().next().value
-      if (oldest !== undefined) this.signatureByCallId.delete(oldest)
-    }
-    this.signatureByCallId.set(callId, signature)
   }
 
   private async processSSEStream(
@@ -413,6 +395,7 @@ export class GeminiClient implements StreamClient {
     const textChunks: string[] = []
     const thinkingChunks: string[] = []
     let emittedChars = 0
+    const streamStartedAt = Date.now()
 
     const timeoutController = new AbortController()
     const maxStreamMs = this.config.requestTimeoutMs ?? 10 * 60_000
@@ -441,6 +424,10 @@ export class GeminiClient implements StreamClient {
           throw new Error(`Gemini stream hard timeout (${Math.round(maxStreamMs / 60_000)}min) — stream exceeded maximum duration`)
         }
         const { done, value } = await reader.read()
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+        if (timeoutController.signal.aborted) {
+          throw new Error(`Gemini stream hard timeout (${Math.round(maxStreamMs / 60_000)}min) — stream exceeded maximum duration`)
+        }
         if (streamTimedOut) throw new Error(`Gemini stream idle timeout (${Math.round(firstByteTimeoutMs / 1000)}s)`)
         if (done) break
         resetIdleTimer()
@@ -483,21 +470,36 @@ export class GeminiClient implements StreamClient {
               callbacks.onToolCallDelta?.()
               const callId = `gemini_call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
               // Native delivers functionCall args as an object, already complete.
-              this.rememberSignature(callId, part.thoughtSignature)
               callbacks.onContentBlock({
                 type: 'tool_use',
                 id: callId,
                 name: part.functionCall.name,
                 input: part.functionCall.args ?? {},
+                ...(part.thoughtSignature ? { providerMetadata: { gemini: { thoughtSignature: part.thoughtSignature } } } : {}),
               })
             }
           }
         }
       }
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (timeoutController.signal.aborted) {
+        throw new Error(`Gemini stream hard timeout (${Math.round(maxStreamMs / 60_000)}min) — stream exceeded maximum duration`)
+      }
+    } catch (err) {
+      callbacks.onStreamAttemptAborted?.({
+        provider: this.config.providerName ?? 'gemini',
+        receivedChars: emittedChars,
+        elapsedMs: Date.now() - streamStartedAt,
+        errorName: (err as Error)?.name ?? 'Error',
+        errorMessage: (err as Error)?.message ?? String(err),
+        usage,
+      })
+      throw err
     } finally {
       clearTimeout(maxStreamTimer)
       if (idleTimer) clearTimeout(idleTimer)
       signalCleanup?.()
+      reader.releaseLock()
     }
 
     if (thinkingChunks.length > 0) {
@@ -512,7 +514,6 @@ export class GeminiClient implements StreamClient {
       ...usage,
       ...(usage ? {} : { input_tokens: 0, output_tokens: 0 }),
     })
-    void emittedChars
   }
 }
 

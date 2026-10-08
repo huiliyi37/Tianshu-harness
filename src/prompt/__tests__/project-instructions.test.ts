@@ -1,11 +1,11 @@
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { splitSections, selectSections, selectProjectInstructions } from '../project-instructions.js'
 import { buildStableVolatileBlock } from '../volatile.js'
 
-const REPO = join(import.meta.dirname, '..', '..', '..')
 
 /** volatile.ts 的 escapeXml 口径——预算按渲染后长度计。 */
 const measure = (t: string): number =>
@@ -116,7 +116,15 @@ describe('budget fitting', () => {
   })
 })
 
-describe("this repo's own project instructions", () => {
+describe('representative large project instruction documents', () => {
+  const REPO = mkdtempSync(join(tmpdir(), 'project-instruction-docs-'))
+  writeFileSync(join(REPO, 'AGENTS.md'), [
+    DOC, '## Agent 安全保护', '禁止泄露凭据。',
+    '## 通用执行纪律', '必须求证后再报告结果。',
+    '## Architecture Reference', '| path | role |\n|---|---|\n' + '| module | reference |\n'.repeat(350),
+    '## Background Details', 'Ordinary descriptive context. '.repeat(250),
+  ].join('\n\n'))
+  writeFileSync(join(REPO, '.rivet.md'), '## Code Conventions\n\nMust preserve reviewed code and run relevant checks.\n')
   // #218 信任门（收编公开仓 PR #234）：未受信目录的项目指令不读不注入——本套件读的
   // 正是**本仓自己的** AGENTS.md/.rivet.md，故必须显式声明受信，否则只在「同批别的
   // 测试恰好设过 RIVET_TRUST_PROJECT=1」时才绿（顺序依赖）。
@@ -130,6 +138,7 @@ describe("this repo's own project instructions", () => {
   after(() => {
     if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
     else process.env.RIVET_TRUST_PROJECT = prevTrust
+    rmSync(REPO, { recursive: true, force: true })
   })
 
   const block = (): string => {

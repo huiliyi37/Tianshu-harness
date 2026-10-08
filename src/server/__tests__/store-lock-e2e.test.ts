@@ -124,15 +124,19 @@ function spawnServe(root: string, port: number, label: string): ServeProc {
 }
 
 /** 带 token 探 /health；任何失败（未监听/超时/非 200）都返回 null，由轮询决定重试。 */
-async function fetchHealth(port: number): Promise<HealthBody | null> {
+async function fetchHealth(port: number, onFailure?: (reason: string) => void): Promise<HealthBody | null> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       headers: { authorization: `Bearer ${TOKEN}` },
       signal: AbortSignal.timeout(2_000),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      onFailure?.(`HTTP ${res.status}: ${await res.text()}`)
+      return null
+    }
     return (await res.json()) as HealthBody
-  } catch {
+  } catch (error) {
+    onFailure?.(error instanceof Error ? `${error.name}: ${error.message}` : String(error))
     return null
   }
 }
@@ -313,8 +317,10 @@ test('e2e：第二个 serve 不得触碰会话库，且自报 data-dir-locked', 
     assert.equal(lock?.pid, a.child.pid, `sidecar.lock 必须归 A(${String(a.child.pid)})：${JSON.stringify(lock)}`)
 
     // A 不该被 B 的启动干扰（先到者继续持有写权）
-    const aAfter = await fetchHealth(a.port)
-    assert.equal(aAfter?.readiness, 'ready', `B 启动后 A 必须仍是 ready：${JSON.stringify(aAfter)}`)
+    let aHealthFailure = ''
+    const aAfter = await fetchHealth(a.port, reason => { aHealthFailure = reason })
+    assert.equal(aAfter?.readiness, 'ready', `B 启动后 A 必须仍是 ready：${JSON.stringify(aAfter)}；` +
+      `pid=${a.child.pid} code=${a.child.exitCode} signal=${a.child.signalCode} probe=${aHealthFailure}\n${a.log()}`)
     assert.equal(aAfter?.initializationError, undefined, `A 不得被标记初始化失败：${JSON.stringify(aAfter)}`)
 
     // 『假续跑不复发』的直接证据：B 启动全程会话库目录零写入。

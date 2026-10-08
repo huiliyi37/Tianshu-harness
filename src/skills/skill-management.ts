@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -87,7 +88,7 @@ export class SkillManagement {
       if (!existsSync(dir)) continue
       const definitions: SkillDefinition[] = []
       for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (entry.name.startsWith('_')) continue
+        if (entry.name.startsWith('_') || isFilesystemMetadata(entry.name)) continue
         const path = join(dir, entry.name), directory = entry.isDirectory()
         if (!(entry.isFile() && entry.name.endsWith('.md')) && !(directory && existsSync(join(path, 'SKILL.md')))) continue
         try {

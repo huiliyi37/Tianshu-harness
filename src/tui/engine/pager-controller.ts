@@ -5,6 +5,14 @@ import { ANSI_SEQ_RE } from './ansi.js'
 interface PagerContext { nav: OverlayNavState; data: PagerData; rows: number; rerender: () => void; preview: boolean }
 const searchOrigins = new WeakMap<OverlayNavState, { mode: 'page' | 'message'; offset: number; selected: number }>()
 
+/** Reflow the suspended reading position together with the visible document. */
+export function remapPagerOffsets(nav: OverlayNavState, map: (offset: number) => number): void {
+  if (nav.pagerLineOffset !== undefined) nav.pagerLineOffset = map(nav.pagerLineOffset)
+  if (nav.pagerBeforeSearch !== undefined) nav.pagerBeforeSearch = map(nav.pagerBeforeSearch)
+  const origin = searchOrigins.get(nav)
+  if (origin) origin.offset = map(origin.offset)
+}
+
 export function pagerSearchLines(content: string, query: string): number[] {
   return query ? content.split('\n').flatMap((line, i) => line.replace(ANSI_SEQ_RE, '').toLowerCase().includes(query.toLowerCase()) ? [i] : []) : []
 }
@@ -25,7 +33,7 @@ export function handlePagerKey(key: {name:string;char:string;ctrl?:boolean;meta?
     const message = messages[index]
     return message ? message.startLine + Math.max(0, message.lines.length - visible) : Math.max(0, lines.length - visible)
   }
-  const matches = (): number[] => pagerSearchLines(data.content, nav.pagerSearchQuery)
+  const matches = (): number[] => data.searchRows?.(nav.pagerSearchQuery) ?? pagerSearchLines(data.content, nav.pagerSearchQuery)
   const jump = (delta: number): void => {
     const hits = matches()
     nav.pagerSearchCurrent = hits.length ? ((nav.pagerSearchCurrent - 1 + delta + hits.length) % hits.length) + 1 : 0

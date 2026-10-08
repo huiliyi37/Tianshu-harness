@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import { release } from '../release'
 
 export type Locale = 'zh' | 'en'
 
@@ -15,11 +16,11 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.download_btn': '下载',
 
     // Hero
-    'hero.badge': 'MIT 开源 · 终端 AI 编程代理',
+    'hero.badge': `${release.license} 开源 · 终端 AI 编程代理`,
     'hero.title': '天枢',
     'hero.subtitle': '终端里的 AI 编程合伙人',
     'hero.desc': '为 DeepSeek V4 前缀缓存优化的开源编程代理。支持多模型路由、子智能体编排、结构化安全机制，让长会话开发高效且可控。',
-    'hero.install_hint': '需要 Node.js 20+。也可直接',
+    'hero.install_hint': `需要 Node.js ${release.nodeMajor}+。也可直接`,
     'hero.download_desktop': '下载桌面版',
     'hero.cta_download': '下载桌面版',
     'hero.cta_terminal': '终端快速开始',
@@ -130,11 +131,11 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.download_btn': 'Download',
 
     // Hero
-    'hero.badge': 'MIT Open Source · Terminal AI Programming Agent',
+    'hero.badge': `${release.license} Open Source · Terminal AI Programming Agent`,
     'hero.title': 'Tianshu',
     'hero.subtitle': 'Your AI Programming Partner in Terminal',
     'hero.desc': 'An open-source programming agent optimized for DeepSeek V4 prefix caching. Supports multi-model routing, sub-agent orchestration, and structured security mechanisms for efficient and controllable long-session development.',
-    'hero.install_hint': 'Requires Node.js 20+. Or directly',
+    'hero.install_hint': `Requires Node.js ${release.nodeMajor}+. Or directly`,
     'hero.download_desktop': 'Download Desktop',
     'hero.cta_download': 'Download Desktop',
     'hero.cta_terminal': 'Terminal Quick Start',

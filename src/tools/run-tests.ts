@@ -4,7 +4,7 @@ import { applyBatchCounts, formatTestCounts } from './test-output-counts.js'
 import { DisplayOutputBuffer } from './display-output-buffer.js'
 import { readFile, stat, glob } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join, delimiter, win32 as winPath } from 'node:path'
+import { join, delimiter, win32 as winPath, posix as posixPath } from 'node:path'
 import type { Tool, ToolCallParams, ToolResult, VerificationMetadata, VerificationBlockedReason, VerificationSnapshotPlan } from './types.js'
 import { track } from './process-tracker.js'
 import { WinStreamDecoder } from '../platform.js'
@@ -76,7 +76,7 @@ export function resolveTestSpawn(
 ): ResolvedTestSpawn {
   if (!deps.isWindows) {
     if (command !== 'tsx') return { command, args: [...args], shell: false }
-    let cli = join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
+    let cli = posixPath.join(cwd, 'node_modules', 'tsx', 'dist', 'cli.mjs')
     try { cli = createRequire(join(cwd, 'package.json')).resolve('tsx/cli') } catch { /* Missing local dependency is an invocation error, never an install. */ }
     return { command: process.execPath, args: [cli, ...args], shell: false }
   }

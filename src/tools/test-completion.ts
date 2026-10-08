@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import type { TestCompletionCoverage } from './types.js'
 import { classifyVerificationCommand, shellWord, verificationArgv } from './verification-command.js'
 import { unwrapVerification } from './verification-invocation.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const ENV = 'RIVET_TEST_COMPLETION_RUN'
 interface Binding { runId: string; dir: string; root: string }
@@ -46,7 +47,8 @@ export default async function*(events){
  writeFileSync(path+'.partial',JSON.stringify({...binding,complete,success,totals,files}));renameSync(path+'.partial',path);
 }`
   writeFileSync(filename, source, { mode: 0o600 })
-  return pathToFileURL(filename).href
+  // Windows ESM requires file URLs. Keep Unicode literal for the strict argv parser.
+  return process.platform === 'win32' ? decodeURI(pathToFileURL(filename).href) : filename
 }
 
 /** Called only at the existing guarded Node spawn. No NODE_OPTIONS or new execution path. */
@@ -116,7 +118,7 @@ export function prepareCompletionCapture(command: string, cwd: string, shellKind
       delete env[ENV]
     }
     if (shellKind === 'powershell' && directFinish) actualCommand = '& ' + actualCommand
-    if (shellKind === 'cmd' && directFinish) actualCommand = (verificationArgv(actualCommand) ?? []).map(word => '"' + word.replaceAll('"', '\\"') + '"').join(' ')
+    if (shellKind === 'cmd') actualCommand = (verificationArgv(actualCommand) ?? []).map((word, index) => index === 0 && /^[A-Za-z0-9_.-]+$/.test(word) ? word : '"' + word.replaceAll('"', '\\"') + '"').join(' ')
     actualCommand = unwrapped.wrap(actualCommand)
     return {
       command: actualCommand,
@@ -124,7 +126,7 @@ export function prepareCompletionCapture(command: string, cwd: string, shellKind
       read(exitCode) {
         try {
           directFinish?.(exitCode === 0)
-          const names = readdirSync(binding.dir).filter(n => n.endsWith('.start'))
+          const names = readdirSync(binding.dir).filter(n => !isFilesystemMetadata(n) && n.endsWith('.start'))
           let executionComplete = names.length > 0, success = true
           const workspaceChanged = before !== workspaceIdentity(root)
           if (!directFinish) {

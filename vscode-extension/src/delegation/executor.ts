@@ -8,6 +8,7 @@
  */
 import * as vscode from 'vscode'
 import { randomBytes } from 'node:crypto'
+import { resolve } from 'node:path'
 import type { SidecarClient } from '../sidecar/client.js'
 import type { SessionEvent } from '../sidecar/protocol.js'
 import { DiffDecorationController, computeLineRanges, type PendingEdit } from './diff-decorations.js'
@@ -33,6 +34,7 @@ export class DelegationExecutor implements vscode.Disposable {
   private client: SidecarClient | undefined
   private workspaceCwd: string
   private terminal: vscode.Terminal | undefined
+  private terminalCwd: string | undefined
   private hasShellIntegration = false
   private disposed = false
   private sessionGeneration = 0
@@ -179,9 +181,11 @@ export class DelegationExecutor implements vscode.Disposable {
       doc = await vscode.workspace.openTextDocument(uri)
     }
     if (!this.isCurrent(origin)) throw new Error('Delegation session changed before edit')
-    const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length))
+    const previousContent = doc.getText()
+    const full = new vscode.Range(doc.positionAt(0), doc.positionAt(previousContent.length))
     edit.replace(uri, full, newContent)
     const ok = await vscode.workspace.applyEdit(edit)
+    const appliedVersion = doc.version
     if (!ok) {
       await client.answerDelegation(sessionId, requestId, {
         content: `WorkspaceEdit failed for ${relPath}`,
@@ -227,16 +231,29 @@ export class DelegationExecutor implements vscode.Disposable {
     if (status === 'rejected') {
       const revert = new vscode.WorkspaceEdit()
       const fresh = await vscode.workspace.openTextDocument(uri)
+      if (fresh.version !== appliedVersion || fresh.getText() !== newContent) {
+        if (this.isCurrent(origin)) {
+          this.decorations.clear(uri)
+          this.codeLenses.refresh()
+        }
+        void vscode.window.showWarningMessage(`无法自动撤销 ${relPath}：文件已修改，请手动检查并撤销代理改动。当前内容已保留。`)
+        await client.answerDelegation(sessionId, requestId, {
+          content: `Rejection conflict for ${relPath}: document changed after the delegated edit; current content preserved.`,
+          isError: true,
+          status: 'rejected',
+        })
+        return
+      }
       const span = new vscode.Range(fresh.positionAt(0), fresh.positionAt(fresh.getText().length))
-      revert.replace(uri, span, oldContent)
-      await vscode.workspace.applyEdit(revert)
+      revert.replace(uri, span, previousContent)
+      const reverted = await vscode.workspace.applyEdit(revert)
       if (this.isCurrent(origin)) {
         this.decorations.clear(uri)
         this.codeLenses.refresh()
       }
       await client.answerDelegation(sessionId, requestId, {
-        content: `User rejected edit to ${relPath}`,
-        isError: false,
+        content: reverted ? `User rejected edit to ${relPath}` : `Could not revert rejected edit to ${relPath}; current content preserved.`,
+        isError: !reverted,
         status: 'rejected',
       })
       return
@@ -291,6 +308,10 @@ export class DelegationExecutor implements vscode.Disposable {
       })
       return
     }
+    if (!si.cwd?.fsPath || resolve(si.cwd.fsPath) !== resolve(cwd)) {
+      await client.answerDelegation(sessionId, requestId, { content: 'Terminal cwd could not be verified for this request', isError: true })
+      return
+    }
 
     let execution: vscode.TerminalShellExecution | undefined
     let settle!: (code: number | undefined) => void
@@ -319,8 +340,12 @@ export class DelegationExecutor implements vscode.Disposable {
   }
 
   private ensureTerminal(cwd: string): vscode.Terminal {
-    if (this.terminal && this.terminal.exitStatus === undefined) return this.terminal
-    this.terminal = vscode.window.createTerminal({ name: '天枢', cwd })
+    const target = resolve(cwd)
+    const actualCwd = this.terminal?.shellIntegration?.cwd?.fsPath
+    if (this.terminal && this.terminal.exitStatus === undefined && this.terminalCwd === target &&
+      (actualCwd ? resolve(actualCwd) === target : !this.terminal.shellIntegration)) return this.terminal
+    this.terminal = vscode.window.createTerminal({ name: '天枢', cwd: target })
+    this.terminalCwd = target
     return this.terminal
   }
 

@@ -9,9 +9,11 @@
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { MAX_LINES_BASELINE, MAX_LINES_REDLINE, countPhysicalLines } from '../agent/structure-gate.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const SRC_ROOT = join(process.cwd(), 'src')
 const SCRIPTS_ROOT = join(process.cwd(), 'scripts')
@@ -31,6 +33,7 @@ function toPosix(p: string): string {
 /** Recursively collect .ts files under a directory. */
 function collectTsFiles(dir: string, results: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
+    if (isFilesystemMetadata(entry)) continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       collectTsFiles(full, results)
@@ -46,6 +49,7 @@ function collectTsFiles(dir: string, results: string[] = []): string[] {
  *  扫描根只有 src/，让 scripts/ 的调用点在无控制台宿主（mintty / Tauri GUI）下持续闪窗。 */
 function collectScriptFiles(dir: string, results: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
+    if (isFilesystemMetadata(entry)) continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       collectScriptFiles(full, results)
@@ -219,6 +223,19 @@ const allScriptFiles = collectScriptFiles(SCRIPTS_ROOT)
 // 预警门共用同一张表）；本测试是硬门：超限即红。语义详见该模块 JSDoc。
 
 describe('architecture guards', () => {
+  test('source collectors ignore metadata files and directories while retaining real source', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'architecture-corpus-'))
+    try {
+      for (const name of ['source.ts', 'script.js', 'module.mjs', '._source.ts', '._script.js', '._module.mjs']) {
+        writeFileSync(join(dir, name), 'export const fixture = true\n')
+      }
+      mkdirSync(join(dir, '._metadata'))
+      writeFileSync(join(dir, '._metadata', 'nested.ts'), 'export const metadata = true\n')
+      assert.deepEqual(collectTsFiles(dir).map(f => relative(dir, f)).sort(), ['source.ts'])
+      assert.deepEqual(collectScriptFiles(dir).map(f => relative(dir, f)).sort(), ['module.mjs', 'script.js', 'source.ts'])
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
+  })
+
   test('guards actually scan (self-check: skip logic and corpus are live)', () => {
     // 回归自检：曾因 startsWith('') 恒真导致每行被跳过，guard 全程空扫。
     // 植入violation必须被抓到；注释行必须被跳过；语料必须非空。

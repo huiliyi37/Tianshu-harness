@@ -139,7 +139,7 @@ for (const renderer of ['classic', 'fullscreen'] as const) {
   })
 }
 
-test('archiving uses the terminal width at settlement rather than when the question arrived', async () => {
+test('archiving an unanswered question uses the terminal width at settlement', async () => {
   const { app, out } = await makeApp()
   const agent = { cwd: '/unused' } as AgentLoop
   try {
@@ -148,12 +148,11 @@ test('archiving uses the terminal width at settlement rather than when the quest
     const prompt = '缩窄后必须保留所有问题内容'.repeat(6)
     await ask(app, agent, 'resize', prompt)
     out.columns = 35; (app as any).rerender()
-    app.decisions.chooseQuestion('0')
-    await app.decisions.submitAnswers()
+    app.dispose()
     const card = (await (app as any).frontend.history.page(0)).find((r: { toolId?: string }) => r.toolId === 'resize')
     const lines = card.text.split('\n') as string[]
     assert.ok(lines.every(line => displayWidth(line) <= 35))
-    const body = lines.slice(3, -1).map(line => line.slice(2, -2).trimEnd()).join('')
+    const body = lines.slice(1).map(line => line.trimStart()).join('')
     assert.ok(body.includes(prompt), '问题原文完整保留')
   } finally { app.dispose() }
 })

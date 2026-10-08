@@ -27,7 +27,7 @@
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +35,21 @@ import { execFileSync, spawnSync } from 'node:child_process'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT = join(repoRoot, 'scripts', 'dispose-community-pr.sh')
+
+function nativeBash(): string {
+  if (process.platform !== 'win32') return 'bash'
+  const gitPaths = execFileSync('where.exe', ['git'], { encoding: 'utf8', windowsHide: true }).trim().split(/\r?\n/)
+  const candidates = gitPaths.flatMap(path => [
+    join(dirname(path), '..', 'bin', 'bash.exe'),
+    join(dirname(path), 'bash.exe'),
+    join(dirname(path), '..', 'usr', 'bin', 'bash.exe'),
+  ])
+  const bash = candidates.find(path => existsSync(path))
+  assert.ok(bash, 'Windows shell fixtures require Git Bash from the installed Git distribution')
+  return bash
+}
+
+const BASH = nativeBash()
 
 /** 行尾反斜杠续行先接起来，免得把跨行的管道形态漏掉。 */
 function shellLines(text: string): string[] {
@@ -81,9 +96,7 @@ function makeLongHistoryRepo(): string {
     'EOM',
   )
   execFileSync('git', ['fast-import', '--quiet'], { cwd: dir, windowsHide: true, input: `${stream.join('\n')}\n` })
-  const bytes = execFileSync('bash', ['-c', "git log --format='%s' | wc -c"], { cwd: dir, windowsHide: true })
-    .toString()
-    .trim()
+  const bytes = execFileSync('git', ['log', '--format=%s'], { cwd: dir, windowsHide: true }).length
   assert.ok(Number(bytes) > 64 * 1024, `合成仓的 log 输出应超出管道缓冲，实际 ${bytes} 字节`)
   return dir
 }
@@ -103,20 +116,22 @@ describe('dispose-community-pr.sh 的 credit 查重形态', () => {
     try {
       const probe = 'credit: PR #999 计入贡献'
       const piped = spawnSync(
-        'bash',
+        BASH,
         ['-c', `set -o pipefail; git log --format='%s' | grep -qF "${probe}"`],
         { cwd: dir, windowsHide: true },
       )
       const viaVar = spawnSync(
-        'bash',
+        BASH,
         ['-c', `subjects="$(git log --format='%s')"; grep -qF "${probe}" <<<"$subjects"`],
         { cwd: dir, windowsHide: true },
       )
-      assert.equal(viaVar.status, 0, '变量形态应找到那笔 credit')
+      assert.ifError(piped.error)
+      assert.ifError(viaVar.error)
+      assert.equal(viaVar.status, 0, `变量形态应找到那笔 credit: ${viaVar.stderr.toString()}`)
       assert.ok(piped.status === 0 || piped.status === 141,
         `管道形态可正常命中或触发 SIGPIPE，不应出现其他错误：${piped.status}`)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   })
 
@@ -124,20 +139,22 @@ describe('dispose-community-pr.sh 的 credit 查重形态', () => {
     const dir = makeLongHistoryRepo()
     try {
       const helper = loadCreditHelper()
-      const hit = spawnSync('bash', ['-c', `${helper}\nhas_credit_commit`], {
+      const hit = spawnSync(BASH, ['-c', `${helper}\nhas_credit_commit`], {
         cwd: dir,
         windowsHide: true,
         env: { ...process.env, PR: '999' },
       })
-      const miss = spawnSync('bash', ['-c', `${helper}\nhas_credit_commit`], {
+      const miss = spawnSync(BASH, ['-c', `${helper}\nhas_credit_commit`], {
         cwd: dir,
         windowsHide: true,
         env: { ...process.env, PR: '998' },
       })
-      assert.equal(hit.status, 0, '早命中的 credit 必须判为已落账')
-      assert.notEqual(miss.status, 0, '不存在的 PR 必须判为未落账')
+      assert.ifError(hit.error)
+      assert.ifError(miss.error)
+      assert.equal(hit.status, 0, `早命中的 credit 必须判为已落账: ${hit.stderr.toString()}`)
+      assert.equal(miss.status, 1, `不存在的 PR 必须判为未落账: ${miss.stderr.toString()}`)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   })
 })

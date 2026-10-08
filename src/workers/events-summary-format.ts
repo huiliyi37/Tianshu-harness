@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
 
-export const SUMMARY_VERSION = 1
+export const SUMMARY_VERSION = 2
 export const BLOCK_BYTES = 256 * 1024
 export const BLOCK_EVENTS = 500
 export const MANIFEST_LIMIT = 1024 * 1024
@@ -16,10 +16,12 @@ export interface BlockSummary {
   start: number; end: number; rawHash: string
   total: number; ordinary: number; firstSeq: number | null; lastSeq: number | null
   delegations: EventReference[]; artifacts: ArtifactReference[]
+  queueTransitions: EventReference[]
 }
 export interface BlockReference {
   digest: string; start: number; end: number; total: number; ordinary: number
   firstSeq: number | null; lastSeq: number | null; delegations: number
+  queueTransitions: number
 }
 export interface SummaryManifest {
   formatVersion: number; parserVersion: number; producerVersion: number
@@ -75,6 +77,7 @@ export function validateManifest(value: unknown): SummaryManifest {
   for (const b of m.blocks) {
     check(b && hashName(b.digest) && integer(b.start) && integer(b.end) && b.start === end && b.end > b.start && b.end <= m.coveredBytes, 'Invalid summary block range')
     check(integer(b.total) && integer(b.ordinary) && integer(b.delegations) && b.total === b.ordinary + b.delegations, 'Invalid block count')
+    check(integer(b.queueTransitions) && b.queueTransitions <= b.ordinary, 'Invalid queue transition count')
     endpoints(b.total, b.firstSeq, b.lastSeq)
     if (b.firstSeq !== null) {
       check(previous === null || previous <= b.firstSeq, 'Unordered summary blocks')
@@ -92,7 +95,8 @@ export function validateBlock(value: unknown, ref: BlockReference): BlockSummary
   const b = value as BlockSummary
   check(b.start === ref.start && b.end === ref.end && b.total === ref.total && b.ordinary === ref.ordinary && b.firstSeq === ref.firstSeq && b.lastSeq === ref.lastSeq && hashName(b.rawHash), 'Block metadata does not match')
   check(Array.isArray(b.delegations) && Array.isArray(b.artifacts) && b.delegations.length === ref.delegations && b.artifacts.length <= b.ordinary, 'Invalid summary references')
-  for (const [refs, delegation] of [[b.delegations, true], [b.artifacts, false]] as const) {
+  check(Array.isArray(b.queueTransitions) && b.queueTransitions.length === ref.queueTransitions, 'Invalid queue references')
+  for (const [refs, delegation] of [[b.delegations, true], [b.artifacts, false], [b.queueTransitions, true]] as const) {
     let offset = b.start - 1
     let seq = b.firstSeq ?? 0
     for (const r of refs) {
@@ -109,5 +113,5 @@ export function validateBlock(value: unknown, ref: BlockReference): BlockSummary
 
 export function blockReference(block: BlockSummary): BlockReference {
   return { digest: summaryDigest(block), start: block.start, end: block.end, total: block.total, ordinary: block.ordinary,
-    firstSeq: block.firstSeq, lastSeq: block.lastSeq, delegations: block.delegations.length }
+    firstSeq: block.firstSeq, lastSeq: block.lastSeq, delegations: block.delegations.length, queueTransitions: block.queueTransitions.length }
 }

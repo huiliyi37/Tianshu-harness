@@ -5,6 +5,7 @@ import { sessionSkillSnapshot } from '../skills/session-skill-snapshot.js'
 import { disposeSessionFilePreviews } from './file-open-routes.js'
 import { disposeSessionBrowserContexts } from './browser-contexts.js'
 import { hasLiveDelegation } from './session-delegation-state.js'
+import { SessionQueueRecovery, findOrphanedApprovals, findOrphanedQueueEntries, updateQueueLedger } from './session-recovery.js'
 import { DelegationStateIndex } from '../workers/delegation-state.js'
 import { withWorkspaceRoots } from '../tools/workspace-context.js'
 import { validateWorkspaceRoots } from './workspace-roots.js'
@@ -697,6 +698,7 @@ export interface StorageReport {
  */
 export interface EventsTail {
   delegationState?: import('../workers/delegation-state.js').DelegationSnapshot
+  pendingQueueLaneIds?: string[]
   /** 尾部 maxEvents 条（日志更短时即全部）。 */
   events: SessionEvent[]
   /** 磁盘日志最早 seq（空日志为 0）。 */
@@ -1333,26 +1335,6 @@ export function delegationTaskCount(name: string, input: Record<string, unknown>
   return Array.isArray(tasks) && tasks.length > 0 ? tasks.length : undefined
 }
 
-/**
- * Scan an event log for approvals that were requested but never resolved —
- * i.e. the run was interrupted (sidecar restart) while blocked on them.
- * Used by rehydrate() to close them out honestly instead of leaving a
- * dangling approval card in the replayed timeline.
- */
-function findOrphanedApprovals(events: SessionEvent[]): Array<{ requestId: string; toolName: string }> {
-  const open = new Map<string, string>()
-  for (const e of events) {
-    const id = typeof e.data.requestId === 'string' ? e.data.requestId : ''
-    if (!id) continue
-    if (e.type === 'approval_required') {
-      open.set(id, typeof e.data.toolName === 'string' ? e.data.toolName : '')
-    } else if (e.type === 'approval_resolved') {
-      open.delete(id)
-    }
-  }
-  return [...open.entries()].map(([requestId, toolName]) => ({ requestId, toolName }))
-}
-
 /** T2 — todo item as surfaced to the desktop (subset of the tool's schema). */
 interface TodoStateItem {
   id: string
@@ -1387,6 +1369,7 @@ function extractTodoState(input: Record<string, unknown>): TodoStateItem[] | nul
 
 export class RuntimeSessionManager {
   private readonly sessions = new Map<string, InternalSession>()
+  private readonly queueRecovery = new SessionQueueRecovery()
   /** In-flight lazy agent builds (per session id) — ensureAgent is not
    *  concurrency-safe on its own: two callers seeing agent=null would each run
    *  createAgent, and the later-resolving build could overwrite the winner.
@@ -1862,7 +1845,8 @@ export class RuntimeSessionManager {
           approvalMode: rec.approvalMode,
         }
         this.sessions.set(session.record.id, session)
-        if (wasRunning) {
+        this.queueRecovery.markBootSession(session)
+        if (wasRunning || rec.pendingQueueLaneIds?.length) {
           // If the run died while blocked on approvals, close them out honestly:
           // read this ONE session's log (bounded: only crashed-with-pending
           // sessions pay it — the pendingApprovals>0 gate keeps lazy boot lazy),
@@ -1910,18 +1894,20 @@ export class RuntimeSessionManager {
           for (const o of orphans) {
             appendMarker('approval_resolved', { requestId: o.requestId, decision: 'sidecar-restart', toolName: o.toolName })
           }
-          appendMarker('status', {
-            status: 'aborted',
-            reason: 'sidecar-restart',
-            ...(orphans.length ? { interruptedApprovals: orphans } : {}),
-          })
-          // One-click resume entry (Phase 3). Carries the model/domain the run
-          // was on — resume is strictly affine to both (prefix-cache), enforced
-          // server-side by resumeRun().
-          appendMarker('resume_offer', {
-            model: rec.model ?? null,
-            domain: rec.domain ?? 'auto',
-          })
+          this.queueRecovery.terminalizeBootQueue(session, data => appendMarker('queue_status', data),
+            rec.pendingQueueLaneIds ?? (markerEvents ? findOrphanedQueueEntries(markerEvents) : []))
+          if (wasRunning) {
+            appendMarker('status', {
+              status: 'aborted',
+              reason: 'sidecar-restart',
+              ...(orphans.length ? { interruptedApprovals: orphans } : {}),
+            })
+            // Resume stays affine to the interrupted run's model and domain.
+            appendMarker('resume_offer', {
+              model: rec.model ?? null,
+              domain: rec.domain ?? 'auto',
+            })
+          }
           this.persistRecord(session)
         }
       }
@@ -1975,6 +1961,7 @@ export class RuntimeSessionManager {
         planAutoApproveUi: ps.record.planAutoApproveUi === true,
       }
       this.sessions.set(session.record.id, session)
+      this.queueRecovery.markBootSession(session)
       this.enforceRingLimits(session)
       if (wasRunning) {
         session.seq += CRASH_RECOVERY_SEQ_GAP
@@ -1997,6 +1984,7 @@ export class RuntimeSessionManager {
         })
         this.persistRecord(session)
       }
+      this.reconcileRestoredQueue(session, findOrphanedQueueEntries(events))
     }
   }
 
@@ -2024,6 +2012,7 @@ export class RuntimeSessionManager {
         this.adoptLoadedEvents(session, evs)
       }
       session.eventsLoaded = true
+      this.reconcileRestoredQueue(session)
       if (loadError !== undefined) {
         this.append(session, 'error', {
           error: `event log could not be read — history replay is incomplete (${loadError})`,
@@ -2055,6 +2044,7 @@ export class RuntimeSessionManager {
     // 客户端 since=0 重放本来就只拿得到环内尾部。磁盘 events.jsonl 不动，
     // 仍是完整历史的 source of truth。
     session.events = evs
+    session.record.pendingQueueLaneIds = findOrphanedQueueEntries(evs)
     this.enforceRingLimits(session)
   }
 
@@ -2067,6 +2057,7 @@ export class RuntimeSessionManager {
     session.seq = Math.max(session.seq, maxSeq)
     // Tail reads carry the bounded replay suffix plus independent lifecycle state.
     session.events = tail.events
+    session.record.pendingQueueLaneIds = tail.pendingQueueLaneIds ?? findOrphanedQueueEntries(tail.events)
     if (tail.delegationState) {
       const index = new DelegationStateIndex(); index.restore(tail.delegationState)
       this.delegationStates.set(session, index); this.delegationSeen.set(session, tail.lastSeq)
@@ -2113,6 +2104,7 @@ export class RuntimeSessionManager {
           if (tail) this.adoptLoadedTail(session, tail)
           else this.adoptLoadedEvents(session, evs)
           session.eventsLoaded = true
+          this.reconcileRestoredQueue(session)
           if (loadError !== undefined) {
             this.append(session, 'error', {
               error: `event log could not be read — history replay is incomplete (${loadError})`,
@@ -2705,6 +2697,7 @@ export class RuntimeSessionManager {
         title: input.title === undefined ? undefined : stripTerminalEscapes(input.title),
         lastSeq: 0,
         pendingApprovals: 0,
+        pendingQueueLaneIds: [],
         approvalMode: input.approvalMode,
         model: sessionModel,
         domain: sessionDomain,
@@ -7189,6 +7182,7 @@ export class RuntimeSessionManager {
     this.enforceRingLimits(session)
     session.record.lastSeq = session.seq
     session.record.updatedAt = stored.ts
+    updateQueueLedger(session.record, type, liveData)
     if (this.persistence) {
       try {
         this.persistence.appendEvent(session.record.id, stored)
@@ -7196,6 +7190,7 @@ export class RuntimeSessionManager {
         // persistence failure must not break the live event log
       }
     }
+    if (type === 'queue_pending' || type === 'queue_status') this.persistRecord(session)
     const forListeners: SessionEvent =
       persistData === liveData ? stored : { ...stored, data: liveData }
     for (const listener of session.listeners) {
@@ -7218,6 +7213,11 @@ export class RuntimeSessionManager {
     } catch {
       // non-fatal — events.jsonl is the source of truth for replay
     }
+  }
+
+  private reconcileRestoredQueue(session: InternalSession, pendingIds = session.record.pendingQueueLaneIds ?? []): void {
+    this.queueRecovery.reconcile(session, this.ownsSessionDurability(session),
+      data => this.appendRaw(session, 'queue_status', data), () => this.persistRecord(session), pendingIds)
   }
 
   /** 阶段 4 — 会话列表失效提示。回调异常不得影响调用方（列表推送只是加速，

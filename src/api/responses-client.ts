@@ -380,6 +380,10 @@ export class ResponsesClient implements StreamClient {
         }
 
         const { done, value } = await reader.read()
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+        if (timeoutController.signal.aborted) {
+          throw new Error(`Responses SSE stream hard timeout (${Math.round(maxStreamMs / 60_000)}min) — stream exceeded maximum duration`)
+        }
         // Check the timeout AFTER read: the idle timer's reader.cancel() makes
         // read() return done=true, but this must throw, not silently break.
         if (streamTimedOut) throw new Error(`Responses SSE stream idle timeout (${Math.round(readTimeoutMs / 1000)}s)`)
@@ -554,6 +558,10 @@ export class ResponsesClient implements StreamClient {
         }
         // Only real content events reset the idle timer (keepalive does not).
         if (sawDataEvent) resetIdleTimer()
+      }
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (timeoutController.signal.aborted) {
+        throw new Error(`Responses SSE stream hard timeout (${Math.round(maxStreamMs / 60_000)}min) — stream exceeded maximum duration`)
       }
     } catch (err) {
       // Observability: surface how much streamed output this attempt discards.

@@ -2,26 +2,35 @@ import type { DecisionRequest } from '../engine/decision-controller.js'
 import type { LiveRegionLine } from '../engine/live-engine.js'
 import type { RivetTheme } from '../theme.js'
 import { color } from '../engine/ansi.js'
-import { hardWrapToDisplayWidth, truncateToDisplayWidth } from '../width.js'
-import { frameTitleLeft, frameLine, frameBottom, frameInset } from './overlay-frame.js'
+import { ambiguousWideEnabled, hardWrapToDisplayWidth, truncateToDisplayWidth } from '../width.js'
+import { frameInset } from './overlay-frame.js'
 import { buildPlanReviewActions } from './plan-review.js'
 import { draftToAnswer } from '../../tools/ask-user-question.js'
 import { formatMarkdown } from './markdown.js'
 
 export function renderDecisionCard(item: DecisionRequest, width: number, height: number, theme: RivetTheme, count: number, countdown?: number): LiveRegionLine[] {
-  const inner = Math.max(1, width - 5)
+  const indent = ' '.repeat(frameInset(width))
+  const policy = { ambiguousAsWide: ambiguousWideEnabled() }
+  const inner = Math.max(1, width - indent.length - 2)
   const lines: LiveRegionLine[] = []
-  const add = (text: string, decisionPart?: LiveRegionLine['decisionPart']) => lines.push({ text: frameLine(` ${text}`, width, theme), decisionPart })
-  const wrap = (text: string, limit = 2) => text.split('\n').flatMap(s => hardWrapToDisplayWidth(s, inner)).slice(0, limit)
+  const add = (text: string, decisionPart?: LiveRegionLine['decisionPart']) => lines.push({ text: truncateToDisplayWidth(`${indent} ${text}`, Math.max(1, width - 1), policy), decisionPart })
+  const wrap = (text: string, limit = 2) => text.split('\n').flatMap(s => hardWrapToDisplayWidth(s, inner, policy)).slice(0, limit)
   const q = item.kind === 'question' ? item.questions[item.index] : undefined
   const title = item.kind === 'plan' ? `计划审批 · ${item.info.title}` : `待回答 · ${q ? `${item.index + 1}/${item.questions.length}` : '确认回答'}`
-  lines.push({ text: frameTitleLeft(truncateToDisplayWidth(title, inner), width, theme), decisionPart: 'title' })
+  add(color(truncateToDisplayWidth(title, inner), theme.secondary, { bold: true }), 'title')
+  if (item.kind === 'question' && item.questions.length > 1 && height >= 10) {
+    const tabs = [...item.questions.map((question, i) => `${i === item.index ? `[${i + 1}]` : i + 1}${draftToAnswer(item.drafts[i]!, question.options) ? '✓' : ''}`),
+      item.index === item.questions.length ? '[提交]' : '提交'].join(' · ')
+    const label = hardWrapToDisplayWidth(tabs, inner, policy).length === 1 ? tabs
+      : `已答 ${item.drafts.filter((draft, i) => draftToAnswer(draft, item.questions[i]!.options)).length}/${item.questions.length} · ${q ? `[${item.index + 1}]` : '[提交]'} · ←→ 切题`
+    add(color(label, theme.muted), 'fact')
+  }
   if (height >= 10 && item.kind === 'plan' && item.view.date) add(color(item.view.date, theme.muted), 'fact')
   if (item.kind === 'question' && q) for (const line of wrap(q.prompt, height >= 8 ? 2 : 1)) add(color(line, theme.secondary, { bold: true }), 'fact')
   if (count > 1 && height >= 10) add(color(`还有 ${count - 1} 项待决策`, theme.muted))
   if (countdown !== undefined && height >= 8) add(color(`Goal：${countdown}s 后自动批准`, theme.warning), 'fact')
   const hint = item.editing ? 'Enter 确认 · Esc 返回' : item.kind === 'plan'
-    ? 'Enter 确认 · Esc 收起 · ↑↓/数字 选择 · PgUp/PgDn 正文 · v 全文 · f 反馈'
+    ? 'Enter 确认 · Esc 收起 · ↑↓/数字 选择 · Ctrl+E/v 全文 · f 反馈 · PgUp/PgDn 正文'
     : 'Enter 确认 · Esc 收起 · ↑↓/数字 选择 · ←→ 切题 · 空格 多选'
   const hints = wrap(hint, height >= 14 ? 2 : 1)
   const reserved = hints.length + 1 + (item.error ? 1 : 0)
@@ -42,10 +51,12 @@ export function renderDecisionCard(item: DecisionRequest, width: number, height:
         return { label: a.label, description: option?.description, recommended: !!option && a.recommended,
           reason: option?.recommendationReason }
       })
+      if (height >= 10) add(color(`文档 · /plan-view ${item.info.slug}`, theme.muted), 'fact')
       if (height >= 8) {
         const body = formatMarkdown({ text: item.view.body ?? '（计划正文为空）', columns: inner }, theme)
-        const start = Math.min(item.scroll, Math.max(0, body.length - 1))
-        for (const line of body.slice(start, start + (height >= 14 ? 3 : 1))) add(line)
+        const bodyBudget = Math.max(1, Math.min(8, height - lines.length - reserved - entries.length - (item.info.options?.length ? 2 : 0)))
+        const start = Math.min(item.scroll, Math.max(0, body.length - bodyBudget))
+        for (const line of body.slice(start, start + bodyBudget)) add(line)
       }
     } else if (q) {
       entries = q.options.map((label, i) => ({ label, selected: item.drafts[item.index]!.selected.includes(i),
@@ -84,6 +95,5 @@ export function renderDecisionCard(item: DecisionRequest, width: number, height:
   }
   if (item.error) add(color(truncateToDisplayWidth(`提交失败：${item.error}`, inner), theme.warning), 'fact')
   for (const row of hints) add(color(row, theme.dim), 'footer')
-  if (lines.length < height) lines.push({ text: frameBottom(width, theme) })
   return lines
 }

@@ -25,6 +25,7 @@ export interface ContentBlockToolUse {
   id: string
   name: string
   input: Record<string, unknown>
+  providerMetadata?: import('./oai-types.js').ToolCallProviderMetadata
   /**
    * Set when the stream ended while this call's arguments were still
    * incomplete/unparseable (final-flush-empty). `input` is {} in that case —

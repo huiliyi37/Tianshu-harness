@@ -10,20 +10,18 @@ function stripAnsi(s: string): string {
 }
 
 describe('formatAskUserQuestion', () => {
-  it('renders a bordered card with title and content', () => {
+  it('renders an open question with title and content', () => {
     const lines = formatAskUserQuestion({
       content: 'Which provider do you want?\n\n  1. OpenAI\n  2. Anthropic',
       columns: 60,
     }, theme)
 
     const plain = lines.map(stripAnsi)
-    assert.ok(plain[0]!.includes('┌'), 'top border')
-    assert.ok(plain[1]!.includes('? 需要你的回答'), 'title')
-    assert.ok(plain[2]!.includes('├'), 'separator')
+    assert.ok(plain[0]!.includes('? 需要你的回答'), 'title')
+    assert.doesNotMatch(plain.join('\n'), /[┌┐└┘├│]/)
     assert.ok(plain.some(l => l.includes('Which provider do you want?')), 'question')
     assert.ok(plain.some(l => l.includes('1. OpenAI')), 'option 1')
     assert.ok(plain.some(l => l.includes('2. Anthropic')), 'option 2')
-    assert.ok(plain[plain.length - 1]!.includes('└'), 'bottom border')
   })
 
   it('does not truncate many options', () => {
@@ -40,15 +38,14 @@ describe('formatAskUserQuestion', () => {
     const lines = formatAskUserQuestion({ content: longQuestion, columns: 60 }, theme)
     const plain = lines.map(stripAnsi)
 
-    // 60 col box → inner width 56, so 120 chars wrap to at least 3 content lines
     const contentLines = plain.filter(l => l.includes('aaa'))
     assert.ok(contentLines.length >= 2, 'long question wraps')
+    assert.equal(contentLines.map(line => line.trimStart()).join(''), longQuestion)
   })
 
-  it('uses box-drawing border characters', () => {
-    const lines = formatAskUserQuestion({ content: 'OK?', columns: 60 }, theme)
-    assert.ok(stripAnsi(lines[0]!).startsWith('┌'))
-    assert.ok(stripAnsi(lines[lines.length - 1]!).startsWith('└'))
+  it('settles to a status line before the chosen answers', () => {
+    const lines = formatAskUserQuestion({ content: 'OK?\n  1. Yes\n  2. No', columns: 60, state: 'answered' }, theme)
+    assert.deepEqual(lines.map(line => stripAnsi(line).trimStart()), ['✓ 已提交回答'])
   })
 
   it('keeps archived questions neutral and does not ask for an answer again', () => {
@@ -63,7 +60,7 @@ describe('formatAskUserQuestion', () => {
     const content = '中文选项👨‍👩‍👧‍👦'.repeat(8)
     const plain = formatAskUserQuestion({ content, columns: 35 }, theme).map(stripAnsi)
     assert.ok(plain.every(line => displayWidth(line) <= 35))
-    const body = plain.slice(3, -1).map(line => line.slice(2, -2).trimEnd()).join('')
+    const body = plain.slice(1).map(line => line.slice(2)).join('')
     assert.equal(body, content)
   })
 })

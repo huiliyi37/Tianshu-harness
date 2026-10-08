@@ -31,6 +31,7 @@ function makeController(session: SessionContext, overrides: Partial<ConstructorP
     getTrajectoryEntries: () => [],
     getStreamedText: () => '',
     refreshLedger: () => {},
+    archiveHistory: async () => 'fixture-controller-history',
     ...overrides,
   })
 }
@@ -1932,5 +1933,46 @@ describe('compaction prompt — write-action chain injection', () => {
     ])
     assert.doesNotMatch(prompt, /变更动作清单/, 'no write section when trajectory is read-only')
     assert.match(prompt, /必须完整保留的用户意图链/, 'user intent chain still present')
+  })
+})
+describe('signed Gemini current-turn compaction boundary', () => {
+  const signedCall = (id: string): OaiMessage => ({ role: 'assistant', content: null, tool_calls: [{
+    id, type: 'function', function: { name: 'glob', arguments: '{}' },
+    providerMetadata: { gemini: { thoughtSignature: `fictional-${id}` } },
+  }] })
+  const history: OaiMessage[] = [
+    { role: 'user', content: 'old task' }, { role: 'assistant', content: 'old answer' },
+    { role: 'user', content: 'current task' }, signedCall('first'),
+    { role: 'tool', tool_call_id: 'first', content: 'result' }, signedCall('second'),
+    { role: 'tool', tool_call_id: 'second', content: 'result' }, { role: 'assistant', content: 'working' },
+  ]
+  // A split between current tool steps retires protocol history needed for continuation.
+  it('keeps the signed current tool turn together even when the desired cut is between complete tool groups', () => {
+    assert.equal(findSafeSplitPoint(history, 5, 2), 2)
+  })
+  it('allows old signed tool steps to retire after a new user message starts another turn', () => {
+    assert.equal(findSafeSplitPoint([...history, { role: 'user', content: 'next task' }], 5, 2), 5)
+  })
+})
+
+
+describe('micro compaction observation recovery', () => {
+  const observation = 'original details\n'.repeat(30) + 'UNIQUE_UNARCHIVED_OBSERVATION\n' + 'tail\n'.repeat(30)
+  const history: OaiMessage[] = [{ role: 'user', content: 'initial' }, { role: 'assistant', content: 'ack' }, { role: 'tool', tool_call_id: 'read_file_original', content: observation }]
+  for (let i = 0; i < 5; i++) history.push({ role: 'user', content: `next ${i}` }, { role: 'assistant', content: 'ack' })
+  for (const mode of ['missing', 'null', 'throw'] as const) {
+    it(`retains the original when recovery archive is ${mode}`, async () => {
+      const session = new SessionContext()
+      const controller = makeController(session, { archiveHistory: mode === 'missing' ? undefined : async () => { if (mode === 'throw') throw new Error('fictional archive failure'); return null } })
+      const out = await (controller as any).compactMessages(history, 1000)
+      assert.equal(out.messages.find((m: OaiMessage) => m.role === 'tool')?.content, observation)
+    })
+  }
+  it('archives original bytes before replacing a semantic observation', async () => {
+    let saved = ''
+    const controller = makeController(new SessionContext(), { archiveHistory: async input => { saved = input.rawContent; return 'fixture-original-observation' } })
+    const out = await (controller as any).compactMessages(history, 1000)
+    assert.ok(saved.includes(observation))
+    assert.match(out.messages.find((m: OaiMessage) => m.role === 'tool')?.content ?? '', /artifact:fixture-original-observation/)
   })
 })

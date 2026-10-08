@@ -18,16 +18,20 @@
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, statSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { SessionStateManager } from '../agent/session-state.js'
 import { buildDynamicAppendix } from '../prompt/volatile.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const SRC_ROOT = join(process.cwd(), 'src')
 
 function collectTsFiles(dir: string, results: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
+    if (isFilesystemMetadata(entry)) continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       if (entry === 'node_modules') continue
@@ -43,6 +47,7 @@ function collectTsFiles(dir: string, results: string[] = []): string[] {
 /** 收集所有 .ts 文件（含测试），用于 env 注册表全量扫描 */
 function collectAllTsFiles(dir: string, results: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
+    if (isFilesystemMetadata(entry)) continue
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       if (entry === 'node_modules') continue
@@ -57,6 +62,43 @@ function collectAllTsFiles(dir: string, results: string[] = []): string[] {
 const allSrcFiles = collectTsFiles(SRC_ROOT)
 const productionFiles = allSrcFiles.filter(f => !f.includes('/__tests__/'))
 const allFilesIncludingTests = collectAllTsFiles(SRC_ROOT)
+
+test('audit collectors exclude metadata while preserving production and test coverage', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'assembly-corpus-'))
+  try {
+    writeFileSync(join(dir, 'source.ts'), 'export const fixture = true\n')
+    writeFileSync(join(dir, '._source.ts'), 'export const metadata = true\n')
+    mkdirSync(join(dir, '._metadata'))
+    writeFileSync(join(dir, '._metadata', 'nested.ts'), 'export const metadata = true\n')
+    mkdirSync(join(dir, '__tests__'))
+    writeFileSync(join(dir, '__tests__', 'fixture.test.ts'), 'export const fixture = true\n')
+    const paths = (files: string[]) => files.map(f => relative(dir, f).replaceAll('\\', '/')).sort()
+    assert.deepEqual(paths(collectTsFiles(dir)), ['source.ts'])
+    assert.deepEqual(paths(collectAllTsFiles(dir)), ['__tests__/fixture.test.ts', 'source.ts'])
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
+})
+
+test('env registry generator covers real source and tests without registering metadata', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'assembly-env-generator-'))
+  try {
+    const src = join(dir, 'src')
+    mkdirSync(join(src, 'config'), { recursive: true })
+    mkdirSync(join(src, '__tests__'))
+    mkdirSync(join(src, '._metadata'))
+    writeFileSync(join(src, 'source.ts'), 'const value = process.env.RIVET_DEBUG\n')
+    writeFileSync(join(src, '__tests__', 'fixture.test.ts'), 'const value = process.env.RIVET_TERSE\n')
+    writeFileSync(join(src, '._source.ts'), 'const value = process.env.RIVET_PLAYBOOK\n')
+    writeFileSync(join(src, '._metadata', 'nested.ts'), 'const value = process.env.RIVET_MAX_WORKERS\n')
+    const generator = fileURLToPath(new URL('../../scripts/gen-env-registry.ts', import.meta.url))
+    const run = spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), generator], {
+      cwd: dir, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    })
+    assert.equal(run.status, 0, run.stdout + run.stderr)
+    const generated = readFileSync(join(src, 'config', 'env-registry.ts'), 'utf8')
+    const names = [...generated.matchAll(/name:\s*'(RIVET_[A-Z_]+)'/g)].map(m => m[1]).sort()
+    assert.deepEqual(names, ['RIVET_DEBUG', 'RIVET_TERSE'])
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
+})
 
 // ── allowlist 条目 ──
 

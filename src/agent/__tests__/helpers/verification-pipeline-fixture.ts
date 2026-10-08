@@ -29,6 +29,7 @@ export async function runVerification(command: string, failTest: boolean, ownFai
   process.env.RIVET_HOME = join(root, 'rivet-home')
   mkdirSync(process.env.RIVET_HOME)
   writeFileSync(join(process.env.RIVET_HOME, 'config.json'), '{}')
+  const jobs = new SessionJobs(join(root, 'jobs'))
   try {
     if (!options.noTestInfra) writeFileSync(join(cwd, 'package.json'), JSON.stringify({ type: 'module', private: true, scripts: { test: 'node --test', typecheck: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(0)"', build: 'node -e "process.exit(0)"' } }))
     writeFileSync(join(cwd, 'good.test.mjs'), "import { test } from 'node:test'; test('passing fixture', () => {});\n")
@@ -41,7 +42,6 @@ export async function runVerification(command: string, failTest: boolean, ownFai
     const baseline = createWorktreeBaseline({ branch: 'fixture', head: 'fixture-head', preExistingDirty: [], preExistingUntracked: [], capturedAt: Date.now() })
     const ownership = createOwnershipLedger({ baseline, taskLedger: ledger })
     ownership.autoOwnFromLedger()
-    const jobs = new SessionJobs(join(root, 'jobs'))
     const evidence = new EvidenceTracker()
     evidence.trackFileModified('feature.js')
     let actual: ToolResult | undefined
@@ -87,7 +87,8 @@ export async function runVerification(command: string, failTest: boolean, ownFai
     if (options.background) {
       assert.equal(initialVerificationCount, 0, 'launch cannot count as completed verification')
       assert.ok(actual?.backgroundJobId)
-      await jobs.await(actual.backgroundJobId, { timeoutMs: 15_000 })
+      const finished = await jobs.await(actual.backgroundJobId, { timeoutMs: 60_000 })
+      assert.ok(finished && !finished.timedOut && finished.job.status !== 'running', finished?.tail ?? 'fixture background verification must settle before reading evidence')
       await jobs.await(actual.backgroundJobId, { timeoutMs: 1 })
       jobs.logs(actual.backgroundJobId)
       assert.equal(ledger.getVerifications().length, options.expectedVerificationCount ?? 1, 'completion records only verification invocations, once')
@@ -96,6 +97,7 @@ export async function runVerification(command: string, failTest: boolean, ownFai
     const gate = createDeliveryGateV2({ taskLedger: ledger, ownership, attribution: createVerificationAttribution({ ownership }) })
     return { actual: actual!, capturedParams, emittedContent, pipelineResult, initialVerificationCount, verification, ledgerEvent: ledger.getVerifications().at(-1)!, gate: gate.assess([]), deliveryGate: gate, ledger, ownership }
   } finally {
+    await jobs.killAllAsync()
     if (previousHome === undefined) delete process.env.RIVET_HOME
     else process.env.RIVET_HOME = previousHome
     rmSync(root, { recursive: true, force: true })

@@ -95,9 +95,9 @@ export type HostMsg =
   | { type: 'error'; message: string }
   | { type: 'providers'; config: ProviderConfigList | null }
   | { type: 'providerSetupResult'; ok: boolean; message?: string }
-  | { type: 'plan'; sessionId: string; plan: PlanDocument }
-  | { type: 'planDecisionResult'; sessionId: string; slug: string; decision: 'approve' | 'reject'; ok: boolean; message?: string }
-  | { type: 'planEditResult'; sessionId: string; slug: string; ok: boolean; message?: string }
+  | { type: 'plan'; sessionId: string; plan: PlanDocument; revision?: number }
+  | { type: 'planDecisionResult'; sessionId: string; slug: string; decision: 'approve' | 'reject'; ok: boolean; message?: string; revision?: number }
+  | { type: 'planEditResult'; sessionId: string; slug: string; ok: boolean; message?: string; revision?: number }
   | { type: 'cockpit'; sessionId: string; snapshot: CockpitSnapshot | null }
   | { type: 'sessionClosed' }
   | {

@@ -1,3 +1,4 @@
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { projectSurfaceAllowed } from '../config/project-trust.js'
@@ -15,12 +16,12 @@ export function loadProjectRules(cwd: string): ClaimProposal[] {
   const proposals: ClaimProposal[] = []
 
   try {
-    const files = readdirSync(rulesDir).filter(f => f.endsWith('.md'))
+    const files = readdirSync(rulesDir).filter(f => !isFilesystemMetadata(f) && f.endsWith('.md'))
 
     for (const file of files) {
       try {
         const content = readFileSync(join(rulesDir, file), 'utf-8').trim()
-        if (!content) continue
+        if (!content || content.includes('\0')) continue
 
         proposals.push({
           kind: 'project_rule',

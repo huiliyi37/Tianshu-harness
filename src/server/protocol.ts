@@ -329,6 +329,8 @@ export interface SessionRecord {
    */
   unattendedHalt?: { reason: string; app?: string }
   pendingApprovals: number
+  /** Queue entries are cancelled explicitly after restart; payloads stay in memory. */
+  pendingQueueLaneIds?: string[]
   /**
    * S — per-session autonomy level. Overrides the global config approval mode
    * so one session can run unattended (dangerously-skip-permissions) while

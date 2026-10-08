@@ -62,3 +62,27 @@ describe('recoverDsmlToolCallsFromContent', () => {
     assert.notEqual(blocks[0]!.id, blocks[1]!.id)
   })
 })
+
+// Treating Markdown literals as protocol must emit no actionable calls.
+for (const wrapper of [
+  (s: string) => 'Example:\n```xml\n' + s + '\n```',
+  (s: string) => 'Example:\n~~~xml\n' + s + '\n~~~',
+  (s: string) => '> ' + s.replaceAll('\n', '\n> '),
+  (s: string) => 'Example: `' + s.replaceAll('\n', ' ') + '`',
+]) {
+  it('preserves a complete DSML example quoted as Markdown', () => {
+    const literal = wrapper(block(invoke('fictional_write', param('path', 'example.txt'))))
+    const { blocks, remaining } = collect(literal)
+    assert.deepEqual(blocks, [])
+    assert.equal(remaining, null)
+  })
+}
+
+it('only parses invokes inside actionable envelopes and preserves literal examples and intervening prose', () => {
+  const example = '```xml\n' + block(invoke('fictional_example', '')) + '\n```'
+  const outside = invoke('fictional_outside', '')
+  const input = example + '\n' + block(invoke('fictional_first', '')) + '\nkeep this prose\n' + outside + '\n' + block(invoke('fictional_second', ''))
+  const { blocks, remaining } = collect(input)
+  assert.deepEqual(blocks.map(b => b.name), ['fictional_first', 'fictional_second'])
+  assert.equal(remaining, example + '\n\nkeep this prose\n' + outside)
+})

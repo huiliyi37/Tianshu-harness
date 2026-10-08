@@ -857,15 +857,18 @@ export class PromptEngine {
     // File content dedup + disk budget: skip on 1M+ windows — mutating historical
     // tool results breaks DeepSeek exact-prefix cache (same rationale as pruning/masking).
     if (!contextWindow || contextWindow < 1_000_000) {
-      const seenContent = new Map<string, number>()
+      const seenContent = new Map<string, Set<string>>()
       for (let i = result.length - 1; i >= 0; i--) {
         const msg = result[i]!
         if (msg.role === 'tool' && msg.content.length > 500 && !msg.content.startsWith('[observation masked')) {
           const hash = simpleHash(msg.content)
-          if (!seenContent.has(hash)) {
-            seenContent.set(hash, i)
-          } else {
+          const bucket = seenContent.get(hash)
+          if (bucket?.has(msg.content)) {
             result[i] = { ...msg, content: `[duplicate content, see later tool result]` }
+          } else if (bucket) {
+            bucket.add(msg.content)
+          } else {
+            seenContent.set(hash, new Set([msg.content]))
           }
         }
       }

@@ -116,7 +116,8 @@ export class TaskRegistry {
   private timeoutTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   /** 待触发的重试 timer（进程关闭时清理，避免泄漏）。 */
-  private retryTimers = new Set<ReturnType<typeof setTimeout>>()
+  private retryTimers = new Map<string, { origin: string; timer: ReturnType<typeof setTimeout> }>()
+  private cancelledRetryOrigins = new Set<string>()
 
   /** 本进程已认领执行的 pending 任务，防止幂等请求重复调度。 */
   private executionClaims = new Set<string>()
@@ -138,11 +139,13 @@ export class TaskRegistry {
   /** 创建任务并立即调度执行（如有 runtime 池） */
   async createTask(input: CreateTaskInput): Promise<TaskRecord> {
     const callerId = input.callerId ?? 'anonymous'
-    const idempotencyKey = input.idempotencyKey ?? buildIdempotencyKey(input.prompt, callerId)
+    const identity = input.scheduledTaskId ? JSON.stringify([callerId, input.scheduledTaskId]) : callerId
+    const idempotencyKey = input.idempotencyKey ?? buildIdempotencyKey(input.prompt, identity)
     const force = input.force ?? false
 
     // 整块串行化：find → build → save 在同一个 per-key 锁内完成
     const record = await this.serialized(idempotencyKey, async () => {
+      if (input.retryOf && this.cancelledRetryOrigins.has(input.retryOf)) throw new Error('Task retry was cancelled')
       // 去重检查（force 跳过）
       if (!force) {
         const existing = await this.store.findActiveByIdempotencyKey(idempotencyKey)
@@ -251,38 +254,47 @@ export class TaskRegistry {
 
     const nextAttempt = attempt + 1
     const origin = record.retryOf ?? record.id
+    if (this.cancelledRetryOrigins.has(origin)) return
     const delay = Math.max(0, retry.backoffMs) * attempt
 
     const timer = setTimeout(() => {
-      this.retryTimers.delete(timer)
-      this.createTask({
-        prompt: record.prompt,
-        source: record.source,
-        callerId: record.callerId,
-        timeoutMs: record.timeoutMs,
-        allowedTools: record.allowedTools,
-        scheduledTaskId: record.scheduledTaskId,
-        retry,
-        unattended: record.unattended,
-        // 重试沿用同一档位：第一次跑不通而重试时放宽档位，等于绕过原判。
-        approvalMode: record.approvalMode,
-        attempt: nextAttempt,
-        retryOf: origin,
-        force: true,
-        idempotencyKey: `${origin}:retry:${nextAttempt}`,
-      }).catch(err => {
+      this.retryTimers.delete(record.id)
+      void (async () => {
+        const current = await this.store.load(record.id)
+        const original = await this.store.load(origin)
+        if (this.cancelledRetryOrigins.has(origin) || original?.status === 'cancelled'
+          || !current || (current.status !== 'failed' && current.status !== 'timed_out')) return
+        await this.createTask({
+          prompt: record.prompt,
+          source: record.source,
+          callerId: record.callerId,
+          timeoutMs: record.timeoutMs,
+          allowedTools: record.allowedTools,
+          scheduledTaskId: record.scheduledTaskId,
+          retry,
+          unattended: record.unattended,
+          // Retries keep the original approval mode and workspace.
+          approvalMode: record.approvalMode,
+          cwd: record.cwd,
+          attempt: nextAttempt,
+          retryOf: origin,
+          force: true,
+          idempotencyKey: `${origin}:retry:${nextAttempt}`,
+        })
+      })().catch(err => {
         serverLogger.error('Failed to enqueue task retry', { taskId: record.id, ...errorContext(err) })
       })
     }, delay)
     // Don't keep the event loop alive solely for a pending retry.
     if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref()
-    this.retryTimers.add(timer)
+    this.retryTimers.set(record.id, { origin, timer })
   }
 
   /** Clear pending retry + timeout timers (call on shutdown to avoid leaks). */
   dispose(): void {
-    for (const t of this.retryTimers) clearTimeout(t)
+    for (const { timer } of this.retryTimers.values()) clearTimeout(timer)
     this.retryTimers.clear()
+    this.cancelledRetryOrigins.clear()
     for (const t of this.timeoutTimers.values()) clearTimeout(t)
     this.timeoutTimers.clear()
   }
@@ -291,13 +303,27 @@ export class TaskRegistry {
 
   /** 取消任务。cancelled 是终态，不可被覆盖。 */
   async cancel(id: string): Promise<TaskRecord | null> {
-    const ac = this.abortControllers.get(id)
-    if (ac) {
-      try {
-        ac.abort()
-      } catch (err) {
-        serverLogger.warn('AbortController.abort threw while cancelling task', { id, ...errorContext(err) })
+    const record = await this.store.load(id)
+    if (!record) return null
+    const origin = record.retryOf ?? record.id
+    this.cancelledRetryOrigins.add(origin)
+    for (const [source, retry] of this.retryTimers) {
+      if (retry.origin === origin) {
+        clearTimeout(retry.timer)
+        this.retryTimers.delete(source)
       }
+    }
+    const chain = await this.store.list()
+    const ids = new Set([id, ...chain.filter(task => (task.id === origin || task.retryOf === origin)
+      && task.status !== 'completed').map(task => task.id)])
+    for (const taskId of ids) {
+      const ac = this.abortControllers.get(taskId)
+      try {
+        ac?.abort()
+      } catch (err) {
+        serverLogger.warn('AbortController.abort threw while cancelling task', { id: taskId, ...errorContext(err) })
+      }
+      if (taskId !== id) await this.transition(taskId, 'cancelled')
     }
     return this.transition(id, 'cancelled')
   }
@@ -435,10 +461,14 @@ export class TaskRegistry {
   private async scheduleExecution(record: TaskRecord): Promise<void> {
     if (!this.runtimePool) return
 
-    await this.transition(record.id, 'running')
-
     const ac = new AbortController()
     this.abortControllers.set(record.id, ac)
+    const current = await this.transition(record.id, 'running')
+    if (current?.status !== 'running' || ac.signal.aborted
+      || this.cancelledRetryOrigins.has(record.retryOf ?? record.id)) {
+      this.cleanup(record.id)
+      return
+    }
 
     // 设置超时
     if (record.timeoutMs > 0) {

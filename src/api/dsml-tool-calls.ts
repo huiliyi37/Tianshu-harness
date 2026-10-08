@@ -37,40 +37,79 @@ export function recoverDsmlToolCallsFromContent(
   text: string,
   emit: (block: DsmlToolUseBlock) => void,
 ): string | null {
-  // 正则就地构造：带 g 标志的正则持有 lastIndex，模块级共享会在并发流之间串状态。
-  const openMatch = /<[\uFF5C|]DSML[\uFF5C|]tool_calls\s*>/.exec(text)
-  if (!openMatch) return null
-
-  const invokeRe = /<[\uFF5C|]DSML[\uFF5C|]invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/[\uFF5C|]DSML[\uFF5C|]invoke>/g
-  const paramRe = /<[\uFF5C|]DSML[\uFF5C|]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([\s\S]*?)<\/[\uFF5C|]DSML[\uFF5C|]parameter>/g
-
+  // Scan protocol envelopes only outside Markdown literals. Keep offsets in
+  // the original text so removing an actionable envelope never removes prose.
+  const literals = markdownLiteralRanges(text)
+  const isLiteral = (index: number) => literals.some(([start, end]) => index >= start && index < end)
+  const envelopeRe = /<[｜|]DSML[｜|]tool_calls\s*>/g
+  const closerRe = /<\/[｜|]DSML[｜|]tool_calls\s*>/g
+  const invokeRe = /<[｜|]DSML[｜|]invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/[｜|]DSML[｜|]invoke>/g
+  const paramRe = /<[｜|]DSML[｜|]parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?\s*>([\s\S]*?)<\/[｜|]DSML[｜|]parameter>/g
+  const removed: Array<[number, number]> = []
   let toolUses = 0
-  let invoke: RegExpExecArray | null
-  while ((invoke = invokeRe.exec(text)) !== null) {
-    const name = invoke[1]!
-    const input: Record<string, unknown> = {}
-    paramRe.lastIndex = 0
-    let param: RegExpExecArray | null
-    while ((param = paramRe.exec(invoke[2]!)) !== null) {
-      const key = param[1]!
-      const rawValue = param[3]!
-      // string="false" 表示结构化参数，按 JSON 解析；其余（含缺省）按字面量。
-      if (param[2] === 'false') {
-        try { input[key] = JSON.parse(rawValue) } catch { input[key] = rawValue }
-      } else {
-        input[key] = rawValue
+  let open: RegExpExecArray | null
+  while ((open = envelopeRe.exec(text)) !== null) {
+    if (isLiteral(open.index)) continue
+    const start = open.index + open[0].length
+    closerRe.lastIndex = start
+    const closer = closerRe.exec(text)
+    const end = closer ? closer.index + closer[0].length : text.length
+    const body = text.slice(start, closer?.index ?? end)
+    let envelopeCalls = 0
+    invokeRe.lastIndex = 0
+    let invoke: RegExpExecArray | null
+    while ((invoke = invokeRe.exec(body)) !== null) {
+      if (isLiteral(start + invoke.index)) continue
+      const name = invoke[1]!
+      const input: Record<string, unknown> = {}
+      paramRe.lastIndex = 0
+      let param: RegExpExecArray | null
+      while ((param = paramRe.exec(invoke[2]!)) !== null) {
+        const rawValue = param[3]!
+        if (param[2] === 'false') {
+          try { input[param[1]!] = JSON.parse(rawValue) } catch { input[param[1]!] = rawValue }
+        } else {
+          input[param[1]!] = rawValue
+        }
       }
+      emit({ type: 'tool_use', id: `fallback_${name}_${toolUses++}`, name, input })
+      envelopeCalls++
     }
-    emit({ type: 'tool_use', id: `fallback_${name}_${toolUses}`, name, input })
-    toolUses++
+    if (envelopeCalls > 0) removed.push([open.index, end])
+    envelopeRe.lastIndex = end
   }
   if (toolUses === 0) return null
+  let remaining = ''
+  let offset = 0
+  for (const [start, end] of removed) {
+    remaining += text.slice(offset, start)
+    offset = end
+  }
+  return (remaining + text.slice(offset)).trim()
+}
 
-  // 剥掉标记区：开标记 → 最后一个闭标记（模型漏发闭标记时到文末）。
-  const closerRe = /<\/[\uFF5C|]DSML[\uFF5C|]tool_calls\s*>/g
-  closerRe.lastIndex = openMatch.index
-  let end = text.length
-  let closer: RegExpExecArray | null
-  while ((closer = closerRe.exec(text)) !== null) end = closer.index + closer[0].length
-  return (text.slice(0, openMatch.index) + text.slice(end)).trim()
+function markdownLiteralRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let fence: { marker: string; length: number; start: number } | undefined
+  const lines = /[^\n]*(?:\n|$)/g
+  let line: RegExpExecArray | null
+  while ((line = lines.exec(text)) !== null && line[0]) {
+    const value = line[0]
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)/.exec(value)
+    if (fence) {
+      if (marker && marker[1]![0] === fence.marker && marker[1]!.length >= fence.length && !marker[2]!.trim()) {
+        ranges.push([fence.start, line.index + value.length])
+        fence = undefined
+      }
+    } else if (marker) {
+      fence = { marker: marker[1]![0]!, length: marker[1]!.length, start: line.index }
+    } else if (/^ {0,3}>|^(?: {4}|\t)/.test(value)) {
+      ranges.push([line.index, line.index + value.length])
+    }
+  }
+  if (fence) ranges.push([fence.start, text.length])
+  const inline = /(`+)([^`]|`(?!`))*?\1/g
+  let match: RegExpExecArray | null
+  while ((match = inline.exec(text)) !== null) ranges.push([match.index, match.index + match[0].length])
+  return ranges
 }

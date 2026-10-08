@@ -18,6 +18,7 @@ describe('GIT_TOOL', () => {
   beforeEach(() => {
     TMP = mkdtempSync(join(tmpdir(), 'rivet-git-tool-'))
     execSync('git init', { cwd: TMP })
+    writeFileSync(join(TMP, '.git', 'info', 'exclude'), '._*\n.DS_Store\n')
     execSync('git config user.email "test@test.com"', { cwd: TMP })
     execSync('git config user.name "Test"', { cwd: TMP })
   })
@@ -281,6 +282,7 @@ describe('getWorkingTreeFiles / getFileDiff (desktop changes tab)', () => {
   beforeEach(() => {
     TMP2 = mkdtempSync(join(tmpdir(), 'rivet-git-wt-'))
     execSync('git init', { cwd: TMP2 })
+    writeFileSync(join(TMP2, '.git', 'info', 'exclude'), '._*\n.DS_Store\n')
     execSync('git config user.email "test@test.com"', { cwd: TMP2 })
     execSync('git config user.name "Test"', { cwd: TMP2 })
     writeFileSync(join(TMP2, 'base.txt'), 'base\n')
@@ -449,6 +451,7 @@ describe('getFileDiff / getFileAtBase outside the session cwd (#358)', () => {
     INSIDE = mkdtempSync(join(tmpdir(), 'rivet-git-inside-'))
     OUTSIDE = mkdtempSync(join(tmpdir(), 'rivet-git-outside-'))
     execSync('git init', { cwd: INSIDE })
+    writeFileSync(join(INSIDE, '.git', 'info', 'exclude'), '._*\n.DS_Store\n')
     execSync('git config user.email "test@test.com"', { cwd: INSIDE })
     execSync('git config user.name "Test"', { cwd: INSIDE })
     writeFileSync(join(INSIDE, 'base.txt'), 'base\n')
@@ -498,11 +501,14 @@ describe('getFileDiff / getFileAtBase outside the session cwd (#358)', () => {
   // filesystem/system roots and sensitive filenames are never readable. The
   // diff readers must agree with that single source of truth.
   it('refuses an absolute path under a system root or a sensitive name', async () => {
+    const systemFiles = process.platform === 'win32'
+      ? ['C:\\Windows\\fixture.txt', 'C:\\Program Files\\fixture.txt', 'C:\\Users\\fixture.txt']
+      : ['/etc/passwd']
     const sensitive = [
       join(homedir(), '.ssh', 'id_rsa'),
       join(homedir(), '.env'),
       join(homedir(), 'credentials.json'),
-      '/etc/passwd',
+      ...systemFiles,
     ]
     for (const target of sensitive) {
       await assert.rejects(() => getFileDiff(INSIDE, target), /无效文件路径/, `should refuse ${target}`)
@@ -538,6 +544,7 @@ describe('isPathClean — v2 claim-lease 的工作区干净判据', () => {
 
   const initRepo = (): void => {
     execSync('git init', { cwd: dir })
+    writeFileSync(join(dir, '.git', 'info', 'exclude'), '._*\n.DS_Store\n')
     execSync('git config user.email "test@test.com"', { cwd: dir })
     execSync('git config user.name "Test"', { cwd: dir })
   }

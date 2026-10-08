@@ -69,24 +69,28 @@ describe('import_resource', () => {
 
     it('rejects a symlink inside the container that points outside', (t) => {
       const root = mkdtempSync(join(tmpdir(), 'import-guard-'))
+      const outside = mkdtempSync(join(tmpdir(), 'import-guard-outside-'))
       try {
         mkdirSync(join(root, 'inner'), { recursive: true })
+        mkdirSync(join(root, 'target'))
+        writeFileSync(join(outside, 'fixture.txt'), 'external fixture')
+        writeFileSync(join(root, 'target', 'fixture.txt'), 'internal fixture')
         try {
-          // 显式声明 'dir'（与 glob.test.ts 的循环链接守卫同款）：Windows 上目录
-          // 符号链接必须给类型，不给时 Node 按 'file' 建，失败码未必落在下面捕获的
-          // EPERM 上，守卫会漏。
-          symlinkSync('/etc', join(root, 'inner', 'link'), 'dir')
+          const type = process.platform === 'win32' ? 'junction' : 'dir'
+          symlinkSync(outside, join(root, 'inner', 'link'), type)
+          symlinkSync(join(root, 'target'), join(root, 'inner', 'safe-link'), type)
         } catch (err) {
-          // Windows 无管理员/开发者模式时目录符号链接创建 EPERM——环境权限问题，
-          // 非被测逻辑缺陷（issue #189 同族守卫，与 glob.test.ts 同款）。
+          // 某些文件系统不支持目录链接；Windows junction 无需开发者模式。
           if ((err as NodeJS.ErrnoException).code === 'EPERM') {
-            return t.skip('dir symlink requires admin/dev mode on Windows')
+            return t.skip('directory links unavailable on this filesystem')
           }
           throw err
         }
-        assert.equal(subpathEscapesContainer(root, 'inner/link/passwd'), true)
+        assert.equal(subpathEscapesContainer(root, 'inner/link/fixture.txt'), true)
+        assert.equal(subpathEscapesContainer(root, 'inner/safe-link/fixture.txt'), false)
       } finally {
         rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+        rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
       }
     })
   })

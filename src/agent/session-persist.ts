@@ -5,57 +5,14 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, rmSync, readdirSync, s
 import { writeFileAtomicSync, writeFileAtomicAsync, writeFileAtomicDurableAsync } from '../fs-atomic.js'
 import { isAbsolute, join, relative, resolve } from 'path'
 import { sessionsDir } from '../config/paths.js'
-import type { ContentBlock, Message } from '../api/types.js'
+import type { Message } from '../api/types.js'
 import { normalizeOaiMessage, normalizeOaiMessages } from '../api/oai-types.js'
-import type { OaiAssistantMessage, OaiMessage, OaiToolCall, OaiToolMessage } from '../api/oai-types.js'
-import { stableStringify } from '../api/stable-json.js'
+import type { OaiMessage, OaiToolCall } from '../api/oai-types.js'
+import { legacyMessageToOaiMessages } from './session-message-conversion.js'
 import { isSafeToRerun } from '../tools/write-tool-helpers.js'
 import { JSON_VALUE_KEEP_RATIO, MAX_SESSION_MESSAGE_JSON_CHARS } from '../compact/constants.js'
 import { parseFrozenSnapshotData, type FrozenSnapshotData } from '../prompt/frozen-snapshot.js'
 
-function legacyMessageToOaiMessages(message: Message): OaiMessage[] {
-  if (typeof message.content === 'string') {
-    return [{ role: message.role, content: message.content }]
-  }
-
-  if (message.role === 'user') {
-    const text = message.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
-      .join('')
-    const toolMessages: OaiToolMessage[] = message.content
-      .filter((block): block is ContentBlock & { type: 'tool_result' } => block.type === 'tool_result')
-      .map(block => ({ role: 'tool', tool_call_id: block.tool_use_id, content: block.content }))
-    return [
-      ...(text ? [{ role: 'user' as const, content: text }] : []),
-      ...toolMessages,
-    ]
-  }
-
-  const text = message.content
-    .filter(block => block.type === 'text')
-    .map(block => block.text)
-    .join('')
-  const reasoning = message.content
-    .filter(block => block.type === 'thinking')
-    .map(block => block.thinking)
-    .join('')
-  const toolCalls: OaiToolCall[] = message.content
-    .filter((block): block is ContentBlock & { type: 'tool_use' } => block.type === 'tool_use')
-    .map(block => ({
-      id: block.id,
-      type: 'function',
-      function: { name: block.name, arguments: stableStringify(block.input) },
-    }))
-
-  const assistant: OaiAssistantMessage = {
-    role: 'assistant',
-    content: text || (toolCalls.length === 0 ? '' : null),
-    ...(reasoning ? { reasoning_content: reasoning } : {}),
-    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-  }
-  return [assistant]
-}
 import type { SessionMetadata } from '../context/types.js'
 import type { CompactEvent } from '../context/types.js'
 import type { LedgerSessionMemoryState, SessionMemoryEntry, SessionMemoryState } from '../context/types.js'
@@ -112,6 +69,8 @@ export function serializeOaiSessionMessage(message: OaiMessage, maxChars = MAX_S
   const normalized = normalizeOaiMessage(message)
   // Attachments are protocol data. Truncating a URL/base64 value corrupts it.
   if (normalized.role === 'user' && Array.isArray(normalized.content)) return JSON.stringify(normalized)
+  // A signature and the associated function arguments are opaque protocol data.
+  if (normalized.role === 'assistant' && normalized.tool_calls?.some(call => call.providerMetadata?.gemini?.thoughtSignature)) return JSON.stringify(normalized)
   return serializeSessionJsonValue(normalized, maxChars, () => ({
     role: normalized.role,
     content: truncateString(JSON.stringify(normalized), maxChars),

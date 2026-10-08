@@ -84,7 +84,7 @@ test('same-size middle rewrite with restored mtime cannot reuse a stale artifact
     const result = await readEventsTailIndexed(f.file, 8)
     assert.deepEqual(result.tail, parseEventsTailRaw(changed, 8))
     assert.equal(result.metrics.mode, 'scan')
-    assert.match(result.metrics.validationReason, /hash mismatch/)
+    assert.match(result.metrics.validationReason, /hash mismatch|another log generation/)
     assert.deepEqual(result.tail.artifactIds, ['old-art', 'old-art', 'new-art'])
   } finally { f.cleanup() }
 })

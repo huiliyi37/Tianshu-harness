@@ -614,7 +614,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
 
       // micro compact (default)
       pushStatic(createLogEntry({ type: 'system', content: 'Micro-compacting conversation...' }))
-      const { messages: compacted, truncated } = microCompactOai(msgs, ctx.maxTokens, beforeTokens)
+      const { messages: compacted, truncated } = microCompactOai(msgs, ctx.maxTokens, beforeTokens, new Map())
       ctx.session.replaceMessages(compacted)
       ctx.agent.config.promptEngine.resetAppendixBaseline()
       const afterTokens = estimateOaiTokens(compacted)

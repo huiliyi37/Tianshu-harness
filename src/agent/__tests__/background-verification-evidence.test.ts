@@ -1,5 +1,6 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { runVerification } from './helpers/verification-pipeline-fixture.js'
 import { getEffectiveVerifications } from '../verification-attribution.js'
 import { unwrapVerification } from '../../tools/verification-invocation.js'
@@ -59,7 +60,7 @@ it('legacy missing counts stay unknown and latest follows completion order after
 
 it('literal wrappers and output redirects preserve execution; compound scripts get no proof', () => {
   const parsed = unwrapVerification("rtk proxy bash -c 'cd /tmp/project && npm test'", '/repo')
-  assert.equal(parsed?.cwd, '/tmp/project')
+  assert.equal(parsed?.cwd, resolve('/tmp/project'))
   assert.equal(parsed?.command, 'npm test')
   const redirected = unwrapVerification('npm test > out 2>&1', '/repo')
   assert.equal(redirected?.command, 'npm test')

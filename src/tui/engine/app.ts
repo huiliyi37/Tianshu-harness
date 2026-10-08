@@ -30,7 +30,7 @@ import { budgetInputChrome } from './input-layout.js'
 import { resolveFrontendRenderer } from './renderer-policy.js'
 import { FrontendWorkflow } from './frontend-workflow.js'
 import { FrontendMouse } from './frontend-mouse.js'
-import { handlePagerKey, pagerSearchLines } from './pager-controller.js'
+import { handlePagerKey, pagerSearchLines, remapPagerOffsets } from './pager-controller.js'
 import { projectUnifiedTasks } from './task-projection.js'
 import { handleTasksKey, selectedTask } from './tasks-controller.js'
 import { previewFrontendSession } from '../frontend-session-provider.js'
@@ -148,6 +148,7 @@ import { InitFlow, probeInitFlowInput, type InitCommit, type InitStepResult } fr
 import { renderSettings } from '../format/settings.js'
 import type { SettingsFlow, SettingsSaveRequest, SettingsSaveResult, SettingsView } from '../settings-flow.js'
 import { parseScrollbackTranscript } from '../scrollback-transcript.js'
+import { preparePlanPreview } from '../format/plan-preview.js'
 import { renderCockpit } from '../format/cockpit.js'
 import type { CockpitSnapshot, Panel } from '../cockpit/types.js'
 import { PANELS } from '../cockpit/types.js'
@@ -608,6 +609,7 @@ export class TuiApp {
   private activePlanProvider?: () => string | undefined
   /** Plan Mode 活动草稿路径（侧栏「起草中」） */
   private planDraftProvider?: () => { path: string; bytes?: number } | null | undefined
+  private planPreviewCache?: { source: string; columns: number; theme: RivetTheme; document: ReturnType<typeof preparePlanPreview>; messages: PagerData['messages'] }
   /** 当前 GoalTracker 快照访问器 */
   private goalTrackerProvider?: () => import('../../agent/goal-tracker.js').GoalTracker | null
   /** 当前 PlanExecutionTrace 访问器 */
@@ -2514,6 +2516,7 @@ export class TuiApp {
     // 此处消费指针防泄漏（后续 pager 打开不再劫持 pagerContent）。
     if (closingId === 'pager' && preview) {
       this.planPreview = null
+      this.planPreviewCache = undefined
       if (preview.returnTo === 'approval' && this.pendingPlanApproval) {
         this.decisions.restore()
         return
@@ -2607,6 +2610,32 @@ export class TuiApp {
    *  returnTo 供 provider 选择 footer 文案——q 是「返回」还是「关闭」）。 */
   getPlanPreview(): { slug: string; draftPath?: string; returnTo?: 'approval' | 'plan-picker' } | null {
     return this.planPreview
+  }
+
+  private getPagerContent(): PagerData {
+    const data = this.detailPager ?? this.overlayController.getData()?.pagerContent?.() ?? { content: '(no content)', page: 0 }
+    if (!this.planPreview) return data
+    const cached = this.planPreviewCache
+    if (!cached || cached.source !== data.content || cached.columns !== this.columns || cached.theme !== this.theme) {
+      const document = preparePlanPreview(data.content, this.columns, this.theme)
+      this.planPreviewCache = { source: data.content, columns: this.columns, theme: this.theme,
+        document, messages: parseScrollbackTranscript(document.content) }
+      if (cached) {
+        const nav = this.overlayController.nav(), pageSize = Math.max(1, this.rows - 4)
+        const anchor = cached.document.anchorAt(nav.pagerLineOffset ?? nav.pagerPage * pageSize)
+        remapPagerOffsets(nav, offset => document.rowForAnchor(cached.document.anchorAt(offset)))
+        let row = document.rowForAnchor(anchor)
+        if ((nav.pagerMode === 'search' || nav.pagerMode === 'results') && nav.pagerSearchCurrent > 0) {
+          const matches = document.searchRows(nav.pagerSearchQuery)
+          nav.pagerSearchCurrent = Math.min(nav.pagerSearchCurrent, matches.length)
+          row = matches[nav.pagerSearchCurrent - 1] ?? row
+        }
+        nav.pagerLineOffset = Math.max(0, Math.min(row, document.content.split('\n').length - pageSize))
+        nav.pagerPage = Math.floor(nav.pagerLineOffset / pageSize)
+      }
+    }
+    const { document, messages } = this.planPreviewCache!
+    return { ...data, content: document.content, searchRows: document.searchRows, messages }
   }
 
   /** 打开计划全文预览——复用 pager overlay（固定每页 height-4 行、PgUp/PgDn 翻页）。 */
@@ -3637,7 +3666,7 @@ export class TuiApp {
 
     if (id === 'pager') {
       return handlePagerKey(key, { nav: this.overlayController.nav(), rows: this.rows,
-        data: this.detailPager ?? this.overlayController.getData()?.pagerContent?.() ?? {content: '', page: 0},
+        data: this.getPagerContent(),
         preview: !!(this.planPreview || this.detailPager), rerender: () => this.overlay.rerender() })
     }
 
@@ -6427,6 +6456,12 @@ export class TuiApp {
       else lines.push({ text: color(`${decision.kind === 'plan' ? '待审批' : '待回答'} · Tab 返回卡片`, this.theme.warning), decisionPart: 'footer' })
     }
     let chromeStart = this.screenReader ? gateStart : lines.length
+    if (planModeActive && !showSidePanel && decision?.kind !== 'plan') {
+      try {
+        const draft = this.planDraftProvider?.()
+        if (draft) lines.push({ text: this.clampLine(color(`  计划草稿 · /plan-view · ${draft.path}`, this.theme.muted)) })
+      } catch { /* A transient draft write must not interrupt the composer. */ }
+    }
     if (!showSidePanel && this.state.todoExpanded && this.state.todos.length) {
       for (const text of formatTaskList(this.state.todos, this.theme, { width: cols, maxRows: 15, showProgressBar: false,
         expanded: true, expandHint: 'Ctrl+X T 收起', tick: this.streamRenderController.tick, ascii: useAsciiGlyphs() })) {
@@ -7178,10 +7213,10 @@ export class TuiApp {
     // Pager — page / mode / search / message 由 overlayNav 注入（覆盖 provider 的静态值）
     this.overlay.register('pager', {
       render: (_w, _h) => {
-        const data = this.detailPager ?? overlayData?.pagerContent?.() ?? { content: '(no content)', page: 0 }
+        const data = this.getPagerContent()
         const nav = this.overlayController.nav()
         const searchMatches = nav.pagerMode === 'search' || nav.pagerMode === 'results'
-          ? pagerSearchLines(data.content, nav.pagerSearchQuery).length
+          ? (data.searchRows?.(nav.pagerSearchQuery) ?? pagerSearchLines(data.content, nav.pagerSearchQuery)).length
           : 0
         return renderPager({
           ...data,

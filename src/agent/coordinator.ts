@@ -1583,6 +1583,7 @@ export class DelegationCoordinator {
     mergedSignal: AbortSignal,
     isWrite: boolean,
     current: DelegateRunState,
+    runBounded: (config: WorkerSessionConfig) => Promise<WorkerSessionRun>,
   ): Promise<DelegateRunState> {
     let run = current
     let attempt = 0
@@ -1645,7 +1646,7 @@ export class DelegationCoordinator {
 
       let continued: WorkerSessionRun
       try {
-        continued = await this.runWorker(continuationConfig)
+        continued = await runBounded(continuationConfig)
       } catch (error) {
         // 续跑失败不覆盖首轮成果——保留原结果，让主控看到原始 failureReason。
         debugLog(`[worker-continuation] ${order.id} 第 ${attempt} 次续跑抛错：${error instanceof Error ? error.message : String(error)}`)
@@ -2020,7 +2021,7 @@ export class DelegationCoordinator {
       ? this.cardForModelOverride(order.modelOverride.model)
       : this.selectModelForTask(task, preferredTier, order.profile)
     const selectedTier = inferModelTierFromCard(selected)
-    const tierShadow = this.buildTierShadow(order, selected, tierRecommendation)
+    let tierShadow = this.buildTierShadow(order, selected, tierRecommendation)
     const tierGatedDecision = buildModelTierGatedDecisionEvent({
       sessionId: this.config.sessionId ?? 'unknown',
       workOrderId: order.id,
@@ -2050,9 +2051,6 @@ export class DelegationCoordinator {
       },
       vetoSignals: tierInfluence.gate.vetoSignals,
     })
-    persistModelTierShadow(this.config.modelTierShadowStore, tierShadow)
-    persistModelTierGatedDecision(this.config.modelTierShadowStore, tierGatedDecision)
-    persistGatedInfluenceAudit(this.config.gatedInfluenceAuditStore ?? this.config.modelTierShadowStore, gatedInfluenceAudit)
     // Use the work order's allowedTools (from ProfileRegistry) instead of hardcoded sets.
     // A profile may allowlist a tool that isn't registered in THIS session — gated
     // tools (web_search), MCP tools, or a host-trimmed registry. filterToolRegistry
@@ -2065,7 +2063,17 @@ export class DelegationCoordinator {
       debugLog(`[worker-tools] order ${order.id} (${order.profile}): dropping ${missingTools.length} unregistered tool(s) [${missingTools.join(', ')}] — not in base registry this session`)
     }
     const workerRegistry = filterToolRegistry(this.config.baseToolRegistry, presentTools)
-    const workerConfig = this.config.runtimeFactory(order, selected, workerRegistry)
+    let workerConfig = this.config.runtimeFactory(order, selected, workerRegistry)
+    if (workerConfig.runtimeDecision) {
+      selected = this.cardForModelOverride(workerConfig.runtimeDecision.model)
+      workerConfig.providerName = workerConfig.runtimeDecision.providerName
+      tierShadow = this.buildTierShadow(order, selected, tierRecommendation)
+      tierGatedDecision.selectedModel = selected.model
+      tierGatedDecision.selectedTier = inferModelTierFromCard(selected)
+    }
+    persistModelTierShadow(this.config.modelTierShadowStore, tierShadow)
+    persistModelTierGatedDecision(this.config.modelTierShadowStore, tierGatedDecision)
+    persistGatedInfluenceAudit(this.config.gatedInfluenceAuditStore ?? this.config.modelTierShadowStore, gatedInfluenceAudit)
     workerConfig.routeReason = `profile=${order.profile};task=${task};tier=${preferredTier};explicitOverride=${!!order.modelOverride}`
     enforceWorkerCapabilities(order, workerConfig)
     workerConfig.reviewDepth = order.reviewDepth
@@ -2305,6 +2313,7 @@ export class DelegationCoordinator {
     this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
     this.ensureStallSweep()
 
+    try {
     try {
       if (role === 'hands') {
         const acquiredClaimFiles: string[] = []
@@ -2566,7 +2575,6 @@ export class DelegationCoordinator {
             }
           } finally {
             this.liveness.unregister(order.id)
-            this.orderControllers.delete(order.id)
           }
         }
       }
@@ -2596,10 +2604,14 @@ export class DelegationCoordinator {
               && TIER_FLOOR_RANK[t] <= TIER_FLOOR_RANK[maxEscalationTier!]
           })
           .sort((a, b) => TIER_FLOOR_RANK[inferModelTierFromCard(b)] - TIER_FLOOR_RANK[inferModelTierFromCard(a)])
-        const strongCard = upgradeCards[0]
+        let strongCard = upgradeCards[0]
         if (strongCard) {
           // Re-create worker config with Pro model
           const upgradedConfig = this.config.runtimeFactory(order, strongCard, workerRegistry)
+          if (upgradedConfig.runtimeDecision) {
+            strongCard = this.cardForModelOverride(upgradedConfig.runtimeDecision.model)
+            upgradedConfig.providerName = upgradedConfig.runtimeDecision.providerName
+          }
           upgradedConfig.maxTurns = clampWorkerMaxTurns(upgradedConfig.maxTurns, order.budget.maxTurns)
           upgradedConfig.reviewDepth = order.reviewDepth
           upgradedConfig.parentApprovalMode = this.config.parentApprovalMode
@@ -2718,6 +2730,7 @@ export class DelegationCoordinator {
             this.recordProviderOutcome(strongCard.model, true)
             if (profileRegistry.get(order.profile)?.tierLock) this.circuitBreaker.recordSuccess(order.profile)
             selected = strongCard
+            workerConfig = upgradedConfig
             // Rebuild tierShadow for the Pro model so telemetry is coherent
             const freshTierShadow = this.buildTierShadow(order, selected, tierRecommendation)
             persistModelTierShadow(this.config.modelTierShadowStore, freshTierShadow)
@@ -2789,8 +2802,11 @@ export class DelegationCoordinator {
           packet: await buildPrimaryWorkerPacket([degraded], this.config.artifactStore),
         }
       }
+    }
+    run = await this.maybeContinueExhausted(order, workerConfig, mergedSignal, isWrite, run,
+      config => wrapAbort(this.runWorker(config)))
     } finally {
-      // A4: stop tracking — no false stall after completion/failure.
+      // All rounds share one cancellation, steering and activity lifecycle.
       this.liveness.unregister(order.id)
       this.orderControllers.delete(order.id)
       this.liveMessages.delete(order.id)
@@ -2806,10 +2822,6 @@ export class DelegationCoordinator {
         this.collaboration.releaseLocks(this.config.sessionId)
       }
     }
-
-    // 预算耗尽 → 自动续跑。必须在 enrichResult / 熔断记账 / 升级判定之前：否则
-    // 首轮的 blocked 先污染连败计数，而续跑产出的结果又拿不到模型元数据。
-    run = await this.maybeContinueExhausted(order, workerConfig, mergedSignal, isWrite, run)
 
     // completed-aborted（2026-09-05 team-76dc14a1 事故修复，2026-09-21 回流）：
     // worker 被 abort（父信号 / 预算墙钟）斩杀但其 scope 声明产物已按预期写盘时，

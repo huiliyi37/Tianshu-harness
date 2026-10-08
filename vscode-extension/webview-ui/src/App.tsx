@@ -115,6 +115,8 @@ export function App() {
   const [providerConfig, setProviderConfig] = useState<ProviderConfigList | null | undefined>(undefined)
   const [plans, setPlans] = useState<Record<string, PlanDocument>>({})
   const [planDecisions, setPlanDecisions] = useState<Record<string, string>>({})
+  const [planRevisions, setPlanRevisions] = useState<Record<string, number>>({})
+  const planRevisionsRef = useRef<Record<string, number>>({})
   // 座舱统计快照（null = 旧内核无 cockpit 路由，统计条隐藏）
   const [cockpit, setCockpit] = useState<CockpitSnapshot | null>(null)
   // SSE 曾经连上过（用于区分「首连中」与「断线重连中」）
@@ -180,12 +182,25 @@ export function App() {
           setRewindSeq(null)
           setRewindBusy(false)
           setRestoreDraft(undefined)
+          setPlans({})
+          setPlanDecisions({})
+          planRevisionsRef.current = {}
+          setPlanRevisions({})
           send({ type: 'listPickers', sessionId: msg.sessionId })
           send({ type: 'getCockpit', sessionId: msg.sessionId })
           send({ type: 'listRewindPoints', sessionId: msg.sessionId })
           break
         case 'event':
           if (msg.sessionId !== activeIdRef.current) break
+          if (msg.event.type === 'plan_submitted') {
+            const slug = String(msg.event.data.slug ?? '')
+            if (slug && msg.event.seq > (planRevisionsRef.current[slug] ?? -1)) {
+              planRevisionsRef.current = { ...planRevisionsRef.current, [slug]: msg.event.seq }
+              setPlanRevisions(planRevisionsRef.current)
+              setPlans((prev) => { const next = { ...prev }; delete next[slug]; return next })
+              setPlanDecisions((prev) => { const next = { ...prev }; delete next[slug]; return next })
+            }
+          }
           dispatch({ type: 'event', ev: msg.event })
           // turn 收束即刷新统计（占用/命中率/成本随 turn 变化）
           if (msg.event.type === 'turn_complete') send({ type: 'getCockpit', sessionId: msg.sessionId })
@@ -236,10 +251,12 @@ export function App() {
           break
         case 'plan':
           if (msg.sessionId !== activeIdRef.current) break
+          if (msg.revision !== undefined && msg.revision !== planRevisionsRef.current[msg.plan.slug]) break
           setPlans((prev) => ({ ...prev, [msg.plan.slug]: msg.plan }))
           break
         case 'planDecisionResult':
           if (msg.sessionId !== activeIdRef.current) break
+          if (msg.revision !== undefined && msg.revision !== planRevisionsRef.current[msg.slug]) break
           if (msg.ok) {
             setPlanDecisions((prev) => ({ ...prev, [msg.slug]: msg.decision }))
           } else {
@@ -260,6 +277,10 @@ export function App() {
           setRewindSeq(null)
           setRewindBusy(false)
           setRestoreDraft(undefined)
+          setPlans({})
+          setPlanDecisions({})
+          planRevisionsRef.current = {}
+          setPlanRevisions({})
           break
         case 'settings':
           setSettingsApproval(wireApproval(msg.approval))
@@ -409,7 +430,11 @@ export function App() {
         send({ type: 'createSession', prompt: text, isolatedWorktree, model: draftModel || undefined, domain: draftDomain || undefined })
         return
       }
-      send({ type: running ? 'queue' : 'prompt', sessionId: activeId, text, images: running ? undefined : images })
+      if (running && images?.length) {
+        setErrorBanner('图片草稿已保留，请等当前任务结束后发送。')
+        return
+      }
+      send({ type: running ? 'queue' : 'prompt', sessionId: activeId, text, images })
     },
     [activeId, running, isolatedWorktree, draftModel, draftDomain],
   )
@@ -646,6 +671,7 @@ export function App() {
             streaming={running && i === chat.items.length - 1}
             plans={plans}
             planDecisions={planDecisions}
+            planRevisions={planRevisions}
             onContinue={() => submit('continue')}
             onQuote={(quoted) => {
               restoreNRef.current += 1
@@ -1301,6 +1327,7 @@ function queueStatusLabel(status: Extract<ChatItem, { kind: 'queue' }>['status']
   if (status === 'queued') return '排队中'
   if (status === 'steered') return '已升级插话'
   if (status === 'delivered') return '已注入'
+  if (status === 'cancelled') return '内核重启，排队已取消'
   return '已并入下轮'
 }
 
@@ -1311,6 +1338,7 @@ function Item({
   streaming,
   plans,
   planDecisions,
+  planRevisions,
   onContinue,
   onQuote,
   rewind,
@@ -1322,6 +1350,7 @@ function Item({
   streaming: boolean
   plans: Record<string, PlanDocument>
   planDecisions: Record<string, string>
+  planRevisions: Record<string, number>
   onContinue: () => void
   onQuote: (quoted: string) => void
   rewind?: {
@@ -1435,12 +1464,14 @@ function Item({
     case 'plan':
       return (
         <PlanCard
+          key={`${sessionId}:${item.slug}:${planRevisions[item.slug]}`}
           slug={item.slug}
           title={item.title}
           status={item.status}
           sessionId={sessionId}
           plan={plans[item.slug]}
           decision={planDecisions[item.slug]}
+          revision={planRevisions[item.slug]}
         />
       )
     case 'info':
@@ -1599,6 +1630,7 @@ function PlanCard(props: {
   sessionId?: string
   plan?: PlanDocument
   decision?: string
+  revision?: number
 }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
@@ -1611,13 +1643,13 @@ function PlanCard(props: {
   const fetchPlan = () => {
     if (requested.current || props.plan || !props.sessionId) return
     requested.current = true
-    send({ type: 'readPlan', sessionId: props.sessionId, slug: props.slug })
+    send({ type: 'readPlan', sessionId: props.sessionId, slug: props.slug, revision: props.revision })
   }
 
   // 编辑保存结果回流（宿主保存成功后会紧跟重推 plan，props.plan 自动刷新）
   useEffect(() => {
     return onHostMessage((msg) => {
-      if (msg.type === 'planEditResult' && msg.slug === props.slug) {
+      if (msg.type === 'planEditResult' && msg.sessionId === props.sessionId && msg.slug === props.slug && msg.revision === props.revision) {
         if (msg.ok) {
           setEditing(false)
           setEditError('')
@@ -1626,7 +1658,7 @@ function PlanCard(props: {
         }
       }
     })
-  }, [props.slug])
+  }, [props.sessionId, props.slug, props.revision])
 
   const decided = props.decision ?? (props.status !== 'submitted' ? props.status : undefined)
   const html = useMemo(() => (props.plan ? renderMarkdown(props.plan.content) : ''), [props.plan])
@@ -1666,7 +1698,7 @@ function PlanCard(props: {
                   return
                 }
                 setEditError('')
-                send({ type: 'editPlan', sessionId: props.sessionId!, slug: props.slug, content: editDraft })
+                send({ type: 'editPlan', sessionId: props.sessionId!, slug: props.slug, content: editDraft, revision: props.revision })
               }}
             >
               保存修改
@@ -1710,7 +1742,7 @@ function PlanCard(props: {
               <button
                 className="deny"
                 onClick={() =>
-                  send({ type: 'planDecision', sessionId: props.sessionId!, slug: props.slug, decision: 'reject', comment: comment.trim() || undefined })
+                  send({ type: 'planDecision', sessionId: props.sessionId!, slug: props.slug, revision: props.revision, decision: 'reject', comment: comment.trim() || undefined })
                 }
               >
                 确认驳回
@@ -1724,6 +1756,7 @@ function PlanCard(props: {
                 onClick={() =>
                   send({
                     type: 'planDecision',
+                    revision: props.revision,
                     sessionId: props.sessionId!,
                     slug: props.slug,
                     decision: 'approve',
@@ -1835,9 +1868,21 @@ function Composer(props: {
 }) {
   const [text, setText] = useState('')
   const [images, setImages] = useState<string[]>([])
+  const [pendingImageReads, setPendingImageReads] = useState(0)
   const [slashHi, setSlashHi] = useState(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const imageReaders = useRef(new Set<FileReader>())
+  const imageGeneration = useRef(0)
+  const imageSessionKey = useRef(props.sessionKey)
+  imageSessionKey.current = props.sessionKey
+  const invalidateImageReads = () => {
+    imageGeneration.current++
+    for (const reader of imageReaders.current) reader.abort()
+    imageReaders.current.clear()
+    setPendingImageReads(0)
+  }
+  useEffect(() => () => invalidateImageReads(), [props.sessionKey])
   const slashQuery = detectSlashToken(text)
   const slashHits = slashQuery !== null ? filterSlashMenu(slashQuery) : []
   // 历史浏览下标：null=正常输入；number=当前显示的是 history 中第几条。
@@ -1946,6 +1991,7 @@ function Composer(props: {
   }
 
   const pickSlash = (name: string) => {
+    if (props.disabled || pendingImageReads > 0 || imageReaders.current.size > 0 || (props.running && images.length > 0)) return
     if (slashNeedsArgs(name)) {
       setText(`${name} `)
       setSlashHi(0)
@@ -1953,6 +1999,7 @@ function Composer(props: {
       return
     }
     props.onSubmit(name)
+    invalidateImageReads()
     setText('')
     props.onClearFiles()
     setImages([])
@@ -1968,6 +2015,7 @@ function Composer(props: {
   }
 
   const fire = () => {
+    if (props.disabled || pendingImageReads > 0 || imageReaders.current.size > 0 || (props.running && images.length > 0)) return
     const t = text.trim()
     if (!t && images.length === 0) return
     if (!t) return
@@ -1977,6 +2025,7 @@ function Composer(props: {
       return
     }
     props.onSubmit(t, images.length ? images : undefined)
+    invalidateImageReads()
     setText('')
     setImages([])
     props.onClearFiles()
@@ -2052,6 +2101,8 @@ function Composer(props: {
           ))}
         </div>
       )}
+      {props.running && images.length > 0 && <div className="empty">图片草稿已保留，请等当前任务结束后发送。</div>}
+      {pendingImageReads > 0 && <div className="empty">正在读取图片，草稿已保留…</div>}
       <textarea
         ref={textareaRef}
         value={text}
@@ -2068,10 +2119,21 @@ function Composer(props: {
             if (!file) continue
             captured = true
             const reader = new FileReader()
+            const generation = imageGeneration.current
+            const sessionKey = props.sessionKey
+            imageReaders.current.add(reader)
+            setPendingImageReads(imageReaders.current.size)
+            const finished = () => {
+              imageReaders.current.delete(reader)
+              setPendingImageReads(imageReaders.current.size)
+            }
             reader.onload = () => {
+              finished()
+              if (generation !== imageGeneration.current || sessionKey !== imageSessionKey.current) return
               if (typeof reader.result === 'string') addImage(reader.result)
             }
-            reader.readAsDataURL(file)
+            reader.onerror = reader.onabort = finished
+            try { reader.readAsDataURL(file) } catch { finished() }
           }
           if (captured) e.preventDefault()
         }}
@@ -2130,7 +2192,7 @@ function Composer(props: {
             ■ 中止
           </button>
         )}
-        <button onClick={fire} disabled={props.disabled || !text.trim()}>
+        <button onClick={fire} disabled={props.disabled || !text.trim() || pendingImageReads > 0 || (props.running && images.length > 0)}>
           {props.running ? '排队' : '发送'}
         </button>
       </div>

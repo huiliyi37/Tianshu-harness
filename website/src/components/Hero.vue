@@ -79,7 +79,7 @@ async function copyInstall() {
       >
         <Button
           size="lg"
-          href="https://github.com/huiliyi37/Tianshu-Tui"
+          href="https://github.com/huiliyi37/Tianshu-harness"
           target="_blank"
           rel="noopener noreferrer"
           class="h-12 rounded-full px-8 text-base bg-white text-bg-primary hover:bg-white/90"
@@ -119,7 +119,7 @@ async function copyInstall() {
           </Button>
           <Button
             size="sm"
-            href="https://github.com/huiliyi37/Tianshu-Tui/releases"
+            href="https://github.com/huiliyi37/Tianshu-harness/releases"
             target="_blank"
             rel="noopener noreferrer"
             class="hidden h-9 rounded-full bg-white px-4 text-sm text-bg-primary hover:bg-white/90 sm:inline-flex"

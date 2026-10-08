@@ -1803,3 +1803,18 @@ describe('/fast — 禅模式跳过（zen 回流 Wave 5）', () => {
     assert.deepEqual(reasons, ['user'])
   })
 })
+
+// The manual product path must opt into archive-failure preservation too.
+it('manual /compact preserves unarchived medium observations', async () => {
+  const { SessionContext } = await import('../../agent/context.js')
+  const session = new SessionContext()
+  const content = 'head\n' + 'fictional details\n'.repeat(30) + 'UNIQUE_OBSERVATION\n' + 'tail\n'.repeat(30)
+  session.addUserMessage('initial task')
+  session.addAssistantBlocks([{ type: 'tool_use', id: 'read_file_fixture', name: 'read_file', input: {} }])
+  session.addToolResults([{ type: 'tool_result', tool_use_id: 'read_file_fixture', content }])
+  for (let i = 0; i < 5; i++) { session.addUserMessage(`next ${i}`); session.addAssistantBlocks([{ type: 'text', text: 'ack' }]) }
+  const ctx = makeCtx({ parts: ['/compact'], session, maxTokens: 64_000 })
+  ;(ctx.agent.config as any).promptEngine = { getRequestBudgetPolicy: () => undefined, resetAppendixBaseline() {} }
+  assert.equal(await handleSlashCommand(ctx), true)
+  assert.equal(session.getMessages().find(m => m.role === 'tool')?.content, content)
+})

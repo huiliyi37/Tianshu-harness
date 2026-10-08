@@ -175,7 +175,7 @@ export function buildMcpRoutes(
     }, token),
 
     // POST /mcp/servers — add or update an MCP server config.
-    'POST /mcp/servers': withAuth((body) => {
+    'POST /mcp/servers': withAuth(async (body) => {
       const input = body as Record<string, unknown>
       const serverId = typeof input.serverId === 'string' ? input.serverId : undefined
       if (!serverId) return { status: 400, body: { error: 'serverId is required' } }
@@ -216,7 +216,9 @@ export function buildMcpRoutes(
       // config is on disk and runServe's post-init reconcile will pick it up —
       // do NOT silently drop the connect forever.
       const mgr = getMgr()
-      if (mgr && !parsed.data.disabled) {
+      if (mgr && parsed.data.disabled) {
+        await mgr.shutdownServer(serverId)
+      } else if (mgr) {
         void mgr.connectAndDiscover(serverId, parsed.data).then((tools) => {
           if (tools.length > 0) onToolsReady?.(tools)
           else {
@@ -235,7 +237,7 @@ export function buildMcpRoutes(
         body: {
           ok: true,
           serverId,
-          pending: !mgr || parsed.data.disabled === true,
+          pending: !mgr,
           managerReady: mgr != null,
         },
       }

@@ -93,6 +93,7 @@ function claimIdFor(proposal: ClaimProposal): string {
       scope: proposal.scope,
       text: normalizeClaimText(proposal.text),
       sessionId: proposal.source.sessionId,
+      observationEventId: proposal.kind === 'file_observation' ? proposal.source.eventId : undefined,
     }))
     .digest('hex')
     .slice(0, 12)

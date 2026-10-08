@@ -538,7 +538,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/plan <feature>` | 生成计划草稿（writing-plans 工作流） |
 | `/plan-mode` | 进入/退出 Plan Mode（toggle；未批准退出需二次确认） |
 | `/plan-list` | 列出待审批计划 |
-| `/plan-view [ref]` | 全屏预览计划全文（审批卡上按 `v` 同效） |
+| `/plan-view [ref]` | 会话内预览计划全文；无参数时查看唯一待审批计划或活动草稿。审批区按 `Ctrl+E` / `v` 打开，`q` / `Esc` 返回原选择，`/` 搜索；正文按窗口宽度排版，表格以“列名：内容”逐项展示 |
 | `/plan-approve <slug>` | 批准计划并启动分波执行 |
 | `/plan-reject <slug> [feedback]` | 退回计划让 agent 修改重交 |
 | `/plan-close <file> --tasks <1-7\|all> [--preview]` | 关闭已完成计划，标记任务状态 |

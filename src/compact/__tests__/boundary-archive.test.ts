@@ -124,3 +124,45 @@ describe('microCompactOai with recoveryRefs', () => {
     assert.ok(!text(messages[2]).includes('[artifact:'))
   })
 })
+
+describe('semantic micro-compaction archive boundary', () => {
+  function oldTool(content: string): OaiMessage[] {
+    const messages: OaiMessage[] = [{ role: 'user', content: 'initial task' }, { role: 'assistant', content: 'ack' }, toolMsg(content)]
+    for (let i = 0; i < 5; i++) messages.push({ role: 'user', content: `next ${i}` }, { role: 'assistant', content: 'ack' })
+    return messages
+  }
+  const medium = 'first observation\n' + 'fictional details\n'.repeat(30) + 'UNIQUE_MIDDLE_OBSERVATION\n' + 'tail\n'.repeat(30)
+
+  // A collector that only considers truncation length misses this semantic loss.
+  it('archives medium old observations before semantic collapse', () => {
+    const input = oldTool(medium)
+    assert.deepEqual(collectMicroArchiveCandidates(input, 64_000), [{ index: 2, content: medium, toolCallId: 'read_file_1' }])
+    const out = microCompactOai(input, 64_000, 1000, new Map([[2, 'semantic_fixture']]))
+    assert.match(text(out.messages[2]), /\[artifact:semantic_fixture\]$/)
+    assert.ok(text(out.messages[2]).length < medium.length)
+  })
+  // Moving the guard after semantic collapse must make these originals disappear.
+  for (const content of [medium, medium.repeat(100)]) {
+    it('retains old original observations when their recovery archive failed', () => {
+      const input = oldTool(content)
+      const out = microCompactOai(input, 64_000, 1000, new Map())
+      assert.equal(text(out.messages[2]), content)
+      assert.equal(out.truncated, 0)
+    })
+  }
+  it('does not archive unchanged short or current-turn medium results', () => {
+    assert.deepEqual(collectMicroArchiveCandidates(oldTool('short'), 64_000), [])
+    assert.deepEqual(collectMicroArchiveCandidates([{ role: 'user', content: 'task' }, toolMsg(medium)], 64_000), [])
+  })
+})
+
+// Tier2 cannot retire an observation and its only recovery pointer together.
+it('micro round eviction keeps tool observation rounds when a recovery pass is specified', () => {
+  const messages: OaiMessage[] = [{ role: 'user', content: 'task' }, { role: 'assistant', content: 'ack' }]
+  for (let i = 0; i < 20; i++) messages.push({ role: 'assistant', content: null, tool_calls: [{
+    id: `fixture_${i}`, type: 'function', function: { name: 'glob', arguments: '{}' },
+  }] }, { role: 'tool', tool_call_id: `fixture_${i}`, content: i === 2 ? 'UNIQUE_OBSERVATION [artifact:fictional_ref]' : 'small result' })
+  const out = microCompactOai(messages, 1000, 100000, new Map())
+  assert.equal(out.messages.filter(m => m.role === 'tool').length, 20)
+  assert.ok(out.messages.some(m => m.role === 'tool' && m.content.includes('UNIQUE_OBSERVATION [artifact:fictional_ref]')))
+})

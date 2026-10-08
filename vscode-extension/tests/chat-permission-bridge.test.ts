@@ -28,7 +28,7 @@ test('levelToMode 映射表：autoApprove/autopilot 覆盖，default 还原，�
 test('首次 autoApprove：捕获原档并发出覆盖动作', async () => {
   const bridge = new PermissionBridge()
   const counter = { n: 0 }
-  const action = await bridge.sync('s1', 'autoApprove', readOf('manual', counter))
+  const action = await bridge.sync('s1', 'autoApprove', readOf('manual', counter), async () => {})
   assert.deepEqual(action, { kind: 'set', mode: 'auto-accept' })
   assert.equal(counter.n, 1)
 })
@@ -36,52 +36,52 @@ test('首次 autoApprove：捕获原档并发出覆盖动作', async () => {
 test('幂等：同档位连续同步第二次 no-op（不再读档）', async () => {
   const bridge = new PermissionBridge()
   const counter = { n: 0 }
-  await bridge.sync('s1', 'autoApprove', readOf('manual', counter))
-  const again = await bridge.sync('s1', 'autoApprove', readOf('manual', counter))
+  await bridge.sync('s1', 'autoApprove', readOf('manual', counter), async () => {})
+  const again = await bridge.sync('s1', 'autoApprove', readOf('manual', counter), async () => {})
   assert.deepEqual(again, { kind: 'none' })
   assert.equal(counter.n, 1)
 })
 
 test('autopilot 映射 skip 档', async () => {
   const bridge = new PermissionBridge()
-  const action = await bridge.sync('s1', 'autopilot', readOf('manual'))
+  const action = await bridge.sync('s1', 'autopilot', readOf('manual'), async () => {})
   assert.deepEqual(action, { kind: 'set', mode: 'dangerously-skip-permissions' })
 })
 
 test('default 还原：有覆盖则还原原档；再次 default no-op（覆盖已清）', async () => {
   const bridge = new PermissionBridge()
-  await bridge.sync('s1', 'autoApprove', readOf('manual'))
-  const restore = await bridge.sync('s1', 'default', readOf('manual'))
+  await bridge.sync('s1', 'autoApprove', readOf('manual'), async () => {})
+  const restore = await bridge.sync('s1', 'default', readOf('manual'), async () => {})
   assert.deepEqual(restore, { kind: 'set', mode: 'manual' })
-  const again = await bridge.sync('s1', 'default', readOf('manual'))
+  const again = await bridge.sync('s1', 'default', readOf('manual'), async () => {})
   assert.deepEqual(again, { kind: 'none' })
 })
 
 test('default 无覆盖：no-op 且不读档', async () => {
   const bridge = new PermissionBridge()
   const counter = { n: 0 }
-  const action = await bridge.sync('s1', 'default', readOf('manual', counter))
+  const action = await bridge.sync('s1', 'default', readOf('manual', counter), async () => {})
   assert.deepEqual(action, { kind: 'none' })
   assert.equal(counter.n, 0)
 })
 
 test('覆盖中换档（autoApprove→autopilot）：original 保持最初值，default 还原到最初', async () => {
   const bridge = new PermissionBridge()
-  await bridge.sync('s1', 'autoApprove', readOf('manual'))
-  const swap = await bridge.sync('s1', 'autopilot', readOf('auto-safe'))
+  await bridge.sync('s1', 'autoApprove', readOf('manual'), async () => {})
+  const swap = await bridge.sync('s1', 'autopilot', readOf('auto-safe'), async () => {})
   assert.deepEqual(swap, { kind: 'set', mode: 'dangerously-skip-permissions' })
-  const restore = await bridge.sync('s1', 'default', readOf('auto-safe'))
+  const restore = await bridge.sync('s1', 'default', readOf('auto-safe'), async () => {})
   assert.deepEqual(restore, { kind: 'set', mode: 'manual' })
 })
 
 test('assisted/undefined/未知值：完全 no-op，不影响覆盖状态', async () => {
   const bridge = new PermissionBridge()
-  await bridge.sync('s1', 'autoApprove', readOf('manual'))
-  assert.deepEqual(await bridge.sync('s1', 'assisted', readOf('manual')), { kind: 'none' })
-  assert.deepEqual(await bridge.sync('s1', undefined, readOf('manual')), { kind: 'none' })
-  assert.deepEqual(await bridge.sync('s1', 'bogus', readOf('manual')), { kind: 'none' })
+  await bridge.sync('s1', 'autoApprove', readOf('manual'), async () => {})
+  assert.deepEqual(await bridge.sync('s1', 'assisted', readOf('manual'), async () => {}), { kind: 'none' })
+  assert.deepEqual(await bridge.sync('s1', undefined, readOf('manual'), async () => {}), { kind: 'none' })
+  assert.deepEqual(await bridge.sync('s1', 'bogus', readOf('manual'), async () => {}), { kind: 'none' })
   // 覆盖仍在：同档位 autoApprove 再同步依然幂等（lastSynced 未被弱信号改写）
-  assert.deepEqual(await bridge.sync('s1', 'autoApprove', readOf('manual')), { kind: 'none' })
+  assert.deepEqual(await bridge.sync('s1', 'autoApprove', readOf('manual'), async () => {}), { kind: 'none' })
 })
 
 test('读当前档失败：覆盖仍生效；还原目标缺失时 default 不调用', async () => {
@@ -89,35 +89,35 @@ test('读当前档失败：覆盖仍生效；还原目标缺失时 default 不�
   const thrown = async (): Promise<ApprovalMode | undefined> => {
     throw new Error('getSession failed')
   }
-  const action = await bridge.sync('s1', 'autoApprove', thrown)
+  const action = await bridge.sync('s1', 'autoApprove', thrown, async () => {})
   assert.deepEqual(action, { kind: 'set', mode: 'auto-accept' })
-  const restore = await bridge.sync('s1', 'default', readOf('manual'))
+  const restore = await bridge.sync('s1', 'default', readOf('manual'), async () => {})
   assert.deepEqual(restore, { kind: 'none' })
 })
 
 test('forget 后再同步：重新捕获原档', async () => {
   const bridge = new PermissionBridge()
   const counter = { n: 0 }
-  await bridge.sync('s1', 'autoApprove', readOf('manual', counter))
+  await bridge.sync('s1', 'autoApprove', readOf('manual', counter), async () => {})
   bridge.forget('s1')
-  await bridge.sync('s1', 'autoApprove', readOf('auto-safe', counter))
+  await bridge.sync('s1', 'autoApprove', readOf('auto-safe', counter), async () => {})
   assert.equal(counter.n, 2)
-  const restore = await bridge.sync('s1', 'default', readOf('auto-safe'))
+  const restore = await bridge.sync('s1', 'default', readOf('auto-safe'), async () => {})
   assert.deepEqual(restore, { kind: 'set', mode: 'auto-safe' })
 })
 
 test('多会话隔离：A 的覆盖不影响 B', async () => {
   const bridge = new PermissionBridge()
-  await bridge.sync('A', 'autoApprove', readOf('manual'))
-  assert.deepEqual(await bridge.sync('B', 'autoApprove', readOf('auto-safe')), { kind: 'set', mode: 'auto-accept' })
-  assert.deepEqual(await bridge.sync('A', 'default', readOf('manual')), { kind: 'set', mode: 'manual' })
-  assert.deepEqual(await bridge.sync('B', 'default', readOf('auto-safe')), { kind: 'set', mode: 'auto-safe' })
+  await bridge.sync('A', 'autoApprove', readOf('manual'), async () => {})
+  assert.deepEqual(await bridge.sync('B', 'autoApprove', readOf('auto-safe'), async () => {}), { kind: 'set', mode: 'auto-accept' })
+  assert.deepEqual(await bridge.sync('A', 'default', readOf('manual'), async () => {}), { kind: 'set', mode: 'manual' })
+  assert.deepEqual(await bridge.sync('B', 'default', readOf('auto-safe'), async () => {}), { kind: 'set', mode: 'auto-safe' })
 })
 
 test('clearAll：清空全部会话状态（重载路径）', async () => {
   const bridge = new PermissionBridge()
-  await bridge.sync('s1', 'autoApprove', readOf('manual'))
+  await bridge.sync('s1', 'autoApprove', readOf('manual'), async () => {})
   bridge.clearAll()
-  assert.deepEqual(await bridge.sync('s1', 'autoApprove', readOf('auto-safe')), { kind: 'set', mode: 'auto-accept' })
-  assert.deepEqual(await bridge.sync('s1', 'default', readOf('auto-safe')), { kind: 'set', mode: 'auto-safe' })
+  assert.deepEqual(await bridge.sync('s1', 'autoApprove', readOf('auto-safe'), async () => {}), { kind: 'set', mode: 'auto-accept' })
+  assert.deepEqual(await bridge.sync('s1', 'default', readOf('auto-safe'), async () => {}), { kind: 'set', mode: 'auto-safe' })
 })

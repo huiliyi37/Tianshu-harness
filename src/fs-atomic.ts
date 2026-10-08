@@ -2,6 +2,7 @@ import { writeFileSync, renameSync, unlinkSync, existsSync, mkdirSync, readdirSy
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { mkdir, writeFile, rename, unlink, open, stat, chmod } from 'node:fs/promises'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 export interface AtomicWriteOptions {
   /** Preserve existing POSIX permissions for project-file edits. Private runtime
@@ -19,6 +20,20 @@ async function existingMode(filePath: string, options: AtomicWriteOptions): Prom
   catch (error) { ignoreMissingFile(error); return undefined }
 }
 
+/** Windows readers/AV can briefly deny replacement. Keep the complete temp file
+ * and old canonical bytes intact; permanent errors and exhausted retries reject. */
+async function publishAtomicAsync(temporary: string, filePath: string): Promise<void> {
+  const delays = [50, 100, 200]
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, filePath); return }
+    catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')
+        || attempt >= delays.length) throw error
+      await sleep(delays[attempt])
+    }
+  }
+}
+
 /** Publish only after file contents are synced. Directory sync is POSIX-only. */
 export async function writeFileAtomicDurableAsync(filePath: string, data: string | Buffer, options: AtomicWriteOptions = {}): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
@@ -31,7 +46,7 @@ export async function writeFileAtomicDurableAsync(filePath: string, data: string
       if (mode !== undefined) await file.chmod(mode)
       await file.sync()
     } finally { await file.close() }
-    await rename(temporary, filePath)
+    await publishAtomicAsync(temporary, filePath)
     if (process.platform !== 'win32') {
       const directory = await open(dirname(filePath), 'r')
       try { await directory.sync() } finally { await directory.close() }
@@ -91,7 +106,7 @@ export async function writeFileAtomicAsync(filePath: string, data: string | Buff
   try {
     await writeFile(tmpPath, data, data instanceof Buffer ? { mode: 0o600 } : { encoding: 'utf-8', mode: 0o600 })
     if (mode !== undefined) await chmod(tmpPath, mode)
-    await rename(tmpPath, filePath)
+    await publishAtomicAsync(tmpPath, filePath)
   } catch (err) {
     try { await unlink(tmpPath) } catch { /* ignore cleanup failure */ }
     throw err

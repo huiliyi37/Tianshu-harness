@@ -326,9 +326,10 @@ async function ensureClient(provider: CockpitProvider, cwd: string | undefined):
         provider.notifySidecarState('dead', `内核进程退出（code ${code}），自动重启 ${MAX_RESTART_ATTEMPTS} 次未恢复`)
         statusBar?.setSidecarState('dead', `内核进程退出（code ${code}）`)
       })
+      liveClient = new SidecarClient(startedSidecar.baseUrl, startedSidecar.token)
+      provider.replaceClient(liveClient)
       provider.notifySidecarState('ready')
       statusBar?.setSidecarState('ready')
-      liveClient = new SidecarClient(startedSidecar.baseUrl, startedSidecar.token)
       modelInfoChannel?.fire()
       return liveClient
     })()

@@ -500,15 +500,21 @@ export class InputHandler {
         // DSR 探针的自动回吐，不是用户输入，剥掉 ESC 后剩下的 `[66;1R` 会被逐字
         // 当可打印字符送进输入框（用户看到的就是输入框里冒出 `[66;`）。
         if (CPR_PARTIAL_RE.test(this.inputBuffer) || this.inputBuffer.startsWith('\x1B[<')) {
+          const cancelFocus = this.escapeImmediate && PASTE_START.startsWith(this.inputBuffer)
           this.inputBuffer = ''
+          if (cancelFocus) this.dispatch({ raw: '\x1B', char: '', name: 'escape', ctrl: false, meta: false, shift: false })
+          return
+        }
+        if (this.escapeImmediate) {
+          this.inputBuffer = ''
+          this.dispatch({ raw: '\x1B', char: '', name: 'escape', ctrl: false, meta: false, shift: false })
           return
         }
         this.dispatch({ raw: '\x1B', char: '', name: 'unknown', ctrl: false, meta: false, shift: false })
         this.inputBuffer = this.inputBuffer.slice(1)
         this.processInputBuffer()
       }
-      if (this.escapeImmediate) flushPartial()
-      else if (!this.escapeTimer) {
+      if (!this.escapeTimer) {
         this.escapeTimer = setTimeout(() => {
           this.escapeTimer = null
           flushPartial()

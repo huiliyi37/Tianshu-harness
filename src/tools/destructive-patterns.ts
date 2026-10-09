@@ -24,8 +24,17 @@
  *   `git stash list` / `git stash pop` / `git stash show` / `git stash apply`
  *   `git diff` / `git status` / `git log`
  */
-/** git 与子命令之间允许出现的全局参数（`-C <dir>` / `-c k=v` / `--no-pager` / `--git-dir=…`）。 */
-const GIT_GLOBAL_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?))*`
+/**
+ * git 与子命令之间允许出现的全局参数（`-C <dir>` / `-c k=v` / `--no-pager` / `--git-dir=…`）。
+ * 值型长旗标必须同时接受 `=` 与空格分隔形态（`--git-dir=/x` 与 `--git-dir /x`）——
+ * 只接 `=` 时 `git --git-dir .git stash`、`git --work-tree . reset --hard` 会绕过本门
+ * （approval-risk.ts 的 GIT_GLOBAL_OPTS_RE 已列空白分隔形态，两处需同口径）。
+ * 通用长旗标（无值 / `--no-pager` 等）仍只接 `=` 形态，避免吞掉子命令首个参数。
+ */
+const GIT_GLOBAL_OPTS =
+  String.raw`(?:\s+(?:-[Cc]\s+\S+` +
+  String.raw`|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\S+|\s+\S+)` +
+  String.raw`|--[\w-]+(?:=\S+)?))*`
 /** 命令起点：行首、空白或 shell 连接符（`;` `&` `|` `(`），覆盖 `cd x&&git …` 这类无空格写法。 */
 const CMD_START = String.raw`(?:^|[\s;&|(])`
 

@@ -2028,13 +2028,24 @@ export class TuiApp {
       return
     }
 
-    // /queue lane 显式暂存 lane 归并（用户显式使用 /queue 拼装前置说明）：
+    // 跨 run steer/queue 残留收口：上一 run 结束（text-only 收尾从不 drain）或
+    // busy 期间排队/插队的 guidance 会滞留到这里。若放任不管，它会在
+    // 下一次工具回合作为 [User guidance] 注入 —— 旧指令混进新任务上下文。
+    // 归并进本次 prompt（排队内容本就是用户意图，按优先级/时间序拼在新消息前）。
+    // /queue lane 与 steer 残留同口径归并：steer 在前、lane 在后，各自内部保序，
+    // lane 拼完清空（它只认这一条出口，没有别的 drain 点）。
+    // 注意：steer 路径已为每条 queued 消息单独 commit 了用户气泡，
+    // 此处不再重复 commit，仅输出合并提示并归并文本。
     let submitText = text
-    if (trimmed && this.queueLane.length > 0) {
+    let steerMerged = false
+    if (trimmed && (this.steerBuffer.hasPending() || this.queueLane.length > 0)) {
+      const pendingEntries = [...this.steerBuffer.getPendingEntries()]
+      this.steerBuffer.clear()
+      const pending = pendingEntries.map(entry => entry.text)
       const lane = this.queueLane.splice(0)
-      const mergedCount = lane.length
-      submitText = [...lane, trimmed].join('\n\n')
-      trimmed = submitText.trim()
+      const mergedCount = pending.length + lane.length
+      submitText = [...pending, ...lane, trimmed].join('\n\n')
+      steerMerged = true
       this.commitAbove(() => {
         this.commit.write({
           text: color(`↳ ${mergedCount} queued message${mergedCount > 1 ? 's' : ''} merged into this prompt`, this.theme.muted),
@@ -2044,22 +2055,11 @@ export class TuiApp {
       })
     }
 
-    // 若当前 agent 空闲但队列中仍有排队消息（上一轮 settle 滞留或多条排队）：
-    // 本条消息继续追加到队列尾部（保持 FIFO），并触发队列依次执行，
-    // 绝不将多条排队消息通过 \n\n 强行合并成一条巨型 prompt 发送（对齐 Codex CLI 排队契约）。
-    if (!this.agentBusy && this.steerBuffer.hasPending() && trimmed) {
-      await this.awaitUserCommit(submitText.trim(), images, questionRequestId)
-      this.steerBuffer.pushQueue(submitText.trim())
-      if (images?.length) {
-        this.deferredImages.push(...images)
-      }
-      this.dispatchQueuedAfterSettle()
-      return
-    }
-
-    // Commit user message to scrollback
+    // Commit user message to scrollback（steer 已单独 commit 时跳过）
     if (trimmed) {
-      await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
+      if (!steerMerged) {
+        await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
+      }
       // 新 run 启动前丢弃上一 run 未 finalize 的流式残留：blockWriter 缓冲
       // 与 streamRenderer pending 若不清，会把上一轮文字追加进新轮输出。
       this.blockWriter.discard()

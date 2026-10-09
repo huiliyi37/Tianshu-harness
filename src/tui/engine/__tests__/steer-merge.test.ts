@@ -53,20 +53,13 @@ test('残留 steer 在下一次 submit 时归并进 prompt 并清空 buffer', as
   assert.equal(app.busy, false)
   assert.equal(app.steerBuffer.hasPending(), true, 'text-only 收尾不 drain，残留保留到下一次 submit')
 
-  // run B：残留 steer 保持 FIFO 独立轮次依次执行，不通过 \n\n 强行合并（对齐 Codex CLI 排队契约）
+  // run B：残留 steer 必须归并进新 prompt，而非泄漏到 B 的工具回合
   app.setInput('task B')
   stdin.dataHandler!('\r')
   await tick()
   assert.equal(runs.length, 2)
-  assert.equal(runs[1], 'note 1', '先执行队列头部的 note 1')
-  assert.deepEqual([...app.steerBuffer.getPending()], ['task B'], 'task B 保持排队待下一轮执行')
-
-  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
-  app.notifyRunSettled()
-  await tick()
-  assert.equal(runs.length, 3)
-  assert.equal(runs[2], 'task B', '下一轮自动执行 task B')
-  assert.equal(app.steerBuffer.hasPending(), false)
+  assert.equal(runs[1], 'note 1\n\ntask B', '残留 guidance 按时间序拼在新消息之前')
+  assert.equal(app.steerBuffer.hasPending(), false, '归并后 buffer 必须清空')
 })
 
 test('abort 丢弃 blockWriter 未 flush 缓冲，新 run 不重现旧文本', async () => {

@@ -114,20 +114,23 @@ test('steer 归并后：不重复生成用户气泡', async () => {
   await tick()
   assert.equal(app.busy, false)
 
-  // run B: 排队消息独立发出，不强行合并（对齐 Codex CLI 排队契约）
+  // run B: 残留 steer 归并
   app.setInput('task B')
   stdin.dataHandler!('\r')
   await tick()
 
   assert.equal(runs.length, 2)
-  assert.equal(runs[1], 'note 1', '先执行队列头部的 note 1')
+  assert.equal(runs[1], 'note 1\n\ntask B', '归并到新 prompt')
 
-  // scrollback 应有 task A、note 1、task B 三条独立气泡
+  // scrollback 应有 note 1 的独立气泡（steer 路径已 commit）+ task A 的气泡
+  // + merge note + task B(merged) — 由于 steerMerged=true，不重复 commit 合并气泡
   const sb = app.getScrollbackContent()
+  // note 1 在 steer 路径中已单独 commit
   assert.ok(hasUserBubbleFor(sb, 'note 1'), 'steer 路径的 note 1 应有独立气泡')
-  assert.ok(hasUserBubbleFor(sb, 'task B'), 'task B 应有独立气泡')
+  // task B 是合并提交（steerMerged），不 commit 用户气泡
   const bubbleCount = (sb.match(/[>❯▌]/g) ?? []).length
-  assert.equal(bubbleCount, 3, `应为 3 个用户气泡（task A + note 1 + task B），实际 ${bubbleCount}`)
+  // task A 1个 + note 1 1个 = 2个气泡标记，不应有第 3 个（task B merged bubble）
+  assert.equal(bubbleCount, 2, `应为 2 个用户气泡（task A + note 1），实际 ${bubbleCount}`)
 })
 
 // ── rejectSubmit：main 层 resolve null 时清 busy ─────────────────

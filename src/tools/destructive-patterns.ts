@@ -24,4 +24,14 @@
  *   `git stash list` / `git stash pop` / `git stash show` / `git stash apply`
  *   `git diff` / `git status` / `git log`
  */
-export const GIT_CLEAR_RE = /(?:^|\s)(?:git\s+(?:stash(?!\s+(?:pop|list|show|apply|drop|branch))|reset\s+(?:--hard|--mixed)|checkout\s+--|restore\s+\S|clean\s+-[a-z]*f)|git\s+stash\s*$)/
+/** git 与子命令之间允许出现的全局参数（`-C <dir>` / `-c k=v` / `--no-pager` / `--git-dir=…`）。 */
+const GIT_GLOBAL_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?))*`
+/** 命令起点：行首、空白或 shell 连接符（`;` `&` `|` `(`），覆盖 `cd x&&git …` 这类无空格写法。 */
+const CMD_START = String.raw`(?:^|[\s;&|(])`
+
+export const GIT_CLEAR_RE = new RegExp(
+  CMD_START +
+    String.raw`git` +
+    GIT_GLOBAL_OPTS +
+    String.raw`\s+(?:stash(?!\s+(?:pop|list|show|apply|drop|branch))|reset\s+(?:--hard|--mixed)|checkout\s+--|restore\s+\S|clean\s+-[a-z]*f)`,
+)

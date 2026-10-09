@@ -7,8 +7,9 @@ export interface AuthContext {
 
 export function extractBearerToken(headers?: Record<string, string>): string | null {
   const authHeader = headers?.authorization
-  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7)
-  return null
+  // RFC 7235：认证方案名不区分大小写
+  const m = authHeader?.match(/^bearer\s+(.+)$/i)
+  return m?.[1] ?? null
 }
 
 export function extractRequestToken(context: AuthContext): string | null {

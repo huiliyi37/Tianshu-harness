@@ -277,7 +277,17 @@ export function normalizeBashCommand(command: string): string {
     .replace(/\$\{IFS\}/gi, ' ') // ${IFS} 默认展开为空白
     .replace(/\\(.)/g, '$1')    // 字符级转义：r\m → rm（检测视图内剥转义）
     .replace(/["']/g, '')       // 引号拼接："r"m → rm
+    .replace(GIT_GLOBAL_OPTS_RE, 'git') // git -C dir / -c k=v / --no-pager reset --hard → git reset --hard
 }
+
+/**
+ * git 全局参数（位于 `git` 与子命令之间）。所有 `\bgit\s+<subcmd>` 形态的规则都假设
+ * 子命令紧跟 git，`git -C repo reset --hard`、`git --no-pager reset --hard`、
+ * `git -c a=b clean -fd` 因此在原始视图和旧归一化视图上全部漏判。
+ * 检测视图里剥掉这些参数——只影响判定，不改写实际执行的命令。
+ */
+const GIT_GLOBAL_OPTS_RE =
+  /\bgit(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|config-env)(?:=\S+|\s+\S+)|--[a-z][\w-]*(?:=\S+)?|-[pP]))+(?=\s)/g
 
 function testBoth(pattern: RegExp, command: string): boolean {
   return pattern.test(command) || pattern.test(normalizeBashCommand(command))
@@ -377,7 +387,7 @@ export function isDestructiveGitAction(toolName: string, input: Record<string, u
   // bash path already caught by BASH_WRITE_PATTERNS; listed here for explicit protection-mode gating
   if (toolName === 'bash') {
     const cmd = typeof input.command === 'string' ? input.command : ''
-    return /\bgit\s+(?:stash\b|checkout\s|restore\b|reset\b|rm\s)/.test(cmd)
+    return testBoth(/\bgit\s+(?:stash\b|checkout\s|restore\b|reset\b|rm\s)/, cmd)
   }
   return false
 }

@@ -745,7 +745,7 @@ export class InputLine {
    * 不触发 onChangeCallback —— submit 路径自己负责后续渲染，
    * 避免在 submit 回调里又触发一次 change 渲染造成竞态。
    */
-  private clearAfterSubmit(): void {
+  clearAfterSubmit(): void {
     this._value = ''
     this._cursor = 0
     this._historyIdx = -1

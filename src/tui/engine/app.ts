@@ -1499,7 +1499,7 @@ export class TuiApp {
         return
       }
       // Alt+Enter 插队引导（对齐 Codex CLI：工具边界生效的 steer guidance）
-      if ((key.name === 'return' || key.name === 'enter') && key.meta) {
+      if ((key.name === 'return') && key.meta) {
         const inputVal = this.inputLine.value
         const inputImages = [...this.inputLine.images]
         if (inputVal.trim() || inputImages.length > 0) {

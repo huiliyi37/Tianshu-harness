@@ -101,6 +101,44 @@ export class SteerBuffer {
     this.notify()
   }
 
+  /**
+   * 显式加入排队队列（严格保持 later 优先级，不被 mid-turn 工具边界 drain，在轮次结束后依次独立执行）。
+   */
+  pushQueue(message: string): void {
+    const { intent } = classifySteerIntent(message)
+    this.pending.push({
+      id: this.nextId++,
+      text: message,
+      priority: 'later',
+      intent,
+    })
+    this.notify()
+  }
+
+  /**
+   * 显式加入插队转向引导（以 next 优先级在下一个工具调用边界前作为 [User guidance] 注入）。
+   */
+  pushSteer(message: string): void {
+    const { intent } = classifySteerIntent(message)
+    this.pending.push({
+      id: this.nextId++,
+      text: message,
+      priority: 'next',
+      intent: intent === 'guidance' ? 'redirect' : intent,
+    })
+    this.notify()
+  }
+
+  /** 获取所有排队消息（later 级，将在轮次结束后依次独立执行）。 */
+  getQueuedEntries(): readonly SteerEntry[] {
+    return this.pending.filter(entry => entry.priority === 'later')
+  }
+
+  /** 获取所有即时插队引导（now/next 级，将在工具调用前注入）。 */
+  getSteerEntries(): readonly SteerEntry[] {
+    return this.pending.filter(entry => entry.priority === 'now' || entry.priority === 'next')
+  }
+
   /** Add a high-priority message, processed after `now` but before `later`. */
   pushNext(message: string): void {
     this.push(message, 'next')

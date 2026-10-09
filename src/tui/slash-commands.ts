@@ -76,6 +76,7 @@ import { switchAgentRuntime, switchAgentSession, switchAgentCwd } from '../boots
 //（architecture-guards 的 max-lines ratchet 只降不升）。
 import { applySessionSwitch, registerNewSessionCommand } from './new-session.js'
 import { registerCvmNoticeCommand } from './cvm-notice-command.js'
+import { registerSteerCommand } from './steer-command.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
 import { formatPermissionLabel, parsePermissionAlias, tierToMode } from '../agent/approval-vocabulary.js'
 import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied } from '../agent/permissions.js'
@@ -3792,6 +3793,8 @@ export function registerQueueCommand(app: TuiApp): void {
   })
 }
 
+export { registerSteerCommand } from './steer-command.js'
+
 /**
  * /yolo 与 /yes 覆盖版共享 handler——见 yolo-toggle.ts（R25 提取为独立模块，
  * 避免本文件巨石继续膨胀；R24 两份复制是分叉根因）。
@@ -3967,6 +3970,9 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
 
   // /queue：显式排队 lane（handler 在 registerQueueCommand，独立导出供单测注册）。
   registerQueueCommand(app)
+
+  // /steer：插队引导（handler 在 registerSteerCommand，独立导出供单测注册）。
+  registerSteerCommand(app)
 
   // /cvm：CVM 拦截提示的级别开关（issue #247 第 2 条）。实现在独立模块——与
   // /new、/queue 同一处置（本文件是点名巨石，只降不升）。

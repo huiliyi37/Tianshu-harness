@@ -1498,6 +1498,20 @@ export class TuiApp {
         this.renderLive()
         return
       }
+      // Alt+Enter 插队引导（对齐 Codex CLI：工具边界生效的 steer guidance）
+      if ((key.name === 'return' || key.name === 'enter') && key.meta) {
+        const inputVal = this.inputLine.value
+        const inputImages = [...this.inputLine.images]
+        if (inputVal.trim() || inputImages.length > 0) {
+          this.inputLine.clearAfterSubmit()
+          this.inputController.closeSlash()
+          void this.handleInputSubmit(inputVal, inputImages, false, undefined, true).catch((err: unknown) => {
+            this.commitStatic(color(`⚠ 插队引导处理出错：${err instanceof Error ? err.message : String(err)}`, this.theme.warning))
+          })
+          this.renderLive()
+        }
+        return
+      }
       // ── W4a: Up 箭头取回最近 queued 消息到输入框编辑 ─────────
       if (key.name === 'up' && !this.inputLine.value && this.steerBuffer.hasPending()) {
         const msg = this.steerBuffer.popLast()
@@ -1880,6 +1894,15 @@ export class TuiApp {
     this.onSubmitCallback = callback
   }
 
+  /**
+   * 提交插队引导消息（对齐 Codex CLI pending_steers / /steer 命令）。
+   * 若 agent 正在执行，则以 next 优先级进入 steer 队列，在下一个工具调用边界作为引导注入；
+   * 若 agent 空闲，则作为普通新 prompt 发起。
+   */
+  async submitSteer(text: string, images?: string[]): Promise<void> {
+    await this.handleInputSubmit(text, images, false, undefined, true)
+  }
+
   // ── Mission Contract 预览（§13）─────────────────────────────────────
   /** 预览卡待决提交：Enter 确认 / e 返回编辑 / Esc 取消。 */
   private contractPreview: { text: string; images?: string[]; draft: MissionDraft } | null = null
@@ -1887,13 +1910,25 @@ export class TuiApp {
   private contractBypass = false
 
   /** 输入提交主流程（InputLine onSubmit 回调；原构造器闭包提取，逻辑零改动）。 */
-  private async handleInputSubmit(text: string, images?: string[], decision = false, questionRequestId?: string): Promise<void> {
+  private async handleInputSubmit(text: string, images?: string[], decision = false, questionRequestId?: string, isSteer = false): Promise<void> {
     // 提交 = 继续对话：取消 Ctrl+C 退出确认（同 Esc/编辑键/粘贴，防残留误退）。
     if (this.inputController.ctrlCPendingSince > 0) this.inputController.clearExitConfirm()
     // 入口先规范化图片数组，后续气泡/渲染/回调看到的是同一份。
     images = normalizeSubmitImages(images)
     let trimmed = text.trim()
     const hasImages = images && images.length > 0
+
+    // /steer 命令支持：等同于 Alt+Enter 插队引导
+    if (trimmed === '/steer') {
+      this.commitStatic('⚡ 用法：/steer <引导内容> — 在当前轮次工具边界立即插队引导（等同于 Alt+Enter）')
+      return
+    }
+    if (trimmed.startsWith('/steer ')) {
+      text = trimmed.slice('/steer'.length).trim()
+      trimmed = text
+      isSteer = true
+    }
+
     // 允许只发图片：空文本时补一个占位 prompt，让后端能触发 run。
     if (!trimmed && hasImages) {
       text = '📎 图片消息'
@@ -1973,11 +2008,16 @@ export class TuiApp {
       return
     }
 
-    // W4a: agent 执行中 → 入队（turn 边界 drain 注入）。
+    // W4a: agent 执行中 → 入队（插队引导进入 steer 队列在工具边界注入；普通输入排队在轮次结束后依次独立执行）。
     // 同时立即 commit 用户气泡到 scrollback，确保用户始终能看到自己说了什么。
     if (this.agentBusy && trimmed) {
-      await this.awaitUserCommit(trimmed, images, questionRequestId)
-      this.steerBuffer.push(trimmed)
+      if (isSteer) {
+        await this.awaitUserCommit(`[⚡ 插队引导] ${trimmed}`, images, questionRequestId)
+        this.steerBuffer.pushSteer(trimmed)
+      } else {
+        await this.awaitUserCommit(trimmed, images, questionRequestId)
+        this.steerBuffer.pushQueue(trimmed)
+      }
       // 插话只走文本：图片暂存到下一轮随 prompt 发出，并明确告知去向。此前这里是
       // 静默丢弃——气泡里图已经显示出来了，用户以为模型看到了，实际从未收到。
       if (images?.length) {
@@ -1988,24 +2028,13 @@ export class TuiApp {
       return
     }
 
-    // 跨 run steer 收口：上一 run 结束（text-only 收尾从不 drain）或
-    // busy 闩残留时排队的 guidance 会滞留到这里。若放任不管，它会在
-    // 下一次工具回合作为 [User guidance] 注入 —— 旧指令混进新任务上下文。
-    // 归并进本次 prompt（排队内容本就是用户意图，按优先级/时间序拼在新消息前）。
-    // /queue lane 与 steer 残留同口径归并：steer 在前、lane 在后，各自内部保序，
-    // lane 拼完清空（它只认这一条出口，没有别的 drain 点）。
-    // 注意：steer 路径已为每条 queued 消息单独 commit 了用户气泡，
-    // 此处不再重复 commit，仅输出合并提示并归并文本。
+    // /queue lane 显式暂存 lane 归并（用户显式使用 /queue 拼装前置说明）：
     let submitText = text
-    let steerMerged = false
-    if (trimmed && (this.steerBuffer.hasPending() || this.queueLane.length > 0)) {
-      const pendingEntries = [...this.steerBuffer.getPendingEntries()]
-      this.steerBuffer.clear()
-      const pending = pendingEntries.map(entry => entry.text)
+    if (trimmed && this.queueLane.length > 0) {
       const lane = this.queueLane.splice(0)
-      const mergedCount = pending.length + lane.length
-      submitText = [...pending, ...lane, trimmed].join('\n\n')
-      steerMerged = true
+      const mergedCount = lane.length
+      submitText = [...lane, trimmed].join('\n\n')
+      trimmed = submitText.trim()
       this.commitAbove(() => {
         this.commit.write({
           text: color(`↳ ${mergedCount} queued message${mergedCount > 1 ? 's' : ''} merged into this prompt`, this.theme.muted),
@@ -2015,11 +2044,22 @@ export class TuiApp {
       })
     }
 
-    // Commit user message to scrollback（steer 已单独 commit 时跳过）
-    if (trimmed) {
-      if (!steerMerged) {
-        await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
+    // 若当前 agent 空闲但队列中仍有排队消息（上一轮 settle 滞留或多条排队）：
+    // 本条消息继续追加到队列尾部（保持 FIFO），并触发队列依次执行，
+    // 绝不将多条排队消息通过 \n\n 强行合并成一条巨型 prompt 发送（对齐 Codex CLI 排队契约）。
+    if (!this.agentBusy && this.steerBuffer.hasPending() && trimmed) {
+      await this.awaitUserCommit(submitText.trim(), images, questionRequestId)
+      this.steerBuffer.pushQueue(submitText.trim())
+      if (images?.length) {
+        this.deferredImages.push(...images)
       }
+      this.dispatchQueuedAfterSettle()
+      return
+    }
+
+    // Commit user message to scrollback
+    if (trimmed) {
+      await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
       // 新 run 启动前丢弃上一 run 未 finalize 的流式残留：blockWriter 缓冲
       // 与 streamRenderer pending 若不清，会把上一轮文字追加进新轮输出。
       this.blockWriter.discard()
@@ -2231,7 +2271,9 @@ export class TuiApp {
     this.todosWrittenThisRun = false
     this.state.turnStartMs = Date.now()
     this.streamRenderController.lastActivityMs = Date.now()
-    this.onSubmitCallback?.(text)
+    const outgoingImages = this.deferredImages.length > 0 ? [...this.deferredImages] : undefined
+    this.deferredImages = []
+    this.onSubmitCallback?.(text, outgoingImages)
     this.renderLive()
   }
 
@@ -6770,13 +6812,24 @@ export class TuiApp {
         lines.push({ text: this.clampLine(color('tab to cycle', this.theme.dim)) })
       }
 
-      // ⏳ 已排队：贴在输入框顶边正上方（chrome），不放进动态段——否则会夹在
-      // thinking / 工具卡之间随输出上漂。多条时 footer 显示 +N。
-      if (this.steerBuffer.hasPending()) {
-        const next = this.steerBuffer.getPendingEntries()[0]!
-        const pendingCount = this.steerBuffer.getPending().length
-        const preview = next.text.length > 60 ? `${next.text.slice(0, 60)}…` : next.text
-        const more = pendingCount > 1 ? `（+${pendingCount - 1} 条）` : ''
+      // ⚡ 插队引导 & ⏳ 已排队：贴在输入框顶边正上方（chrome），不放进动态段
+      const steerEntries = this.steerBuffer.getSteerEntries()
+      if (steerEntries.length > 0) {
+        const nextSteer = steerEntries[0]!
+        const preview = nextSteer.text.length > 60 ? `${nextSteer.text.slice(0, 60)}…` : nextSteer.text
+        const more = steerEntries.length > 1 ? `（+${steerEntries.length - 1} 条）` : ''
+        lines.push({
+          text: this.clampLine(
+            this.renderBanner(`⚡ 插队引导: "${preview}"${more} · 工具边界注入 · ↑ 取回编辑`, this.theme.warning)
+          ),
+        })
+      }
+
+      const queuedEntries = this.steerBuffer.getQueuedEntries()
+      if (queuedEntries.length > 0) {
+        const nextQueued = queuedEntries[0]!
+        const preview = nextQueued.text.length > 60 ? `${nextQueued.text.slice(0, 60)}…` : nextQueued.text
+        const more = queuedEntries.length > 1 ? `（+${queuedEntries.length - 1} 条）` : ''
         const deliverable = this.agentBusy && !this.isAgentRunSettling()
         lines.push({
           text: this.clampLine(deliverable

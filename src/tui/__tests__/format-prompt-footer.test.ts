@@ -35,12 +35,12 @@ describe('formatPromptFooter', () => {
     assert.ok(!plainNo.includes('Ctrl+Enter'), `非 kitty 终端不提示不可用键: ${plainNo}`)
   })
 
-  it('agentBusy 时显示停止、补充、换行三个动作', () => {
+  it('agentBusy 时显示停止、排队、插队、换行动作', () => {
     const [line] = formatPromptFooter({ ...base, agentBusy: true, shiftEnterAvailable: true }, theme)
     const plain = stripAnsi(line ?? '')
-    assert.equal(plain, 'Esc 停止 · Enter 补充 · Ctrl+J 换行')
+    assert.equal(plain, 'Esc 停止 · Enter 排队 · Alt+Enter 插队 · Ctrl+J 换行')
     assert.ok(!plain.includes('/ 命令'), `busy 不提示命令: ${plain}`)
-    assert.equal(plain.split(' · ').length, 3)
+    assert.equal(plain.split(' · ').length, 4)
 
     // busy 态使用基础键，kitty 能力不改变这些动作。
     const [unsupported] = formatPromptFooter({ ...base, agentBusy: true }, theme)
@@ -52,7 +52,7 @@ describe('formatPromptFooter', () => {
     const [line] = formatPromptFooter({ ...base, agentBusy: true, newlineMode: true, shiftEnterAvailable: true }, theme)
     const plain = stripAnsi(line ?? '')
     assert.equal(plain, 'Enter 换行 · Ctrl+Enter 发送 · /pager 历史')
-    assert.ok(!plain.includes('Enter 补充'), 'newline mode keeps its own Enter behavior')
+    assert.ok(!plain.includes('Enter 排队'), 'newline mode keeps its own Enter behavior')
   })
 
   it('approvalPending 时 composer 不重复决策区的审批提示', () => {

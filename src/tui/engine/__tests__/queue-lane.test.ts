@@ -109,9 +109,16 @@ test('busy 时 /queue 照攒；steer 残留 + lane 混合归并（steer 在前 l
   await type(app, stdin, 'task B')
 
   assert.equal(runs.length, 2)
-  assert.equal(runs[1], 'steer 消息\n\nlane 消息\n\ntask B', 'steer 残留在前、lane 在后')
+  assert.equal(runs[1], 'steer 消息', 'steer 排队消息先独立执行')
+  assert.equal(app.queueLane.length, 0, 'lane 已被消费')
+  assert.deepEqual([...app.steerBuffer.getPending()], ['lane 消息\n\ntask B'], 'lane 与 task B 组合后排队待下一轮')
+
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
+  app.notifyRunSettled()
+  await tick()
+  assert.equal(runs.length, 3)
+  assert.equal(runs[2], 'lane 消息\n\ntask B', '下一轮执行带 lane 前缀的 task B')
   assert.equal(app.steerBuffer.hasPending(), false)
-  assert.equal(app.queueLane.length, 0)
 })
 
 test('ESC abort settle 回填：buffer 非空 + 输入框空 → 原文回填且 buffer 清空', async () => {
@@ -163,11 +170,19 @@ test('ESC abort settle：输入框有草稿 → 不回填，队列留待下次�
   assert.equal(app.getInputValue(), '草稿', '草稿不被覆盖')
   assert.equal(app.steerBuffer.hasPending(), true, '队列保留')
 
-  // 下次提交照归并口径拼进前部
+  // 下次提交时依次排队执行，不强行合并
   app.setInput('正式消息')
   stdin.dataHandler!('\r')
   await tick()
-  assert.equal(runs[1], '排队一\n\n正式消息')
+  assert.equal(runs[1], '排队一', '先执行队列头部的排队一')
+  assert.deepEqual([...app.steerBuffer.getPending()], ['正式消息'], '正式消息排队待下一轮')
+
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
+  app.notifyRunSettled()
+  await tick()
+  assert.equal(runs.length, 3)
+  assert.equal(runs[2], '正式消息', '下一轮执行正式消息')
+  assert.equal(app.steerBuffer.hasPending(), false)
 })
 
 test('守护中断（convergence）settle 不回填：队列留给自动续跑 drain', async () => {

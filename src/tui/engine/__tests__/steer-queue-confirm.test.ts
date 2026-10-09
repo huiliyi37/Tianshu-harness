@@ -330,3 +330,82 @@ test('watchdog 守护中断（自动续跑）：排队消息不回填输入框',
   assert.equal(app.getInputValue(), '', 'watchdog 自动续跑：不得把排队消息拉回输入框打断续跑')
   assert.equal(app.steerBuffer.hasPending(), true, '排队消息保留在队列，随续跑提交归并')
 })
+
+// ── 契约 7: 多条消息连续排队与插队引导区分（对齐 Codex CLI）─────────
+
+test('连续发送多条普通消息自动排队：含动词不被误当作 steer 注入，每轮结束后依次独立执行', async () => {
+  const { app, stdin } = makeApp()
+  const runs: string[] = []
+  app.onSubmit((t) => { runs.push(t) })
+
+  // 启动 task A
+  app.setInput('task A')
+  stdin.dataHandler!('\r')
+  await tick()
+  assert.equal(app.busy, true)
+
+  // busy 期间发送两条普通消息（含"修"、"改"等动词）
+  app.setInput('修改一下这个函数')
+  stdin.dataHandler!('\r')
+  await tick()
+
+  app.setInput('再跑一遍完整测试')
+  stdin.dataHandler!('\r')
+  await tick()
+
+  // 工具边界不得提前将排队消息 drain 注入
+  const drained = app.callbacks.onSteerDrain?.() ?? null
+  assert.equal(drained, null, '普通 Enter 排队消息不得在工具边界作为 steer 注入')
+  assert.equal(runs.length, 1, '当前仅执行 task A')
+  assert.equal(app.steerBuffer.getQueuedEntries().length, 2, '两条消息均在排队队列中')
+
+  // task A 完成，依次触发后续独立轮次
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 1, true)
+  app.notifyRunSettled()
+  await tick()
+
+  assert.equal(runs.length, 2)
+  assert.equal(runs[1], '修改一下这个函数', '第一条排队消息作为独立新轮次执行')
+  assert.equal(app.steerBuffer.getQueuedEntries().length, 1, '第二条仍保留在队列')
+
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
+  app.notifyRunSettled()
+  await tick()
+
+  assert.equal(runs.length, 3)
+  assert.equal(runs[2], '再跑一遍完整测试', '第二条排队消息作为独立新轮次执行')
+  assert.equal(app.steerBuffer.hasPending(), false)
+})
+
+test('/steer 与 submitSteer 插队引导：在当前轮次工具边界即时注入生效', async () => {
+  const { app, stdin } = makeApp()
+  const runs: string[] = []
+  app.onSubmit((t) => { runs.push(t) })
+
+  // 启动 task A
+  app.setInput('task A')
+  stdin.dataHandler!('\r')
+  await tick()
+  assert.equal(app.busy, true)
+
+  // 普通消息进入排队
+  app.setInput('稍后执行的第二步')
+  stdin.dataHandler!('\r')
+  await tick()
+
+  // 显式插队引导
+  await app.submitSteer('紧急：跳过当前步骤并换用方案B')
+  await tick()
+
+  assert.equal(app.steerBuffer.getSteerEntries().length, 1, '插队引导进入 steer 列表')
+  assert.equal(app.steerBuffer.getQueuedEntries().length, 1, '排队消息保留在队列')
+
+  // 工具边界注入：仅 drain 插队引导，排队消息继续保留
+  const drained = app.callbacks.onSteerDrain?.() ?? null
+  assert.ok(drained !== null, '插队引导成功注入')
+  assert.ok(drained!.includes('跳过当前步骤并换用方案B'), '注入内容包含插队引导文本')
+  assert.ok(!drained!.includes('稍后执行的第二步'), '普通排队消息不被混合注入')
+
+  assert.equal(app.steerBuffer.getSteerEntries().length, 0, 'steer 引导已消费')
+  assert.equal(app.steerBuffer.getQueuedEntries().length, 1, '排队消息依然保留')
+})

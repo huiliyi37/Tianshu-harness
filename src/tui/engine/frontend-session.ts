@@ -19,7 +19,7 @@ export interface FrontendLiveLine {
   caretCol?: number
   inputLine?: number
   inputStartCol?: number
-  decisionPart?: 'title' | 'fact' | 'action' | 'footer'
+  decisionPart?: 'title' | 'fact' | 'action' | 'footer' | 'body'
   region?: 'identity' | 'mode' | 'composer'
 }
 

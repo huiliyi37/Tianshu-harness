@@ -36,7 +36,7 @@ export interface LiveRegionLine {
   caretCol?: number
   inputLine?: number
   inputStartCol?: number
-  decisionPart?: 'title' | 'fact' | 'action' | 'footer'
+  decisionPart?: 'title' | 'fact' | 'action' | 'footer' | 'body'
   livePart?: 'status' | 'disclosure' | 'tail'
   region?: 'identity' | 'mode' | 'composer'
 }

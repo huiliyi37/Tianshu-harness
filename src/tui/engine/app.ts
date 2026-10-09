@@ -6050,7 +6050,7 @@ export class TuiApp {
   /** Classic live chrome keeps a bounded high-water height; fullscreen owns its fixed grid. */
   private getDynamicBudget(chromeRows: number, dynamicRows: number): number {
     const rows = this.rows || 24
-    const expanded = !!(this.approvalIntentController.approvalPending || this.pendingPlanApproval
+    const expanded = !!(this.approvalIntentController.approvalPending || this.decisions.active
       || this.inputController.slashMenu.open || this.inputLine.value.startsWith('/'))
     const cap = expanded ? liveMaxRowsFor(rows) : Math.min(liveMaxRowsFor(rows), Math.ceil(rows / 2))
     if (!expanded && this.state.phase === 'idle') {
@@ -6122,7 +6122,7 @@ export class TuiApp {
 
   private mergeSidePanel(lines: LiveRegionLine[], panelLines: string[], contentCols: number, panelWidth: number): LiveRegionLine[] {
     const merged: LiveRegionLine[] = []
-    const totalRows = Math.max(lines.length, panelLines.length)
+    const totalRows = lines.some(line => line.decisionPart) ? lines.length : Math.max(lines.length, panelLines.length)
     const RESET = '\x1B[0m'
     for (let i = 0; i < totalRows; i++) {
       const mainRaw = lines[i]?.text ?? ''
@@ -6498,7 +6498,7 @@ export class TuiApp {
 
     const decision = this.decisions.active
     if (decision && !this.overlay.isActive() && !this.approvalIntentController.approvalPending) {
-      if (decision.visible) lines.push(...renderDecisionCard(decision, cols, Math.max(5, Math.min(18, this.rows - 7)), this.theme, this.decisions.count, decision.kind === 'plan' ? this.planAutoApproveRemainSec : undefined))
+      if (decision.visible) lines.push(...renderDecisionCard(decision, cols, Math.max(3, Math.min(18, Math.max(5, this.rows - 7), this.rows - 2)), this.theme, this.decisions.count, decision.kind === 'plan' ? this.planAutoApproveRemainSec : undefined))
       else lines.push({ text: color(`${decision.kind === 'plan' ? '待审批' : '待回答'} · Tab 返回卡片`, this.theme.warning), decisionPart: 'footer' })
     }
     let chromeStart = this.screenReader ? gateStart : lines.length
@@ -6821,8 +6821,9 @@ export class TuiApp {
     }
 
     const decisionRows = lines.slice(0, chromeStart).filter(line => line.decisionPart).length
-    if (decisionRows && this.rows < 14 && !this.screenReader && !this.frontend.isFullscreen) {
-      const chrome = lines.slice(chromeStart), keep = Math.max(1, this.rows - 1 - decisionRows)
+    if (decisionRows && !this.screenReader) {
+      const cap = this.frontend.isFullscreen ? this.rows : liveMaxRowsFor(this.rows)
+      const chrome = lines.slice(chromeStart), keep = Math.max(1, cap - decisionRows)
       lines = [...lines.slice(0, chromeStart), ...budgetInputChrome(chrome, keep)]
     }
     if (this.screenReader) {

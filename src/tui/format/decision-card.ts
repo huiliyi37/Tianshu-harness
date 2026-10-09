@@ -1,7 +1,7 @@
 import type { DecisionRequest } from '../engine/decision-controller.js'
 import type { LiveRegionLine } from '../engine/live-engine.js'
 import type { RivetTheme } from '../theme.js'
-import { color } from '../engine/ansi.js'
+import { color, enforceTextContract } from '../engine/ansi.js'
 import { ambiguousWideEnabled, hardWrapToDisplayWidth, truncateToDisplayWidth } from '../width.js'
 import { frameInset } from './overlay-frame.js'
 import { buildPlanReviewActions } from './plan-review.js'
@@ -13,7 +13,10 @@ export function renderDecisionCard(item: DecisionRequest, width: number, height:
   const policy = { ambiguousAsWide: ambiguousWideEnabled() }
   const inner = Math.max(1, width - indent.length - 2)
   const lines: LiveRegionLine[] = []
-  const add = (text: string, decisionPart?: LiveRegionLine['decisionPart']) => lines.push({ text: truncateToDisplayWidth(`${indent} ${text}`, Math.max(1, width - 1), policy), decisionPart })
+  const add = (text: string, decisionPart: LiveRegionLine['decisionPart'] = 'body') => {
+    const row = enforceTextContract(text.replace(/[\r\n\t]/g, ' '))
+    lines.push({ text: truncateToDisplayWidth(`${indent} ${row}`, Math.max(1, width - 1), policy), decisionPart })
+  }
   const wrap = (text: string, limit = 2) => text.split('\n').flatMap(s => hardWrapToDisplayWidth(s, inner, policy)).slice(0, limit)
   const q = item.kind === 'question' ? item.questions[item.index] : undefined
   const title = item.kind === 'plan' ? `计划审批 · ${item.info.title}` : `待回答 · ${q ? `${item.index + 1}/${item.questions.length}` : '确认回答'}`
@@ -26,14 +29,15 @@ export function renderDecisionCard(item: DecisionRequest, width: number, height:
     add(color(label, theme.muted), 'fact')
   }
   if (height >= 10 && item.kind === 'plan' && item.view.date) add(color(item.view.date, theme.muted), 'fact')
-  if (item.kind === 'question' && q) for (const line of wrap(q.prompt, height >= 8 ? 2 : 1)) add(color(line, theme.secondary, { bold: true }), 'fact')
+  if (item.kind === 'question' && q && height >= (item.error ? 5 : 4)) for (const line of wrap(q.prompt, height >= 8 ? 2 : 1)) add(color(line, theme.secondary, { bold: true }), 'fact')
   if (count > 1 && height >= 10) add(color(`还有 ${count - 1} 项待决策`, theme.muted))
   if (countdown !== undefined && height >= 8) add(color(`Goal：${countdown}s 后自动批准`, theme.warning), 'fact')
   const hint = item.editing ? 'Enter 确认 · Esc 返回' : item.kind === 'plan'
     ? 'Enter 确认 · Esc 收起 · ↑↓/数字 选择 · Ctrl+E/v 全文 · f 反馈 · PgUp/PgDn 正文'
     : 'Enter 确认 · Esc 收起 · ↑↓/数字 选择 · ←→ 切题 · 空格 多选'
   const hints = wrap(hint, height >= 14 ? 2 : 1)
-  const reserved = hints.length + 1 + (item.error ? 1 : 0)
+  const showError = !!item.error && height >= 4
+  const reserved = hints.length + 1 + (showError ? 1 : 0)
   if (item.submitting) add(color('提交中，请稍候…', theme.warning), 'action')
   else if (item.editing) {
     if (height >= 8) add(color(item.kind === 'plan' ? '反馈输入中 · 驳回反馈' : '自定义回答', theme.warning), 'action')
@@ -93,7 +97,7 @@ export function renderDecisionCard(item: DecisionRequest, width: number, height:
     }
     for (const row of reasonRows) add(color(row, theme.muted))
   }
-  if (item.error) add(color(truncateToDisplayWidth(`提交失败：${item.error}`, inner), theme.warning), 'fact')
+  if (showError) add(color(truncateToDisplayWidth(`提交失败：${item.error}`, inner), theme.warning), 'fact')
   for (const row of hints) add(color(row, theme.dim), 'footer')
   return lines
 }

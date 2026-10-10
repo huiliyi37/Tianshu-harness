@@ -425,3 +425,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #410 fix: git 全局参数绕过危险命令审批门；修复 semver prerelease 解析与 Bearer 大小写（CLOSED）
 - #406 fix(tui): 优化消息排队与插队引导机制（对齐 Codex CLI 排队契约）（CLOSED）
 - #437 fix(cli): 适配远控终端并修复跨平台运行与持久化问题（OPEN）
+- #440 fix(mcp): OAuth token 缺失 fail-closed，鉴权 401 归 auth 类——不再静默裸连（OPEN）

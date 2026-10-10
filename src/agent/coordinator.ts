@@ -2096,11 +2096,11 @@ export class DelegationCoordinator {
     workerConfig.mailbox = mailbox
     // Batch-scoped shared prewarm (delegateBatch 派发前预热 + 同批 worker 互暖)。
     // 单发 delegate() 路径不入表，worker 用 AgentLoop 实例默认 cache（历史行为）。
-    const batchPrewarmCache = this.batchPrewarmByOrder.get(order.id)
+    const batchPrewarmCache = this.batchPrewarmByOrder.get(order.parentTurnId)
     if (batchPrewarmCache) workerConfig.prewarm = batchPrewarmCache
     // 批级共享信息素（星河收编 #3）：读工默认共享；写工显式 opt-in 才挂——
     // 信号可能引导实现偏向，守护写工实现独立性。
-    const batchStigmergy = this.batchStigmergyByOrder.get(order.id)
+    const batchStigmergy = this.batchStigmergyByOrder.get(order.parentTurnId)
     if (batchStigmergy && (classifyProfile(order.profile) !== 'hands' || order.batchStigmergy)) {
       workerConfig.stigmergy = batchStigmergy
     }
@@ -2812,8 +2812,8 @@ export class DelegationCoordinator {
       this.liveMessages.delete(order.id)
       this.nestedUpstream.delete(order.id)
       this.activityUpstream.delete(order.id)
-      this.batchPrewarmByOrder.delete(order.id)
-      this.batchStigmergyByOrder.delete(order.id)
+      this.batchPrewarmByOrder.delete(order.parentTurnId)
+      this.batchStigmergyByOrder.delete(order.parentTurnId)
       this.resumeMessages.delete(order.id)
       this.resumeBaselines.delete(order.id)
       this.steerQueues.delete(order.id)
@@ -3043,11 +3043,11 @@ export class DelegationCoordinator {
     if (orders.length > 0) {
       const batchCache = new PrewarmCache(60_000, 50)
       const files = [...new Set(orders.flatMap(o => o.scope.files ?? []))]
-      for (const order of orders) this.batchPrewarmByOrder.set(order.id, batchCache)
+      for (const order of orders) this.batchPrewarmByOrder.set(order.parentTurnId, batchCache)
       // 批级共享信息素（星河收编 #3）：内存 store 不落盘，生命周期 = 本次
       // delegateBatch。写工默认不注入（守护实现独立性），读工共享。
       const batchStigmergy = new StigmergyStore(undefined)
-      for (const order of orders) this.batchStigmergyByOrder.set(order.id, batchStigmergy)
+      for (const order of orders) this.batchStigmergyByOrder.set(order.parentTurnId, batchStigmergy)
       if (files.length > 0) {
         await batchPrewarm(this.config.cwd ?? process.cwd(), files, batchCache, 25).catch(() => {})
       }

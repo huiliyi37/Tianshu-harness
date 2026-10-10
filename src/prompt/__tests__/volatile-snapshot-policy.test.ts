@@ -8,6 +8,10 @@ import { buildStableVolatileBlock, buildDynamicAppendixParts, type VolatileConte
 import { standardPromptBlocks, invalidatePromptBlocks, type PromptBlockPolicy } from '../block-policy.js'
 import { clearCapsuleCache } from '../../agent/seed-capsule-store.js'
 
+// 信任门（2026-10-09）：胶囊素材写在临时 cwd 的 docs/ 下，需项目已授信才加载
+// （与 seed-capsule-store 测试同惯例）。
+process.env.RIVET_TRUST_PROJECT = '1'
+
 function leanPolicy(): PromptBlockPolicy {
   const base = standardPromptBlocks()
   return {

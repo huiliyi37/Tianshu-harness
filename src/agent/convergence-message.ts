@@ -10,6 +10,7 @@
 
 import type { ConvergenceSignals, ActivityMode, WindowTier } from './convergence-detector.js'
 import type { PhaseClass } from './phase-class.js'
+import type { EditExpectation } from './edit-expectation.js'
 import { sessionStateAdvice } from './runtime-advice-facts.js'
 
 /** 注入消息的结构化变体标识——发射门据它判"方向是否变化"（文案改词不构成改道）。 */
@@ -32,7 +33,12 @@ export function buildInjectedMessage(
   repeatCount?: number,
   activityMode?: ActivityMode,
   runtimeAdvice?: string,
+  editExpectation?: EditExpectation,
 ): BuiltMessage {
+  // P1：编辑期待——not-required/unknown 时不把"去编辑"当处方（验证/审查/
+  // 只读步骤落入编辑处方会把正确行为误判成偏航）。缺失时按 required 处理
+  // （旧行为不变）。required 的判定与收敛评分同源（同一投影对象）。
+  const expectsEdit = (editExpectation?.kind ?? 'required') === 'required'
   const lines: string[] = []
 
   // Progressive prefix: when the same message variant has been emitted before,
@@ -68,7 +74,9 @@ export function buildInjectedMessage(
     lines.push('')
     lines.push('信息可能已足够，请收敛：')
     lines.push('- 如果这是审查/排查类任务，输出你的结论或发现，交给用户判断——不要为了"做点什么"而去改代码')
-    lines.push('- 如果这是实现类任务且已有方案，直接编辑或测试')
+    lines.push(expectsEdit
+      ? '- 如果这是实现类任务且已有方案，直接编辑或测试'
+      : '- 当前步骤不期待编辑（验证/只读/审查）——请核实关键断言与证据后输出结论')
     lines.push('- 如果不确定方向，向用户说出你的判断')
     lines.push('- 如果任务已完成，输出摘要并结束')
     return { text: lines.join('\n'), variant: 'stagnation-build' }
@@ -156,7 +164,9 @@ export function buildInjectedMessage(
     lines.push('**天枢-感知：任务未能在预期轮次内收敛，建议中断当前探索。**')
   }
 
-  if (signals.editRatio < 0.1 && phaseClass === 'execute') {
+  // P1：仅在编辑期待为 required 时给出"编辑产出偏低"诊断——验证/只读步骤
+  // 无编辑是正确行为，不是偏航证据。
+  if (expectsEdit && signals.editRatio < 0.1 && phaseClass === 'execute') {
     lines.push(`- 执行阶段进行了 ${Math.round(signals.editRatio * 100)}% 轮次有编辑产出的操作 — 远低于预期 (≥30%)`)
   }
   if (signals.toolEntropy < 0.3) {
@@ -172,7 +182,9 @@ export function buildInjectedMessage(
     lines.push(`- 失败率 ${Math.round((1 - signals.errorPenalty) * 100)}% 偏高，当前方向可能不可行`)
   }
   if (signals.tokenEfficiency < 0.2 && phaseClass !== 'explore') {
-    lines.push('- 纯读取无产出，建议立即采取编辑或测试行动验证当前假设')
+    lines.push(expectsEdit
+      ? '- 纯读取无产出，建议立即采取编辑或测试行动验证当前假设'
+      : '- 纯读取无产出，建议核实关键断言/失败证据后输出带证据的结论')
   }
   if (signals.tokenEfficiency === 0.0 && phaseClass === 'explore') {
     lines.push('- 已连续读取多个文件但未做任何编辑/测试/提交 — 信息已足够，请输出结论或采取行动')
@@ -190,7 +202,11 @@ export function buildInjectedMessage(
   } else {
     lines.push('')
     lines.push('请选择以下行动之一：')
-    lines.push('- 对当前最可能的方案进行编辑或测试')
+    if (expectsEdit) {
+      lines.push('- 对当前最可能的方案进行编辑或测试')
+    } else {
+      lines.push('- 核实关键断言与证据，输出带证据的结论（当前步骤不期待编辑）')
+    }
     lines.push('- 重新阅读用户原始请求，确认方向')
     lines.push('- 缩小范围：只解决一个子问题')
     lines.push('- 天璇胶囊（docs/seed-capsule-tianxuan.md）有换视角方法论可供 recall')

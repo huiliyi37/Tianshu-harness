@@ -218,3 +218,52 @@ test('#10 findings 只数真实命中，不数原文里的 [REDACTED] 字面量'
   assert.equal(redactSnapshotText('日志里出现过 [REDACTED] 这几个字，其实没有密钥').findings, 0)
   assert.equal(redactSnapshotText('[REDACTED] 与 sk-abcdefghijklmnopqrstuvwxyz012345 并存').findings, 1)
 })
+
+// #11 反证「import 路径不受沙箱约束」：请求体里的 path 若不校验就 stat/read，
+// 持有 apiToken 的调用者可对 cwd 之外任意路径做存在性/体积探测（400 文案分叉
+// 构成 oracle），并读出磁盘上恰好符合快照形状的 JSON 正文。同文件的兄弟读路由
+// （file-content / file-preview / list-dir / PUT hooks）一律走 validatePath，
+// 越界 403——import 必须与它们同构。
+test('#11 导入路径必须落在会话 cwd 内——越界 403，与 file-content 同构', async () => {
+  const manager = new RuntimeSessionManager({ createAgent: () => new QuietAgent(), defaultCwd: '/tmp' })
+  const router = createRouter(buildSessionRoutes(manager, TOKEN))
+  const cwd = mkdtempSync(join(tmpdir(), 'rivet-snap-sandbox-'))
+  const outsideDir = mkdtempSync(join(tmpdir(), 'rivet-snap-outside-'))
+  const id = manager.createSession({ cwd, title: 'Sandbox' }).id
+  const snapshotShape = {
+    version: SNAPSHOT_VERSION, createdAt: 1, meta: { title: 'LEAKED' },
+    messages: [{ role: 'user', text: 'x' }], redaction: { findings: 0, appliedAt: 1 },
+  }
+  const post = (path: string) => router('POST', `/sessions/${id}/snapshot/import`, { path }, AUTH)
+  try {
+    // ① cwd 之外的快照形状文件：不得被 stat，更不得回显正文
+    const outsideSnap = join(outsideDir, 'stolen.json')
+    writeFileSync(outsideSnap, JSON.stringify(snapshotShape))
+    const escaped = await post(outsideSnap)
+    assert.equal(escaped.status, 403, 'cwd 之外必须是 403，不能落到 stat/read')
+    assert.equal((escaped.body as { error: string }).error, 'Path outside session cwd')
+    assert.ok(!JSON.stringify(escaped.body).includes('LEAKED'), '越界路径的正文绝不能回显')
+
+    // 兄弟路由对同一路径的裁决必须一致（同一安全不变量）
+    const sibling = await router('GET', `/sessions/${id}/file-content?path=${encodeURIComponent(outsideSnap)}`, {}, AUTH)
+    assert.equal(sibling.status, 403, 'file-content 早已 403——import 不能是例外')
+
+    // ② cwd 之外不存在的路径：不得让「存在 / 不存在」经 400 文案分叉泄漏
+    const escapedMissing = await post(join(outsideDir, 'nope.json'))
+    assert.equal(escapedMissing.status, 403, '不存在的越界路径同样 403——否则文案分叉构成存在性 oracle')
+    assert.equal((escapedMissing.body as { error: string }).error, 'Path outside session cwd')
+
+    // ③ cwd 内合法快照：修复不得误伤正常导入
+    const insideSnap = join(cwd, 'shared.json')
+    writeFileSync(insideSnap, JSON.stringify({ ...snapshotShape, meta: { title: 'SHARED' } }))
+    const ok = await post(insideSnap)
+    assert.equal(ok.status, 200)
+    assert.equal((ok.body as { snapshot: { meta: { title: string } } }).snapshot.meta.title, 'SHARED')
+
+    // ④ cwd 内但不存在的文件：仍走原有 400（与越界 403 可区分，但仅在 cwd 内成立）
+    assert.equal((await post(join(cwd, 'missing.json'))).status, 400)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+    rmSync(outsideDir, { recursive: true, force: true })
+  }
+})

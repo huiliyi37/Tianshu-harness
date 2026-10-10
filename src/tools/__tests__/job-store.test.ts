@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { SessionJobs, type JobEvent } from '../job-store.js'
+import { SessionJobs, type JobEvent, type JobVerificationMeta } from '../job-store.js'
 
 // These tests spawn real short-lived shell commands via the platform shell
 // (sh -c on POSIX). They assume a POSIX-ish shell — consistent with the rest of
@@ -231,6 +231,113 @@ describe('SessionJobs', () => {
     } finally {
       await hbStore.killAllAsync()
       rmSync(hbDir, { recursive: true, force: true })
+    }
+  })
+
+  // ── 验证元数据（共同命令事实的私有上下文）：spawn 侧写入、收敛侧读取。
+  // 取代「每个 convergence 检查重新猜整条命令」——runner 漏认（batch runner
+  // 无 test/tsc 关键词）在新链路上不再是漏报源。
+
+  it('waitingVerificationJob：running 且带等待资格命中；同一 job 终态后不再命中', async () => {
+    const local = makeStore()
+    try {
+      const j = local.store.spawn({ command: "sh -c 'sleep 2'", rawCommand: 'npm run test:unit', cwd: local.dir, env })
+      local.store.recordVerificationMeta(j.id, {
+        waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'runner-kind',
+      })
+      assert.equal(local.store.waitingVerificationJob()?.id, j.id)
+
+      // 终态 → 信标消失（只认 running，不给已结束的证据继续豁免）。
+      local.store.kill(j.id)
+      await local.store.await(j.id, { timeoutMs: 5000 })
+      assert.equal(local.store.waitingVerificationJob(), null)
+    } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('waiting protection expires once and never crosses a task boundary or leaks into events', async () => {
+    const local = makeStore()
+    const events: JobEvent[] = []
+    local.store.on('event', (e: JobEvent) => events.push(e))
+    try {
+      const job = local.store.spawn({ command: "sh -c 'sleep 2'", rawCommand: 'node --test', cwd: local.dir, env })
+      local.store.recordVerificationMeta(job.id, { waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'node-test' }, { timeout: 30000 })
+      assert.equal(local.store.waitingVerificationJob(job.startedAt + 29999)?.id, job.id)
+      assert.equal(local.store.waitingVerificationJob(job.startedAt + 30000), null)
+      local.store.logs(job.id)
+      local.store.recordVerificationMeta(job.id, { waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'node-test' }, { timeout: 900000 })
+      assert.equal(local.store.waitingVerificationJob(job.startedAt + 600000), null, 'polling cannot renew protection')
+      assert.equal(local.store.waitingVerificationJob(job.startedAt)?.id, job.id)
+      local.store.beginTask()
+      assert.equal(local.store.waitingVerificationJob(job.startedAt), null, 'new task cannot borrow old job')
+      await local.store.killAllAsync()
+      for (const snapshot of [...local.store.list(), ...events.map(e => e.job)]) {
+        assert.deepEqual(Object.keys(snapshot).sort(), ['id', 'command', 'status', 'exitCode', 'startedAt', 'endedAt', 'lastLine', 'pid'].sort())
+      }
+    } finally { await local.store.killAllAsync(); rmSync(local.dir, { recursive: true, force: true }) }
+  })
+
+  it('旧正则漏认的套件形态经元数据仍可命中（runner 漏认失效）', async () => {
+    const local = makeStore()
+    try {
+      // 门禁钦点的全量套件形态：不含 test/tsc/lint/build 等关键词，
+      // 旧实现（收敛侧每次用 VERIFY_BASH_RE 重猜整条命令）会漏认 →
+      // 把「正在等验证」读成停滞。新链路只看 spawn 时存下的元数据。
+      const cmd = 'node --import tsx scripts/run-node-tests.ts src/tools/'
+      const j = local.store.spawn({ command: "sh -c 'sleep 2'", rawCommand: cmd, cwd: local.dir, env })
+      local.store.recordVerificationMeta(j.id, {
+        waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'batch-runner',
+      })
+      const hit = local.store.waitingVerificationJob()
+      assert.equal(hit?.id, j.id)
+      assert.equal(hit?.meta.source, 'batch-runner')
+    } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('waitingVerificationJob：无等待资格（persistent/unknown）与未记录元数据从不命中', async () => {
+    const local = makeStore()
+    try {
+      const persistent = local.store.spawn({ command: "sh -c 'sleep 2'", rawCommand: 'npm run dev', cwd: local.dir, env })
+      local.store.recordVerificationMeta(persistent.id, {
+        waitingEligible: false, purpose: 'unknown', lifetime: 'persistent', source: 'persistent-shape',
+      })
+      assert.equal(local.store.waitingVerificationJob(), null)
+
+      // 未记录元数据的 running job 同样不命中——缺数据 ≠ 等待资格。
+      local.store.spawn({ command: "sh -c 'sleep 2'", rawCommand: 'sleep 2', cwd: local.dir, env })
+      assert.equal(local.store.waitingVerificationJob(), null)
+    } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('终态淘汰 job 时同步清理其验证元数据（不泄漏）', async () => {
+    const local = makeStore()
+    try {
+      const total = SessionJobs.MAX_TERMINAL_JOBS + 3
+      const ids: string[] = []
+      for (let i = 0; i < total; i++) {
+        const snap = local.store.spawn({ command: "sh -c 'exit 0'", rawCommand: `echo ${i}`, cwd: local.dir, env })
+        local.store.recordVerificationMeta(snap.id, {
+          waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'runner-kind',
+        })
+        ids.push(snap.id)
+      }
+      await Promise.all(ids.map(id => local.store.await(id, { timeoutMs: 10_000 })))
+      // 淘汰由 exit 事件同步触发，等一拍确保事件链跑完再断言。
+      await new Promise((r) => setTimeout(r, 50))
+      const meta = (local.store as unknown as { verificationMeta: Map<string, JobVerificationMeta> }).verificationMeta
+      assert.ok(meta.size <= SessionJobs.MAX_TERMINAL_JOBS, `淘汰后 meta 应封顶 ${SessionJobs.MAX_TERMINAL_JOBS}，实际 ${meta.size}`)
+      assert.equal(meta.size, local.store.list().length, 'meta 必须与保留下来的 jobs 一一对应')
+    } finally {
+      await local.store.killAllAsync()
+      rmSync(local.dir, { recursive: true, force: true })
     }
   })
 })

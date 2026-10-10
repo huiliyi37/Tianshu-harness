@@ -68,12 +68,20 @@ const profileStringSchema = z.string().refine(
 )
 
 /** Dynamic star-domain validation — same as delegate-task.ts.
- *  Accepts both Chinese names (天机) and Pinyin IDs (tianji).
- *  Empty string treated as unspecified (not validated). */
-const authorityStringSchema = z.string().refine(
-  (val) => val === '' || starDomainRegistry.get(val) !== undefined,
-  (val) => ({ message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}` }),
-)
+ *  Accepts both Chinese names (天机) and Pinyin IDs (tianji, case-insensitive);
+ *  the transform normalizes to the canonical pinyin id so the value reaching
+ *  DelegationRequest.authority is always resolvable by the worker tool gate.
+ *  Empty string treated as unspecified (not validated) — the dimension-level
+ *  refine then requires `authorities` instead. */
+const authorityStringSchema = z.string().transform((val, ctx) => {
+  if (val === '') return val
+  const resolved = starDomainRegistry.resolve(val)
+  if (resolved === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}（亦可传中文星名，如 天机）` })
+    return z.NEVER
+  }
+  return resolved
+})
 
 const parallelismSchema = z.enum(['expert', 'data'])
 
@@ -572,6 +580,7 @@ export function createGalaxyTool(coordinator: GalaxyCoordinator): Tool {
 ## 星域选择（dimensions[].authority 或 .authorities）
 - 前端/UI → 文曲 · 后端/逻辑 → 天机 · 架构/规划 → 天权 · 实现/编码 → 天梁
 - 审查/验证 → 瑶光 · 探索/攻坚 → 破军 · 重构/优化 → 天府 · 数据/对账 → 开阳 · 文档/调研 → 天璇
+- authority/authorities 可传中文星名（如 天机）或拼音 id（如 tianji），中文会被归一化为规范 id
 
 ## 硬性约束
 - 可写维度必须拆成文件范围不重叠的单 authority 维度
@@ -589,8 +598,8 @@ export function createGalaxyTool(coordinator: GalaxyCoordinator): Tool {
                 name: { type: 'string', description: '维度标识（如 frontend / backend / review / test / docs）' },
                 objective: { type: 'string', description: '该维度的具体执行目标' },
                 constraints: { type: 'array', items: { type: 'string' }, maxItems: 12, description: '该维度必须遵守的任务级约束：计划里的反目标、待验证假设、不许动的东西。逐字抄写原文，不要转述——worker 看不到计划文档，这是唯一的送达通道。' },
-                authority: { type: 'string', description: '该维度使用的星域 id。单星域时使用，与 authorities 二选一。' },
-                authorities: { type: 'array', items: { type: 'string' }, description: '该维度使用多个星域作独立只读分析；不共享实时上下文，也不能用于并行写入。与 authority 二选一。' },
+                authority: { type: 'string', description: '该维度使用的星域 id 或中文星名（如 tianji 或 天机）。单星域时使用，与 authorities 二选一。' },
+                authorities: { type: 'array', items: { type: 'string' }, description: '该维度使用多个星域（id 或中文星名）作独立只读分析；不共享实时上下文，也不能用于并行写入。与 authority 二选一。' },
                 parallelism: { type: 'string', enum: ['expert', 'data'], default: 'expert', description: 'expert 为按专长的单分片派发；data 为同一只读任务的独立副本。' },
                 replicas: { type: 'integer', minimum: 2, maximum: 5, description: '仅 data 模式：独立副本数。' },
                 profile: { type: 'string', enum: profileRegistry.getProfileNames(), description: 'worker profile。默认按维度名自动推导。' },

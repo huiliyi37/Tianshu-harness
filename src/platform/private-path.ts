@@ -17,7 +17,7 @@ foreach ($sid in @($user.Value, 'S-1-5-18', 'S-1-5-32-544')) {
   $rule = New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', $inherit, 'None', 'Allow')
   $acl.AddAccessRule($rule)
 }
-$current = Get-Acl -LiteralPath $path
+$current = $item.GetAccessControl()
 if (@($user.Value, 'S-1-5-18', 'S-1-5-32-544') -notcontains $current.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Untrusted storage owner is unsafe' }
 if ($current.GetSecurityDescriptorSddlForm('Access') -ne $acl.GetSecurityDescriptorSddlForm('Access')) {
   if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName, $acl) }
@@ -29,6 +29,10 @@ export function protectPrivatePath(path: string, platform = process.platform): v
   if (lstatSync(path).isSymbolicLink()) throw new Error('Private storage cannot be a symbolic link')
   if (platform !== 'win32') {
     chmodSync(path, lstatSync(path).isDirectory() ? 0o700 : 0o600)
+    const effective = lstatSync(path)
+    if (effective.isSymbolicLink() || (effective.mode & 0o077) !== 0) {
+      throw new Error('Private storage permissions could not be enforced')
+    }
     return
   }
   const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')

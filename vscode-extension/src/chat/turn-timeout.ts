@@ -56,6 +56,15 @@ export class TurnTimeout {
     if (this.pendingApprovals === 0 && this.timer === undefined) this.arm()
   }
 
+  /** Authoritative reconnect state also removes approvals resolved while offline. */
+  setPendingApprovals(count: number): void {
+    if (this.disposed) return
+    const previous = this.pendingApprovals
+    this.pendingApprovals = count
+    if (count > 0) this.pause()
+    else if (previous > 0 && this.timer === undefined) this.arm()
+  }
+
   /** 轮收束：停止计时，此后不再触发。 */
   dispose(): void {
     this.disposed = true

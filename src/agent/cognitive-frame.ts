@@ -25,6 +25,27 @@ import type { StructureFlowInputs } from './structure-flow-controller.js'
 import type { CognitiveFactQuality, CognitiveFactSource } from './cognitive-quality.js'
 export type { CognitiveFactQuality, CognitiveFactSource } from './cognitive-quality.js'
 
+/** P3：工作相位/评分口径观测（frame facts 的可选扩展——旧帧缺此字段，
+ *  replay 报 legacy；不记录文件正文、敏感路径或原始命令）。 */
+export interface CognitiveFrameWorkFacts {
+  committedPhase: string | null
+  candidatePhase: string | null
+  candidateTurns: number
+  candidateSource: string | null
+  transition: string | null
+  reason: string | null
+  taskEpoch: number
+  stageEpoch: number
+  mutationRevision: number
+  progressRevision: number
+  editExpectationKind: string | null
+  editExpectationSource: string | null
+  /** 自最后实质进展（无记录时为任务起点）起的 modelTurn 数（P3 进展年龄）。 */
+  progressAgeTurns: number
+  /** 验证等待是否到期（waitingVerification 投影；none = 无等待）。 */
+  verificationWait: 'none' | 'active' | 'expired'
+}
+
 export interface CognitiveFrameFacts {
   palStatus?: import('./pal-observation.js').PalStatus
   efe: EFEComponents | null
@@ -38,6 +59,8 @@ export interface CognitiveFrameFacts {
   user: { intervened: boolean }
   plan: { activePlanFile: boolean; planModeState: string }
   progress: { todoCompletedDelta: number }
+  /** P3 可选：工作相位/口径观测（装配器不自动补默认值——旧帧重算不变）。 */
+  work?: CognitiveFrameWorkFacts
 }
 
 /** 装配输入与 facts 同构——装配器负责深拷贝与质量标记。 */
@@ -118,6 +141,8 @@ export function assembleCognitiveFrame(input: CognitiveFrameInput, schemaVersion
     user: { ...input.user },
     plan: { ...input.plan },
     progress: { ...input.progress },
+    // P3：可选工作观测——只在输入提供时设置（缺省不加键——旧帧 fingerprint 重算不变）。
+    ...(input.work ? { work: { ...input.work } } : {}),
   }
 
   const quality: Record<CognitiveFactSource, CognitiveFactQuality> = {

@@ -169,6 +169,45 @@ describe('W2 efficacy 负反馈环 (incident 20b9714e)', () => {
   })
 })
 
+describe('isKeySilenced — 会话级静音综合查询（2026-10-10 方向3）', () => {
+  it('任一静音源命中即 true：习惯化静音（真实 streak→render 链路）', () => {
+    const bus = new AdvisoryBus()
+    bus.setHabituationPolicy({ getIgnoredStreak: (k) => (k === 'x' ? 3 : 0) })
+    assert.equal(bus.isKeySilenced('x'), false, '尚未触发静音')
+    bus.submit({ key: 'x', priority: 0.6, category: 'repair', content: 'c', expect: { kind: 'tool_appears', tools: [] } })
+    bus.render(undefined, 1)
+    assert.equal(bus.isKeySilenced('x'), true, 'render 触发习惯化静音后应命中')
+  })
+
+  it('任一静音源命中即 true：负 lift 静音', () => {
+    const bus = new AdvisoryBus()
+    bus.setLiftProvider((k) => (k === 'y' ? 0 : null))
+    bus.submit({ key: 'y', priority: 0.6, category: 'repair', content: 'c', expect: { kind: 'tool_appears', tools: [] } })
+    assert.equal(bus.isKeySilenced('y'), false)
+    bus.render(undefined, 1)
+    assert.equal(bus.isKeySilenced('y'), true, '负 lift 触发静音后应命中')
+  })
+
+  it('无任何静音状态 → false（不误报）', () => {
+    const bus = new AdvisoryBus()
+    assert.equal(bus.isKeySilenced('convergence'), false)
+  })
+
+  // 2026-10-10 复核补修：efficacy 冷却窗口此前不在并集里——advisory 被吞而
+  // isKeySilenced 报 false，与「本轮确实不会送达的会话级抑制都该命中」口径相悖。
+  it('efficacy 冷却窗口也计为被抑制（此前漏报：advisory 被吞而 silenced=false）', () => {
+    const bus = new AdvisoryBus()
+    bus.setEfficacyStatsProvider(() => ({ delivered: 3, adopted: 0, decided: 3 }))
+    const entry = () => ({ key: 'cooling', priority: 0.65, category: 'discipline' as const, content: 'c', expect: { kind: 'tool_appears' as const, tools: [] } })
+    bus.submit(entry())
+    assert.match(bus.render(undefined, 1), /key="cooling"/, '首次送达——建立冷却窗')
+    bus.drainDelivered()
+    bus.submit(entry())
+    assert.doesNotMatch(bus.render(undefined, 2), /key="cooling"/, '冷却窗口内 advisory 应被吞')
+    assert.equal(bus.isKeySilenced('cooling'), true, '冷却窗口内应报被抑制')
+  })
+})
+
 describe('W6 CVM overhead throttle — Wave 2 统一注入预算', () => {
   it('throttled: budget = 1, only 1 non-exempt entry per render', () => {
     const bus = new AdvisoryBus()
@@ -951,4 +990,56 @@ describe('W6 注入预算 × 送达记账一致性（2026-09-10 audit：假送�
     }
   })
 
+})
+
+
+// ── §3 周期资格（episodeProbation）：新任务给「本任务里真的收到过该提醒」的 key
+// 一次投递机会——但仍受候选门禁/预算/holdout 约束，且实际非 shadow 投递才消费 ──
+describe('周期资格 episodeProbation（§3 发射侧贯通）', () => {
+  it('efficacy 静音中的 key 被周期资格放行一次，真实投递后消费', () => {
+    const bus = new AdvisoryBus()
+    const stats = new Map<string, { delivered: number; adopted: number; decided?: number }>()
+    bus.setEfficacyStatsProvider(key => stats.get(key) ?? null)
+    stats.set('convergence', { delivered: 20, adopted: 0, decided: 20 })
+    const entry = {
+      key: 'convergence', priority: 0.65, category: 'discipline' as const, content: '请收敛',
+      expect: { kind: 'verify_attempted' as const },
+    }
+
+    bus.submit(entry)
+    assert.ok(!bus.render(undefined, 1).includes('key="convergence"'), '先确认默认被 efficacy 静音')
+
+    bus.grantEpisodeProbation(['convergence'])
+    bus.submit(entry)
+    assert.ok(bus.render(undefined, 2).includes('key="convergence"'), '周期资格应放行一次')
+    bus.drainDelivered() // 模拟真实送达（消费点）
+
+    bus.submit(entry)
+    assert.ok(!bus.render(undefined, 3).includes('key="convergence"'), '资格已消费，回到静音')
+  })
+
+  it('未拿到渲染位（预算裁掉）不消耗资格——下轮仍能放行', () => {
+    const bus = new AdvisoryBus()
+    const stats = new Map<string, { delivered: number; adopted: number; decided?: number }>()
+    bus.setEfficacyStatsProvider(key => stats.get(key) ?? null)
+    stats.set('quiet', { delivered: 20, adopted: 0, decided: 20 })
+
+    const quiet = {
+      key: 'quiet', priority: 0.65, category: 'discipline' as const, content: '安静提醒',
+      expect: { kind: 'verify_attempted' as const },
+    }
+    bus.grantEpisodeProbation(['quiet'])
+    // 三条更高优先级条目占满 CVM 预算（3）→ quiet 拿不到渲染位。
+    // 用不同 category，避免先被「每类上限」裁掉而让出位置。
+    for (const [k, c, p] of [['p1', 'repair', 0.95], ['p2', 'mistake', 0.9], ['p3', 'dedup', 0.85]] as const) {
+      bus.submit({ key: k, priority: p, category: c, content: k })
+    }
+    bus.submit(quiet)
+    const first = bus.render(undefined, 1)
+    assert.ok(!first.includes('key="quiet"'), '预算淘汰下确实没送达')
+    bus.drainDelivered()
+
+    bus.submit(quiet)
+    assert.ok(bus.render(undefined, 2).includes('key="quiet"'), '未送达不得消耗资格，下轮仍放行')
+  })
 })

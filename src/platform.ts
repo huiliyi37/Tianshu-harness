@@ -216,6 +216,17 @@ function whereAsync(cmd: string): Promise<string | undefined> {
   })
 }
 
+function usablePowerShellAsync(path: string | undefined): Promise<boolean> {
+  if (!path) return Promise.resolve(false)
+  return new Promise(resolve => {
+    try {
+      execFile(path, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
+        timeout: 3000, windowsHide: true,
+      }, error => resolve(!error))
+    } catch { resolve(false) }
+  })
+}
+
 let _shellPrewarm: Promise<void> | null = null
 /** 缓存代数：applyConfiguredGitBashPath 清缓存时自增，在飞预热写回前比对。 */
 let _shellProbeGen = 0
@@ -243,6 +254,9 @@ export function prewarmShellProbes(): Promise<void> {
     const [git, bash, pwsh, powershell] = await Promise.all([
       whereAsync('git'), whereAsync('bash'), whereAsync('pwsh.exe'), whereAsync('powershell.exe'),
     ])
+    const [pwshUsable, powershellUsable] = await Promise.all([
+      usablePowerShellAsync(pwsh), usablePowerShellAsync(powershell),
+    ])
     if (gen !== _shellProbeGen) return
     if (_cachedGitBash === undefined) {
       _cachedGitBash = resolveGitBashPath({
@@ -254,7 +268,7 @@ export function prewarmShellProbes(): Promise<void> {
       })
     }
     if (!_cachedShell) {
-      const hits: Record<string, boolean> = { 'pwsh.exe': !!pwsh, 'powershell.exe': !!powershell }
+      const hits: Record<string, boolean> = { 'pwsh.exe': pwshUsable, 'powershell.exe': powershellUsable }
       _cachedShell = resolveShellCommand({
         isWindows: true,
         env: process.env,
@@ -335,11 +349,15 @@ export function resolveShellCommand(deps: ShellProbeDeps): ShellCommand {
   return { cmd: 'sh', args: ['-c'], kind: 'sh' }
 }
 
-/** True if the named PowerShell executable resolves on PATH (Windows). */
+/** A PATH entry can be an unusable WindowsApps alias, especially over SSH. */
 function hasPwshWindows(cmd: string): boolean {
   try {
     const result = spawnSync('where', [cmd], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true })
-    return result.status === 0 && result.stdout.toString().trim().length > 0
+    if (result.status !== 0 || !result.stdout.toString().trim()) return false
+    const probe = spawnSync(cmd, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
+      stdio: 'ignore', timeout: 3000, windowsHide: true,
+    })
+    return probe.status === 0
   } catch {
     return false
   }

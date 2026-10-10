@@ -9,6 +9,7 @@
  */
 
 import chalk from 'chalk'
+import { isCapturedPty } from '../terminal-profile.js'
 
 // ── 原始转义序列常量 ──────────────────────────────────────────
 
@@ -215,6 +216,21 @@ function use256(): boolean {
   return chalk.level === 2
 }
 
+function rgbToAnsi16(rgb: readonly number[]): number {
+  const palette = [
+    [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
+    [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
+    [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0],
+    [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255],
+  ]
+  let best = 0, distance = Infinity
+  for (let i = 0; i < palette.length; i++) {
+    const d = palette[i]!.reduce((sum, value, j) => sum + (value - rgb[j]!) ** 2, 0)
+    if (d < distance) { best = i; distance = d }
+  }
+  return best < 8 ? 30 + best : 90 + best - 8
+}
+
 /**
  * 设置前景色。接受 hex（`#a8e6cf`）或 chalk 命名色（`cyan`/`redBright`）。
  * hex 在 truecolor 终端发 38;2，在 256 色终端（chalk.level === 2）量化为 38;5；
@@ -226,6 +242,7 @@ export function fg(colorValue: string): string {
     const code = NAMED_FG_CODES[colorValue]
     return code === undefined ? '' : `\x1B[${code}m`
   }
+  if (isCapturedPty()) return `\x1B[${rgbToAnsi16(rgb)}m`
   if (use256()) return `\x1B[38;5;${rgbToXterm256(rgb[0], rgb[1], rgb[2])}m`
   return `\x1B[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
 }
@@ -240,6 +257,7 @@ export function bg(colorValue: string): string {
     const code = NAMED_FG_CODES[colorValue]
     return code === undefined ? '' : `\x1B[${code + 10}m`
   }
+  if (isCapturedPty()) return `\x1B[${rgbToAnsi16(rgb) + 10}m`
   if (use256()) return `\x1B[48;5;${rgbToXterm256(rgb[0], rgb[1], rgb[2])}m`
   return `\x1B[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
 }
@@ -284,6 +302,7 @@ export function setHyperlinksEnabled(value: boolean | null): void {
  * - tmux/screen 与 dumb 终端保守降级（tmux 需 passthrough 配置，默认关闭）
  */
 export function detectHyperlinkSupport(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (isCapturedPty(env)) return false
   if (env.RIVET_HYPERLINKS === '0') return false
   if (env.RIVET_HYPERLINKS === '1' || env.FORCE_HYPERLINK) return true
   const term = env.TERM ?? ''
@@ -301,6 +320,7 @@ export function detectHyperlinkSupport(env: NodeJS.ProcessEnv = process.env): bo
 let detectedSupport: boolean | null = null
 
 function hyperlinksSupported(): boolean {
+  if (isCapturedPty()) return false
   if (hyperlinkOverride !== null) return hyperlinkOverride
   if (detectedSupport === null) detectedSupport = detectHyperlinkSupport()
   return detectedSupport
@@ -347,6 +367,7 @@ export function detectImageProtocol(
   env: NodeJS.ProcessEnv = process.env,
   isTTY: boolean = Boolean(process.stdout.isTTY),
 ): ImageProtocol {
+  if (isCapturedPty(env)) return 'none'
   const override = env.RIVET_IMAGES?.toLowerCase()
   if (override === '0' || override === 'off' || override === 'none') return 'none'
   if (override === 'kitty' || override === 'iterm2') return override
@@ -365,6 +386,7 @@ let detectedImageProtocol: ImageProtocol | null = null
 
 /** 当前生效的图片协议（带缓存 + override 钩子）。 */
 export function imageProtocol(): ImageProtocol {
+  if (isCapturedPty()) return 'none'
   if (imageProtocolOverride !== null) return imageProtocolOverride
   if (detectedImageProtocol === null) detectedImageProtocol = detectImageProtocol()
   return detectedImageProtocol

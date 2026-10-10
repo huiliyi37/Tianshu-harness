@@ -26,12 +26,14 @@ describe('killAllSync', () => {
     assert.ok(b.signals.includes('SIGKILL'))
   })
 
-  // 回归守卫（issue #185）：win32 上 killProcessTree 忽略 signal（process-kill.ts:64-65），
-  // 同步路径没有等待窗口，第二发与第一发参数逐字相同——只剩 spawnSync 空转。
-  // 每个子进程必须恰好一次 taskkill；多一次就是回归。
-  it('win32: 每个子进程恰好发一次 taskkill（不得回归成两遍）', () => {
+  // issue #398：Windows 注销/关机阶段会话拆除中，新进程 DLL 初始化大量失败
+  // （0xC0000142），退出路径 spawnSync('taskkill') 的加载器弹系统硬错误框
+  // （NtRaiseHardError，windowsHide 压不住）阻塞关机。退出路径必须零 spawn、
+  // 进程内直杀（child.kill = TerminateProcess）。树杀兜底：经 job-launch.exe
+  // 的壳由 Job Object KILL_ON_JOB_CLOSE 收树（#144），注销场景由会话拆除收余。
+  it('win32: 退出路径零 spawn——不发 taskkill，进程内直杀（issue #398）', () => {
     const seen: string[][] = []
-    // 不可能的 PID：RED 阶段（老代码）会真的 spawnSync taskkill，用真实区间 PID 有误杀风险
+    // 不可能的 PID：不误杀真实进程
     const a = fakeChild(2_000_000_001)
     const b = fakeChild(2_000_000_002)
     track(a.proc)
@@ -40,9 +42,8 @@ describe('killAllSync', () => {
     killAllSync('win32', (args) => { seen.push(args) })
 
     assert.equal(getActiveCount(), 0)
-    assert.deepEqual(seen, [
-      ['/F', '/T', '/PID', '2000000001'],
-      ['/F', '/T', '/PID', '2000000002'],
-    ])
+    assert.deepEqual(seen, [], '退出路径不得 spawn taskkill（issue #398）')
+    assert.ok(a.signals.includes('SIGKILL'), '必须进程内直杀')
+    assert.ok(b.signals.includes('SIGKILL'), '必须进程内直杀')
   })
 })

@@ -438,13 +438,20 @@ function inspectorObjective(inspector: typeof INSPECTORS[number], change: Change
 }
 
 function squadronRequests(change: ChangeSet, options: CoordinatorReviewDepsOptions, onActivity?: DelegationRequest['onActivity']): DelegationRequest[] {
-  return INSPECTORS.map(inspector => request({
-    change,
-    options,
-    kind: 'review',
-    profile: 'reviewer',
-    objective: inspectorObjective(inspector, change),
-    onActivity,
+  // parentTurnId 是 dispatch 归属键（瞬态表按它键控，ownDispatch 拒绝同键并发）——
+  // 同批 inspector 必须各自唯一。verifier/patcher 是单发串行（跑完即释放），
+  // 仍共享基础键；批内并发的 squadron/wiring 必须按席位派生。
+  const base = options.parentTurnId ?? REVIEW_PARENT_TURN_ID
+  return INSPECTORS.map((inspector, index) => ({
+    ...request({
+      change,
+      options,
+      kind: 'review',
+      profile: 'reviewer',
+      objective: inspectorObjective(inspector, change),
+      onActivity,
+    }),
+    parentTurnId: `${base}:inspector-${index}`,
   }))
 }
 
@@ -542,7 +549,8 @@ export function createCoordinatorReviewDeps(
       const budget = computeAutoReviewBudget(change)
       const wiring = INSPECTORS.find(i => i.name === '接线审查')!
       const silence = INSPECTORS.find(i => i.name === '静默审查')!
-      const requests = [wiring, silence].map(inspector => ({
+      const base = options.parentTurnId ?? REVIEW_PARENT_TURN_ID
+      const requests = [wiring, silence].map((inspector, index) => ({
         ...request({
           change,
           options,
@@ -554,6 +562,8 @@ export function createCoordinatorReviewDeps(
           ].join('\n'),
           onActivity,
         }),
+        // 与 squadronRequests 同理：批内并发派发的归属键必须唯一。
+        parentTurnId: `${base}:wiring-${index}`,
         budget,
       }))
       const run = coordinator.delegateBatch

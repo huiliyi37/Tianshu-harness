@@ -50,8 +50,14 @@ const FORBIDDEN_HEAVY = [
  * server 面增长把图推到 489；jszip/yaml 随之静态进图。父链核对（why）确认增长来自
  * server 路由/兼容层，FORBIDDEN_HEAVY 8 模块仍全绿、无 agent/tui 内核回流。
  * 上限 → 500（489 + ~2% 余量）。若技能管理后续把静态边改动态 import，应回调本值。
+ * 2026-10-09：500→510——file-context 路由加工作区守卫（安全修复，#221 同族），
+ * 引入 workspace-guard → project-trust 链，实测 504。FORBIDDEN_HEAVY 仍全绿。
+ * 2026-10-10：510→525（代为登记，对齐实测 512，非本会话增长）——10-09 后 server 面
+ * 路由/会话演进新增 ~8 条边；FORBIDDEN_HEAVY 8 模块全绿、无 agent/tui 回流。
+ * 收编 Windows 审计补丁包（20261009）P2-04 同项：公开仓按 ce4b60a 实测 504 调
+ * 500→520，dev 按本仓实测另调。
  */
-const REACHABLE_LIMIT = 500
+const REACHABLE_LIMIT = 525
 
 /**
  * 启动图允许静态出现的 bare 包（tsup 会按入口可达性把它们打进 chunk）。

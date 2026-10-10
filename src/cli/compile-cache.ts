@@ -14,6 +14,7 @@
  */
 import { readdirSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 /** 保留当前版本 + 最近修改的 N 个其他条目（与桌面端 KEEP_RECENT_COMPILE_CACHES 同值）。 */
 export const CLI_COMPILE_CACHE_KEEP_RECENT = 3
@@ -70,6 +71,7 @@ export function pruneStaleCliCompileCaches(root: string, keep: string, keepRecen
   const entries = readdirSync(root, { withFileTypes: true })
   const candidates: Array<{ path: string; mtimeMs: number }> = []
   for (const entry of entries) {
+    if (isFilesystemMetadata(entry.name)) continue
     const path = join(root, entry.name)
     if (path === keep) continue
     if (isLegacyNodeCacheEntry(entry.name)) {

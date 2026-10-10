@@ -1,3 +1,5 @@
+import { persistWorkerResult } from '../../agent/worker-result-store.js'
+import { saveWorkerSession } from '../../agent/worker-session-persist.js'
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -140,4 +142,30 @@ describe('getWorkerLog', () => {
     assert.equal(log.transcript[0]?.text, 'persisted verdict')
     assert.equal(log.savedAt, 456)
   })
+
+  it('dispatch-selected log isolates concurrent activity, archived results and transcript', async () => {
+    const manager = makeManager(), id = manager.createSession({}).id
+    const session = (manager as any).sessions.get(id)
+    for (const batch of ['A', 'B']) {
+      const dispatchId = `tool_${batch}:batch:0`, attemptId = batch, nonce = `nonce${batch}`
+      ;(manager as any).emitDelegationActivity(session, { workOrderId: 'batch:0', dispatchId, attemptId, status: 'completed', progressLine: `${batch} activity` })
+      persistWorkerResult({ workOrderId: 'batch:0', dispatchId, attemptId, status: 'passed', summary: `${batch} result`,
+        findings: [], changedFiles: [], artifacts: [], risks: [], nextActions: [], evidenceStatus: 'unverified' }, undefined, nonce)
+      saveWorkerSession('batch:0', 'code_scout', batch, [{ role: 'assistant', content: `${batch} transcript` }], undefined, undefined, undefined, nonce)
+    }
+    const a = await manager.getWorkerLog(id, 'batch:0', { dispatchId: 'tool_A:batch:0', attemptId: 'A' })
+    assert.deepEqual(a?.activity, ['A activity'])
+    assert.equal(a?.result?.summary, 'A result')
+    assert.equal(a?.transcript[0]?.text, 'A transcript')
+    assert.deepEqual(a?.rounds.map(r => r.nonce), ['nonceA'])
+    const unknown = await manager.getWorkerLog(id, 'batch:0', { dispatchId: 'missing' })
+    assert.equal(unknown?.result, null)
+    assert.deepEqual(unknown?.activity, [])
+    assert.deepEqual(unknown?.transcript, [])
+    const stub = { getLiveWorkerMessages: (target: string) => target === 'tool_A:batch:0' ? [] : undefined }
+    ;(manager as any).coordinatorBySession.set(id, () => stub)
+    const emptyLive = await manager.getWorkerLog(id, 'batch:0', { dispatchId: 'tool_A:batch:0' })
+    assert.deepEqual(emptyLive?.transcript, [], 'empty active snapshot must not expose stale disk history')
+  })
+
 })

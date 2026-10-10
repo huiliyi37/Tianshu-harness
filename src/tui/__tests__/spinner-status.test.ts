@@ -12,7 +12,6 @@ import {
   setReducedMotion,
   resetSpinnerConfig,
 } from '../format/spinner-status.js'
-import { circleSpinnerFrame } from '../braille-spinner.js'
 import { getTheme } from '../theme.js'
 import type { JobRow } from '../job-registry.js'
 
@@ -21,24 +20,39 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')
 }
 
+const glyphProfiles = [
+  { name: 'Unicode', asciiUi: '0', colorLevel: 0, frame: '◒', done: '◆' },
+  { name: 'ASCII', asciiUi: '1', colorLevel: 3, frame: '/', done: '*' },
+] as const
+
+function withGlyphProfile(profile: (typeof glyphProfiles)[number], run: () => void): void {
+  const previousAscii = process.env.RIVET_ASCII_UI
+  const previousColorLevel = chalk.level
+  process.env.RIVET_ASCII_UI = profile.asciiUi
+  chalk.level = profile.colorLevel
+  try { run() }
+  finally {
+    if (previousAscii === undefined) delete process.env.RIVET_ASCII_UI
+    else process.env.RIVET_ASCII_UI = previousAscii
+    chalk.level = previousColorLevel
+  }
+}
+
 describe('formatSpinnerStatus', () => {
   it('idle returns null', () => {
     assert.equal(formatSpinnerStatus({ tick: 0, phase: 'idle', elapsedMs: 0 }, theme), null)
   })
 
-  it('shows single spinner frame + verb + elapsed', () => {
-    resetSpinnerConfig()
-    const line = formatSpinnerStatus({ tick: 3, phase: 'thinking', elapsedMs: 5_000 }, theme)
-    assert.ok(line)
-    const plain = stripAnsi(line!)
-    const useAscii = chalk.level < 3
-    const expectedFrame = useAscii ? '/' : circleSpinnerFrame(3)
-    assert.ok(plain.startsWith(expectedFrame), 'leads with single spinner frame matching tick')
-    assert.ok(plain.includes('thinking'), 'first verb slot is "thinking"')
-    assert.ok(plain.includes('…'), 'word carries ellipsis')
-    assert.ok(plain.includes('5s'))
-    assert.ok(!plain.includes('esc'), 'no interrupt hint appended')
-  })
+  for (const profile of glyphProfiles) {
+    it(`shows one ${profile.name} spinner frame + verb + elapsed at color level ${profile.colorLevel}`, () => {
+      withGlyphProfile(profile, () => {
+        resetSpinnerConfig()
+        const line = formatSpinnerStatus({ tick: 3, phase: 'thinking', elapsedMs: 5_000 }, theme)
+        assert.ok(line)
+        assert.equal(stripAnsi(line), `${profile.frame} thinking… 5s`, 'explicit glyph profile overrides color capability')
+      })
+    })
+  }
 
   it('thinking uses the verb pool while streaming and waiting describe their activity', () => {
     resetSpinnerConfig()
@@ -115,17 +129,18 @@ describe('formatElapsedHuman / formatTokenCount', () => {
 })
 
 describe('formatTurnWorkSummary', () => {
-  it('renders ◆ elapsed · in→out tokens', () => {
-    const line = stripAnsi(formatTurnWorkSummary({
-      elapsedMs: 66_000,
-      inputTokens: 12_300,
-      outputTokens: 890,
-    }, theme))
-    const useAscii = chalk.level < 3
-    const expectedGlyph = useAscii ? '*' : '◆'
-    assert.ok(line.includes(`${expectedGlyph} 完成 · 1m 6s`))
-    assert.ok(line.includes('12.3k→890'))
-  })
+  for (const profile of glyphProfiles) {
+    it(`renders the ${profile.name} done glyph + elapsed + in→out tokens at color level ${profile.colorLevel}`, () => {
+      withGlyphProfile(profile, () => {
+        const line = stripAnsi(formatTurnWorkSummary({
+          elapsedMs: 66_000,
+          inputTokens: 12_300,
+          outputTokens: 890,
+        }, theme))
+        assert.equal(line, `${profile.done} 完成 · 1m 6s · 12.3k→890`, 'explicit glyph profile overrides color capability')
+      })
+    })
+  }
 })
 
 // ── job(await) 等待区如实化 ─────────────────────────────────────────

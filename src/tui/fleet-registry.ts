@@ -1,3 +1,4 @@
+import { workerDispatchKey } from '../tools/worker-identity.js'
 /**
  * FleetRegistry — TUI 侧的并行子代理「舰队读模型」。
  *
@@ -26,6 +27,9 @@ export const TERMINAL_RECORDS_CAP = 50
 export interface FleetWorkerView {
   /** Work order id（稳定的 per-worker 标识，区别于 spawning tool id）。 */
   workerId: string
+  workOrderId?: string
+  dispatchId?: string
+  attemptId?: string
   /** 人类友好短标签，例如 "wo_team:T1" → "T1"。 */
   shortLabel: string
   /** 派生该 worker 的委派工具调用 id（委派树父节点）。 */
@@ -78,6 +82,9 @@ export interface FleetGroupProgress {
 
 interface FleetRecord {
   workerId: string
+  workOrderId?: string
+  dispatchId?: string
+  attemptId?: string
   parentToolId: string
   parentWorkerId?: string
   profile: string
@@ -143,6 +150,7 @@ export class FleetRegistry {
    * - 复见：合并状态/活动行；profile 缺省时保留既有（终态事件常不带 profile）。
    */
   apply(activity: DelegationActivity, now: number = Date.now()): void {
+    const key = workerDispatchKey(activity)
     const terminal = TERMINAL_STATUSES.has(activity.status)
 
     // 已终态的 id 又收到非终态事件 = **新一轮派发**（或 resume 续跑），不是旧
@@ -154,13 +162,14 @@ export class FleetRegistry {
     // 下面「只在缺失时才写」的 contract / summary（:163-165）永远停在第一轮的值
     // 上——/tasks 的目标行逐次相同、与本轮任务毫无关系，上一轮的结论还会挂到这
     // 一轮的 worker 上。
-    const prior = this.records.get(activity.workOrderId) ?? this.terminalRecords.get(activity.workOrderId)
+    const prior = this.records.get(key) ?? this.terminalRecords.get(key)
+    if (prior?.terminal && !terminal && activity.dispatchId) return
     if (prior?.terminal && !terminal) {
-      this.records.delete(activity.workOrderId)
-      this.terminalRecords.delete(activity.workOrderId)
+      this.records.delete(key)
+      this.terminalRecords.delete(key)
     }
 
-    const existing = this.records.get(activity.workOrderId)
+    const existing = this.records.get(key)
 
     // Maintain activity log ring buffer
     const log = existing?.activityLog ? [...existing.activityLog] : []
@@ -219,8 +228,11 @@ export class FleetRegistry {
       return
     }
 
-    this.records.set(activity.workOrderId, {
-      workerId: activity.workOrderId,
+    this.records.set(key, {
+      workerId: key,
+      workOrderId: activity.workOrderId,
+      dispatchId: activity.dispatchId,
+      attemptId: activity.attemptId,
       parentToolId: activity.parentToolId,
       parentWorkerId: activity.parentWorkerId,
       profile: activity.profile ?? 'worker',
@@ -247,7 +259,10 @@ export class FleetRegistry {
   private toView(r: FleetRecord, now: number): FleetWorkerView {
     return {
       workerId: r.workerId,
-      shortLabel: shortOrderLabel(r.workerId),
+      workOrderId: r.workOrderId,
+      dispatchId: r.dispatchId,
+      attemptId: r.attemptId,
+      shortLabel: shortOrderLabel(r.workOrderId ?? r.workerId),
       parentToolId: r.parentToolId,
       parentWorkerId: r.parentWorkerId,
       profile: r.profile,

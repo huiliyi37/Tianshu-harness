@@ -23,6 +23,7 @@ import type { MeridianIndexer } from './meridian-indexer.js'
 import { isMeridianIndexablePath } from './meridian-indexer.js'
 import { isRuntimeLeanAspect } from '../config/runtime-lean.js'
 import { debugLog } from '../utils/debug.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 /** 每批索引文件数——批间让出事件循环，TUI/sidecar 不被 tree-sitter 解析卡住。 */
 const BACKFILL_BATCH_SIZE = 20
@@ -87,6 +88,7 @@ function enumerateViaReaddir(cwd: string): string[] {
       return
     }
     for (const entry of entries) {
+      if (isFilesystemMetadata(entry.name)) continue
       if (out.length >= READDIR_ENUM_CAP) return
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name
       if (entry.isDirectory()) {

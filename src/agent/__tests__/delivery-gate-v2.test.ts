@@ -28,6 +28,7 @@ function makeGate(ownedFiles: string[], externalDirty: string[] = []) {
     gate: createDeliveryGateV2({ taskLedger: ledger, ownership, attribution: attr }),
     ledger,
     ownership,
+    attr,
   }
 }
 
@@ -62,6 +63,36 @@ describe('delivery-gate-v2 — ownership-aware delivery gate with GREEN/YELLOW/R
     assert.notEqual(result.state, 'GREEN', '基线不完整时不能说「就绪可交付」')
     assert.match(String(result.reason), /git/, '原因里要说明是 git/归属基线不可用')
     assert.equal(result.canDeliver, true, '文件已产出，不阻断；只是交付/提交流程不可用')
+  })
+
+  it('#共享工作区：无 coverage 的 required 失败不再被当作「从未验证」硬拦', () => {
+    // 现场（2026-10-09）：owned 的 config-routes.ts 被并行会话改了，它的下游
+    // image-gen-model-routes 测试进我的 required；该测试在隔离快照里因依赖缺失而失败
+    //（快照只含本会话 owned diff → 拿不到 per-file coverage）。修复前它整条被
+    // `if (!c) continue` 跳过 → 落进 uncovered（语义是「从未跑过」）→ 硬拦，
+    // 跑多少次都填不上。修复后归 failed 档，配合外部在途改动证据降级为可交付。
+    const { gate, ledger } = makeGate(
+      ['src/server/config-routes.ts'],
+      ['src/api/image-gen-client.ts'],
+    )
+    ledger.record({ type: 'verification', command: 'npm run typecheck', status: 'passed', meta: { kind: 'typecheck', scope: 'full', exitCode: 0 } })
+    ledger.record({
+      type: 'verification',
+      command: "rtk node --import tsx --test 'src/server/__tests__/image-gen-model-routes.test.ts'",
+      status: 'failed',
+      meta: { kind: 'test', scope: 'targeted', exitCode: 1, passed: 0, failed: 0, skipped: 0 },
+    })
+
+    const result = gate.assess([], ['src/server/config-routes.ts', 'src/api/image-gen-client.ts'], undefined, {
+      impactedTests: ['src/server/__tests__/image-gen-model-routes.test.ts'],
+      testExists: () => true,
+    })
+    // 锁定「归档」这一步（本笔修复的对象）：修复前这条记录落进 uncovered →
+    // reason 报 "lack coverage"（那一档没有归因、硬拦）；修复后进 failed 档 →
+    // 走可归因路径。最终降级另需 externalFiles 非空（既有的 externallyBlocked
+    // 分支，由真实工作区的 dirty 集合构造，本夹具未复现该构造）。
+    assert.match(result.reason ?? '', /Required impacted tests failed/, `应走 failed 档（可归因）— state=${result.state} reason=${result.reason}`)
+    assert.doesNotMatch(result.reason ?? '', /lack coverage/, '不得被当作「从未跑过」')
   })
 
   it('returns GREEN when no files modified', () => {
@@ -413,13 +444,28 @@ describe('W1 回归防线 — assessImpactedTestCoverage', () => {
     assert.deepEqual(coverage.uncovered, ['src/a/__tests__/a.test.ts'])
   })
 
-  it('failed verifications provide no coverage', () => {
+  it('整批失败不作废批内逐文件证据（粒度对齐：证据粒度 = 责任粒度）', () => {
+    // 语义变更（本笔）：整批状态不再覆盖批内逐文件 outcome。
+    // 该 helper 构造的 coverage 声明 a.test.ts 的 outcome 为 passed——它确实跑过并通过，
+    // 同批其他文件的失败与它无关。旧行为（整批失败 → 零覆盖）在共享工作区下使 required
+    // 全覆盖不可满足：一次全量里 7862 个文件通过，因混入 1 个既有的非本会话失败而
+    // 全部作废。同构先例：编译器不因一个文件报错丢掉其他文件的诊断；CI 矩阵里 job 3
+    // 红不作废 job 7 的结果。真正的「证据不可信」由 complete / filtered / stale 三条
+    // 把关（见同文件另两条用例），与「这批整体成不成功」正交。
     const coverage = assessImpactedTestCoverage(
       ['src/a/__tests__/a.test.ts'],
       [meta({ status: 'failed', command: 'npx tsx --test src/a/__tests__/a.test.ts', passed: 0, failed: 1, exitCode: 1 })],
       () => true,
     )
-    assert.deepEqual(coverage.uncovered, ['src/a/__tests__/a.test.ts'])
+    assert.deepEqual(coverage.uncovered, [], 'a.test.ts 有逐文件 passed 证据 → 构成覆盖')
+  })
+
+  it('无 per-file 证据的失败仍不构成覆盖，且进 failed 档', () => {
+    const noCov = meta({ status: 'failed', command: 'npx tsx --test src/a/__tests__/a.test.ts', passed: 0, failed: 1, exitCode: 1 })
+    delete (noCov as { coverage?: unknown }).coverage
+    const coverage = assessImpactedTestCoverage(['src/a/__tests__/a.test.ts'], [noCov], () => true)
+    assert.deepEqual(coverage.uncovered, ['src/a/__tests__/a.test.ts'], '没有执行证据就不构成覆盖')
+    assert.deepEqual(coverage.failed, ['src/a/__tests__/a.test.ts'], '但进 failed 档（有外部归因机会）')
   })
 })
 

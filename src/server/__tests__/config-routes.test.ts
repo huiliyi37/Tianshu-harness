@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -1571,6 +1571,52 @@ describe('POST /config/providers/test (completion probe)', () => {
     assert.equal(typeof seenContent, 'string', 'vision:false 压制启发 → 纯文本 content')
     await server.close()
     server = undefined
+  })
+
+  it('uses the saved vision declaration when the desktop only sends provider and model', async () => {
+    const seenContent: unknown[] = []
+    server = await startProbeServer((req, res) => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'mimo-v2.6-flash' }, { id: 'custom-image-model' }] }))
+        return
+      }
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      req.on('end', () => {
+        seenContent.push(JSON.parse(Buffer.concat(chunks).toString()).messages[0].content)
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end(sseProbeBody([JSON.stringify({ choices: [{ delta: { content: 'red square' } }] })]))
+      })
+    })
+    const configPath = join(home, 'config.json')
+    const previous = existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined
+    try {
+      writeFileSync(configPath, JSON.stringify({ provider: { default: 'custom', providers: {
+        custom: { baseUrl: server.baseUrl, protocol: 'openai', models: [
+          { id: 'mimo-v2.6-flash', supportsVision: false },
+          { id: 'custom-image-model', supportsVision: true },
+        ] },
+      } } }))
+      const router = createRouter(buildConfigRoutes(TOKEN))
+      for (const model of ['mimo-v2.6-flash', 'custom-image-model']) {
+        const result = await router('POST', '/config/providers/test', {
+          provider: 'custom', apiKey: 'sk-test', model,
+        }, AUTH)
+        assert.equal((result.body as { ok: boolean }).ok, true)
+      }
+      assert.equal(typeof seenContent[0], 'string', 'unchecked vision must override preset metadata')
+      assert.ok(Array.isArray(seenContent[1]), 'checked custom model must receive an image without an alias entry')
+      await router('POST', '/config/providers/test', {
+        provider: 'custom', apiKey: 'sk-test', model: 'custom-image-model', vision: false,
+      }, AUTH)
+      assert.equal(typeof seenContent[2], 'string', 'explicit request overrides the saved declaration')
+    } finally {
+      if (previous === undefined) rmSync(configPath, { force: true })
+      else writeFileSync(configPath, previous)
+      await server.close()
+      server = undefined
+    }
   })
 
   it('A′ keys-pool provider without explicit apiKey probes with the stored key (not 400)', async () => {

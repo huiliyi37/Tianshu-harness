@@ -1,3 +1,4 @@
+import { renderAdvisories } from './advisory-render.js'
 import type { SrClass } from './context.js'
 
 /**
@@ -45,10 +46,12 @@ export type AdvisoryExpectation =
   | { kind: 'file_touched'; paths: string[]; withinTurns?: number }
   | { kind: 'pattern_absent'; path: string; needles: string[]; withinTurns?: number }
   | {
-      /** 改道核销（B1/M4，2026-07-23 信号互扰治理）：观察窗内出现前置对照窗
-       *  （送达前 3 轮）未见过的 (工具族×文件面) 粗签名 → adopted。前置窗
-       *  无事件时任意工具事件即 adopted（与 tool_appears tools:[] 的
-       *  "打破无工具僵局"语义一致）。 */
+      /** 改道核销（B1/M4，2026-07-23 信号互扰治理；2026-10-10 方向 3 收紧）：
+       *  投递之后、同一策略周期内**首次**出现的工具族 → adopted；周期基线内已见
+       *  的族不算改道（换文件、只读 bash→read_file 这类同族换外衣都不算）。族映射
+       *  与周期边界见 course-correction-tracker.ts，核销账本在 AdvisoryReadback。
+       *  旧实现是「送达前 3 轮未见过的 工具族×文件面 粗签名」——文件面进签名 +
+       *  滚动窗口让活跃轨迹每轮自证改道，假 adopted 反复清零静默环。 */
       kind: 'course_changed'
       withinTurns?: number
     }
@@ -93,16 +96,23 @@ export interface AdvisoryEntry {
   /** W2 通道分级：SR 载荷类别，缺省 'discipline'。仅 channel='system-reminder' 的条目使用。
    *  'functional' 类不限流（调用方自带 run 级闩锁），仅 git-clear-after-fail 标记。 */
   srClass?: SrClass
+  /** §4 卡片关联 id——只用于"这条建议真的投递了吗"的内部关联，**不进入 prompt 文本**。
+   *  同一条 advisory 可以同时触发 UI 卡片，但只有在它实际进入渲染位时才该弹卡。 */
+  candidateId?: string
 }
 
 /** render() 实际送达的条目快照 — 供 readback 跟踪（send 侧账本的"已送达"半边） */
 export interface DeliveredAdvisory {
+  /** Exact toned payload, internal delivery proof; never added to public events. */
+  renderedContent?: string
   key: string
   category: AdvisoryCategory
   tier?: AdvisoryTier
   expect?: AdvisoryExpectation
   /** holdout 反事实组:该条赢得渲染位但被静默扣留（未渲染）,readback 核销进 shadow 桶 */
   shadow?: boolean
+  /** §4：透传候选 id——卡片确认只认「非 shadow 且带该 id」的投递。 */
+  candidateId?: string
 }
 
 export type AdvisoryCategory =
@@ -485,6 +495,10 @@ export class AdvisoryBus {
   private efficacySilenced = new Set<string>()
   private efficacyMuteRemaining = new Map<string, number>()
   private efficacyProbation = new Set<string>()
+  /** 周期边界发放的一次投递资格（§3）：新任务/人工引导后，相关 key 即使正处于
+   *  习惯化/efficacy/lift 静音中也放行一次。与另两种 probation 同构——**实际
+   *  非 shadow 投递后才消费**；被预算裁掉或 holdout 扣留不消耗资格。 */
+  private episodeProbation = new Set<string>()
   /** key → 剩余冷却渲染周期数 */
   private efficacyCooldownRemaining = new Map<string, number>()
   /** key → 上次冷却长度（下次送达时翻倍） */
@@ -560,9 +574,30 @@ export class AdvisoryBus {
     this.overheadThrottled = throttled
   }
 
-  /** 该 key 是否已被本会话 efficacy 环静默 — decision-shift 卡片同步抑制入口。 */
+  /** 该 key 是否已被本会话 efficacy 环静默 — efficacy 环单源查询（环自身判定用）。 */
   isEfficacySilenced(key: string): boolean {
     return this.efficacySilenced.has(key)
+  }
+
+  /** 周期边界发放一次投递资格（§3 发射侧贯通）。调用方是周期边界的消费点
+   *  （course-episodes 的 human 任务/guidance 分支），key 取自 readback 本周期
+   *  实际投递过的集合——只给「本任务里真的收到过该提醒」的 key 一次机会，
+   *  不给全量 key 洗白。 */
+  grantEpisodeProbation(keys: Iterable<string>): void {
+    for (const k of keys) this.episodeProbation.add(k)
+  }
+
+  /** 该 key 当前是否被任一会话级抑制机制命中——四张表都是「本轮 advisory 不会
+   *  送达」的会话级状态：efficacy 静音 / efficacy 冷却 / 习惯化静音 / 负 lift 静音。
+   *  逐轮机会性淘汰（MUTEX 让位 / 阶段抑制 / holdout 扣留 / 注入预算）不算抑制。
+   *  消费方：session-vitals-builder 的 silenced 面板口径。（2026-10-10 方向 3 起；
+   *  改道卡此后改由实际投递确认驱动——DecisionShiftDelivery，不再查此函数。） */
+  isKeySilenced(key: string): boolean {
+    return this.efficacySilenced.has(key)
+      || this.efficacyMuteRemaining.has(key)
+      || this.efficacyCooldownRemaining.has(key)
+      || this.silenceRemaining.has(key)
+      || this.liftMuteRemaining.has(key)
   }
 
   /** 静音中的 key（习惯化 + 负 lift）— cockpit advisory 面板观测口。 */
@@ -855,13 +890,13 @@ export class AdvisoryBus {
         const efficacy = this.efficacyStats?.(e.key)
         if (efficacy?.adopted === 0 && (efficacy.decided ?? 0) >= EFFICACY_COOLDOWN_DELIVERED) { kept.push(e); continue }
         if (this.efficacySilenced.has(e.key) || this.efficacyProbation.has(e.key)) { kept.push(e); continue }
-        if (this.silenceRemaining.has(e.key)) {
+        if (this.silenceRemaining.has(e.key) && !this.episodeProbation.has(e.key)) {
           droppedSilenced.add(e.key)
           continue
         }
         const streak = this.habituation.getIgnoredStreak(e.key)
         // streak 加深才触发新静音 — 期满 probation 放行一次，采纳则 streak 清零
-        if (streak >= HABITUATION_SILENCE_STREAK && streak > (this.lastSilencedStreak.get(e.key) ?? 0)) {
+        if (streak >= HABITUATION_SILENCE_STREAK && streak > (this.lastSilencedStreak.get(e.key) ?? 0) && !this.episodeProbation.has(e.key)) {
           this.lastSilencedStreak.set(e.key, streak)
           this.silenceRemaining.set(e.key, HABITUATION_SILENCE_RENDERS)
           droppedSilenced.add(e.key)
@@ -895,6 +930,9 @@ export class AdvisoryBus {
         const stats = this.efficacyStats!(e.key)
         if (!stats || stats.decided === undefined) return true
         if (stats.pending) { dropped.add(e.key); return false }
+        // 周期资格（§3）：新任务给相关 key 一次投递机会——豁免 efficacy 静音与
+        // 冷却（但**不穿透 pending 观察**：那是防重复投递的候选门禁，资格不该取消它）。
+        if (this.episodeProbation.has(e.key)) return true
         if (stats.adopted > 0) {
           this.efficacySilenced.delete(e.key); this.efficacyMuteRemaining.delete(e.key); this.efficacyProbation.delete(e.key)
           return true
@@ -956,7 +994,7 @@ export class AdvisoryBus {
       const droppedByLift = new Set<string>()
       const kept: AdvisoryEntry[] = []
       for (const e of all) {
-        const exempt = e.tier === 'constitutional' || e.immediate === true || e.category === 'star_domain' || this.efficacyProbation.has(e.key)
+        const exempt = e.tier === 'constitutional' || e.immediate === true || e.category === 'star_domain' || this.efficacyProbation.has(e.key) || this.episodeProbation.has(e.key)
         if (exempt) {
           kept.push(e)
           continue
@@ -1193,13 +1231,12 @@ export class AdvisoryBus {
     this.ledgerRendered += sorted.length
     this.ledgerHeldOut += heldOut.length
 
+    const rendered = renderAdvisories(sorted, e => this.applyTone(e))
     // P1a 核销闭环：记录实际送达的条目（含 expect 谓词），供 readback 追踪
-    this.delivered.push(...sorted.map(e => ({
-      key: e.key,
-      category: e.category,
-      tier: e.tier,
-      expect: e.expect,
-    })))
+    this.delivered.push(...rendered.delivered)
+    // 周期资格（§3）消费：只有真实进入渲染位（`sorted`，holdout 已从中移出）才算
+    // 用掉这次机会——被预算裁掉或扣留的条目下轮仍有资格。
+    for (const e of sorted) this.episodeProbation.delete(e.key)
     // W2 冷却记账只算真实送达（holdout 扣留条目模型没看到，不占冷却窗）
     this.recordDeliveredRender(sorted.map(e => e.key), renderEpoch)
     // holdout 反事实组:扣留但照常核销（shadow 桶,自发完成率基线）
@@ -1208,7 +1245,7 @@ export class AdvisoryBus {
       category: e.category,
       tier: e.tier,
       expect: e.expect,
-      shadow: true,
+      shadow: true, ...(e.candidateId ? { candidateId: e.candidateId } : {}),
     })))
 
     if (sorted.length === 0) {
@@ -1217,14 +1254,6 @@ export class AdvisoryBus {
       return ''
     }
 
-    // 渲染声明的是条目自身的 priority，不是排序用的有效优先级：效力信号与
-    // 正向臂逐轮变化，把它们写进注入文本会让同一条 ttl>1 的建议在 alive 周期
-    // 内字节抖动，而 advisory 走 appendix 通道（前缀缓存敏感）。有效优先级只
-    // 参与 Top-N 竞争，不进 prompt。
-    const lines = sorted.map(e =>
-      `  <entry key="${escapeXml(e.key)}" priority="${e.priority.toFixed(2)}" category="${e.category}">${escapeXml(this.applyTone(e))}</entry>`,
-    )
-
     // TTL 递减：TTL > 1 的条目保留到 alive，下轮继续
     this.alive = sorted
       .filter(e => (e.ttl ?? 1) > 1)
@@ -1232,7 +1261,7 @@ export class AdvisoryBus {
 
     this.entries = []
 
-    return `<星域-advisory>\n${lines.join('\n')}\n</星域-advisory>`
+    return rendered.block
   }
 
   /** 清空所有状态 */
@@ -1265,15 +1294,8 @@ export class AdvisoryBus {
     this.efficacySilenced.clear()
     this.efficacyMuteRemaining.clear()
     this.efficacyProbation.clear()
+    this.episodeProbation.clear()
     this.efficacyCooldownRemaining.clear()
     this.efficacyCooldownLength.clear()
   }
-}
-
-function escapeXml(text: string | null | undefined): string {
-  return (text ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
 }

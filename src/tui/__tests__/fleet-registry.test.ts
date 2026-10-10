@@ -418,3 +418,22 @@ test('FleetRegistry: clearGroup — 归档区封顶 TERMINAL_RECORDS_CAP，按�
   assert.ok(fleet.getWorkerById(`wo_cap_${total - 1}`), '最新归档保留')
   assert.equal(fleet.getCompletedWorkers().length, TERMINAL_RECORDS_CAP)
 })
+
+
+test('FleetRegistry: concurrent dispatch identities preserve independent controls and terminal states', () => {
+  const fleet = new FleetRegistry()
+  const a = { ...running('batch:0', 'tool_A', 'code_scout'), dispatchId: 'tool_A:batch:0', attemptId: 'A' }
+  const b = { ...running('batch:0', 'tool_B', 'code_scout'), dispatchId: 'tool_B:batch:0', attemptId: 'B' }
+  fleet.apply(a); fleet.apply(b)
+  assert.deepEqual(fleet.getActiveWorkers().map(w => w.workerId), [a.dispatchId, b.dispatchId])
+  assert.equal(fleet.getWorkerById(a.dispatchId)?.workOrderId, 'batch:0')
+  assert.equal(fleet.getWorkerById(a.dispatchId)?.shortLabel, '0')
+  fleet.apply({ ...a, status: 'completed' })
+  assert.equal(fleet.getWorkerById(b.dispatchId)?.terminal, false)
+  fleet.apply(a)
+  assert.equal(fleet.getWorkerById(a.dispatchId)?.terminal, true, 'late activity cannot revive completed dispatch')
+  assert.deepEqual(fleet.findGoneWorkers(id => id === b.dispatchId).map(w => w.workerId), [])
+  fleet.clearGroup('tool_A')
+  assert.equal(fleet.getWorkerById(a.dispatchId)?.terminal, true)
+  assert.equal(fleet.getWorkerById(b.dispatchId)?.terminal, false)
+})

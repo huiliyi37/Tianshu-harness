@@ -25,7 +25,7 @@ function makeController(
 
   const controller = new TurnStreamController({
     client,
-    abortSignal: new AbortController().signal,
+    getAbortSignal: () => new AbortController().signal,
     getStreamedTextLength: () => streamedText.length,
     appendStreamedText: text => { streamedText += text },
     truncateStreamedText: length => { streamedText = streamedText.slice(0, length) },
@@ -95,7 +95,7 @@ describe('TurnStreamController', () => {
     const persisted: Array<{ removedCount: number; uniqueUrlCount?: number }> = []
     const controller = new TurnStreamController({
       client,
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0,
       appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0,
@@ -137,7 +137,7 @@ describe('TurnStreamController', () => {
     }
     const controller = new TurnStreamController({
       client,
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0,
       appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0,
@@ -557,7 +557,7 @@ describe('TurnStreamController', () => {
       },
     } as unknown as StreamClient
     const controller = new TurnStreamController({
-      client: stubClient, abortSignal: new AbortController().signal,
+      client: stubClient, getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0, appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0, setLastPrewarmAt: () => {}, maybePrewarm: () => {},
       prewarmFile: () => { order.push('prewarm-ran') },
@@ -640,7 +640,7 @@ describe('TurnStreamController', () => {
     }
     const controller = new TurnStreamController({
       client,
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0,
       appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0,
@@ -683,7 +683,7 @@ describe('TurnStreamController', () => {
     }
     const controller = new TurnStreamController({
       client,
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0,
       appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0,
@@ -756,7 +756,7 @@ describe('TurnStreamController', () => {
     }
     const controller = new TurnStreamController({
       client,
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => 0,
       appendStreamedText: () => {}, truncateStreamedText: () => {},
       getLastPrewarmAt: () => 0,
@@ -879,7 +879,7 @@ it('a late stream keeps its own request identity after its first observation was
   const controller = new TurnStreamController({
     client: { stream: async (_r, cb) => { cb.onContextBudget?.(old); cb.onStopReason('end_turn', { input_tokens: 999_000 }) } },
     recordContextBudget: budget => { recorded.push(budget.requestId); return current },
-    abortSignal: new AbortController().signal, getStreamedTextLength: () => 0, appendStreamedText: () => {}, truncateStreamedText: () => {},
+    getAbortSignal: () => new AbortController().signal, getStreamedTextLength: () => 0, appendStreamedText: () => {}, truncateStreamedText: () => {},
     getLastPrewarmAt: () => 0, setLastPrewarmAt: () => {}, maybePrewarm: () => {}, addUsage: () => {}, recordTurnCache: () => {},
   })
   await controller.streamTurn({ request: { ...request, contextBudget: old }, turn: 0, lastTurnTextFingerprint: '',

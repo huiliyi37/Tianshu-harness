@@ -265,7 +265,9 @@ export function createPlanTaskTool(deps: {
 设 execute: true 自动完成所有可推进波次——共享多波驱动 executePlanWaves 从 wave 0 逐波推进至计划末波或停止判据（与 team_orchestrate 同一执行路径）。worker 直接写入共享工作区——用 git diff 审查聚合结果。
 等待上限（executeTimeoutMs，默认 10 分钟）到点不是失败：编排脱离等待转入后台继续推进（worker 不被中止、逐波 checkpoint 落盘、完成时下轮提醒），可用 executePlanWaves fromWave=N 续跑收尾。
 
-输出为 UnifiedPlan JSON——传给 team_orchestrate 的 planJson 参数做多波次续跑。`,
+输出为 UnifiedPlan JSON——传给 team_orchestrate 的 planJson 参数做多波次续跑。
+
+计划文件快速路径：objective 文本或 files 里出现 .rivet/plans/、.rivet/knowledge/、docs/superpowers/plans/ 下的 .md 路径时，自动读取该计划并按 H2/H3 章节 + \`- [ ]\` 清单切分任务（每章节一片，清单文本并入任务 objective）——未命中路径则退化为按 files 模块分组自由分解。要把设计文档变成分片，就把计划完整路径放进 files。`,
       input_schema: {
         type: 'object',
         properties: {

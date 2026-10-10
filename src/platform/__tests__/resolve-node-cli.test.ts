@@ -4,6 +4,7 @@ import { join, posix } from 'node:path'
 import {
   resolveNpmCliCommand,
   buildStdioEnvWithNodePath,
+  hasRealNode,
 } from '../resolve-node-cli.js'
 
 describe('resolveNpmCliCommand', () => {
@@ -70,6 +71,7 @@ describe('buildStdioEnvWithNodePath', () => {
         execPath: '/opt/node/bin/node',
         platform: 'linux',
         getDefaultEnvironment: () => ({ PATH: '/default', HOME: '/home/u' }),
+        existsSync: () => true, // 模拟真 node 存在 → prepend（issue #149 行为）
       },
     )
     assert.equal(env.TOKEN, 'secret')
@@ -84,6 +86,7 @@ describe('buildStdioEnvWithNodePath', () => {
         execPath: 'C:\\app\\node.exe',
         platform: 'win32',
         getDefaultEnvironment: () => ({ PATH: 'C:\\Windows' }),
+        existsSync: () => true, // 模拟真 node 存在 → prepend
       },
     )
     assert.ok(env.PATH?.startsWith(`C:\\app;`))
@@ -97,6 +100,7 @@ describe('buildStdioEnvWithNodePath', () => {
       execPath: posix.join('/opt', 'node', 'bin', 'node'),
       platform: 'darwin',
       getDefaultEnvironment: () => ({ PATH: '/usr/bin' }),
+      existsSync: () => true, // 模拟真 node 存在 → prepend
     })
     assert.ok(env.PATH?.startsWith(posix.join('/opt', 'node', 'bin') + ':'))
   })
@@ -112,6 +116,7 @@ describe('buildStdioEnvWithNodePath', () => {
       platform: 'win32',
       // MCP SDK 1.29.0 之前的 win32 白名单就是这样：有 SYSTEMROOT 没有 PATH。
       getDefaultEnvironment: () => ({ SYSTEMROOT: 'C:\\Windows' }),
+      existsSync: () => true, // 模拟真 node 存在 → prepend
     })
     assert.equal(
       env.PATH,
@@ -125,6 +130,7 @@ describe('buildStdioEnvWithNodePath', () => {
       execPath: 'D:\\app\\node.exe',
       platform: 'win32',
       getDefaultEnvironment: () => ({ SYSTEMROOT: 'D:\\Win' }),
+      existsSync: () => true, // 模拟真 node 存在 → prepend
     })
     assert.ok(env.PATH?.includes('D:\\Win\\System32'))
     assert.ok(!env.PATH?.includes('C:\\Windows'))
@@ -135,6 +141,7 @@ describe('buildStdioEnvWithNodePath', () => {
       execPath: 'C:\\app\\node.exe',
       platform: 'win32',
       getDefaultEnvironment: () => ({ PATH: 'C:\\Windows\\System32', SYSTEMROOT: 'C:\\Windows' }),
+      existsSync: () => true, // 模拟真 node 存在 → prepend
     })
     assert.equal(env.PATH, 'C:\\app;C:\\Windows\\System32')
   })
@@ -144,8 +151,88 @@ describe('buildStdioEnvWithNodePath', () => {
       execPath: '/opt/node/bin/node',
       platform: 'linux',
       getDefaultEnvironment: () => ({}),
+      existsSync: () => true, // 模拟真 node 存在 → prepend
     })
     assert.equal(env.PATH, '/opt/node/bin')
+  })
+})
+
+// ── issue #408：nodeDir 只有转发器（无真 node）时不抢占 PATH 首位 ──
+// 桌面端 bundled 的 node-runtime 目录在 Windows 上只有 node.cmd 转发器
+// （`@ECHO OFF` + `"%~dp0tianshu-runtime.exe" %*`），prepend 到 PATH 前部会劫持
+// 用户系统的真 node——`npm exec` / `npm run` 里经 cmd 层启动 node 的脚本随之失败。
+// 本组断言：无真 node 时改 append 到末尾（bundled 目录仍在 PATH 中）。
+
+describe('hasRealNode（issue #408）', () => {
+  it('win32 认 node.exe（转发器是 .cmd，不算命中）；posix 认 node', () => {
+    assert.equal(hasRealNode('C:\\app', 'win32', (p) => p === 'C:\\app\\node.exe'), true)
+    assert.equal(hasRealNode('C:\\app', 'win32', () => false), false)
+    assert.equal(hasRealNode('/opt/node/bin', 'linux', (p) => p === '/opt/node/bin/node'), true)
+    assert.equal(hasRealNode('/opt/node/bin', 'linux', () => false), false)
+  })
+
+  it('win32 只看 node.exe——目录里只有 node.cmd 转发器时不算真 node', () => {
+    assert.equal(
+      hasRealNode('E:\\tianshu\\node-runtime\\win-x64', 'win32', (p) => p.endsWith('node.cmd')),
+      false,
+      'node.cmd 是转发器，不是真 node，不该让它顶掉系统 node',
+    )
+  })
+})
+
+describe('buildStdioEnvWithNodePath — 无真 node 时不抢占首位（issue #408）', () => {
+  it('win32: nodeDir 无 node.exe 时 append 到末尾，不抢占系统 node', () => {
+    const env = buildStdioEnvWithNodePath(
+      { PATH: 'D:\\nvm\\nodejs' },
+      {
+        execPath: 'E:\\tianshu\\node-runtime\\win-x64\\tianshu-runtime.exe',
+        platform: 'win32',
+        getDefaultEnvironment: () => ({ PATH: 'D:\\nvm\\nodejs' }),
+        existsSync: () => false, // 模拟：目录里没有真 node.exe（只有转发器）
+      },
+    )
+    assert.ok(env.PATH?.startsWith('D:\\nvm\\nodejs;'), `系统 node 应排首位，实际: ${env.PATH}`)
+    assert.ok(
+      env.PATH?.endsWith('E:\\tianshu\\node-runtime\\win-x64'),
+      `bundled 目录仍应在 PATH 中，实际: ${env.PATH}`,
+    )
+  })
+
+  it('win32: nodeDir 有真 node.exe 时仍 prepend（issue #149 行为不变）', () => {
+    const env = buildStdioEnvWithNodePath(
+      { PATH: 'D:\\nvm\\nodejs' },
+      {
+        execPath: 'C:\\app\\node.exe',
+        platform: 'win32',
+        getDefaultEnvironment: () => ({ PATH: 'D:\\nvm\\nodejs' }),
+        existsSync: (p) => p.endsWith('node.exe'), // 模拟真 node 存在
+      },
+    )
+    assert.ok(env.PATH?.startsWith('C:\\app;'), `实际: ${env.PATH}`)
+  })
+
+  it('win32: 无真 node 且基座给不出 PATH 时，bundled 目录排在兜底系统目录之后', () => {
+    const env = buildStdioEnvWithNodePath(undefined, {
+      execPath: 'E:\\tianshu\\node-runtime\\win-x64\\tianshu-runtime.exe',
+      platform: 'win32',
+      getDefaultEnvironment: () => ({ SYSTEMROOT: 'C:\\Windows' }),
+      existsSync: () => false,
+    })
+    assert.equal(
+      env.PATH,
+      'C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;E:\\tianshu\\node-runtime\\win-x64',
+      '兜底目录是系统目录，必须排在只有转发器的 bundled 目录之前',
+    )
+  })
+
+  it('POSIX: 无真 node 时同样 append，不抢占系统 node', () => {
+    const env = buildStdioEnvWithNodePath(undefined, {
+      execPath: '/opt/runtime/tianshu-runtime',
+      platform: 'linux',
+      getDefaultEnvironment: () => ({ PATH: '/usr/bin:/bin' }),
+      existsSync: () => false,
+    })
+    assert.equal(env.PATH, '/usr/bin:/bin:/opt/runtime')
   })
 })
 

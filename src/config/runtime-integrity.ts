@@ -103,6 +103,7 @@ export function shouldIncludePath(relPath: string, mode: IntegrityMode): boolean
 
   const segments = p.split('/')
   if (segments.length > MAX_DEPTH) return false
+  if (segments.some((s) => s.startsWith('._'))) return false
 
   // 永远排除：清单自身 / 运行时自愈文件
   if (p === INTEGRITY_MANIFEST_FILENAME) return false

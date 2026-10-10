@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { presetIncludes, resolveToolPreset, __resetToolPresetForTest, type ToolPreset } from '../tool-preset.js'
@@ -9,20 +9,43 @@ import { setActiveScheduler, type CronScheduler } from '../../server/cron-schedu
 
 const SCHEDULE_TOOLS = ['schedule_create', 'schedule_list', 'schedule_delete'] as const
 
+/**
+ * bootstrap.ts 里装配的、不经过 createDefaultToolRegistry 的工具。
+ *
+ * 2026-10-09 补齐：旧清单只列了 19 个手抄名，漏掉 bootstrap 侧三个真实注册点
+ * （galaxy / starflow 有 presetIncludes 门控却没进清单，memory 干脆没门控），
+ * 于是 totalCount 断言（30/31/51）比实装少 3 件。清单完整性现由
+ * 「bootstrap.ts 漂移闸门」用例把守——源码新增门控工具而不改这里会红。
+ */
 const BOOTSTRAP_TOOLS = [
-  'delegate_task', 'undo', 'delegate_batch', 'team_orchestrate', 'council_convene',
-  'recall_capsule', 'recall_general', 'record_general_finding', 'ask_user_question',
+  'delegate_task', 'undo', 'delegate_batch', 'galaxy', 'team_orchestrate', 'council_convene',
+  'starflow', 'recall_capsule', 'recall_general', 'record_general_finding', 'ask_user_question',
   'browser_debug', 'repo_graph', 'related_tests', 'semantic_search', 'apply_patch',
-  'session_vitals', 'attack_case', 'plan_task', 'deliver_task', 'update_goal',
+  'session_vitals', 'attack_case', 'plan_task', 'update_goal', 'memory',
+  // 唯一无门控的一个：bootstrap.ts 里 createDeliverTaskTool 无条件注册。
+  'deliver_task',
 ] as const
 
-function bootstrapCount(preset: ToolPreset): number {
-  // related_tests 与 kernel 重名（覆盖注册），不计入新增
-  return BOOTSTRAP_TOOLS.filter(n => n !== 'related_tests' && presetIncludes(preset, n)).length
+/** 文档口径的 taiyi 最小集（tool-preset.ts 文件头注释逐字列出）。 */
+const TAIYI_TOOLSET = [
+  'bash', 'read_file', 'write_file', 'edit_file', 'hash_edit', 'grep', 'glob',
+  'git', 'todo', 'deliver_task', 'run_tests', 'job', 'plan', 'diff',
+] as const
+
+/**
+ * 完整装配口径的名字集：kernel(default-registry) ∪ bootstrap 侧注册。
+ *
+ * 计数与「装配集精确断言」共用这一份计算——两边分开写会出现「计数说 15、
+ * 集合断言说 14，而两边都绿」的盲区（首版就是这样漏掉了 memory）。
+ */
+function assembledNames(preset: ToolPreset): string[] {
+  const kernel = createDefaultToolRegistry([], { preset }).getAllNames()
+  const bootstrap = BOOTSTRAP_TOOLS.filter(n => n !== 'related_tests' && presetIncludes(preset, n))
+  return [...new Set([...kernel, ...bootstrap])].sort()
 }
 
 function totalCount(preset: ToolPreset): number {
-  return createDefaultToolRegistry([], { preset }).getAll().length + bootstrapCount(preset)
+  return assembledNames(preset).length
 }
 
 describe('presetIncludes', () => {
@@ -84,20 +107,20 @@ describe('presetIncludes', () => {
 describe('assembly counts per preset', () => {
   // 口径 = 无调度器的 CLI 交互模式。schedule 三工具按 isSchedulerAvailable()
   // 条件注册，有调度器的 serve/桌面端各档 +3（见下一条用例）。
-  it('minimal=30 / frontend=31 / full=51（完整装配口径）', () => {
+  it('minimal=33 / frontend=34 / full=54 / taiyi=14（完整装配口径）', () => {
+    // 2026-10-09 口径修正：旧断言 30/31/51 建立在一份手抄的 BOOTSTRAP_TOOLS 上，
+    // 该清单漏了 bootstrap 侧三个真实注册点（galaxy / starflow / memory），每档
+    // 都少记 3 件。清单已补齐，完整性由本文件末尾的源码漂移闸门把守。
     // git_scout 只读 git 侦察（3.14alpha 回流）：**taiyi 以外各档无条件注册**（+1）——
     // 它必须对 readonly worker 可见，而 worker 与主控共用同一张注册表，按档位
     // 排除会连带把 worker 也排掉（readonly profile 无 bash/git，正是要补这条缝）。
     // taiyi 仍按评测档纪律排除（冻结基线，见 tool-preset 的 drop 断言）。
-    // 29/30/50 → 30/31/51。
-    assert.equal(totalCount('minimal'), 30)
-    assert.equal(totalCount('frontend'), 31)
-    // 118d0505：monitor 工具（full 档专属）入注册表，full 44 → 45
-    // B3：web_crawl/web_map（full 档专属）入注册表，full 45 → 47
-    // 视觉副驾：ask_image 无条件注册（各档 +1），28/29/47 → 29/30/48
-    // capability 能力索引（full 档专属，查询面低频，同 repo_graph/semantic_search），48 → 49
-    // cli_discover CLI 能力发现与安装（full 档专属，安装审批硬闸门），49 → 50
-    assert.equal(totalCount('full'), 51)
+    assert.equal(totalCount('minimal'), 33)
+    assert.equal(totalCount('frontend'), 34)
+    assert.equal(totalCount('full'), 54)
+    // taiyi = 13（kernel 侧，即 tool-preset.ts 文件头 14 名清单除去 deliver_task）
+    // + deliver_task（bootstrap 唯一无条件注册件）。
+    assert.equal(totalCount('taiyi'), 14)
   })
 
   it('schedule 三工具按调度器存在与否条件注册', () => {
@@ -111,9 +134,8 @@ describe('assembly counts per preset', () => {
       for (const n of SCHEDULE_TOOLS) {
         assert.ok(createDefaultToolRegistry([], { preset: 'full' }).has(n), `有调度器要注册 ${n}`)
       }
-      // git_scout 非 taiyi 各档 +1（见上一用例），故 32→33 / 53→54
-      assert.equal(totalCount('minimal'), 33)
-      assert.equal(totalCount('full'), 54)
+      assert.equal(totalCount('minimal'), 36)
+      assert.equal(totalCount('full'), 57)
     } finally {
       setActiveScheduler(undefined)
     }
@@ -164,6 +186,52 @@ describe('assembly counts per preset', () => {
     for (const drop of ['web_fetch', 'web_search', 'ask_image', 'repo_map', 'read_section', 'ast_grep', 'skill', 'git_scout']) {
       assert.ok(!reg.has(drop), `taiyi must drop ${drop}`)
     }
+  })
+})
+
+// ── 档位口径的机读闸门（2026-10-09） ────────────────────────────────
+// 这组用例防的是「注册点加了、口径没跟」——本仓库已经栽过两次：tool-preset.ts
+// 文件头注释曾写 17 并误含 request_path_access，totalCount 清单又漏了 galaxy /
+// starflow / memory 三件。手抄清单会漂移，所以闸门直接扫 bootstrap.ts 源码。
+
+describe('档位口径闸门', () => {
+  it('memory 不进 taiyi 评测档（其余三档保留）', () => {
+    assert.equal(
+      presetIncludes('taiyi', 'memory'),
+      false,
+      'taiyi 的 14 名清单里没有 memory；缺门控时它会跟着 bootstrap 的无条件注册混进来',
+    )
+    for (const preset of ['minimal', 'frontend', 'full'] as const) {
+      assert.equal(presetIncludes(preset, 'memory'), true, `${preset} 应保留 memory`)
+    }
+  })
+
+  it('taiyi 装配集恰为文档的 14 件（多一件少一件都红）', () => {
+    assert.deepEqual(
+      assembledNames('taiyi'),
+      [...TAIYI_TOOLSET].sort(),
+      'taiyi 装配集与 tool-preset.ts 文件头列出的 14 名不一致——文档/实现二选一必须改',
+    )
+  })
+
+  it('BOOTSTRAP_TOOLS 不漂移：bootstrap.ts 的每个 presetIncludes 门控名都在清单里', () => {
+    // 源码形态闸门，与 static-subagent 的 assertAnchorsResolve / injection-surfaces
+    // 同一路数：解析不出东西就判失效，不放行。
+    const src = readFileSync(new URL('../../bootstrap.ts', import.meta.url), 'utf8')
+    const gated = new Set(
+      [...src.matchAll(/presetIncludes\(toolPreset,\s*'([^']+)'\)/g)].map(m => m[1]!),
+    )
+    assert.ok(
+      gated.size >= 15,
+      `只从 bootstrap.ts 扫到 ${gated.size} 个门控点——正则或源码形态变了，闸门已失效`,
+    )
+    const known = new Set<string>(BOOTSTRAP_TOOLS)
+    const missing = [...gated].filter(n => !known.has(n)).sort()
+    assert.deepEqual(
+      missing,
+      [],
+      `bootstrap.ts 新增了门控工具但没进 BOOTSTRAP_TOOLS，totalCount 会漏记：${missing.join(', ')}`,
+    )
   })
 })
 

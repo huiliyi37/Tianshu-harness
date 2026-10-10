@@ -377,6 +377,30 @@ test('computer_use approve + remember records a per-app grant (always allow)', a
   assert.equal(isAppGranted('Notes'), false, 'reject+remember must not grant')
 })
 
+test('computer_use remembers the edited app instead of the original approval target', async (t) => {
+  const { isAppGranted } = await import('../../tools/computer-use/app-grants.js')
+  const home = mkdtempSync(join(tmpdir(), 'rivet-cu-edited-'))
+  writeFileSync(join(home, 'config.json'), '{}')
+  const prevHome = process.env.RIVET_HOME
+  process.env.RIVET_HOME = home
+  t.after(() => {
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  })
+  const { manager, agents } = makeManager()
+  const session = manager.createSession({ prompt: 'go' })
+  t.after(() => manager.abort(session.id))
+  const pending = agents[0]!.callbacks!.onApprovalRequired('edited-app', 'computer_use', { action: 'snapshot', app: 'Original Fixture App' })
+  const editedInput = { action: 'snapshot', app: 'Approved Fixture App' }
+  manager.answerIntervention(session.id, 'edited-app', 'approve', editedInput, true)
+  assert.deepEqual(await pending, { approved: true, editedInput, remember: true })
+  assert.equal(isAppGranted('Original Fixture App'), false)
+  assert.equal(isAppGranted('Approved Fixture App'), true)
+  const resolved = manager.getEvents(session.id, 0)!.events.find(e => e.type === 'approval_resolved' && e.data.requestId === 'edited-app')
+  assert.equal(resolved!.data.rememberedApp, 'Approved Fixture App')
+})
+
 test('rejecting approval resolves with approved:false', async () => {
   const { manager, agents } = makeManager()
   const s = manager.createSession({ prompt: 'go' })
@@ -842,9 +866,9 @@ test('T3: steer on a running session queues, echoes, and drains once', async () 
   assert.equal(echoed.length, 1)
   assert.equal(echoed[0]!.data.text, 'focus on tests')
 
-  const drained = cb.onSteerDrain!()
-  assert.match(String(drained), /focus on tests/)
-  assert.equal(cb.onSteerDrain!(), null, 'second drain is empty')
+  const drained = await cb.onHumanGuidanceDrain!()
+  assert.match(drained!.text, /focus on tests/)
+  assert.equal(await cb.onHumanGuidanceDrain!(), null, 'second drain is empty')
 })
 
 test('T3: steer on an idle session returns idle; missing returns not_found', async () => {
@@ -870,7 +894,7 @@ test('Phase 1.1: steer residue from a finished run merges into the next prompt',
   const users = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'user')
   assert.equal(users[users.length - 1]!.data.text, 'stale one\n\nstale two\n\ngo again')
   // buffer 已随归并清空——本轮首个 drain 不再看到上轮残留。
-  assert.equal(agents[0]!.callbacks!.onSteerDrain!(), null)
+  assert.equal(await agents[0]!.callbacks!.onHumanGuidanceDrain!(), null)
 })
 
 // Phase 1.3 — drain 出内容时写 steer_delivered，count 为本次 drain 条数。
@@ -879,16 +903,16 @@ test('Phase 1.3: steer_delivered fires on drain with the drained entry count', a
   const s = manager.createSession({ prompt: 'go' })
   const cb = agents[0]!.callbacks!
 
-  cb.onSteerDrain!() // 空 buffer drain → 无事件
+  await cb.onHumanGuidanceDrain!() // 空 buffer drain → 无事件
   manager.steer(s.id, 'one')
   manager.steer(s.id, 'two')
-  const drained = cb.onSteerDrain!()
-  assert.match(String(drained), /one/)
+  const drained = await cb.onHumanGuidanceDrain!()
+  assert.match(drained!.text, /one/)
   const delivered = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'steer_delivered')
   assert.equal(delivered.length, 1)
   assert.equal(delivered[0]!.data.count, 2)
 
-  assert.equal(cb.onSteerDrain!(), null, 'second drain is empty')
+  assert.equal(await cb.onHumanGuidanceDrain!(), null, 'second drain is empty')
   const after = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'steer_delivered')
   assert.equal(after.length, 1, 'empty drain emits nothing')
 })
@@ -921,7 +945,7 @@ test('Phase 2: steer { laneId } upgrades a queued entry into the steer buffer', 
   const status = manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'queue_status')
   assert.deepEqual(status.map((e) => [e.data.laneId, e.data.status]), [[laneId, 'steered']])
   assert.equal(manager.getEvents(s.id, 0)!.events.filter((e) => e.type === 'steer_queued').length, 0)
-  assert.match(String(cb.onSteerDrain!()), /upgrade me/)
+  assert.match((await cb.onHumanGuidanceDrain!())!.text, /upgrade me/)
 
   // 已非 queued：重复升级 / 撤回都拒绝。
   assert.equal(manager.steer(s.id, { laneId }), 'lane_not_queued')
@@ -2509,6 +2533,20 @@ test('tool display evidence persists full redacted output and sends only image r
   assert.equal(event.data.outputTruncated, false)
   agent.callbacks!.onToolResult('partial', 'bash', 'stream chunk')
   assert.equal(outputs.size, 1, 'stream chunks do not create full-output files')
+  agent.finish()
+})
+
+test('generated image identity is persisted for desktop without creating model image attachments', () => {
+  const agent = new FakeAgent()
+  let savedImages = 0
+  const persistence: SessionPersistenceAdapter = { saveRecord: () => {}, appendEvent: () => {}, loadAll: () => [], saveImage: () => { savedImages++ } }
+  const manager = new RuntimeSessionManager({ createAgent: () => agent, defaultCwd: '/tmp/work', persistence })
+  const session = manager.createSession({ prompt: 'draw' })
+  agent.callbacks!.onToolResult('drawing', 'generate_image', 'Saved: /tmp/work/image.png', false, undefined, undefined, { generatedImageId: 'generation-record' })
+  const event = manager.getEvents(session.id, 0)!.events.find(event => event.type === 'tool_result')!
+  assert.equal(event.data.generatedImageId, 'generation-record')
+  assert.equal(event.data.imageIds, undefined)
+  assert.equal(savedImages, 0)
   agent.finish()
 })
 

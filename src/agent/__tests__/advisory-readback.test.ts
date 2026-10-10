@@ -100,16 +100,51 @@ describe('AdvisoryReadback — 谓词矩阵（P1a 核销闭环）', () => {
 
   // ── course_changed（B1/M4 改道核销） ──────────────────────────
 
-  it('course_changed: 换文件面（前置窗反复读 a.ts,观察窗读 b.ts）→ adopted', () => {
+  // 2026-10-10 方向 3（狂轰事故 20261009c40f5c2262ea）：旧实现 read/edit 带文件面进签名，
+  // 活跃会话每轮自然换文件 → 「前置窗未见过的新签名」恒真 → 每张卡假采纳续命
+  // （现场 5/8 adopted，efficacy/习惯化静默被反复清零）。收紧为族级签名：
+  // 换文件面（同族）不再计采纳——改道的定义回到「换了种做法」。
+  it('course_changed: 换文件面（同族）不再计采纳——族级签名（方向3）', () => {
     const rb = new AdvisoryReadback()
     rb.observeTool(tool(8, 'read_file', 'src/a.ts'))
     rb.observeTool(tool(9, 'read_file', 'src/a.ts'))
     deliver(rb, 'convergence', { kind: 'course_changed', withinTurns: 2 }, 10)
     rb.observeTool(tool(10, 'read_file', 'src/b.ts'))
-    assert.equal(rb.evaluate(10), 1)
+    assert.equal(rb.evaluate(10), 0, '窗口未到期不判定')
+    assert.equal(rb.evaluate(11), 1)
     const o = rb.drainOutcomes()[0]!
-    assert.equal(o.outcome, 'adopted')
+    assert.equal(o.outcome, 'ignored')
     assert.equal(o.expectKind, 'course_changed')
+  })
+
+  // 计划 §6 矩阵行：反复「读三轮 → 同一失败验证」跨六周期只首次核销——滚动的
+  // 「前 3 轮」窗口会遗忘旧策略，让同一失败验证每周期重新变「新」（实测回归形态：
+  // 父提交六次 ignored ↔ 族级签名六次 adopted）。
+  it('course_changed: 六周期「读三轮 → 同一失败验证」只首次核销（核销周期）', () => {
+    const rb = new AdvisoryReadback()
+    let adopted = 0
+    for (let cycle = 0; cycle < 6; cycle++) {
+      const base = cycle * 6 + 1
+      rb.observeTool(tool(base, 'read_file', `m${base}.ts`))
+      rb.observeTool(tool(base + 1, 'read_file', `l${base}.ts`))
+      rb.observeTool(tool(base + 2, 'bash', `sed -n 1,40p s${base}.sh`))
+      deliver(rb, 'convergence', { kind: 'course_changed', withinTurns: 2 }, base + 3)
+      rb.observeTool(tool(base + 3, 'bash', 'npm test'))
+      rb.evaluate(base + 3)
+      rb.evaluate(base + 4)
+      for (const o of rb.drainOutcomes()) if (o.outcome === 'adopted') adopted++
+    }
+    assert.equal(adopted, 1, `同一失败验证重复六周期只应首次核销，得 ${adopted}`)
+  })
+
+  it('course_changed: bash 只读循环 → 验证类 bash（verify 族）→ adopted（bash 细分）', () => {
+    const rb = new AdvisoryReadback()
+    rb.observeTool(tool(8, 'bash', 'sed -n 1,20p scripts/x.sh'))
+    rb.observeTool(tool(9, 'bash', 'sed -n 21,40p scripts/x.sh'))
+    deliver(rb, 'convergence', { kind: 'course_changed', withinTurns: 2 }, 10)
+    rb.observeTool(tool(10, 'bash', 'npm run test:unit'))
+    assert.equal(rb.evaluate(10), 1)
+    assert.equal(rb.drainOutcomes()[0]!.outcome, 'adopted')
   })
 
   it('course_changed: 换工具族（前置窗只读 a.ts,观察窗改写 a.ts）→ adopted', () => {
@@ -411,4 +446,53 @@ describe('advisory-readback-hook — 运行时接线', () => {
     assert.equal(stats?.adopted, 0)
     assert.equal(stats?.ignored, 1)
   })
+})
+
+
+// ── §3 周期边界发射侧贯通：旧周期未决项不算"听了不做"，episode streak 不跨任务
+// 继承成永久门禁，相关 key 拿一次再投递机会 ──
+describe('周期边界发射侧贯通（§3）', () => {
+  it('startCourseEpisode：旧 episode 未决观察记 superseded，不判成新周期的 ignored', () => {
+    const rb = new AdvisoryReadback()
+    deliver(rb, 'convergence', { kind: 'course_changed', withinTurns: 2 }, 5)
+    rb.startCourseEpisode('human-task')
+    const un = rb.drainUnresolved()
+    assert.equal(un.length, 1, '旧周期未决项应转 unresolved 报出')
+    assert.equal(un[0]!.reason, 'superseded')
+    assert.equal(un[0]!.key, 'convergence')
+  })
+
+  it('startCourseEpisode：episode ignoredStreak 归零，会话累计计数保留', () => {
+    const rb = new AdvisoryReadback()
+    deliver(rb, 'convergence', { kind: 'tool_appears', tools: ['edit_file'], withinTurns: 1 }, 1)
+    assert.equal(rb.evaluate(2), 1, '窗口到期应判定')
+    assert.equal(rb.getIgnoredStreak('convergence'), 1)
+    rb.startCourseEpisode('human-task')
+    assert.equal(rb.getIgnoredStreak('convergence'), 0, '新任务不继承旧 streak（不成为永久门禁）')
+    assert.equal(rb.getTotals().ignored, 1, '会话累计计数保留（不调用全局 reset）')
+  })
+
+  it('startCourseEpisode：只返回本周期实际投递过的 key（shadow 不算）', () => {
+    const rb = new AdvisoryReadback()
+    rb.track([{ key: 'a', category: 'discipline', expect: { kind: 'course_changed', withinTurns: 1 } }], 3)
+    rb.track([{ key: 'b', category: 'discipline', expect: { kind: 'course_changed', withinTurns: 1 }, shadow: true }], 3)
+    assert.deepEqual(rb.startCourseEpisode('human-task'), ['a'], '只有真实投递过的 key 拿二次机会')
+  })
+})
+
+it('course episode leaves unrelated obligations and streaks intact', () => {
+  const rb = new AdvisoryReadback()
+  deliver(rb, 'self-verify', { kind: 'verify_attempted', withinTurns: 1 }, 1)
+  rb.evaluate(2)
+  assert.equal(rb.getIgnoredStreak('self-verify'), 1)
+  deliver(rb, 'self-verify', { kind: 'verify_attempted', withinTurns: 2 }, 3)
+  deliver(rb, 'convergence', { kind: 'course_changed', withinTurns: 2 }, 3)
+  assert.deepEqual(rb.startCourseEpisode('human-follow-up'), ['convergence'])
+  assert.equal(rb.getIgnoredStreak('self-verify'), 1)
+  assert.deepEqual(rb.drainUnresolved().map(p => p.key), ['convergence'])
+  rb.observeTool({ turn: 4, name: 'run_tests', target: '', isError: false })
+  rb.evaluate(4)
+  assert.equal(rb.drainOutcomes().at(-1)?.key, 'self-verify')
+  rb.reset()
+  assert.deepEqual(rb.startCourseEpisode('human-task'), [])
 })

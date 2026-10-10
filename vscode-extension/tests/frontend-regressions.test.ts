@@ -20,6 +20,66 @@ async function load(relative: string, mocks: Record<string, any> = {}, globals: 
 }
 const tick = () => new Promise<void>(r => setImmediate(r))
 
+test('native chat restores pending approval snapshots once, including frames before the turn is armed', async () => {
+  let handler: any, callback: any, cancel: any
+  const shown: string[] = []
+  const { TianshuChatParticipant } = await load('src/chat/participant.ts', { vscode: { chat: { createChatParticipant: (_id: string, fn: any) => { handler = fn; return { dispose() {} } } } } })
+  const frame = { seq: 0, ts: 1, type: 'approval_snapshot', data: { approvals: [{ requestId: 'pending-a', toolName: 'write_file', input: { file_path: 'fixture.ts' } }], lastSeq: 55 } }
+  const client = {
+    getSession: async () => ({ lastSeq: 55, approvalMode: 'manual' }),
+    subscribe: (_id: string, since: number, fn: any) => { assert.equal(since, 55); callback = fn; fn(frame); return () => {} },
+    queue: async () => ({ laneId: 'followup' }), abort: async () => {},
+  }
+  const participant = new TianshuChatParticipant(async () => client, () => {}, { handleApproval: (_session: string, id: string) => { shown.push(id) } })
+  try {
+    const pending = handler({ prompt: 'followup' }, { history: [{ participant: 'tianshu.default', result: { metadata: { tianshuSessionId: 'A' } } }] }, { markdown() {}, progress() {} }, { onCancellationRequested: (fn: any) => { cancel = fn; return { dispose() {} } } })
+    for (let n = 0; n < 20 && !callback; n++) await tick()
+    callback(frame)
+    assert.deepEqual(shown, ['pending-a'])
+    cancel(); await pending
+  } finally { participant.dispose() }
+})
+
+test('question answers return to the originating session instead of the currently open native chat', async () => {
+  for (const steerResult of ['queued', 'idle', 'lane_gone']) {
+    const sent: unknown[] = [], notices: string[] = []
+    let select: any
+    const { ChatHumanInteraction } = await load('src/chat/human-interaction.ts', { vscode: {
+      window: { showQuickPick: () => new Promise(resolve => { select = resolve }), showInformationMessage: async (text: string) => { notices.push(text) } },
+      commands: { executeCommand: async (...args: unknown[]) => { sent.push(['global-chat', ...args]) } },
+    } })
+    const client = { steer: async (id: string, text: string) => { sent.push(['steer', id, text]); return steerResult }, prompt: async (id: string, text: string) => { sent.push(['prompt', id, text]) } }
+    const human = new ChatHumanInteraction(async () => client, () => {})
+    try {
+      human.handleQuestion('original-A', 'question-A', [{ id: 'q', prompt: 'Fixture?', options: ['selected'], allowMultiple: false }])
+      for (let n = 0; n < 20 && !select; n++) await tick()
+      select('selected')
+      await human.queue
+      assert.deepEqual(sent, steerResult === 'queued' ? [['steer', 'original-A', 'selected']] : [['steer', 'original-A', 'selected'], ['prompt', 'original-A', 'selected']])
+      assert.deepEqual(notices, ['回答已发送至原会话，请在天枢座舱查看后续结果。'])
+    } finally { human.dispose() }
+  }
+})
+
+test('dismissed or disposed question dialogs never send an answer', async () => {
+  for (const disposed of [false, true]) {
+    let select: any, deliveries = 0
+    const { ChatHumanInteraction } = await load('src/chat/human-interaction.ts', { vscode: {
+      window: { showQuickPick: () => new Promise(resolve => { select = resolve }), showInformationMessage: async () => { deliveries++ } },
+      commands: { executeCommand: async () => { deliveries++ } },
+    } })
+    const human = new ChatHumanInteraction(async () => { deliveries++; return {} }, () => {})
+    try {
+      human.handleQuestion('A', 'q', [{ id: 'q', prompt: 'Fixture?', options: ['selected'], allowMultiple: false }])
+      for (let n = 0; n < 20 && !select; n++) await tick()
+      if (disposed) human.dispose()
+      select(disposed ? 'selected' : undefined)
+      await human.queue
+      assert.equal(deliveries, 0)
+    } finally { human.dispose() }
+  }
+})
+
 // The VS Code host is external. These document doubles retain text/version and
 // apply the real executor's edits so assertions cover its observable file result.
 async function executorFixture() {

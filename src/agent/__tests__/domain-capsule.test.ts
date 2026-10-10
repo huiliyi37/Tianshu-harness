@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os'
 import { formatDomainDriftNudge } from '../../tui/domain-drift-nudge.js'
 import { getCapsuleByStar } from '../seed-capsule-store.js'
 
+// 信任门（2026-10-09）：下方查询用例的素材建在临时 cwd 的 docs/ 下，需显式授信
+// （信任门双态由 seed-capsule-store.test.ts 专测；此处只验查询功能本身）。
+process.env.RIVET_TRUST_PROJECT = '1'
+
 // ── 漂移提示引导文案（消息级注入语义）──────────────────────────
 
 describe('domain-capsule: 漂移提示引导', () => {

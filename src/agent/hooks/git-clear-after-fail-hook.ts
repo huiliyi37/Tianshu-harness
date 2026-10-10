@@ -40,7 +40,8 @@ const WINDOW_SIZE = 3
 
 /**
  * 测试类 bash 命令正则——用于判断 bash 是否在跑测试。
- * 来源：AGENTS.md Commands 段 + self-verify-hook.ts VERIFY_BASH_RE
+ * 来源：AGENTS.md Commands 段。口径与 verification-activity.isVerificationIntent 同族，
+ * 但这里刻意更窄：只有测试类命令才开门，lint/build 失败不构成"测试失败"。
  * 匹配：npm test / npm run test / tsx --test / pytest / vitest / jest 等
  */
 const TEST_CMD_RE = /\b(test|vitest|jest|pytest|mocha|tsx\s+--test|npm\s+(run\s+)?(test|typecheck))\b/i

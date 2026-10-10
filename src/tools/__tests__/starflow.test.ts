@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStarflowTool } from '../starflow.js'
@@ -68,8 +68,23 @@ describe('STARFLOW_TOOL', () => {
     // tmpdir，探测必出值；提案仍零派发（探针只读）。
     assert.match(result.content, /── 环境预检（硬约束，评审\/排期前必核）──/)
     assert.match(result.content, /磁盘（项目卷）：可用 \d+(\.\d+)? GiB/)
-    assert.match(result.content, /状态持久化/)
+    assert.match(result.content, /点火后将持久化到：/)
+    assert.doesNotMatch(result.content, /^状态持久化：/m, '预览不落盘，不得用陈述句声称已持久化')
     assert.match(result.uiContent ?? '', /星流方案/)
+  })
+
+  // issue #412 回归：预览阶段（confirm:false）宣称落盘却不落盘——文案与
+  // 文件系统行为必须一致。预览零落盘，「点火后将持久化到」为未来时态。
+  it('confirm 缺省 → 预览不落盘（状态目录与文件均不创建）', async () => {
+    const { tool, cwd } = makeTool()
+    const result = await tool.execute({
+      toolUseId: 'tu_1b',
+      cwd: '/repo',
+      input: { objective: '预览不落盘', draftItems: DRAFTS },
+    })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content, /点火后将持久化到：/)
+    assert.equal(existsSync(join(cwd, '.rivet', 'starflow')), false, '预览阶段不得创建 .rivet/starflow/')
   })
 
   it('confirm:false 显式 → 同样零执行', async () => {

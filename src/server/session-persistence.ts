@@ -78,17 +78,24 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     deadline.throwIfAborted()
     this.kickWriteChain(sessionId)
     const operation = async () => {
-      while ((this.writtenWatermarks.get(sessionId) ?? 0) < seq) {
+      let watermark = this.writtenWatermarks.get(sessionId) ?? 0
+      while (watermark < seq) {
         deadline.throwIfAborted()
         if (this.eventChainFailures.get(sessionId)?.permanent) throw new Error('Event persistence failed')
+        // 内存水位只覆盖本进程写链；rehydrate 的存量会话盘上早已达标——盘上
+        // 高水位 ≥ seq 即认可，别让「本进程没写过」在死等里吃掉整个 30s 更新
+        // 预算（桌面端存量会话实测：更新闸恒报「未能确认保存完成」）。
+        try {
+          const disk = this.loadEventHighWater(sessionId)
+          if (disk > watermark) watermark = disk
+        } catch { /* 写链仍是权威路径——读不出就继续等它推进 */ }
+        if (watermark >= seq) break
         await new Promise(resolve => setTimeout(resolve, 10))
       }
       if (seq === 0) return 0
       const file = await open(join(this.dir(sessionId), 'events.jsonl'), 'r+')
-      // Capture before sync: later writes must not borrow this acknowledgement.
-      const watermark = this.writtenWatermarks.get(sessionId) ?? 0
-      try { await file.sync() } finally { await file.close() }
       deadline.throwIfAborted()
+      try { await file.sync() } finally { await file.close() }
       return watermark
     }
     let onAbort!: () => void

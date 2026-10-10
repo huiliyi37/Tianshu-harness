@@ -55,8 +55,14 @@ export function parseCliArgs(args: string[]): HeadlessCliArgs {
 
   if (goalIndex >= 0) {
     const goal = args[goalIndex + 1]
+    // 预算缺省在此**不定价**：解析层只回答"用户是否显式给了值"。缺省值由
+    // goal 预算定价层决定（main.ts → agent/goal-budget.ts）——此前这里直接填
+    // 100，会被定价层当成 explicitBudget 而短路成显式值，形状定价形同虚设。
+    // 非法/非正值一并归为"没给"：NaN 会一路传到 maxTurns，而 turn-orchestrator
+    // 的 `maxTurns > 0` 判据会把上限静默变成 Number.MAX_SAFE_INTEGER。
     const budgetIndex = args.indexOf('--budget')
-    const budget = budgetIndex >= 0 ? parseInt(args[budgetIndex + 1]!, 10) : 100
+    const parsedBudget = budgetIndex >= 0 ? parseInt(args[budgetIndex + 1]!, 10) : Number.NaN
+    const budget = Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined
     return { headless: true, prompt: undefined, json, streamJson, goal, budget }
   }
 

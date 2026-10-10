@@ -25,7 +25,7 @@
 
 import type { WorkerResult, WorkOrderKind } from './work-order.js'
 import type { WorkerTranscript } from './worker-session.js'
-import { VERIFY_BASH_RE } from './hooks/self-verify-hook.js'
+import { isVerificationIntent } from './verification-activity.js'
 import { classifyProfile } from './coordination-policy.js'
 
 /** 对账只需要派发侧这几样，不必拖进整个 WorkOrder。 */
@@ -69,7 +69,7 @@ function summaryIsEmpty(summary: string): boolean {
 /** transcript 里是否出现过任何可算作验证的执行痕迹。 */
 function ranAnyVerification(transcript: WorkerTranscript): boolean {
   if (transcript.toolUses.includes('run_tests')) return true
-  return (transcript.bashCommands ?? []).some(cmd => VERIFY_BASH_RE.test(cmd))
+  return (transcript.bashCommands ?? []).some(cmd => isVerificationIntent(cmd))
 }
 
 /** 测试文件模式：__tests__/ 目录或 *.test.* / *.spec.* —— 写工/verifier 的

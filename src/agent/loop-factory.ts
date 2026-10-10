@@ -9,6 +9,7 @@ import { describeImages, visionCacheKey } from './vision-service.js'
 import { loadContextImage } from './context-image-archive.js'
 import { TurnCompletionController } from './turn-completion.js'
 import { ToolExecutionController } from './tool-execution.js'
+import { tagLatestWriteOutcome } from './tool-history-recorder.js'
 import type { RuntimeHookSnapshot } from './runtime-hooks.js'
 import { createRuntimeHookContext, RuntimeHookPipeline } from './runtime-hooks.js'
 import { createDefaultRuntimeHooks } from './create-runtime-hooks.js'
@@ -110,7 +111,9 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
   return new TurnStreamController({
       recordContextBudget: budget => self.recordContextBudget(budget),
       client: self.config.client,
-      abortSignal: self.abortController?.signal ?? new AbortController().signal,
+      // 惰性读：rescue 换新 controller 后（loop.ts resetAbortAfterRescue），
+      // 本 controller 是 run 启动时建的，必须现取活信号。
+      getAbortSignal: () => self.abortController?.signal ?? new AbortController().signal,
       getStreamedTextLength: () => self.streamedText.length,
       appendStreamedText: text => { self.streamedText += text },
       truncateStreamedText: length => { self.streamedText = self.streamedText.slice(0, length) },
@@ -352,6 +355,13 @@ export function createTurnCompletionController(self: AgentLoop, callbacks?: Agen
 }
 export function createToolExecutionController(self: AgentLoop): ToolExecutionController {
   return new ToolExecutionController({
+      // P0：执行事实两路转发到共享事实层（执行序号与任务/工作版本章由
+      // WorkProgressFacts 统一盖；文件变化经 mutationRevision 被 sample 消费）。
+      // P1：同一结果回填写工具历史条目（editRatio 依据执行效果计编辑）。
+      onCourseFileChange: fact => { self.workFacts.recordFileProgress(fact); tagLatestWriteOutcome(self, fact.outcome) },
+      onToolExecutionStart: () => { self.workFacts.recordToolExecutionStart() },
+      onVerificationExecutionStart: intent => self.workFacts.recordVerificationExecutionStart(intent),
+      onVerificationExecutionSettled: (sequence, result) => { self.workFacts.recordVerificationExecutionSettled(sequence, result) },
       config: self.config,
       cwd: self.cwd,
       harness: self.harness,
@@ -1321,6 +1331,7 @@ export function createTurnOrchestrator(self: AgentLoop): TurnOrchestrator {
 
     // === Abort reason (watchdog vs user) ===
     getAbortReason: () => self.abortReason(),
+    resetAbortAfterRescue: () => self.resetAbortAfterRescue(),
     // 打断留痕开关（config `agent.interruptMarker` / env `RIVET_INTERRUPT_MARKER` 双通道；默认开）
     getInterruptMarkerEnabled: () => isInterruptMarkerEnabled(self.config.interruptMarker),
 

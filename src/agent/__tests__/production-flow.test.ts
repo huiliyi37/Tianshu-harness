@@ -48,3 +48,9 @@ describe('isInProductionFlow', () => {
     assert.equal(isInProductionFlow([{ tool: 'read_file' }, { tool: 'edit_file' }, { tool: 'run_tests' }]), true)
   })
 })
+
+it('production flow uses the recorded full-command fact and excludes query/lint/build policies', () => {
+  const bash = (target: string, verificationAttempted?: boolean): ProductionFlowEntry => ({ tool: 'bash', status: 'success', target, ...(verificationAttempted === undefined ? {} : { verificationAttempted }) })
+  assert.equal(isInProductionFlow([read(), edit(), bash('node --import tsx scripts/run-node-tests.ts src/agent', true)]), true)
+  for (const command of ['rg "npm test" src', 'npx eslint .', 'npm run build']) assert.equal(isInProductionFlow([read(), edit(), bash(command)]), false, command)
+})

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { bashGitBypassesScope, isDestructiveGitAction, hasOutOfWorkspaceWriteTarget, matchesDangerousBash } from '../approval-risk.js'
+import { bashGitBypassesScope, isDestructiveGitAction, hasOutOfWorkspaceWriteTarget, matchesDangerousBash, normalizeBashCommand } from '../approval-risk.js'
 import { assessToolRisk, DANGEROUS_BASH_PATTERNS, BASH_WRITE_PATTERNS, bashCommandMayWrite, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval, CONFIDENCE_THRESHOLDS, RISKY_WRITE_PATTERNS, DESTRUCTIVE_EXTENDED_PATTERNS, AVAILABILITY_HAZARD_PATTERNS } from '../approval-risk.js'
 import type { ContextClaim } from '../../context/claims.js'
 import type { Sensorium } from '../sensorium.js'
@@ -1041,5 +1041,69 @@ describe('dangerous bash — force-push / git clean / PowerShell download-exec b
       assert.equal(matchesDangerousBash(c), true, c)
     }
     assert.equal(matchesDangerousBash('Invoke-WebRequest x -OutFile a.zip'), false)
+  })
+})
+
+// ─── git 全局参数不绕过判定（收编公开仓 PR #410）─────────────────────────
+// `\bgit\s+<subcmd>` 形态的规则都假设子命令紧跟 git。git 允许两者之间夹全局参数
+// （`-C <dir>` / `-c k=v` / `--no-pager` / `--git-dir=…`），旧判定在原始视图与
+// 旧归一化视图上全部漏判——测试失败后的清场类命令（stash / reset --hard）在多会话
+// 共享工作区下可静默通过。值型旗标的分隔与紧贴形态（`-C dir` ≡ `-Cdir`、
+// `-c k=v` ≡ `-ck=v`）、引号形态（`-C "my repo"`）都是同一语义，必须同判。
+describe('git 全局参数不绕过判定（收编公开仓 PR #410）', () => {
+  const dangerous = [
+    'git -C repo reset --hard',
+    'git --no-pager reset --hard HEAD',
+    'git -c core.pager=cat clean -fd',
+    'git --git-dir=.git --work-tree=. checkout -- .',
+    'git --git-dir .git stash',
+    'git -C a -C b reset --hard',
+    // 值型短旗标紧贴形态（git 同样合法）
+    'git -C/tmp reset --hard',
+    'git -cfoo.bar=baz clean -fd',
+    // 引号形态：值含空格 / 旗标名被引号包住
+    'git -C "my repo" reset --hard',
+    'git "-C" repo reset --hard',
+  ]
+  for (const cmd of dangerous) {
+    it(`需审批：${cmd}`, () => {
+      assert.equal(matchesDangerousBash(cmd), true, `manual 档应审批：${cmd}`)
+      assert.equal(assessToolRisk('bash', { command: cmd }).level, 'high', `auto-safe 档应 high：${cmd}`)
+      assert.equal(isSafeWriteOnly(cmd), false, `不得按安全写放行：${cmd}`)
+    })
+  }
+
+  const benign = [
+    'git -C repo status',
+    'git --no-pager log -5',
+    'git stash list',
+    'git -C docs log --oneline -5',
+    'git -C repo diff',
+  ]
+  for (const cmd of benign) {
+    it(`保持免审：${cmd}`, () => {
+      assert.equal(matchesDangerousBash(cmd), false, `不应误报：${cmd}`)
+      assert.equal(assessToolRisk('bash', { command: cmd }).level, 'none', `不应升级风险：${cmd}`)
+    })
+  }
+
+  it('归一化只剥全局参数，不动子命令参数', () => {
+    assert.equal(normalizeBashCommand('git -C repo log --oneline -5'), 'git log --oneline -5')
+    assert.equal(normalizeBashCommand('git -C/tmp reset --hard'), 'git reset --hard')
+    assert.equal(normalizeBashCommand('git -C "my repo" stash'), 'git stash')
+  })
+
+  it('写入判定 / 保护模式判据同样覆盖', () => {
+    assert.equal(bashCommandMayWrite('git -C repo commit -m x'), true)
+    assert.equal(bashCommandMayWrite('git -C/tmp commit -m x'), true)
+    assert.equal(isDestructiveGitAction('bash', { command: 'git -C repo reset HEAD~1' }), true)
+    assert.equal(isDestructiveGitAction('bash', { command: 'git -C /tmp stash' }), true)
+  })
+
+  it('未限定 git 命令判据（bashGitBypassesScope）同口径', () => {
+    assert.equal(bashGitBypassesScope('git -C repo add -A'), true)
+    assert.equal(bashGitBypassesScope('git -C repo commit -am "msg"'), true)
+    assert.equal(bashGitBypassesScope('git -C repo stash'), true)
+    assert.equal(bashGitBypassesScope('git -C repo add -- src/a.ts'), false)
   })
 })

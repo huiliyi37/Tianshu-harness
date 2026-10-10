@@ -23,7 +23,7 @@ import { parseVerifyCommand, spawnVerifyArgv } from './verify-command.js'
 
 /** A bash command that runs a real TypeScript type check (vs. a plain test run,
  *  which under tsx/esbuild never type-checks). Used to clear the
- *  typecheck-reminder flag. Narrower than self-verify's VERIFY_BASH_RE on
+ *  typecheck-reminder flag. Narrower than isVerificationIntent on
  *  purpose — `test`/`lint`/`build` do not establish type safety. */
 export const TYPECHECK_CMD_RE = /\b(tsc|type-?check)\b/i
 

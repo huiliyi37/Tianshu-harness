@@ -7,6 +7,7 @@ import { validatePath } from '../tools/path-validate.js'
 import { GitignoreFilter } from '../tools/gitignore.js'
 import { listProjectFiles, listDirEntries, rankPaths } from './file-list.js'
 import { FILE_CONTEXT_CACHE_MS, contextFilePriority, isSuggestedContextFile } from './file-context-policy.js'
+import { isKnownWorkspace, UNKNOWN_WORKSPACE_ERROR } from './workspace-guard.js'
 
 type Index = { expires: number; files: Promise<string[]> }
 const indexes = new Map<string, Index>()
@@ -22,11 +23,18 @@ export async function cachedProjectFiles(cwd: string, refresh = false): Promise<
   return files
 }
 
-export function buildFileContextRoutes(apiToken?: string): Record<string, RouteHandler> {
+export function buildFileContextRoutes(
+  apiToken?: string,
+  knownWorkspaces: () => string[] = () => [],
+): Record<string, RouteHandler> {
   return {
     'GET /workspace/file-context': withAuth(async (_body, params) => {
       const requested = typeof params?.cwd === 'string' ? params.cwd : getWorkspaceConfig().defaultDir
       if (!requested || !isAbsolute(requested)) return { status: 400, body: { error: 'Choose a workspace directory first' } }
+      // 安全加固（与 issue #221 同族）：cwd 必须命中已注册工作区，防止 Bearer 持有者枚举任意目录结构
+      if (!isKnownWorkspace(requested, knownWorkspaces())) {
+        return { status: 403, body: { error: UNKNOWN_WORKSPACE_ERROR } }
+      }
       let root: string
       try {
         root = await realpath(requested)

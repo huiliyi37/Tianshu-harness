@@ -222,3 +222,12 @@ describe('buildTelemetrySnapshot', () => {
     assert.equal(snapshot.prefixDrift, true)
   })
 })
+
+describe('isWriting 写工具全族（2026-10-09：只认 write_file/edit_file 导致写码中被误判非写）', () => {
+  it('hash_edit / ast_edit / apply_patch 都计入 isWriting', () => {
+    for (const tool of ['hash_edit', 'ast_edit', 'apply_patch']) {
+      const ctx = buildStarPhaseContext({ turn: 1, maxTurns: 10, recentTools: [tool], hasEnteredHighComplexity: false })
+      assert.equal(ctx.isWriting, true, `${tool} 应计入 isWriting`)
+    }
+  })
+})

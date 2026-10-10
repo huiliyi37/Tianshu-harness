@@ -69,4 +69,15 @@ describe('isB2ConvergingRecently — B2 收敛轨迹门（会话 506a5e86 优化
     // minSamples=4：3 样本不足 → 照发
     assert.equal(isB2ConvergingRecently([0.9, 0.9, 0.9], 4, 3, 0.4), false)
   })
+
+  it('P3 口径切片：同 regime 才累计；混合口径不足不静默（保守照发）', () => {
+    const ok = (score: number, regimeKey: string) => ({ score, regimeKey, quality: 'ok' as const })
+    const insufficient = (score: number, regimeKey: string) => ({ score, regimeKey, quality: 'insufficient' as const })
+    // 尾部同口径 2 条高分 → 静默（同 regime 段达 minSamples）
+    assert.equal(isB2ConvergingRecently([ok(0.9, 'a'), ok(0.8, 'a')]), true)
+    // 尾部同口径仅 1 条（前两条属另一 regime）→ 不足，照发（不得凭混合旧分数静默）
+    assert.equal(isB2ConvergingRecently([ok(0.9, 'a'), ok(0.9, 'a'), ok(0.9, 'b')]), false)
+    // 尾部 insufficient（无证据）→ 不静默
+    assert.equal(isB2ConvergingRecently([ok(0.9, 'a'), insufficient(0.9, 'a')]), false)
+  })
 })

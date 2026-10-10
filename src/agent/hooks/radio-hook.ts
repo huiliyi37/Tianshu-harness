@@ -1,5 +1,6 @@
 import { verificationAttempted, recentVerification } from '../verification-activity.js'
 import { PHASE_CLASS_MAP } from '../phase-class.js'
+import { WRITE_TOOL_NAMES } from '../../tools/write-tool-helpers.js'
 /**
  * Tianshu Radio — Runtime hook for phase transition + milestone + stuck detection
  * + phase-aware heartbeat + domain voice.
@@ -42,8 +43,10 @@ function classifyPhase(phase: StarPhase): PhaseClass {
 // StarPhaseContext construction
 // ---------------------------------------------------------------------------
 
+/** P2 名单收编：写工具全族同一真源（WRITE_TOOL_NAMES）——只认 edit_file/
+ *  write_file 会把 hash_edit/ast_edit/apply_patch 的写码轮误判成「没在写」。 */
 function isWritingTool(name: string): boolean {
-  return name === 'edit_file' || name === 'write_file'
+  return WRITE_TOOL_NAMES.has(name)
 }
 
 function buildStarPhaseContext(

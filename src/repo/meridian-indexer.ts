@@ -9,6 +9,7 @@ import { analyzeImpact, inferTestedByTargets } from './meridian-impact.js'
 import { isTestEntry } from './test-entry.js'
 import { extractExpressRoutes, extractJsxChildren } from './meridian-framework.js'
 import { toPosixPath } from '../path-format.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import type { RepoMapResult, MeridianSymbol, MeridianSymbolKind, MeridianEdge } from './meridian-types.js'
 import type { CallSite } from './meridian-types.js'
 import type { RepoMapOptions } from './meridian-graph.js'
@@ -46,6 +47,7 @@ export interface MeridianIndexOptions {
  * 归 toRepoRelative 管，不在此层。
  */
 export function isMeridianIndexablePath(rel: string): boolean {
+  if (toPosixPath(rel).split('/').some(isFilesystemMetadata)) return false
   if (IGNORE_PATTERNS.some(p => rel.includes(p))) return false
   if (classifyPath(rel).silent) return false
   return ALL_EXTENSIONS.some(ext => rel.endsWith(ext))
@@ -369,6 +371,7 @@ export class MeridianIndexer {
   recordEdit(filePath: string, turn: number): void {
     const rel = this.toRepoRelative(filePath)
     if (rel === null) return
+    if (toPosixPath(rel).split('/').some(isFilesystemMetadata)) return
     this.behavior.recordEdit(rel, turn)
   }
 
@@ -494,7 +497,7 @@ export class MeridianIndexer {
     const seen = new Set<string>()
     for (const imp of imports) {
       const resolved = this.resolveImport(fromFile, imp)
-      if (resolved) seen.add(resolved)
+      if (resolved && !toPosixPath(resolved).split('/').some(isFilesystemMetadata)) seen.add(resolved)
     }
     return [...seen]
   }

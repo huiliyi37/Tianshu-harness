@@ -1,16 +1,9 @@
-import { lookup as dnsLookup } from 'node:dns/promises'
+import { fetch as undiciFetch, ProxyAgent } from 'undici'
 import { resolveProbeEndpoints } from './endpoint-map.js'
-// 复用网络工具层的 SSRF 判据（与 web_fetch 同一份）：这里刻意不另写一份——安全判据
-// 有两份，就必然会演变成"一份更新、另一份漏"。跨层 import 在此是安全的：ssrf.ts 只
-// 依赖 node:net，不反向引用 api 层，因此不成环。（它的位置在 tools/ 属于历史；理想
-// 归宿是提升为共享的网络层，但那要先动 web-fetch / http-fetch 的消费方。）
-import { resolveAndAssertPublic, type LookupFn } from '../tools/net/ssrf.js'
-
-/** 下载图片时的 DNS 解析。抽成常量以便测试注入。 */
-const defaultLookup: LookupFn = async (hostname) => {
-  const resolved = await dnsLookup(hostname)
-  return { address: resolved.address, family: resolved.family }
-}
+// 图片地址来自服务响应；复用网络工具的代理解析、逐跳 SSRF 检查和下载上限。
+import type { LookupFn } from '../tools/net/ssrf.js'
+import { httpFetchGuarded, type FetchLike } from '../tools/net/http-fetch.js'
+import { resolveProxyForUrl, type ProxyResolverOptions } from '../tools/net/proxy-resolver.js'
 
 /**
  * image-gen-client — 文生图端点客户端（issue #8 Wave 2）。
@@ -59,9 +52,14 @@ export interface GenerateImageOptions {
   /** 尺寸参数的线上字段名。缺省 'size'（OpenAI 形态）。 */
   sizeField?: 'size' | 'image_size'
   timeoutMs?: number
+  signal?: AbortSignal
+  /** provider/global proxy overrides; otherwise follow environment and system proxy. */
+  proxy?: ProxyResolverOptions
+  trustProxyFakeIp?: boolean
+  onStage?: (stage: 'generating' | 'downloading') => void
   /** 图片字节上限。缺省 MAX_IMAGE_BYTES。 */
   maxBytes?: number
-  /** 测试注入点。生产路径走全局 fetch。 */
+  /** 测试注入点。生产路径使用与代理 dispatcher 同版本的 undici fetch。 */
   fetchImpl?: typeof fetch
   /** 测试注入点：SSRF 预检用的 DNS 解析。 */
   lookupImpl?: LookupFn
@@ -187,20 +185,44 @@ async function withTimeout<T>(
   init: RequestInit,
   timeoutMs: number,
   consume: (response: Response) => Promise<T>,
+  signal?: AbortSignal,
+  network?: ProxyResolverOptions,
 ): Promise<T> {
+  const proxyUrl = network ? resolveProxyForUrl(url, network) : undefined
+  const dispatcher = proxyUrl ? new ProxyAgent({ uri: proxyUrl }) : undefined
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal })
+    signal?.throwIfAborted()
+    const requestInit: RequestInit = { ...init, signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal }
+    if (dispatcher) (requestInit as { dispatcher?: unknown }).dispatcher = dispatcher
+    const response = await fetchImpl(url, requestInit)
     return await consume(response)
   } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Cancelled', 'AbortError')
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Image generation timed out after ${timeoutMs}ms. Increase agent.imageGenModel.timeoutMs if the provider is slow.`)
     }
-    throw error
+    throw describeNetworkError(error, url, !!proxyUrl)
   } finally {
     clearTimeout(timer)
+    if (dispatcher) await dispatcher.destroy().catch(() => {})
   }
+}
+
+/** Only expose the host and known error codes; signed URLs and proxy credentials stay private. */
+function describeNetworkError(error: unknown, url: string, proxied: boolean): unknown {
+  const codes = new Set<string>()
+  const visit = (value: unknown, depth = 0): void => {
+    if (!value || typeof value !== 'object' || depth > 4) return
+    const e = value as { code?: unknown; cause?: unknown; errors?: unknown[] }
+    if (typeof e.code === 'string' && /^(?:E[A-Z_]+|UND_ERR_[A-Z_]+|CERT_[A-Z_]+|ERR_TLS_[A-Z_]+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE)$/.test(e.code)) codes.add(e.code)
+    visit(e.cause, depth + 1)
+    if (Array.isArray(e.errors)) e.errors.forEach(child => visit(child, depth + 1))
+  }
+  visit(error)
+  if (!codes.size && !(error instanceof Error && error.message === 'fetch failed')) return error
+  return new Error(`Image network request failed (${new URL(url).hostname}; ${proxied ? 'proxy' : 'direct'}; ${[...codes].join(', ') || 'NETWORK_ERROR'}). Check the network, proxy and certificate configuration.`, { cause: error })
 }
 
 /**
@@ -208,7 +230,9 @@ async function withTimeout<T>(
  * 是可以直接写文件的 `Uint8Array`。
  */
 export async function generateImage(options: GenerateImageOptions): Promise<GeneratedImage> {
-  const fetchImpl = options.fetchImpl ?? fetch
+  options.signal?.throwIfAborted()
+  options.onStage?.('generating')
+  const fetchImpl = options.fetchImpl ?? (undiciFetch as unknown as typeof fetch)
   const timeoutMs = options.timeoutMs ?? DEFAULT_IMAGE_GEN_TIMEOUT_MS
   const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES
   // 复用 endpoint-map 的归一化：用户从 provider 文档粘贴完整端点 URL 时也不会
@@ -239,7 +263,7 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       if (error instanceof Error && error.name === 'AbortError') throw error
       return null
     })) as unknown
-  })
+  }, options.signal, options.fetchImpl ? undefined : options.proxy ?? {})
   const ref = extractImageRef(payload)
   if (!ref) {
     throw new Error(
@@ -256,18 +280,23 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
     return { bytes, mimeType: sniffMimeType(bytes), source: 'b64_json' }
   }
 
+  options.onStage?.('downloading')
   // SSRF 预检：这个 url 完全来自响应体，不受我们控制。恶意或被劫持的生图端点可以
   // 借它打到内网或云元数据地址（169.254.169.254 一类），而且取回的字节会落盘、进而
   // 被 read_file 读回上下文——外泄链是闭合的。下载前必须解析目标并确认它不在保留
   // 网段内，与 web_fetch 走同一套判据（src/tools/net/ssrf.ts）。
-  await resolveAndAssertPublic(new URL(ref.value).hostname, options.lookupImpl ?? defaultLookup)
-  const bytes = await withTimeout(fetchImpl, ref.value, { method: 'GET' }, timeoutMs, async (download) => {
-    if (!download.ok) {
-      throw new Error(`Failed to download the generated image from ${ref.value} (HTTP ${download.status}).`)
+  try {
+    const download = await httpFetchGuarded(ref.value, {
+      lookup: options.lookupImpl,
+      ...(options.fetchImpl ? { fetch: options.fetchImpl as unknown as FetchLike } : {}),
+    }, { timeoutMs, maxResponseBytes: maxBytes, proxy: options.proxy, trustProxyFakeIp: options.trustProxyFakeIp, signal: options.signal })
+    if (download.status < 200 || download.status >= 300) {
+      throw new Error(`Failed to download the generated image from ${new URL(download.finalUrl).hostname} (HTTP ${download.status}).`)
     }
-    const buffer = new Uint8Array(await download.arrayBuffer())
-    assertWithinLimit(buffer.byteLength, maxBytes, BIGNESS_HINT)
-    return buffer
-  })
-  return { bytes, mimeType: sniffMimeType(bytes, ref.value), source: 'url' }
+    return { bytes: download.bytes, mimeType: sniffMimeType(download.bytes, download.finalUrl), source: 'url' }
+  } catch (error) {
+    if (options.signal?.aborted) throw options.signal.reason
+    if (error instanceof Error && error.message.startsWith('Response body exceeds maximum allowed size')) throw new Error(`Image payload too large: exceeds the ${maxBytes} byte limit. ${BIGNESS_HINT}`)
+    throw describeNetworkError(error, ref.value, !options.fetchImpl && !!resolveProxyForUrl(ref.value, options.proxy))
+  }
 }

@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createVerificationAttribution, getEffectiveVerifications, isInvocationFailure } from '../verification-attribution.js'
+import { assessImpactedTestCoverage, createVerificationAttribution, getEffectiveVerifications, isInvocationFailure } from '../verification-attribution.js'
 import { createOwnershipLedger } from '../ownership-ledger.js'
 import { createWorktreeBaseline, type BaselineSnapshot } from '../worktree-baseline.js'
 import { createTaskLedger, type TaskLedgerEvent } from '../task-ledger.js'
-import type { VerificationMetadata } from '../../tools/types.js'
+import type { TestCompletionCoverage, VerificationMetadata } from '../../tools/types.js'
 
 function makeOwnership(ownedFiles: string[]) {
   const baseline = createWorktreeBaseline({
@@ -356,5 +356,153 @@ describe('verification-attribution — run_tests 超时经 ledger 边界仍保�
     const { effective } = getEffectiveVerifications(events)
     assert.equal(effective[0]?.failureKind, 'tool_invocation_failure')
     assert.equal(isInvocationFailure(effective[0]!), true)
+  })
+})
+
+describe('assessImpactedTestCoverage — coverage 缺失的失败不得落进 uncovered', () => {
+  // 现场（2026-10-09）：run_tests 的隔离快照里失败（快照只含本会话 owned diff，
+  // 未跟踪的依赖不在其中 → 模块缺失）→ 拿不到 per-file coverage。旧逻辑的
+  // `if (!c) continue` 把这条失败整条跳过，其文件随后落进 uncovered——那一档的
+  // 语义是「从未跑过」，没有外部归因、直接硬拦，于是共享工作区下成为永久缺口。
+  const impacted = ['src/server/__tests__/image-gen-model-routes.test.ts']
+
+  it('无 per-file coverage 的失败按命令归因进 failed 档', () => {
+    const verifications = [{
+      command: "rtk node --import tsx --test 'src/server/__tests__/image-gen-model-routes.test.ts'",
+      status: 'failed',
+      kind: 'test',
+      scope: 'targeted',
+      targetFiles: ['src/server/__tests__/image-gen-model-routes.test.ts'],
+      exitCode: 1,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      durationMs: 1000,
+      // 故意不带 coverage —— 隔离快照失败时拿不到 per-file 覆盖
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage(impacted, verifications, () => true, process.cwd())
+    assert.deepEqual(out.failed, impacted, '失败记录应进 failed 档（那里有外部归因机会）')
+    // uncovered 仍会列出它——保持既有的 fail-safe 语义（只看 uncovered 的消费方
+    // 不会误以为它被覆盖）；门禁按 failed → uncovered 的顺序检查，先命中可归因的
+    // failed 档，因此这条记录不再是没有归因空间的硬拦。
+    assert.deepEqual(out.uncovered, impacted)
+  })
+
+  it('命令未点名该测试时，仍按「从未跑过」处理', () => {
+    const verifications = [{
+      command: 'rtk node --import tsx --test src/tools/__tests__/other.test.ts',
+      status: 'failed',
+      kind: 'test',
+      scope: 'full',
+      exitCode: 1,
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      durationMs: 100,
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage(impacted, verifications, () => true, process.cwd())
+    assert.deepEqual(out.uncovered, impacted, '没被任何失败命令点名 → 仍是 uncovered')
+    assert.equal(out.failed, undefined, '不因别处的失败被误判为 failed')
+  })
+
+  it('passed 的完整 coverage 仍然照常计入覆盖（兜底不干扰正常路径）', () => {
+    const verifications = [{
+      command: "rtk node --import tsx --test 'src/server/__tests__/image-gen-model-routes.test.ts'",
+      status: 'passed',
+      kind: 'test',
+      scope: 'targeted',
+      exitCode: 0,
+      passed: 3,
+      failed: 0,
+      skipped: 0,
+      durationMs: 500,
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage(impacted, verifications, () => true, process.cwd())
+    // 没有 coverage 的 passed 不构成覆盖证据（诚实门禁：标签不证明执行）
+    assert.deepEqual(out.uncovered, impacted)
+    assert.equal(out.failed, undefined)
+  })
+
+  it('命令路径形态归一：Windows 反斜杠与 ./ 前缀的命令同样能归因', () => {
+    // 405bfc4c1 评审遗留：commandMentionsTest 只归一化测试侧，Windows 的
+    // `src\server\...` 反斜杠命令与 `./src/...` 前缀命令会漏配（退回旧行为=硬拦）。
+    const base = {
+      status: 'failed', kind: 'test', scope: 'targeted', exitCode: 1,
+      passed: 0, failed: 0, skipped: 0, durationMs: 1000,
+    }
+    for (const command of [
+      String.raw`node --test src\server\__tests__\image-gen-model-routes.test.ts`,
+      "node --test './src/server/__tests__/image-gen-model-routes.test.ts'",
+    ]) {
+      const out = assessImpactedTestCoverage(
+        impacted,
+        [{ ...base, command }] as unknown as VerificationMetadata[],
+        () => true,
+        process.cwd(),
+      )
+      assert.deepEqual(out.failed, impacted, `命令形态应归因成功: ${command}`)
+    }
+  })
+})
+
+describe('assessImpactedTestCoverage — 覆盖判定逐文件（粒度对齐责任粒度）', () => {
+  // 结构规则：验证证据的判定粒度 = 责任的粒度（文件级）。同批中一个文件失败，
+  // 不得作废批内其他文件已拿到的通过证据。同构先例：编译器不因一个文件报错就丢掉
+  // 其他文件的诊断；CI 矩阵里 job 3 红不作废 job 7 的结果；批量校验一行坏不作废整批。
+  const A = 'src/agent/__tests__/a.test.ts'
+  const B = 'src/agent/__tests__/b.test.ts'
+
+  function cov(files: TestCompletionCoverage['files']): TestCompletionCoverage {
+    return {
+      version: 1, runId: 'r', runner: 'node-test', cwd: '/repo', repositoryRoot: '/repo',
+      complete: true, filtered: false, files,
+    }
+  }
+
+  it('同批里一个文件失败，不作废另一个文件的通过证据', () => {
+    const verifications = [{
+      command: 'rtk node --import tsx --test src/agent/__tests__/*.test.ts',
+      status: 'failed',
+      kind: 'test',
+      scope: 'full',
+      exitCode: 1,
+      passed: 5,
+      failed: 3,
+      skipped: 0,
+      durationMs: 1000,
+      coverage: cov([
+        { path: A, outcome: 'passed', tests: 5, skipped: 0, cancelled: 0 },
+        { path: B, outcome: 'failed', tests: 3, skipped: 0, cancelled: 0 },
+      ]),
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage([A, B], verifications, () => true, '/repo')
+    assert.ok(!out.uncovered.includes(A), 'A 确实跑过并通过，不应因同批 B 失败而作废')
+    assert.deepEqual(out.failed, [B], 'B 仍如实进 failed 档（失败不因闸门放开而丢失）')
+  })
+
+  it('完整性判据不受影响：coverage.complete=false 时整条不作数', () => {
+    const incomplete = { ...cov([{ path: A, outcome: 'passed', tests: 5, skipped: 0, cancelled: 0 }]), complete: false }
+    const verifications = [{
+      command: 'x', status: 'passed', kind: 'test', scope: 'full', exitCode: 0,
+      passed: 5, failed: 0, skipped: 0, durationMs: 1, coverage: incomplete,
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage([A], verifications, () => true, '/repo')
+    assert.deepEqual(out.uncovered, [A], '证据不完整（executionComplete 未成立）不得充作覆盖')
+  })
+
+  it('filtered 的批次同样不作数', () => {
+    const filtered = { ...cov([{ path: A, outcome: 'passed', tests: 5, skipped: 0, cancelled: 0 }]), filtered: true }
+    const verifications = [{
+      command: 'x', status: 'passed', kind: 'test', scope: 'full', exitCode: 0,
+      passed: 5, failed: 0, skipped: 0, durationMs: 1, coverage: filtered,
+    }] as unknown as VerificationMetadata[]
+
+    const out = assessImpactedTestCoverage([A], verifications, () => true, '/repo')
+    assert.deepEqual(out.uncovered, [A], '名称过滤过的运行不证明整文件执行')
   })
 })

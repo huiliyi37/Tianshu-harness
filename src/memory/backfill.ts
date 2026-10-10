@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { debugLog } from '../utils/debug.js'
 import { readHistoricalTranscript } from '../agent/session-persist.js'
@@ -89,7 +90,7 @@ export function collectBackfillCandidates(
   const candidates: BackfillCandidate[] = []
   const staleIds: string[] = []
   for (const name of readdirSync(sessionDir)) {
-    if (!name.endsWith('.jsonl') || name === 'cache-log.jsonl') continue
+    if (isFilesystemMetadata(name) || !name.endsWith('.jsonl') || name === 'cache-log.jsonl') continue
     const sessionId = name.slice(0, -'.jsonl'.length)
     // worker 派生会话不回填（隔离边界，同巩固 hook 的 isWorker 判定）。
     if (sessionId.startsWith('worker-')) continue

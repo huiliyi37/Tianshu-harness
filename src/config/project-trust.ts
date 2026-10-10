@@ -124,8 +124,8 @@ export function listTrustedProjectEntries(): { path: string; trustedAt: string }
  *  边界重建，避免刷屏。 */
 const noticed = new Set<string>()
 
-/** 信任门族：未授信即拒绝的项目表面（2026-10-07 安全审计补齐）。 */
-export type UntrustedProjectSurface = 'skills' | 'rules' | 'commands' | 'playbook' | 'presence' | 'agents' | 'plans'
+/** 信任门族：未授信即拒绝的项目表面（2026-10-07 安全审计补齐；2026-10-09 补 capsules）。 */
+export type UntrustedProjectSurface = 'skills' | 'rules' | 'commands' | 'playbook' | 'presence' | 'agents' | 'plans' | 'capsules'
 
 /** 各表面未授信跳过时的一次性提示文案。 */
 const SURFACE_NOTICE: Record<UntrustedProjectSurface, string> = {
@@ -136,6 +136,7 @@ const SURFACE_NOTICE: Record<UntrustedProjectSurface, string> = {
   presence: '项目在线状态文件（.rivet/presence.json）',
   agents: '项目装配目录（.rivet/agents / .rivet/domains）',
   plans: '项目计划目录（.rivet/plans）',
+  capsules: '项目胶囊目录（docs/seed-capsule-*.md）',
 }
 
 export function notifyUntrustedOnce(
@@ -233,6 +234,11 @@ const UNTRUSTED_SURFACE_PATHS: Readonly<Record<UntrustedProjectSurface, readonly
   presence: ['.rivet/presence.json'],
   agents: ['.rivet/agents', '.rivet/domains'],
   plans: ['.rivet/plans'],
+  // capsules 的存在性探测是文件名模式匹配（docs/seed-capsule-*.md），由
+  // seed-capsule-store 的 loadAllCapsules 侧完成后直报 notifyUntrustedOnce；
+  // 此表对 capsules 不参与通知判定（空数组兜底，projectSurfaceAllowed('capsules')
+  // 仅剩「未授信即拒绝」语义）。
+  capsules: [],
 }
 
 /**

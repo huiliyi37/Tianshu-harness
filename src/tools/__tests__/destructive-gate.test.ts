@@ -109,6 +109,40 @@ describe('GIT_CLEAR_RE 共享正则(迁移回归)', () => {
       assert.equal(GIT_CLEAR_RE.test(cmd), false, `should NOT match: ${cmd}`)
     }
   })
+
+  // 收编公开仓 PR #410：git 与子命令之间的全局参数（-C/-c/--no-pager/--git-dir…）。
+  // 值型旗标的分隔与紧贴形态（`-C dir` ≡ `-Cdir`、`--git-dir x` ≡ `--git-dir=x`）
+  // 与引号值（`-C "my repo"`）语义相同，必须同判；只读形态不得误伤。
+  test('全局参数形态（含紧贴与引号值）同口径', () => {
+    for (const cmd of [
+      'git -C repo reset --hard',
+      'git --no-pager reset --hard HEAD',
+      'git -c core.pager=cat clean -fd',
+      'git --git-dir .git stash',
+      'git --work-tree . reset --hard',
+      'git --git-dir=.git stash',
+      'cd x&&git reset --hard',
+      'cd x;git clean -fd',
+      '(git stash)',
+      'git restore a.ts',
+      'git -C a -C b stash',
+      'git -C/tmp reset --hard',
+      'git -cfoo.bar=baz clean -fd',
+      'git -C "my repo" stash',
+    ]) {
+      assert.equal(GIT_CLEAR_RE.test(cmd), true, `should match: ${cmd}`)
+    }
+    for (const cmd of [
+      'git stash list',
+      'git --no-pager status',
+      'git -C repo status',
+      'git -C docs log --oneline -5',
+      'git clean -dn',
+      'echo digit reset --hard',
+    ]) {
+      assert.equal(GIT_CLEAR_RE.test(cmd), false, `should NOT match: ${cmd}`)
+    }
+  })
 })
 
 // ─── T4 getVirtueCredit 选项 ──────────────────────────────────────

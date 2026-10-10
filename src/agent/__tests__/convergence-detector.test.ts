@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { classifyActivityMode, computeFlowBeacon, evaluateConvergence } from '../convergence-detector.js'
 import type { ConvergenceInput, ConvergenceSignals, FlowBeaconInput, PhaseClass } from '../convergence-detector.js'
+import type { ConvergenceScoreSample } from '../score-history.js'
 import { bashCommandTarget, classifyBashCommandActivity } from '../tool-target.js'
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -171,6 +172,45 @@ describe('evaluateConvergence', () => {
       recentToolHistory: [],
       noToolTurnCount: 5,
       progressBeacons: { todoCompletedDelta: 1, activePlan: false },
+    }))
+    assert.ok(result.level >= 2, `no-tool stagnation must keep escalating, got ${result.level}`)
+  })
+
+  // ── 2026-10-10 狂轰事故方向 2（等待验证信标）：后台有 running 的验证型 job 时，
+  // 执行相位的「无编辑」是等门禁钦定证据，不是停滞——与 todo 信标同级的硬 veto。
+  it('awaitingVerification caps score-based escalation at L1', () => {
+    const input = {
+      turn: 14,
+      phaseClass: 'execute' as const,
+      contextWindow: 200_000,
+      recentToolHistory: makeHistory([
+        { tool: 'bash', target: 'ls' },
+        { tool: 'read_file', target: 'c.ts' },
+        { tool: 'grep', target: 'z' },
+        { tool: 'read_file', target: 'a.ts' },
+      ]),
+    }
+    // 基线：信标缺席 → 旧行为（同输入应能升级到 L2+，cap 副作用才可归因）。
+    const baseline = evaluateConvergence(baseInput({ ...input, progressBeacons: { todoCompletedDelta: 0, activePlan: false } }))
+    assert.ok(baseline.level >= 2, `baseline should escalate without the beacon, got ${baseline.level}`)
+    // 信标在场 → cap L1（不发 L2 改道卡）。
+    const capped = evaluateConvergence(baseInput({
+      ...input,
+      progressBeacons: { todoCompletedDelta: 0, activePlan: false, awaitingVerification: true },
+    }))
+    assert.ok(capped.level <= 1, `expected level <= 1 while a verification job runs, got ${capped.level}`)
+    assert.equal(capped.shouldKick, false)
+    assert.equal(capped.injectedMessage, null)
+  })
+
+  it('awaitingVerification does NOT suppress no-tool stagnation levels', () => {
+    const result = evaluateConvergence(baseInput({
+      turn: 14,
+      phaseClass: 'execute',
+      contextWindow: 200_000,
+      recentToolHistory: [],
+      noToolTurnCount: 5,
+      progressBeacons: { todoCompletedDelta: 0, activePlan: false, awaitingVerification: true },
     }))
     assert.ok(result.level >= 2, `no-tool stagnation must keep escalating, got ${result.level}`)
   })
@@ -2188,6 +2228,74 @@ describe('evaluateConvergence', () => {
         repeatCount: 2,
       }))
       assert.equal(result.shouldAbort, false, 'shouldAbort must be false when scoreHistory is absent')
+    })
+  })
+
+  // ── P3：score-abort 口径切片（regimeKey/quality）与有效权重 ──
+
+  describe('scoreAbort — P3 口径切片与有效权重', () => {
+    const ok = (regimeKey: string | null, score: number): ConvergenceScoreSample =>
+      ({ score, regimeKey, quality: 'ok' })
+    const insuff = (regimeKey: string | null, score: number): ConvergenceScoreSample =>
+      ({ score, regimeKey, quality: 'insufficient' })
+    const stalledHistory = () => makeHistory(Array.from({ length: 12 }, () => ({ tool: 'read_file', target: 'same.ts' })))
+    const oscillating = ['A', 'B', 'A', 'B', 'A', 'B', 'A', 'B', 'A', 'B', 'A', 'B']
+
+    it('混合口径旧分数不构成下降证据：尾部同口径仅 2 条（<6）不熔断', () => {
+      const result = evaluateConvergence(baseInput({
+        turn: 35,
+        phaseClass: 'deliver',
+        recentToolHistory: stalledHistory(),
+        toolFingerprints: [...oscillating],
+        // 前 4 条旧口径（legacy）+ 尾部新口径 2 条低分——同口径窗口不足
+        scoreHistory: [0.50, 0.38, 0.40, 0.22, ok('7:2:required', 0.15), ok('7:2:required', 0.03)],
+        repeatCount: 2,
+        priorWarningAtL2Plus: true,
+      }))
+      assert.equal(result.shouldAbort, false, '混合口径的旧分数不得触发 score-abort')
+      assert.equal(result.abortCause, undefined)
+    })
+
+    it('同口径（对象样本）持续下降 + 已警告 → 仍然熔断（切片无普遍性关闭）', () => {
+      const result = evaluateConvergence(baseInput({
+        turn: 35,
+        phaseClass: 'deliver',
+        recentToolHistory: stalledHistory(),
+        toolFingerprints: [...oscillating],
+        scoreHistory: [0.50, 0.38, 0.40, 0.22, 0.15, 0.03].map(s => ok('7:2:required', s)),
+        repeatCount: 2,
+        priorWarningAtL2Plus: true,
+      }))
+      assert.equal(result.shouldAbort, true)
+      assert.equal(result.abortCause, 'score')
+    })
+
+    it('尾部 insufficient 样本截断历史 → 不熔断（无证据不充当下降证据）', () => {
+      const result = evaluateConvergence(baseInput({
+        turn: 35,
+        phaseClass: 'deliver',
+        recentToolHistory: stalledHistory(),
+        toolFingerprints: [...oscillating],
+        scoreHistory: [0.50, 0.38, 0.40, 0.22, 0.15].map(s => ok('7:2:required', s)).concat([insuff('7:2:required', 0.03)]),
+        repeatCount: 2,
+        priorWarningAtL2Plus: true,
+      }))
+      assert.equal(result.shouldAbort, false)
+    })
+
+    it('effectiveWeights：not-required 时 editRatio 份额归零、其余按原比例归一（和为 1）', () => {
+      const result = evaluateConvergence(baseInput({
+        phaseClass: 'execute',
+        editExpectation: { kind: 'not-required', source: 'verifying-step', reason: 'test' },
+      }))
+      assert.equal(result.effectiveWeights.editRatio, 0)
+      const sum = Object.values(result.effectiveWeights).reduce((a, b) => a + b, 0)
+      assert.ok(Math.abs(sum - 1) < 1e-9, `有效权重之和应为 1，得到 ${sum}`)
+    })
+
+    it('effectiveWeights：required 时保留 execute 的 editRatio 基础权重', () => {
+      const result = evaluateConvergence(baseInput({ phaseClass: 'execute' }))
+      assert.equal(result.effectiveWeights.editRatio, 0.40)
     })
   })
 

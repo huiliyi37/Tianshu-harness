@@ -102,6 +102,41 @@ describe('ToolExecutionController abort-signal threading', () => {
     }
   }
 
+  for (const parallel of [false, true]) it(`verification facts reach the actual ${parallel ? 'parallel' : 'sequential'} execution and late completion`, async () => {
+    const { WorkProgressFacts } = await import('../work-progress-facts.js')
+    const { EvidenceTracker } = await import('../evidence.js')
+    const evidence = new EvidenceTracker()
+    const self = { modelObservationTurn: 5, config: {}, obligations: { getStore: () => ({ obligations: [] }) }, evidence }
+    const facts = new WorkProgressFacts(self as any)
+    const controller = makeController({}, parallel)
+    const deps = (controller as any).deps as ToolExecutionDeps
+    deps.evidence = evidence
+    deps.onToolExecutionStart = () => facts.recordToolExecutionStart()
+    deps.onVerificationExecutionStart = intent => facts.recordVerificationExecutionStart(intent)
+    deps.onVerificationExecutionSettled = (sequence, result) => facts.recordVerificationExecutionSettled(sequence, result)
+    let completed: ((result: any) => void) | undefined
+    ;(deps.config.toolRegistry as any).execute = async (_: string, params: any) => {
+      assert.equal(facts.recentVerificationExecutions().length, 1, 'register immediately before real execution')
+      completed = params.onVerificationCompleted
+      return { content: 'background started', backgroundJobId: 'fixture-job' }
+    }
+    const input = makeInput(new AbortController().signal)
+    input.toolUses = [{ id: 'verification', name: 'bash', input: { command: 'node --test a.test.ts' } }]
+    await controller.executeBatch(input)
+    facts.beginModelTurn(6)
+    const snapshot = facts.currentSnapshot()!
+    assert.equal(snapshot.latestVerificationExecution?.settled, false, 'starting a job is not settlement')
+    facts.recordFileProgress({ outcome: 'changed' })
+    completed!({ command: 'node --test a.test.ts', status: 'passed', kind: 'test', scope: 'targeted', targetFiles: ['a.test.ts'], exitCode: 0, countsReliable: true })
+    const execution = facts.recentVerificationExecutions()[0]!
+    assert.equal(execution.settled, true)
+    assert.equal(execution.mutationRevisionAtStart, 0, 'late completion retains launch version')
+    assert.equal(snapshot.latestVerificationExecution?.settled, false, 'late result cannot change frozen snapshot')
+    facts.beginModelTurn(7)
+    assert.equal(facts.currentSnapshot()?.latestVerificationExecution?.settled, true)
+    assert.notEqual(facts.currentSnapshot()?.mutationRevision, execution.mutationRevisionAtStart)
+  })
+
   for (const parallel of [false, true]) it(`aborted ${parallel ? 'parallel' : 'sequential'} tools cannot emit late decision requests`, async () => {
     const controller = makeController({}, parallel)
     const deps = (controller as any).deps as ToolExecutionDeps

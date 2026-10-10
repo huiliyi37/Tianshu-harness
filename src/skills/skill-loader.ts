@@ -648,6 +648,7 @@ export function listInstallableSkills(cwd: string): InstallableSkill[] {
       return
     }
     for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (isFilesystemMetadata(e.name)) continue
       let name: string | null = null
       let skillMd: string | null = null
       if (e.isDirectory()) {

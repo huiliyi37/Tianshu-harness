@@ -48,7 +48,8 @@ export type ChatTurnEvent =
   /** 工具调用待审批——由原生对话框接管（不结束轮）。 */
   | { kind: 'approval'; requestId: string; toolName: string; input: unknown }
   /** 审批闭环信号——审批豁免的恢复点（见 turn-timeout.ts）。 */
-  | { kind: 'approval-resolved' }
+  | { kind: 'approval-resolved'; requestId: string }
+  | { kind: 'approval-snapshot'; approvals: Array<{ requestId: string; toolName: string; input: unknown }> }
   /** 结构化提问——由原生对话框接管（不结束轮）。 */
   | { kind: 'question'; toolUseId: string; questions: ChatQuestion[] }
   /** 用量脚注（turn_complete）——promptTokens=当前上下文（contextTokens 优先），
@@ -190,7 +191,14 @@ export function interpretSessionEvent(ev: SessionEvent): ChatTurnEvent | undefin
       return { kind: 'approval', requestId, toolName: asString(d.toolName) || '工具调用', input: d.input }
     }
     case 'approval_resolved':
-      return { kind: 'approval-resolved' }
+      return { kind: 'approval-resolved', requestId: asString(d.requestId) }
+    case 'approval_snapshot':
+      return { kind: 'approval-snapshot', approvals: (Array.isArray(d.approvals) ? d.approvals : []).flatMap((item: unknown) => {
+        if (!item || typeof item !== 'object') return []
+        const row = item as Record<string, unknown>
+        const requestId = asString(row.requestId)
+        return requestId ? [{ requestId, toolName: asString(row.toolName) || '工具调用', input: row.input }] : []
+      }) }
     case 'user_question': {
       const questions = parseQuestions(d.questions)
       if (questions.length === 0) return undefined

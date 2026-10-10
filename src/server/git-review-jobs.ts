@@ -48,10 +48,12 @@ export function buildGitReviewRoutes(manager: RuntimeSessionManager, apiToken?: 
           number = Number(data.number)
           if (!Number.isSafeInteger(number) || number! < 1) throw new GitWorkbenchError('invalid_pr', '无效 PR 编号', 400)
           const repo = await prRepository(cwd, data.remote), pr = await assertPrHead(cwd, repo, number!, data.headSha)
-          await gitRead(cwd, ['fetch', String(data.remote), `refs/pull/${number}/head`])
+          const baseRef = pr.baseRefName
+          if (typeof baseRef !== 'string' || !baseRef || baseRef.startsWith('-')) throw new GitWorkbenchError('invalid_base', '请选择基准分支', 400)
+          await gitRead(cwd, ['fetch', '--', String(data.remote), `refs/pull/${number}/head`])
           headSha = (await gitRead(cwd, ['rev-parse', 'FETCH_HEAD'])).trim()
           if (headSha !== pr.headRefOid) throw new GitWorkbenchError('stale_pr', '获取到的 PR 版本已经变化')
-          await gitRead(cwd, ['fetch', String(data.remote), pr.baseRefName])
+          await gitRead(cwd, ['fetch', '--', String(data.remote), baseRef])
           target = `PR #${number}, head ${headSha}, base ${pr.baseRefOid}. Inspect the diff from the merge base against ${pr.baseRefOid}.`
         } else if (data.scope === 'commit') {
           headSha = validSha(data.sha); target = `Commit ${headSha}. Inspect this commit's changes, including a root commit if applicable.`

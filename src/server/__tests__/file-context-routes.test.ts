@@ -20,7 +20,7 @@ test('workspace browse/search is authenticated, filtered and sandboxed', async (
     // Windows 上 dir symlink 需开发者模式/管理员（普通权限恒 EPERM，与防护逻辑
     // 无关）；junction 无需特权、同样呈报 isSymbolicLink=true，逃逸防护语义等价。
     symlinkSync(outside, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
-    const handler = buildFileContextRoutes('file-context-test')['GET /workspace/file-context']!
+    const handler = buildFileContextRoutes('file-context-test', () => [root])['GET /workspace/file-context']!
     assert.equal((await handler(undefined, { cwd: root }, {})).status, 401)
     const browse = await handler(undefined, { cwd: root }, auth)
     assert.equal(browse.status, 200)
@@ -39,11 +39,29 @@ test('search reaches files beyond the former 2000-file cap; refresh invalidates 
   try {
     for (let i = 0; i < 2001; i++) writeFileSync(join(root, `a${String(i).padStart(4, '0')}.md`), '')
     writeFileSync(join(root, 'zz-final.sh'), 'echo marker')
-    const handler = buildFileContextRoutes('file-context-test')['GET /workspace/file-context']!
+    const handler = buildFileContextRoutes('file-context-test', () => [root])['GET /workspace/file-context']!
     const res = await handler(undefined, { cwd: root, q: 'zz-final.sh' }, auth)
     assert.deepEqual((res.body as { items: unknown[] }).items, [{ path: 'zz-final.sh', kind: 'file' }])
     writeFileSync(join(root, 'new.md'), '')
     assert.equal((await cachedProjectFiles(root)).includes('new.md'), false)
     assert.equal((await cachedProjectFiles(root, true)).includes('new.md'), true)
   } finally { rmSync(root, { recursive: true, force: true }) }
+})
+test('未知工作区 cwd 被 403 拒绝（#221 同族加固）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'file-context-known-'))
+  const evil = mkdtempSync(join(tmpdir(), 'file-context-evil-'))
+  try {
+    writeFileSync(join(root, 'ok.md'), 'ok')
+    writeFileSync(join(evil, 'secret.md'), 'secret')
+    // 只注册 root 为已知工作区
+    const handler = buildFileContextRoutes('file-context-test', () => [root])['GET /workspace/file-context']!
+    // 已知工作区：200
+    assert.equal((await handler(undefined, { cwd: root }, auth)).status, 200)
+    // 未知工作区：403，即使目录真实存在
+    const res = await handler(undefined, { cwd: evil }, auth)
+    assert.equal(res.status, 403)
+    // 未传 knownWorkspaces（默认空）：一律 403
+    const strict = buildFileContextRoutes('file-context-test')['GET /workspace/file-context']!
+    assert.equal((await strict(undefined, { cwd: root }, auth)).status, 403)
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(evil, { recursive: true, force: true }) }
 })

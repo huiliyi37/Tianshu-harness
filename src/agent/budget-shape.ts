@@ -28,7 +28,8 @@ export const SHAPE_MAX_TURNS_CEIL = 100
  *  在最坏 hands 形态下 outer ≈ 4h，仍在工具层可接受范围。 */
 export const SHAPE_TIMEOUT_CEIL_MS = 1_800_000
 
-const TURNS_PER_EXTRA_FILE = 6
+/** 一文件 ≈ 6 轮——goal 预算定价（goal-budget.ts）复用同一锚点，口径必须一致。 */
+export const TURNS_PER_EXTRA_FILE = 6
 const MS_PER_EXTRA_FILE = 45_000
 
 /** 形状定价开关（RIVET_WORKER_BUDGET_SHAPE=0 关闭）。 */

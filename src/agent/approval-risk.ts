@@ -4,6 +4,7 @@ import { evaluateMcpPolicy, type McpCapability } from '../mcp/policy.js'
 import type { ContextClaim } from '../context/claims.js'
 import type { Sensorium } from './sensorium.js'
 import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from '../tools/sensitive-file-detector.js'
+import { GIT_GLOBAL_OPTS_SRC } from '../tools/destructive-patterns.js'
 
 export type RiskLevel = 'none' | 'low' | 'medium' | 'high'
 
@@ -265,6 +266,15 @@ function stripDevNullRedirects(command: string): string {
 }
 
 /**
+ * git 全局参数剥离（检测视图专用）——所有 `\bgit\s+<subcmd>` 形态的规则都假设
+ * 子命令紧跟 git，`git -C repo reset --hard` / `git --no-pager reset --hard` /
+ * `git -c a=b clean -fd` 在原始视图与旧归一化视图上全部漏判（本仓库多会话共享
+ * 工作区，清场类命令误伤面大）。语法与 destructive-patterns / sensitive-file-detector
+ * 同源（GIT_GLOBAL_OPTS_SRC）——只影响判定，不改写实际执行命令（收编公开仓 PR #410）。
+ */
+const GIT_GLOBAL_OPTS_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS_SRC}(?=\s)`, 'g')
+
+/**
  * 命令文本归一化——只服务风险判定，不改变执行（执行仍是原始命令）。
  * 审批门在文本层、bash 语义在展开层：反斜杠续行拆散「命令名+旗标」、
  * ${IFS} 替代空白、字符级转义（r\m）与引号拼接（"r"m）都能让语义不变的
@@ -272,11 +282,14 @@ function stripDevNullRedirects(command: string): string {
  * 语义相同、判定必须相同。
  */
 export function normalizeBashCommand(command: string): string {
-  return command
+  const unquoted = command
     .replace(/\\\r?\n/g, ' ')   // 续行：rm \<newline> -rf 是一条命令
     .replace(/\$\{IFS\}/gi, ' ') // ${IFS} 默认展开为空白
     .replace(/\\(.)/g, '$1')    // 字符级转义：r\m → rm（检测视图内剥转义）
+    .replace(GIT_GLOBAL_OPTS_RE, 'git') // 引号仍在：`-C "my repo"` 的值含空格，靠引号分组
     .replace(/["']/g, '')       // 引号拼接："r"m → rm
+  // 引号剥离后再剥一次：`git "-C" repo stash` 的旗标名这时才成形（同族两种引号形态）
+  return unquoted.replace(GIT_GLOBAL_OPTS_RE, 'git')
 }
 
 function testBoth(pattern: RegExp, command: string): boolean {
@@ -365,7 +378,10 @@ const GIT_BYPASS_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 export function bashGitBypassesScope(command: string): boolean {
-  return GIT_BYPASS_PATTERNS.some(p => p.test(command.trim()))
+  const cmd = command.trim()
+  // 双视图与审批门同口径（收编公开仓 PR #410）：`git -C repo add -A` 等全局参数
+  // 形态同样是未限定暂存/提交，不能只在原始视图上判
+  return GIT_BYPASS_PATTERNS.some(p => testBoth(p, cmd))
 }
 
 /** Destructive git actions that can wipe working-tree changes — the panic targets. */
@@ -377,7 +393,9 @@ export function isDestructiveGitAction(toolName: string, input: Record<string, u
   // bash path already caught by BASH_WRITE_PATTERNS; listed here for explicit protection-mode gating
   if (toolName === 'bash') {
     const cmd = typeof input.command === 'string' ? input.command : ''
-    return /\bgit\s+(?:stash\b|checkout\s|restore\b|reset\b|rm\s)/.test(cmd)
+    // 双视图并检（收编公开仓 PR #410）：`git -C repo reset --hard` 等全局参数形态
+    // 与裸形态语义相同，保护模式（doom loop）判据不得漏
+    return testBoth(/\bgit\s+(?:stash\b|checkout\s|restore\b|reset\b|rm\s)/, cmd)
   }
   return false
 }

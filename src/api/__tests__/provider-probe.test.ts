@@ -650,6 +650,37 @@ describe('vision real-test (视觉真测)', () => {
     server = undefined
   })
 
+  for (const protocol of ['openai', 'openai-responses'] as const) {
+    it(`${protocol} reserves enough output for a vision answer after reasoning`, async () => {
+      server = await startServer((req, res) => {
+        if (req.url === '/v1/models') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ data: [{ id: 'mimo-v2.6-flash' }] }))
+          return
+        }
+        let body = ''
+        req.on('data', chunk => { body += chunk })
+        req.on('end', () => {
+          const request = JSON.parse(body)
+          const budget = protocol === 'openai' ? request.max_tokens : request.max_output_tokens
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          const answer = budget > 512 ? 'red square' : ''
+          res.end(sse([JSON.stringify(protocol === 'openai'
+            ? { choices: [{ delta: { reasoning_content: 'thinking', content: answer }, finish_reason: answer ? 'stop' : 'length' }] }
+            : { type: 'response.output_text.delta', delta: answer })]))
+        })
+      })
+      try {
+        const report = await probeProvider({ baseUrl: server.baseUrl, protocol, probeModel: 'mimo-v2.6-flash' })
+        assert.equal(report.completionOk, true, 'reasoning budget must leave room for the final answer')
+        assert.equal(report.visionAnswer, 'red square')
+      } finally {
+        await server.close()
+        server = undefined
+      }
+    })
+  }
+
   it('the built-in image is exactly 16×16 pure RGB red', () => {
     const png = Buffer.from(VISION_PROBE_IMAGE_DATA_URI.split(',')[1]!, 'base64')
     assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG')

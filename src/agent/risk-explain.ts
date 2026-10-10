@@ -103,6 +103,7 @@ export async function explainToolRisk(
     instruction: buildInstruction(params.toolName, params.input),
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     signal: params.signal,
+    purpose: 'risk_explain',
   })
   return raw === null ? null : parseRiskExplanation(raw)
 }

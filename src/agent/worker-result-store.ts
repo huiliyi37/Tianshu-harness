@@ -101,22 +101,34 @@ export function persistWorkerResult(result: WorkerResult, fingerprint?: string, 
   }
 }
 
+/** Model report ingestion strips coordinator identities; trusted disk reads restore validated metadata. */
+function parseStoredWorkerResult(text: string, orderId: string): WorkerResult {
+  const result = parseWorkerResult(text, orderId)
+  const metadata = JSON.parse(text) as Record<string, unknown>
+  for (const key of ['dispatchId', 'attemptId', 'parentAttemptId'] as const) {
+    if (typeof metadata[key] === 'string' && metadata[key].length > 0) result[key] = metadata[key]
+  }
+  return result
+}
+
 /** B1: read back a previously persisted worker result for resume/inspection.
  *  The persistWorkerResult sink used to have no reader (write-only grave).
  *  Returns null on cold miss or unparseable content — callers must handle it. */
 export function loadPersistedResult(orderId: string, homeDir?: string): WorkerResult | null {
-  // orderId 拼进文件名——与 isSafeRoundNonce 同族守卫（nonce 有校验而
-  // orderId 曾裸奔；workerId 亦可经 HTTP 路由到达此处）。编码后的键已无
-  // 路径语义，此守卫防的是旧格式回退分支拿原名拼路径。
-  if (!isSafeFileName(orderId)) return null
   const dir = coordinatorSubagentsDir(homeDir)
+  // orderId 拼进文件名前经 orderFileKey 单射编码（编码键已无路径语义，新格式
+  // 主路径恒安全）。旧格式回退分支拿**原名**拼路径——守卫只作用于该分支：
+  // 入口守卫会误杀含冒号的合法 orderId（batch:0 / team:T1——写经编码成功、
+  // 读被 isSafeFileName 拦死，恢复通道对 batch/team 派发全断；
+  // coordinator-persist-rounds 回归即此）。冒号裸名回退保持不读
+  // （与 Windows ADS 行为统一，fail-closed 一侧）。
   const key = orderFileKey(orderId)
-  const names = legacyKeyDiffers(orderId) ? [`${key}.json`, `${orderId}.json`] : [`${key}.json`]
+  const names = legacyKeyDiffers(orderId) && isSafeFileName(orderId) ? [`${key}.json`, `${orderId}.json`] : [`${key}.json`]
   for (const name of names) {
     try {
       const path = join(dir, name)
       if (!existsSync(path)) continue
-      return parseWorkerResult(readFileSync(path, 'utf-8'), orderId)
+      return parseStoredWorkerResult(readFileSync(path, 'utf-8'), orderId)
     } catch { /* unparseable format — try the legacy name once more */ }
   }
   return null
@@ -136,7 +148,7 @@ export interface PersistedResultRound {
 }
 
 /**
- * 列出某个 order id 的全部归档轮次，按时间升序（第 0 条是首轮）。
+ * 列出某个 order id 的全部归档轮次，按时间升序；同 mtime 按 nonce 字节序。
  * 只数 `<key>.<nonce>.json`：`<key>.json` 最新副本（nonce 为空被排除）
  * 与指纹文件（不带 order id 前缀）都不算轮次。
  * 旧格式前缀（未编码原名）一并扫描做兼容；同一 nonce 新旧两份并存时
@@ -146,7 +158,8 @@ export function listPersistedResultRounds(orderId: string, homeDir?: string): Pe
   try {
     const dir = coordinatorSubagentsDir(homeDir)
     const prefixes = [`${orderFileKey(orderId)}.`]
-    if (legacyKeyDiffers(orderId)) prefixes.push(`${orderId}.`)
+    // 旧格式前缀仅供原名安全的 id 回退（裸冒号名不读——见 loadPersistedResult）。
+    if (legacyKeyDiffers(orderId) && isSafeFileName(orderId)) prefixes.push(`${orderId}.`)
     const byNonce = new Map<string, PersistedResultRound>()
     for (const f of readdirSync(dir)) {
       if (!f.endsWith('.json')) continue
@@ -160,7 +173,7 @@ export function listPersistedResultRounds(orderId: string, homeDir?: string): Pe
       if (!existing || savedAt >= existing.savedAt) byNonce.set(nonce, { nonce, savedAt })
     }
     const rounds = [...byNonce.values()]
-    rounds.sort((a, b) => a.savedAt - b.savedAt)
+    rounds.sort((a, b) => a.savedAt - b.savedAt || (a.nonce < b.nonce ? -1 : a.nonce > b.nonce ? 1 : 0))
     return rounds
   } catch {
     return []
@@ -172,12 +185,13 @@ export function loadPersistedResultRound(orderId: string, nonce: string, homeDir
   if (!isSafeRoundNonce(nonce)) return null
   const dir = coordinatorSubagentsDir(homeDir)
   const key = orderFileKey(orderId)
-  const names = legacyKeyDiffers(orderId) ? [`${key}.${nonce}.json`, `${orderId}.${nonce}.json`] : [`${key}.${nonce}.json`]
+  // 旧格式回退分支守卫同 loadPersistedResult（裸冒号名不回退）。
+  const names = legacyKeyDiffers(orderId) && isSafeFileName(orderId) ? [`${key}.${nonce}.json`, `${orderId}.${nonce}.json`] : [`${key}.${nonce}.json`]
   for (const name of names) {
     try {
       const path = join(dir, name)
       if (!existsSync(path)) continue
-      return parseWorkerResult(readFileSync(path, 'utf-8'), orderId)
+      return parseStoredWorkerResult(readFileSync(path, 'utf-8'), orderId)
     } catch { /* unparseable — try the legacy name once more */ }
   }
   return null

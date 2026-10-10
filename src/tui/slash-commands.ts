@@ -37,11 +37,13 @@ import { loadProjectRules } from '../context/rules-loader.js'
 import { exportDurableClaims, importClaims } from '../context/claim-export.js'
 import { formatVolatilePayloadReport } from '../context/payload-diagnostic.js'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { basename, join, resolve } from 'node:path'
 import { buildHandoffPrompt } from './handoff.js'
 import { ensureVerifyDeclaration, renderRivetMdStack, upsertStackSection } from '../bootstrap/verify-declaration.js'
 import { exportsDir } from '../config/paths.js'
 import { listPlans, rejectPlan, resolvePlanOptionLabel, resolvePlanRef, stripCopiedTitleSuffix } from '../plan/plan-store.js'
+import { isSafeFileName } from '../utils/safe-path.js'
 import { approvePlanAndKickoff } from './plan-kickoff.js'
 import { fullRebuild, generateCodebaseIndexBlock, getHeadSha } from '../repo/codebase-index.js'
 import { isDiagramType, buildDiagramDoc, renderDiagramBlock, formatDiagramList } from './diagram-templates.js'
@@ -76,6 +78,7 @@ import { switchAgentRuntime, switchAgentSession, switchAgentCwd } from '../boots
 //（architecture-guards 的 max-lines ratchet 只降不升）。
 import { applySessionSwitch, registerNewSessionCommand } from './new-session.js'
 import { registerCvmNoticeCommand } from './cvm-notice-command.js'
+import { registerSteerCommand } from './steer-command.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
 import { formatPermissionLabel, parsePermissionAlias, tierToMode } from '../agent/approval-vocabulary.js'
 import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied } from '../agent/permissions.js'
@@ -345,7 +348,7 @@ export function formatMemoryOverview(ctx: SlashHandlerContext): string {
 
   const dir = knowledgeDir()
   const knowledgeFiles = existsSync(dir)
-    ? readdirSync(dir).filter(f => f.endsWith('.md')).slice(0, 8)
+    ? readdirSync(dir).filter(f => f.endsWith('.md') && !isFilesystemMetadata(f)).slice(0, 8)
     : []
   const knowledgeLines = knowledgeFiles.length === 0
     ? ['  (none)']
@@ -364,7 +367,7 @@ export function searchMemory(ctx: SlashHandlerContext, query: string): string {
     .map(p => `pheromone:${p.path} ${p.signal} ${p.context ?? ''}`)
   const dir = knowledgeDir()
   const knowledgeHits = existsSync(dir)
-    ? readdirSync(dir).filter(f => f.endsWith('.md')).flatMap(file => {
+    ? readdirSync(dir).filter(f => f.endsWith('.md') && !isFilesystemMetadata(f)).flatMap(file => {
       const content = readFileSync(join(dir, file), 'utf-8')
       return content.toLowerCase().includes(needle) ? [`knowledge:${file} ${content.slice(0, 160).replaceAll('\n', ' ')}`] : []
     })
@@ -2119,6 +2122,13 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       }
 
       const cwd = ctx.agent.cwd
+      // slug 直达 rejectPlan：先过 isSafeFileName 门（与 /plan-approve 的
+      // resolvePlanRef 白名单同构的 fail-closed；store 层 planFilePath 亦有门）。
+      if (!isSafeFileName(slug)) {
+        pushStatic(createLogEntry({ type: 'system', content: `Plan not found: "${slug}". Use /plan-list to see available plans.`, isError: true }))
+        setIsStreaming(false)
+        return true
+      }
       const rejected = await rejectPlan(cwd, slug)
       if (!rejected) {
         pushStatic(createLogEntry({ type: 'system', content: `Plan not found: "${slug}". Use /plan-list to see available plans.`, isError: true }))
@@ -3967,6 +3977,10 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
 
   // /queue：显式排队 lane（handler 在 registerQueueCommand，独立导出供单测注册）。
   registerQueueCommand(app)
+
+  // /steer：显式插队引导（Alt+Enter 的斜杠等价入口，next 工具边界立即注入）——
+  // 实现在独立模块，与 /queue、/new 同一处置（本文件是点名巨石，只降不升）。
+  registerSteerCommand(app)
 
   // /cvm：CVM 拦截提示的级别开关（issue #247 第 2 条）。实现在独立模块——与
   // /new、/queue 同一处置（本文件是点名巨石，只降不升）。

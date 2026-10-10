@@ -63,11 +63,11 @@ describe('knowledge-index', () => {
     const oldEntry = appendMemoryEntry(cwd, {
       text: 'Bundler webpack is used for all builds in this project',
       kind: 'project_rule', confidence: 0.9, source: 'manual', status: 'verified', tags: [], topic: 'build',
-    })
+    })!
     const newEntry = appendMemoryEntry(cwd, {
       text: 'Bundler esbuild is used for all builds in this project',
       kind: 'project_rule', confidence: 0.95, source: 'essence-gate', status: 'verified', tags: [], topic: 'build',
-    })
+    })!
     supersedeMemoryEntry(cwd, oldEntry.id, newEntry.id)
 
     const idx = new KnowledgeIndex(cwd)
@@ -226,4 +226,24 @@ describe('knowledge-index 向量层存活对账（撤信/缩编后无陈旧 id �
     assert.ok(hits.length >= 1)
     assert.ok(hits.every(h => h.file === 'guide.md'))
   })
+  it('ignores filesystem metadata Markdown in lexical and semantic recall', async () => {
+    const dir = join(cwd, '.rivet', 'knowledge')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'guide.md'), 'normal knowledge guide\n')
+    writeFileSync(join(dir, '._noise.md'), 'zqxmetadata sidecar must never enter recall\n')
+
+    assert.deepEqual(await new KnowledgeIndex(cwd).search('zqxmetadata'), [])
+    const embedded: string[] = []
+    const embedder: EmbeddingProvider = {
+      ...uniformEmbedder(),
+      embed: async texts => {
+        embedded.push(...texts)
+        return texts.map(() => [1, 0])
+      },
+    }
+    const hits = await new KnowledgeIndex(cwd, embedder).search('normal')
+    assert.deepEqual(hits.map(h => h.id), ['kmd:guide.md:0'])
+    assert.ok(embedded.every(text => !text.includes('zqxmetadata')), 'sidecar content must not be embedded')
+  })
+
 })

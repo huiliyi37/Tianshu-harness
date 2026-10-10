@@ -20,6 +20,7 @@ import type { Tool, ToolCallParams, ToolResult } from '../tools/types.js'
 import { validatePathSafe } from '../tools/path-validate.js'
 import { parseManifest, type PluginManifest, type PluginPackageJson } from './manifest.js'
 import { skillRegistry, parseSkillMarkdown } from '../skills/skill-loader.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -353,6 +354,7 @@ function loadPluginCommands(
       ? readdirSync(abs).filter(f => f.endsWith('.md')).map(f => join(abs, f))
       : abs.endsWith('.md') ? [abs] : []
     for (const file of files) {
+      if (isFilesystemMetadata(basename(file))) continue
       const name = basename(file, '.md')
       if (seenNames.has(name)) {
         warnings.push(`[plugins] ${manifest.name}: command "/${name}" conflicts — skipped`)

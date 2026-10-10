@@ -1,3 +1,10 @@
+import { CourseEpisodes } from './course-episodes.js'
+import { WorkProgressFacts, computeRepeatedVerificationSignal } from './work-progress-facts.js'
+import { recordConvergenceInput, type RecordedConvergenceInput } from './convergence-replay.js'
+import type { EditExpectation } from './edit-expectation.js'
+import { WorkStage } from './work-stage.js'
+import { buildRegimeKey, type ConvergenceScoreSample } from './score-history.js'
+import { DecisionShiftDelivery } from './decision-shift-delivery.js'
 import { sessionSkillSnapshot } from '../skills/session-skill-snapshot.js'
 import { buildSessionVitals } from './session-vitals-builder.js'
 import { currentWorkspaceRoots } from '../tools/workspace-context.js'
@@ -39,7 +46,7 @@ import type { PhaseClass, ConvergenceResult } from './convergence-detector.js'
 import { computeStructureFlowControl } from './structure-flow-controller.js'
 import type { StructureFlowSnapshot } from './structure-flow-controller.js'
 import { assembleCognitiveFrame, projectStructureFlowInputs } from './cognitive-frame.js'
-import type { CognitiveFrame } from './cognitive-frame.js'
+import type { CognitiveFrame, CognitiveFrameWorkFacts } from './cognitive-frame.js'
 import { buildCognitiveFrameRecord, buildCognitiveFrameLiteRecord } from './cognitive-frame-replay.js'
 import { planConvergenceEmit } from './convergence-emit-gate.js'
 import { createFrameRecorder } from './frame-telemetry.js'
@@ -269,6 +276,10 @@ export class AgentLoop {
   sawVisualVerify = false
   prewarm = new PrewarmCache(60_000, 50)
   private _running = false
+  /** 工具表是否已随本会话的请求上网——上网后外部晚到工具一律不再注入（见 refreshToolsAtBoundary）。 */
+  private _toolSetPublished = false
+  /** 本会话是否已丢弃过外部工具注入（只告警一次）。 */
+  private _droppedToolRefresh = false
   /** Idle compaction: after a run settles, a debounced timer fires a turn-0
    *  compaction pass so the NEXT user turn doesn't eat a synchronous full
    *  compaction. Gated on real pressure / pending deferred work, cancelled the
@@ -365,6 +376,7 @@ export class AgentLoop {
   /** U6: most recent convergence-detector result — consumed by the replan loop's
    *  detectDeviation (blocked/stalled signals). Null until first convergence check. */
   latestConvergenceResult: ConvergenceResult | null = null
+  latestConvergenceInput: RecordedConvergenceInput | null = null
   /** P2 阴阳调度：本 turn 的 structure-flow 控制快照（EFE 就绪时每次
    *  runConvergenceCheck 重算；EFE 缺失 = null → 一切消费方走旧行为）。
    *  只读事实，供 convergence 软阈值 / plan advisory / tdd 投影消费。 */
@@ -387,7 +399,8 @@ export class AgentLoop {
    *  same advisory ~50 times in a 154-turn session. Now the cooldown for the
    *  SAME message variant doubles each consecutive emission (3→6→12→24…),
    *  resetting to base when the variant changes, level escalates, or the agent
-   *  produces a productive tool (edit/bash/test) since the last emit.
+   *  produces a productive tool (edit/bash/test) while a nudge is still
+   *  outstanding (2026-10-10 狂轰事故：无条件清账会把发射门变成每轮直通）。
    *
    *  Re-emit only when the cooldown elapses, the level escalates, or the message
    *  type changes. Mirrors the cooldown discipline in kick-hook.ts. */
@@ -404,6 +417,10 @@ export class AgentLoop {
    *  backoff multiplier and the "第 N 次提醒" prefix in the injected message. */
   private convergenceEmitRepeatCount = 0
   private lastConvergenceEmitTurn = -Infinity
+  /** 最近一次 runConvergenceCheck 的 turn——recordToolHistory 判「提醒是否未结」
+   *  （产出清账窗口）的唯一来源；未跑过检查时为 0，与 lastConvergenceEmitTurn
+   *  初值 -Infinity 组合 = 恒不未结 = 不清账。 */
+  private latestConvergenceCheckTurn = 0
   private lastConvergenceEmitLevel = 0
   private lastConvergenceMsgKey = ''
   /** 上次发射时的验证失败流水 — 第四突破条件（流水加深 → 提前发射）的基线。 */
@@ -416,17 +433,19 @@ export class AgentLoop {
   private readonly convergenceWarningClearProductiveTurns = 5
   private turnHadProductiveTool = false
   private productiveTurnStreak = 0
-  /** W1（20b9714e 复盘）：阶段相对轮数基线。phaseClass 变更时重置，收敛文案
-   *  用 turn - phaseStartTurn 而非会话全局轮数——消灭"连续 90 轮未收敛"这类
-   *  会话越长越吓人的假数字。 */
-  private phaseStartTurn = 0
+  /** W1（20b9714e 复盘）：最近的收敛相位类（文案/观测/CVM 消费）。
+   *  P3：阶段相对轮数的基线不再在本类维护（phaseStartTurn 已删）——
+   *  唯一锚是 WorkStage.enteredModelTurn（只随确认切换更新），计时走跨 run
+   *  单调的 modelObservationTurn；见 stageAnchorTurnForCooldown。 */
   private lastConvergencePhaseClass = ''
   /** 近 10 次收敛检查时的 todo 完成数采样（进度信标数据源，10 = 最大信号窗口）。 */
   private todoCompletedSamples: number[] = []
   /** Rolling score history from recent convergence checks (most recent last).
    *  Maintained as a sliding window of at most 20 entries. Passed to
-   *  evaluateConvergence for L3 scoreAbort decline-trend detection. */
-  convergenceScoreHistory: number[] = []
+   *  evaluateConvergence for L3 scoreAbort decline-trend detection.
+   *  P3：条目带口径键（regimeKey）与质量（score-history.ts）——趋势只取
+   *  末尾连续、同口径、有效的样本；number 条目为 legacy（旧形态兼容）。 */
+  convergenceScoreHistory: Array<number | ConvergenceScoreSample> = []
   /** 解耦修复：CCR/kick 的让位判据。旧判据 latestConvergenceResult.shouldKick
    *  在卡住期间恒为 true，而发射被 3 轮冷却节流——冷却静默期 CCR 也被整轮压制
    *  （守护链路静音栈的一环）。新判据只在 convergence **真实发射**过 advisory 的
@@ -470,6 +489,8 @@ export class AgentLoop {
   } = { ccr: 0, shifts: {}, advisoriesRendered: 0, advisoriesDropped: 0, advisoriesAdopted: 0, advisoriesIgnored: 0, advisoriesHeldOut: 0, advisoriesSrSubmitted: 0, advisoriesSrDropped: 0 }
   private lastGuardianMetaFingerprint = ''
   /** 记录一次结构化改道发射（source: 'kick' | 'convergence' | …）。 */
+  readonly decisionShifts = new DecisionShiftDelivery(source => this.recordDecisionShift(source), event => this.telemetryWriter.write(event), () => this.workFacts.taskEpoch)
+
   recordDecisionShift(source: string): void {
     this.guardianActivity.shifts[source] = (this.guardianActivity.shifts[source] ?? 0) + 1
   }
@@ -747,6 +768,14 @@ export class AgentLoop {
   advisoryBus = new AdvisoryBus()
   /** P1a 核销闭环：advisory 送达后按 expect 谓词核销 adopted/ignored */
   advisoryReadback = new AdvisoryReadback()
+  readonly courseEpisodes = new CourseEpisodes(this)
+  /** P0 共享工作事实（《收敛阶段补修》§3）：任务边界/工作版本/进展/验证执行，
+   *  每 modelTurn 感知前快照一次，感知/收敛/核销读同一份。 */
+  readonly workFacts = new WorkProgressFacts(this)
+  /** P2 工作相位确认器（《收敛阶段补修》§5）：感知确认点消费；任务寿命管理——
+   *  内部状态按 taskEpoch 边界自重置，followUp/引导/自动继续/压缩/普通新 run
+   *  不清空（perception.reset 只清 Sensorium 采样）。 */
+  readonly workStage = new WorkStage()
   /** 主控心流控制面（RIVET_CONTROL_PLANE: off|shadow|active，默认 shadow）。
    *  shadow 只归并/记账（K0），不改 prompt；active 才允许 appendix 出口（Wave 4）。 */
   controlPlane = new ControlPlaneController()
@@ -916,6 +945,8 @@ export class AgentLoop {
       const stateManager = new SessionStateManager(this.config.sessionId)
       this.sessionStateManager = stateManager
       this._jobs = new SessionJobs(join(artifactDir, 'jobs'), source => touchActivity(this.config.sessionId ?? 'default', source))
+      // P0：任务边界号权威在 WorkProgressFacts——SessionJobs 盖章/比对读同一边界。
+      this._jobs.setTaskEpochProvider(() => this.workFacts.taskEpoch)
     }
     // MonitorRegistry 无条件创建（无会话时 getJobs 返回 undefined，subscribe 优雅降级）。
     this._monitors = new MonitorRegistry(() => this._jobs, { telemetry: this.telemetryWriter })
@@ -994,6 +1025,8 @@ export class AgentLoop {
       setReasoningEffort: effort => { this.setReasoningEffort(effort, 'programmatic') },
       getFingerprint: () => this.config.promptEngine.getFingerprint(),
       submitControlSignal: signal => { this.controlPlane.submit(signal) },
+      // P2：工作相位确认器由 AgentLoop 任务寿命管理（turn-perception 只消费）。
+      workStage: this.workStage,
     })
     this.intent = new TurnIntentController()
     this.contextInjection = new ContextInjectionController({
@@ -1261,23 +1294,33 @@ export class AgentLoop {
 
   recordToolHistory(name: string, input: Record<string, unknown>, isError: boolean, result: string, errorClass?: ToolErrorClass, errorKind?: FailureClass): void {
       recordToolHistory(this, name, input, isError, result, errorClass, errorKind);
-      // Reset convergence cooldown when the agent produces a productive tool
-      // (edit/bash/test/commit/deliver). This means past convergence nudges
-      // were either effective (prompted action) or irrelevant (direction was
-      // fine all along) — in either case, reset the repeat counter and cooldown
-      // so the next nudge starts fresh rather than escalating from a stale count.
+      // Productive tools (edit/bash/test/commit/deliver) settle an OUTSTANDING
+      // convergence nudge: within its cooldown window, productivity means the
+      // nudge was either effective (prompted action) or irrelevant (direction
+      // was fine all along) — reset repeat/cooldown/wall-clock so the next
+      // nudge starts fresh rather than escalating from a stale count.
       if (PRODUCTIVE_TOOLS.has(name)) {
-        this.convergenceEmitRepeatCount = 0
-        this.convergenceEmitCooldownTurns = this.convergenceEmitBaseCooldownTurns
-        // 墙钟凭证同步清空（697bd138f 送审查 LOW）：另两处清账点（B1c 产出清账 /
-        // 用户介入）都清了 lastConvergenceEmitAtMs，此处原先漏掉 → "产出后按新方向
-        // 结算"仍会被墙钟静音最长 convergenceEmitMinIntervalMs。
-        this.lastConvergenceEmitAtMs = -Infinity
-        // 方向凭证同步清空（审查 09389b78e 指出）：原先只清 repeat/cooldown，
-        // lastConvergenceMsgKey 仍留旧值 → 下次同变体发射 changedDirection 为
-        // false，按 backoff 递增结算，「第 N 次同类提醒」的 N 与"产出后重新
-        // 开始"的语义不符。清空后下一次发射按新方向结算。
-        this.lastConvergenceMsgKey = ''
+        // 产出清账仅限「提醒未结」窗口（2026-10-10 狂轰事故修复）：提醒发出后的
+        // 冷却期内见到产出 = 提醒被采纳或方向本来没问题，按新方向重新结算
+        // （repeat/cooldown/墙钟归位）。此前无条件清账——没有未结提醒时也把
+        // repeat/cooldown/lastEmitAtMs 一并 wipe，且 09389b78e 又清了 msgKey
+        // 方向凭证 → changedDirection 与 wallClockElapsed 双突破条件被清成每轮
+        // 恒真，发射门（convergence-emit-gate）退化为每轮直通：持续 L2 + 每轮
+        // 有 bash 产出的会话里改道卡 7 轮 6 张（会话 20261009c40f5c2262ea，
+        // 见 docs/known-issues/2026-10-10-convergence-emit-reset-bombardment.md）。
+        // 方向凭证 lastConvergenceMsgKey 不在此清：它只被真·变体切换（发射门
+        // 自带比对）、用户介入或 B1c 产出清账重置；产出工具清它会让
+        // changedDirection 每轮恒真（09389b78e 的清空在此组合下是过矫正——
+        // 「第 N 次」的 N 语义由 repeatCount 归位保证，不需要动方向凭证）。
+        const nudgeOutstanding =
+          this.latestConvergenceCheckTurn - this.lastConvergenceEmitTurn <= this.convergenceEmitCooldownTurns
+        if (nudgeOutstanding) {
+          this.convergenceEmitRepeatCount = 0
+          this.convergenceEmitCooldownTurns = this.convergenceEmitBaseCooldownTurns
+          // 墙钟凭证同步清空（697bd138f 送审查 LOW）：未结提醒被产出核销后，
+          // 下一次发射按新方向结算，不应再被墙钟静音。
+          this.lastConvergenceEmitAtMs = -Infinity
+        }
         // B1c：turn 级产出标志,由 runConvergenceCheck 在下个 turn 边界结算
         this.turnHadProductiveTool = true
       }
@@ -1410,6 +1453,15 @@ export class AgentLoop {
     this.abortController?.abort()
   }
 
+  /** 仅恢复运行中的 watchdog 误报；未知来源和用户 Esc 都保留中止状态。
+   *  AbortSignal 不可撤销，必须换 controller，不能跳过下一轮的中止检查。 */
+  resetAbortAfterRescue(): boolean {
+    if (!this._running || !this._watchdogAborted || this._pendingAbort || !this.abortController?.signal.aborted) return false
+    this._watchdogAborted = false
+    this.abortController = new AbortController()
+    return true
+  }
+
   setApprovalMode(mode: ApprovalMode): void {
     this.config.approvalMode = mode
     // Mirror into the prompt engine so the permission note tracks the live mode.
@@ -1509,7 +1561,7 @@ export class AgentLoop {
    * so the encoding stays consistent across abort paths.
    */
   abortReason(): string | undefined {
-    if (!this._watchdogAborted) return undefined
+    if (this._pendingAbort || !this._watchdogAborted) return undefined
     return this.isGoalActive() ? 'watchdog:goal' : 'watchdog'
   }
 
@@ -1619,6 +1671,23 @@ export class AgentLoop {
 
   updateTools(): void {
     this.config.promptEngine.updateTools(this.gatedToolDefinitions())
+  }
+
+  /**
+   * 外部晚到工具（MCP 等）就绪后的工具表刷新——**会话内冻结**。
+   *
+   * 首个请求上网前 → 直接刷新（此刻没有可碎的前缀，零成本）。
+   * 之后 → 一律不刷新：tools 在 system 之后、messages 之前，无论落在轮中还是
+   * user 边界，改写都会把 tools 段之后的整段已缓存前缀作废（实测会话
+   * 202610098c9331a42102 turn 86：create 432,713 / 命中 4.5% / ttft 7.4s）。
+   * 宁可这些工具在本会话不生效（新建会话自然带上），也不碎已缓存的上下文。
+   */
+  refreshToolsAtBoundary(): void {
+    if (!this._toolSetPublished) { this.updateTools(); return }
+    if (!this._droppedToolRefresh) {
+      this._droppedToolRefresh = true
+      debugLog('[agent] 会话已开始，晚到的外部工具（MCP）不在本会话注入——避免打穿前缀缓存；新会话生效')
+    }
   }
 
   /** 当前主控实际可见的工具名（已应用门控 + 运行时挂载 + zen 读面）。 */
@@ -2138,6 +2207,9 @@ export class AgentLoop {
       try { this.onAskModeChange?.('off') } catch { /* non-fatal */ }
     }
     this.planModeState = 'planning'
+    // P2：明确进入/重新进入 plan 的结构化事件——工作相位确认器消费
+    // （不从提醒文案/复杂度推断）。幂等保留草稿的 re-entry 在上方已返回。
+    this.workStage.recordPlanEntry()
     // P2 plan advisory 去重键随生命周期清空——新的 planning 语境允许新建议。
     this.structureFlowPlanAdvisoryKeys.clear()
     // Re-entering cancels any pending exit reminder from a prior exit.
@@ -2340,6 +2412,10 @@ export class AgentLoop {
       try { this._jobs.killAll() } catch { /* best-effort */ }
     }
     this._jobs = jobs
+    // P0：taskEpoch 权威在 WorkProgressFacts——被替换的实例同样要接线，否则
+    // 新任务边界（recordHumanTaskBoundary）不会使旧验证 job 失保护
+    // （loop.test「real human task invalidates an old running verification job」回归即此）。
+    jobs.setTaskEpochProvider(() => this.workFacts.taskEpoch)
   }
 
   /** Real context-window occupancy (anchor on last API prompt_tokens + tail
@@ -2568,8 +2644,10 @@ export class AgentLoop {
   activeInputOrigin: import('./input-origin.js').InputOrigin = 'human'
   async run(userInput: string, callbacks: AgentCallbacks, images?: string[], options?: import('./input-origin.js').InputOptions): Promise<AgentRunOutcome> {
     if (this._running) return 'skipped-already-running'
+    // §4：新 run 丢弃上一轮的改道卡候选——卡片只对当轮投递有效，绝不补弹旧卡。
+    this.decisionShifts.discard('run-or-flood')
     this.activeInputOrigin = options?.origin ?? this.config.inputOrigin ?? 'human'
-    return observeRun(this.config.sessionId ?? 'default', () => this.runObserved(userInput, callbacks, images))
+    return observeRun(this.config.sessionId ?? 'default', () => this.runObserved(userInput, this.courseEpisodes.callbacks(callbacks), images))
   }
 
   private async runObserved(userInput: string, callbacks: AgentCallbacks, images?: string[]): Promise<AgentRunOutcome> {
@@ -2609,6 +2687,9 @@ export class AgentLoop {
     // 可选调用：测试里有以裸对象冒充 toolRegistry 的桩（只给 getDefinitions），
     // 缺该方法时跳过闸门而非炸掉 run（生产路径恒为真 ToolRegistry）。
     await this.config.toolRegistry.awaitExtraRegistrations?.(8_000)
+    // 工具表在本 user 边界定稿：晚到注册已吸收，此后外部工具（MCP）不再注入
+    // ——会话一旦有请求上网，改 tools 段就会碎整段前缀（见 refreshToolsAtBoundary）。
+    this._toolSetPublished = true
     // W3：每轮用户输入开始时重置 system-reminder 计数器（每轮最多 1 条）。
     this.session.resetSrCount()
     // Cancel + drain any pending/in-flight idle compaction before mutating the
@@ -2841,7 +2922,58 @@ export class AgentLoop {
       // progressBeacons.activePlan 保持只看批准计划文件，两个语义不混用。
       plan: { activePlanFile: this.activePlanFilePath !== null, planModeState: this.planModeState },
       progress: { todoCompletedDelta },
+      // P3：工作相位/口径观测（可选字段；不进 structure-flow 投影；不记正文/
+      // 路径/argv）。旧帧（无此字段）replay 报 legacy。
+      work: this.assembleWorkObservation(),
     })
+  }
+
+  /** P3：WorkStage/事实快照 → 帧工作观测（纯读取装配）。 */
+  private assembleWorkObservation(): CognitiveFrameWorkFacts {
+    const wsState = this.workStage.getState()
+    const wsConfirm = this.workStage.getLastConfirm()
+    const workSnap = this.workFacts.currentSnapshot()
+    const editExpectation = this.currentEditExpectation()
+    const progressBase = workSnap
+      ? (workSnap.lastMeaningfulProgressModelTurn >= 0
+        ? workSnap.lastMeaningfulProgressModelTurn
+        : workSnap.taskStartModelTurn)
+      : null
+    return {
+      committedPhase: wsState.committedPhase,
+      // 候选观测三元组同源（审查 finding 1）：candidate 清空后不得残留 source。
+      candidatePhase: wsState.candidate?.value ?? null,
+      candidateTurns: wsState.candidate?.turns ?? 0,
+      candidateSource: wsState.candidate?.source ?? null,
+      transition: wsConfirm?.decision.transition ?? null,
+      reason: wsConfirm?.decision.reason ?? null,
+      taskEpoch: workSnap?.taskEpoch ?? wsState.taskEpoch,
+      stageEpoch: wsState.stageEpoch,
+      mutationRevision: workSnap?.mutationRevision ?? 0,
+      progressRevision: workSnap?.progressRevision ?? 0,
+      editExpectationKind: editExpectation.kind,
+      editExpectationSource: editExpectation.source,
+      progressAgeTurns: progressBase !== null ? Math.max(0, this.modelObservationTurn - progressBase) : 0,
+      verificationWait: workSnap?.waitingVerification
+        ? (Date.now() <= workSnap.waitingVerification.waitUntil ? 'active' : 'expired')
+        : 'none',
+    }
+  }
+
+  /** P2：编辑期待投影的唯一组装点——感知确认（turn-step-producer）与收敛检查
+   *  同轮同源（纯投影幂等；快照为每 modelTurn 不可变值）。 */
+  currentEditExpectation(): EditExpectation {
+    return this.workFacts.editExpectation(this._lastRetrievalRoute?.taskKinds ?? [], this.initialUserMessage ?? '')
+  }
+
+  /** P3：阶段宽限/文案的计时锚。已确认（committedPhase 非空）→ 进入该阶段
+   *  的 modelObservationTurn（只随确认切换更新）；未确认（含历史恢复缺快照）
+   *  回落任务起点（新任务头几轮与旧行为同样获得宽限，但跨 run 不重复获得）。 */
+  stageAnchorTurnForCooldown(): number {
+    const ws = this.workStage.getState()
+    if (ws.committedPhase !== null) return ws.enteredModelTurn
+    const snap = this.workFacts.currentSnapshot()
+    return snap?.taskStartModelTurn ?? this.modelObservationTurn
   }
 
   async runConvergenceCheck(
@@ -2853,12 +2985,14 @@ export class AgentLoop {
   ): Promise<{
     action: 'proceed' | 'abort'
   }> {
+    this.latestConvergenceCheckTurn = turn
     // Fix 3 — the user just intervened this turn, so any pre-intervention
     // "hesitation" (no-tool) streak is broken: zero it before evaluation so a
     // stale streak can't drive a spurious stagnation/abort right after the user
     // speaks. (Turn-start and tool-use paths reset this elsewhere; this covers
     // mid-run steer injection.)
     if (userMessageConsumed) {
+      this.decisionShifts.clearWarning()
       this.consecutiveNoToolTurns = 0
       // 缺口 C 意图锚点:steer 注入 = 用户刚重申过意图,stale 计时重置
       this.lastUserInputRunTurn = turn
@@ -2866,14 +3000,16 @@ export class AgentLoop {
       this.structureFlowPlanAdvisoryKeys.clear()
     }
 
-    // W1 — 阶段相对轮数：phase 切换即重置基线，文案与判定引用的是"本阶段"
-    // 的轮数而非会话全局计数。
+    // W1/P3 — 阶段相对轮数：基线 = WorkStage.enteredModelTurn（只随确认
+    // 阶段切换更新——弱候选抖动不移动锚），计时走跨 run 单调的
+    // modelObservationTurn——新 run 不再让阶段宽限虚拟重置。仅控制阶段
+    // 宽限与文案；重复验证的停滞年龄独立计算（P1 快照口径）。
     if (phaseClass !== this.lastConvergencePhaseClass) {
       this.lastConvergencePhaseClass = phaseClass
-      this.phaseStartTurn = turn
     }
-    const phaseRelativeTurn = Math.max(1, turn - this.phaseStartTurn + 1)
+    const phaseRelativeTurn = Math.max(1, this.modelObservationTurn - this.stageAnchorTurnForCooldown() + 1)
 
+    this.courseEpisodes.sample()
     // W1 — 进度信标：todo 完成数在近窗口内的增量。todo 推进是最硬的
     // "未停滞"证据，交给 detector 做 L2+ 否决。
     let todoCompletedNow = 0
@@ -2897,6 +3033,7 @@ export class AgentLoop {
     this.productiveTurnStreak = this.turnHadProductiveTool ? this.productiveTurnStreak + 1 : 0
     this.turnHadProductiveTool = false
     if (this.lastConvergenceEmitLevel >= 2 && this.productiveTurnStreak >= this.convergenceWarningClearProductiveTurns) {
+      this.decisionShifts.clearWarning()
       debugLog(`[convergence] turn=${turn} prior-warning cleared (${this.productiveTurnStreak} productive turns since emit)`)
       this.lastConvergenceEmitTurn = -Infinity
       this.lastConvergenceEmitLevel = 0
@@ -2910,8 +3047,7 @@ export class AgentLoop {
     // least one turn to act on the guidance. Captured before this turn's kick
     // emission updates the fields and passed into evaluateConvergence so the
     // detector's scoreAbort decision uses the same signal as loop.ts.
-    const warnedInEarlierTurn = this.lastConvergenceEmitLevel >= 2
-      && this.lastConvergenceEmitTurn < turn
+    const warnedInEarlierTurn = this.decisionShifts.warnedEarlier(turn)
 
     // P3 认知帧：先装配 turn 边界事实帧（单一装配点），再投影出 P2 控制器
     // 输入。EFE 质量非 measured → 投影 null → latestStructureFlow=null，
@@ -2943,12 +3079,37 @@ export class AgentLoop {
     const sanitizedHistory = this.recentToolHistory.map(h =>
       h.status === 'failed' && h.transient ? { ...h, status: 'success' as const } : h)
 
-    const convergenceCheck = evaluateConvergence({
+    // P1：编辑期待投影 + 重复验证摘要——从共享工作事实快照组装（与感知/核销
+    // 同源；组装点已抽为 currentEditExpectation，感知确认点复用同一投影）。
+    // editExpectation 决定 editRatio 是否参与评分与文案处方；
+    // repeatedVerification 是软判据摘要（detector 保持纯函数）。
+    const workSnap = this.workFacts.currentSnapshot()
+    const editExpectation = this.currentEditExpectation()
+    const repeatedVerification = workSnap
+      ? computeRepeatedVerificationSignal({
+          executions: this.workFacts.recentVerificationExecutions(),
+          taskEpoch: workSnap.taskEpoch,
+          lastMutationSequence: workSnap.lastMutationSequence,
+          modelObservationTurn: workSnap.modelObservationTurn,
+          lastMeaningfulProgressModelTurn: workSnap.lastMeaningfulProgressModelTurn,
+          taskStartModelTurn: workSnap.taskStartModelTurn,
+          lastToolExecutionSequence: workSnap.lastToolExecutionSequence,
+        })
+      : undefined
+
+    const stageStateForScore = this.workStage.getState()
+    const scoreRegimeKey = buildRegimeKey({
+      taskEpoch: workSnap?.taskEpoch ?? stageStateForScore.taskEpoch,
+      stageEpoch: stageStateForScore.stageEpoch,
+      editExpectationKind: editExpectation.kind,
+    })
+    const convergenceInput: Parameters<typeof evaluateConvergence>[0] = {
       turn,
       phaseClass: phaseClass as PhaseClass,
       runtimeAdvice: sessionStateAdvice({ getActiveToolNames: () => this.getActiveToolNames(), getContextBudget: () => this.getContextBudget(), getModel: () => this.config.promptEngine.getModel() }),
       phaseRelativeTurn,
       scoreHistory: this.convergenceScoreHistory,
+      scoreRegimeKey,
       contextWindow: this.config.contextWindow,
       recentToolHistory: sanitizedHistory,
       evidenceState: this.evidence.getState(),
@@ -2967,6 +3128,9 @@ export class AgentLoop {
       progressBeacons: {
         todoCompletedDelta,
         activePlan: this.activePlanFilePath !== null,
+        // 2026-10-10 狂轰事故方向 2：后台有 running 的验证型 job（等门禁钦定
+        // 证据——如全量套件）→ 执行相位的无编辑是等待，不是停滞（cap L1）。
+        awaitingVerification: this._jobs?.waitingVerificationJob() != null,
         // P2 快照合格 → 单声源接管软阈值；否则 P1 心流保护：Sensorium 原始
         // 快照三字段透传——工具成功率与推进因子由 detector 内部按
         // tier.signalWindow 计算（窗口与其它信号一致）。Sensorium 缺失 →
@@ -2978,8 +3142,15 @@ export class AgentLoop {
       },
       activityMode,
       recentToolErrorRatio,
-    })
+      editExpectation,
+      repeatedVerification,
+    }
+    this.latestConvergenceInput = recordConvergenceInput(convergenceInput)
+    const convergenceCheck = evaluateConvergence(convergenceInput)
     this.latestConvergenceResult = convergenceCheck
+    // P3：本轮评分口径键（taskEpoch:stageEpoch:编辑期待——score-history.
+    // buildRegimeKey）——分数历史记录与帧记录同源；弱候选抖动不改变它
+    //（stageEpoch 只随确认切换）。
     // P3 Wave 3 / P3-D：认知帧回放遥测。full 记录（facts 全量，可回放重算）
     // 默认落会话目录 frames.jsonl（独立通道，RIVET_FRAME_TELEMETRY=0 可关）；
     // lite 摘要（<200B）继续走 sensorium.jsonl。recorder 关闭时连记录构建
@@ -3014,12 +3185,20 @@ export class AgentLoop {
           this.latestStructureFlow,
           convergenceCheck,
           convergenceEmitPlan ? { emitted: convergenceEmitPlan.emit, suppressedBy: convergenceEmitPlan.suppressedBy } : null,
+          convergenceCheck.scoreRegimeKey ?? null,
+          this.latestConvergenceInput,
         ))
       }
       this.telemetryWriter.write(buildCognitiveFrameLiteRecord(this.latestCognitiveFrame, this.latestStructureFlow, convergenceCheck))
     } catch { /* telemetry is diagnostics-only */ }
     // Maintain rolling score history for L3 decline-trend detection (sliding window ≤ 20)
-    this.convergenceScoreHistory.push(convergenceCheck.score)
+    // P3：条目带口径（上方 scoreRegimeKey）与质量；趋势侧（detector score-abort /
+    // B2 门）只取末尾连续同口径有效样本。
+    this.convergenceScoreHistory.push({
+      score: convergenceCheck.score,
+      regimeKey: convergenceCheck.scoreRegimeKey ?? null,
+      quality: convergenceCheck.scoreQuality,
+    })
     if (this.convergenceScoreHistory.length > 20) this.convergenceScoreHistory.shift()
     debugLog(`[convergence] turn=${turn} score=${convergenceCheck.score.toFixed(2)} level=${convergenceCheck.level} phase=${phaseClass}`)
 
@@ -3069,38 +3248,30 @@ export class AgentLoop {
           // R4 — externalize the convergence nudge as a structured course-correction
           // so the desktop renders a "改道" card; the injected guidance below is what
           // the agent acts on next, making the cause→effect visible to the user.
-          // W2 — efficacy 环静默的 key 同步抑制改道卡：advisory 都不再送达了，
-          // 还继续弹卡就是纯 UI 噪音（20b9714e：32 张改道卡）。
-          if (!this.advisoryBus.isEfficacySilenced('convergence')) {
-            this.recordDecisionShift('convergence')
-            callbacks.onDecisionShift?.({
-              source: 'convergence',
-              reason: `${phaseClass} 阶段近 ${phaseRelativeTurn} 轮进度信号弱，已提示换一种推进方式`,
-              methods: [convergenceCheck.injectedMessage.slice(0, 200)],
-              severity: convergenceCheck.level >= 2 ? 'warn' : 'info',
-            })
-          }
+          // §4（2026-10-10 修复 C）：**不再在此处弹卡**。render 前的静音预判看不到
+          // 本轮新进入的习惯化/负 lift 静音，也看不到预算淘汰/星域去重/holdout——
+          // 于是出现"弹了卡但建议没进 request"。改为登记候选（见下方 flood 分支），
+          // 由实际投递结果确认（turn-step-producer → decisionShifts.confirm）。
           // W4 advisory 密度感知（2026-07-28 session 0087edf0）：当会话已渲染
           // 大量 advisory（平均 >15 条/轮）时，收敛 detection 不再向 advisory
           // bus 提交——agent 已在噪音中迷失，再投喂 advisory 只会加剧正反馈回路。
           // 仍保留 onPhaseChange 事件供 TUI 观测，但不再增加 advisory 负荷。
           const avgAdvisoriesPerTurn = (turn + 1) > 0 ? this.guardianActivity.advisoriesRendered / (turn + 1) : 0
           const advisoryFlood = avgAdvisoriesPerTurn > 15
-          if (!advisoryFlood) {
+          if (advisoryFlood) {
+            // 密度过热：连候选都不登记——这条建议本轮根本没提交，卡片不该出现。
+            this.decisionShifts.discard('run-or-flood')
+          } else {
+            const candidateId = this.decisionShifts.registerConvergence(turn, phaseClass, phaseRelativeTurn, convergenceCheck.injectedMessage, convergenceCheck.level)
             this.advisoryBus.submit({
             key: 'convergence',
             priority: 0.65,
+            candidateId,
             tier: 'operational',
             category: 'discipline',
             content: convergenceCheck.injectedMessage +
               ` ${renderRouteAnnotation(STALL_ROUTE_TABLE[this.consecutiveNoToolTurns >= 2 ? 'no-tool-stall' : 'strategy-stall'])}`,
-            // 谓词映射表（P1a + W3 + B1b）：
-            // - 无工具僵局变体：任意工具调用即打破僵局。
-            // - 诊断态变体（W3）："核实后收束"的行为签名 = 后续轮出现认知型
-            //   工具调用（read/grep/glob 等）。核实了 → adopted 续命；直接
-            //   无工具脑补结论 → 谓词失败计 ignored，与 efficacy 环双轨咬合。
-            // - build 变体（B1b/M4，2026-07-23 信号互扰治理）：改道 = 换文件面
-            //   /换工具族——course_changed 粗签名核销，填补此前刻意留空的核销位。
+            // 无工具僵局看后续工具，诊断态看核实动作；build 态只核销本周期首次新族。
             expect: this.consecutiveNoToolTurns >= 2
               ? { kind: 'tool_appears', tools: [], withinTurns: 1 }
               : activityMode === 'diagnostic'

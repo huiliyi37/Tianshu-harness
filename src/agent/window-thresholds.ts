@@ -13,6 +13,8 @@
  * 但插值几何相同。
  */
 
+import { tailAlignedScores, type ConvergenceScoreHistoryEntry } from './score-history.js'
+
 /** 200K 与 1M 之间的线性插值（与 convergence-detector selectTier 同构）。 */
 export function scaledThreshold(contextWindow: number, at200K: number, at1M: number): number {
   if (contextWindow <= 200_000) return at200K
@@ -50,12 +52,15 @@ export const regressionLoopLimitForWindow = (contextWindow: number): number =>
  * 冷启动：样本 < minSamples 时返回 false（保守照发，旧行为）。
  */
 export function isB2ConvergingRecently(
-  scoreHistory: readonly number[],
+  scoreHistory: readonly ConvergenceScoreHistoryEntry[],
   minSamples = 2,
   window = 3,
   bar = 0.6,
 ): boolean {
-  if (scoreHistory.length < minSamples) return false
-  const recent = scoreHistory.slice(-window)
+  // P3：与 detector 趋势同口径——只取末尾连续、同 regime（regimeKey）、
+  // 有效的样本；同口径数据不足时返回 false（保守照发 B2），不得凭混合
+  // 旧分数静默 B2 门。legacy number 条目按原语义参与（逐位兼容）。
+  const recent = tailAlignedScores(scoreHistory, window)
+  if (recent.length < minSamples) return false
   return recent.reduce((a, b) => a + b, 0) / recent.length >= bar
 }

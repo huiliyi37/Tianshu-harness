@@ -13,6 +13,8 @@ import assert from 'node:assert/strict'
 import { dispatchUserImages, formatNoBridgeNotice } from '../user-image-dispatch.js'
 import type { StreamCallbacks, StreamClient } from '../../api/stream-client.js'
 import type { ContentBlock } from '../../api/types.js'
+import { OpenAIClient } from '../../api/openai-client.js'
+import { FallbackStreamClient } from '../../api/fallback-client.js'
 
 const IMG = 'data:image/png;base64,' + 'A'.repeat(64)
 const IMG2 = 'data:image/jpeg;base64,' + 'B'.repeat(64)
@@ -31,6 +33,45 @@ function visionClientThrowing(message: string) {
 }
 
 describe('dispatchUserImages', () => {
+  for (const fixture of [
+    { label: 'vprov/v-cap', model: 'v-cap' },
+    { label: 'vprov/vendor/v-cap', model: 'vendor/v-cap' },
+    { label: 'vprov/v-cap → backup/other-cap', model: 'v-cap', fallback: 'other-cap' },
+  ]) {
+    it(`keeps the bridge label out of the API model field: ${fixture.label}`, async t => {
+      const models: string[] = []
+      t.mock.method(globalThis, 'fetch', async (_url: unknown, init: RequestInit) => {
+        const body = JSON.parse(String(init.body))
+        models.push(body.model)
+        if (fixture.fallback && models.length === 1) {
+          return new Response(JSON.stringify({ error: { message: 'upstream unavailable' } }), {
+            status: 503, headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"visible text"},"index":0,"finish_reason":"stop"}]}\n\n'
+          + 'data: [DONE]\n\n',
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      })
+      const makeClient = (model: string) => new OpenAIClient({
+        baseUrl: 'https://vision.example/v1', apiKey: 'test-fixture', model,
+        maxTokens: 1024, maxRetries: 0,
+      })
+      const primary = makeClient(fixture.model)
+      const client = fixture.fallback
+        ? new FallbackStreamClient(primary, 'primary', [{ name: 'backup', create: () => makeClient(fixture.fallback!) }])
+        : primary
+
+      const result = await dispatchUserImages('inspect', [IMG], {
+        supportsVision: false, visionClient: client, visionModel: fixture.label,
+      })
+
+      assert.deepEqual(models, fixture.fallback ? ['v-cap', 'other-cap'] : [fixture.model])
+      assert.match(result.userInput, /\[图片描述\]\nvisible text/)
+    })
+  }
+
   it('truncated descriptions stay visible but never enter the complete-description cache', async () => {
     let cached = 0
     const client = { stream: async (_request: unknown, cb: any) => { cb.onTextDelta('partial OCR'); cb.onStopReason('length', { output_tokens: 3 }) } } as StreamClient

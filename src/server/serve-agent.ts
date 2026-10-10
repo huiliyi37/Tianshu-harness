@@ -34,6 +34,7 @@ import { applyConfiguredPathGrants, applyDefaultDependencyReadGrants, applyRivet
 import { loadProjectSkills } from '../skills/skill-loader.js'
 import { recordSkillLoadErrors, forgetSkillLoadErrors } from './skill-load-errors.js'
 import { createMemoryTool } from '../tools/memory.js'
+import { presetIncludes } from '../tools/tool-preset.js'
 import { DomainKnowledgeStore } from '../agent/domain-knowledge-store.js'
 import type { ProviderHealthTracker } from '../agent/provider-health.js'
 import { MeridianIndexer } from '../repo/meridian-indexer.js'
@@ -450,7 +451,7 @@ function buildSessionStores(
     if (restored) refs.goalTrackerRef.current = restored
   } catch { /* non-fatal — start without a restored goal */ }
   refs.preparedBaseline = prepared?.baseline
-  const { registry: toolRegistry } = createInteractiveToolRegistry(refs, ctx.config, cwd)
+  const { registry: toolRegistry, toolPreset } = createInteractiveToolRegistry(refs, ctx.config, cwd)
 
   // 插件工具合入（2026-09-12 补齐 sidecar 装配缺口——此前桌面会话不加载插件，
   // 是 TUI 专属装配链）：启动暖场缓存（plugin-session-cache）同步快照注册，
@@ -490,21 +491,24 @@ function buildSessionStores(
   // memory (unified recall + remember + deep_recall)：bootstrap 在 createInteractiveToolRegistry 外装的工具，
   // 这里复用 sidecar 已有的 claimStore + session 完成对齐。deep_recall 侧路通道
   // 经 deepRecallAgentRef 晚绑定到 assembleAgentLoop 产出的当次 agent（与 TUI 同构）。
+  // 档位门控与 TUI 侧 bootstrapInteractiveSession 同步——sidecar 是桌面端主装配路径。
   const deepRecallAgentRef: { current?: AgentLoop } = {}
-  toolRegistry.register(createMemoryTool(claimStore, {
-    sessionId,
-    getTurn: () => session.getTurnCount(),
-    cwd,
-    deepRecallComplete: async (prompt, timeoutMs) => {
-      const client = deepRecallAgentRef.current?.config.compactClient
-        ?? deepRecallAgentRef.current?.config.primaryClient
-        ?? deepRecallAgentRef.current?.config.client
-      if (!client) throw new Error('deep recall: no client')
-      return runGateCompletion(client, () => {}, prompt, timeoutMs)
-    },
-    sessionDir,
-    excludeSessionId: sessionId,
-  }))
+  if (presetIncludes(toolPreset, 'memory')) {
+    toolRegistry.register(createMemoryTool(claimStore, {
+      sessionId,
+      getTurn: () => session.getTurnCount(),
+      cwd,
+      deepRecallComplete: async (prompt, timeoutMs) => {
+        const client = deepRecallAgentRef.current?.config.compactClient
+          ?? deepRecallAgentRef.current?.config.primaryClient
+          ?? deepRecallAgentRef.current?.config.client
+        if (!client) throw new Error('deep recall: no client')
+        return runGateCompletion(client, () => {}, prompt, timeoutMs)
+      },
+      sessionDir,
+      excludeSessionId: sessionId,
+    }))
+  }
 
   // taskLedger / ownershipLedger 由 createInteractiveToolRegistry 的 B1 装配段
   // 原地填入 refs；fallback 仅用于装配失败时不破坏 assembleAgentLoop 的 deps。
@@ -1063,13 +1067,13 @@ export function buildManagedAgent(
     // P0-2: plan_task 成功后 onToolResult 通过此方法读取 TodoStore 发 todo_state SSE
     getTodos: () => stores.refs.todoStore.read(),
     // Hot-inject MCP tools discovered after this agent was built (mid-session
-    // connector enable). register is Map.set-idempotent; updateTools refreshes
-    // the prompt tool list the same way attachLspTools does for LSP tools.
+    // connector enable). register is Map.set-idempotent; refreshToolsAtBoundary
+    // republishes the prompt tool list — 运行中挂起到下一个 user 边界（见 loop）。
     registerExternalTools: (tools) => {
       for (const tool of tools) {
         stores.toolRegistry.register(tool)
       }
-      agent.updateTools()
+      agent.refreshToolsAtBoundary()
     },
   }
 }

@@ -12,7 +12,7 @@ import { disposeSessionFilePreviews } from './file-open-routes.js'
 import { randomUUID } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { assertSecureBind, readServeTlsArgs } from './serve-transport.js'
+import { assertSecureBind, readServeTlsArgs, resolveLanDirect } from './serve-transport.js'
 import type { ServerOptions as TlsServerOptions } from 'node:https'
 import { startServer } from './index.js'
 import { guardRuntimeRoutes } from './runtime-route-guard.js'
@@ -90,8 +90,8 @@ import type { OaiMessage } from '../api/oai-types.js'
 import { findRecentUnrecordedWrites, formatDiskReconciliationNote, shouldReconcileDisk } from '../context/write-evidence-probe.js'
 import { createAuthProvider } from '../auth/registry.js'
 import type { AuthProvider } from '../auth/types.js'
-import { SessionPersist } from '../agent/session-persist.js'
-import { SessionContext } from '../agent/context.js'
+import type { SessionPersist } from '../agent/session-persist.js'
+import type { SessionContext } from '../agent/context.js'
 import { buildOpenPathCommand, buildRevealCommand, decideOpenAction, isDirectoryPath, windowsFileHasHandler } from '../tools/open-path.js'
 import { installStallObserver } from '../agent/stall-observer.js'
 import { SessionRegistry } from '../agent/session-registry.js'
@@ -623,6 +623,9 @@ export interface RunServeOptions {
   host?: string
   /** Host header allowlist（不带端口）。默认读 RIVET_SERVE_HOSTS_ALLOW。 */
   allowedHosts?: string[]
+  /** LAN Direct 显式 opt-in（设计 §5.3 Wave 1）：非回环无 TLS 的局域网明文监听；
+   *  缺省读 env `RIVET_SERVE_LAN_DIRECT`（仅 `'1'`），未 opt-in 时行为与历史一致。 */
+  lanDirect?: boolean
   /** P2 — /mobile 静态挂载目录。默认读 RIVET_MOBILE_DIR。未配则不暴露 /mobile。 */
   mobileDir?: string
   token?: string
@@ -685,8 +688,11 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   // 监听地址：显式 opts（serveCommand --host / 测试注入）> env（桌面壳经父 env 继承
   // RIVET_SERVE_HOST 可达，零 Rust 改动）> 默认 127.0.0.1（行为不变）。
   const host = (opts.host ?? process.env.RIVET_SERVE_HOST)?.trim() || '127.0.0.1'
-  const allowedHosts = opts.allowedHosts ?? parseHostsAllow(process.env.RIVET_SERVE_HOSTS_ALLOW) ?? (!isLoopbackBind(host) ? defaultLanHosts(host) : undefined)
-  assertSecureBind(host, opts.tls)
+  // LAN Direct opt-in：显式 opts > env；只解析一次——assertSecureBind 与
+  // allowlist 收紧必须同一判定，否则「放行明文但未收紧」错配。
+  const lanDirect = resolveLanDirect(opts.lanDirect)
+  const allowedHosts = opts.allowedHosts ?? parseHostsAllow(process.env.RIVET_SERVE_HOSTS_ALLOW) ?? (!isLoopbackBind(host) ? defaultLanHosts(host, { lanDirect }) : undefined)
+  assertSecureBind(host, opts.tls, { lanDirect })
   // /mobile 静态目录：显式 opts（--mobile-dir / 测试注入）> env（桌面壳注入）> 未配置。
   const mobileDir = (opts.mobileDir ?? process.env.RIVET_MOBILE_DIR)?.trim() || undefined
   const ctx = opts.context ?? resolveServeContext()
@@ -1023,7 +1029,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
 
   // Remote access: desktop info, authenticated HTTPS endpoint registration and phone self-check.
   const remoteEndpoint = createRemoteAccessEndpoint()
-  Object.assign(routes, buildRemoteInfoRoutes(apiToken, { host, allowedHosts, protocol: opts.tls ? 'https' : 'http', endpoint: remoteEndpoint }))
+  Object.assign(routes, buildRemoteInfoRoutes(apiToken, { host, allowedHosts, lanDirect, protocol: opts.tls ? 'https' : 'http', endpoint: remoteEndpoint }))
 
   // Config routes: provider + API key management for the desktop settings UI.
   Object.assign(routes, buildConfigRoutes(apiToken, {
@@ -1046,6 +1052,8 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     // 不刷新的话当前会话看不到它（用户表现为「配置成功但工具不出现」）。与上面两个
     // hook 同属「落盘后对存活 agent 广播」；注入式 ctx（测试）不接线，保持确定性。
     onImageGenConfigChanged: opts.context ? undefined : () => { sessions.refreshAgentTools() },
+    // file-context 路由的 cwd 工作区守卫（与 #221 同族）：只接受已注册工作区。
+    knownWorkspaces: () => registeredWorkspaces(sharedRuntime.sessions ?? undefined),
   }))
 
   // Environment route: host toolchain availability (python, uv, git, node) for setup UI.
@@ -1265,7 +1273,9 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   installStallObserver()
   timing.mark('routes')
   const listenT0 = performance.now()
-  const server = await startServer(port, routes, apiToken, { host, allowedHosts, mobileDir, tls: opts.tls, additionalAllowedHosts: remoteEndpoint.hosts })
+  // lanDirect 必须原样下传：startServer 会用 opts.lanDirect 再解析一次，缺它就回落到 env
+  // 二次判定——显式 opt-in 会被判成未开启并抛 requires TLS（契约：serve-tls.test.ts）。
+  const server = await startServer(port, routes, apiToken, { host, allowedHosts, lanDirect, mobileDir, tls: opts.tls, additionalAllowedHosts: remoteEndpoint.hosts })
   timing.mark('listen', `bind=${Math.round(performance.now() - listenT0)}ms wall=${Date.now() - startedAt}ms`)
   const serverInfo: ServerInfo = { port, host, ...(opts.tls ? { protocol: 'https' as const } : {}), token: apiToken, pid: process.pid, startedAt: new Date(startedAt).toISOString() }
   // 首批 UI 请求里的 GET /environment 此前是这些探针的首个调用方，同步 spawnSync
@@ -1301,6 +1311,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       .then(() => timing.mark('serve-agent-loaded'))
       .catch(() => { /* createAgent 路径会带着真实错误重试 */ })
   }, resolveServeWarmDelayMs())
+  if (!ctx.configured || !ownsSessionStore) warmup.cancel()
   return {
     port,
     /** 本实例坐标（内存真源）——--json 握手输出用，不回读发现文件（双实例竞态）。 */

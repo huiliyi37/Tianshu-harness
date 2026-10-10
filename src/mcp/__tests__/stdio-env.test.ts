@@ -45,7 +45,9 @@ describe('buildStdioChildEnv', () => {
   const deps = {
     execPath: '/opt/node/bin/node',
     platform: 'linux' as NodeJS.Platform,
-    existsSync: () => false,
+    // 模拟该目录里有真 node → nodeDir prepend（issue #149）；目录里只有转发器时
+    // 改 append，那条分支锁在 resolve-node-cli.test.ts 的 issue #408 用例里。
+    existsSync: () => true,
     getDefaultEnvironment: () => ({ PATH: '/usr/bin' }),
   }
 

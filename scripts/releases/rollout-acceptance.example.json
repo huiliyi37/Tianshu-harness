@@ -1,0 +1,19 @@
+{
+  "version": "0.0.0",
+  "platforms": {
+    "windows-x86_64": {
+      "sha256": "REPLACE_WITH_TESTED_PACKAGE_SHA256",
+      "passed": false,
+      "checkedAt": null,
+      "conclusion": "Fill from actual observations; do not claim an unperformed upgrade",
+      "realSignedUpgrade": false
+    },
+    "darwin-aarch64": {
+      "sha256": "REPLACE_WITH_TESTED_PACKAGE_SHA256",
+      "passed": false,
+      "checkedAt": null,
+      "conclusion": "Fill from actual observations; do not claim an unperformed upgrade",
+      "realSignedUpgrade": false
+    }
+  }
+}

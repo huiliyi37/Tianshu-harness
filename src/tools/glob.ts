@@ -8,6 +8,7 @@ import { GitignoreFilter } from './gitignore.js'
 import { classifyPath } from '../context/attention-filter.js'
 import { isRestrictedPath } from '../platform/restricted-paths.js'
 import { SCAN_EXCLUDE_DIRS } from './scan-excludes.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const EXCLUDE_DIRS = SCAN_EXCLUDE_DIRS
 const MAX_RESULTS = 500
@@ -100,6 +101,7 @@ async function walkDir(
   }
 
   for (const name of names) {
+    if (isFilesystemMetadata(name)) continue
     if (results.length >= MAX_RESULTS) return
     const fullPath = join(dir, name)
     let s: Awaited<ReturnType<typeof lstat>>

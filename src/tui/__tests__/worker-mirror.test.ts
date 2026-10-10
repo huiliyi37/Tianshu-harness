@@ -118,3 +118,17 @@ test('WorkerMirror: worker 记录数封顶 MIRROR_WORKER_CAP — 最旧 worker �
   assert.deepEqual(store.getMessages('wo_0').map(m => m.content), ['new'])
   assert.equal(store.has('wo_3'), false, '新建记录触发下一轮最旧淘汰')
 })
+
+
+test('WorkerMirror: concurrent dispatch identities isolate text and late events', () => {
+  const store = new WorkerMirrorStore()
+  const a = ev({ workOrderId: 'batch:0', dispatchId: 'tool_A:batch:0', eventKind: 'text', eventDetail: 'A text' })
+  const b = ev({ workOrderId: 'batch:0', dispatchId: 'tool_B:batch:0', eventKind: 'text', eventDetail: 'B text' })
+  store.apply(a); store.apply(b)
+  assert.equal(store.getMessages(a.dispatchId!)[0]?.content, 'A text')
+  assert.equal(store.getMessages(b.dispatchId!)[0]?.content, 'B text')
+  store.apply({ ...a, status: 'completed', eventKind: undefined })
+  store.apply({ ...a, eventDetail: 'late A text' })
+  assert.equal(store.getMessages(a.dispatchId!)[0]?.content, 'A text')
+  assert.equal(store.getMessages(b.dispatchId!)[0]?.content, 'B text')
+})

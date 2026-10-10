@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createGenerateImageTool } from '../generate-image.js'
@@ -123,6 +123,7 @@ describe('generate_image tool — base64 never reaches the transcript (§10 反�
 
   it('honors an explicit output_path outside the workspace', async () => {
     const target = join(dir, 'nested', 'custom-name.png')
+    mkdirSync(join(dir, 'workspace'))
     const tool = createGenerateImageTool({
       getConfig: () => CONFIGURED,
       cwd: join(dir, 'workspace'),
@@ -169,9 +170,9 @@ describe('generate_image tool — base64 never reaches the transcript (§10 反�
     assert.equal(result.isError, true)
     assert.match(result.content, /过大|too large/)
     assert.equal(
-      existsSync(join(dir, '.rivet', 'artifacts', 'images')),
+      existsSync(join(dir, '.rivet', 'artifacts', 'images')) && readdirSync(join(dir, '.rivet', 'artifacts', 'images')).some(name => /\.(png|jpe?g|webp|gif)$/.test(name)),
       false,
-      '超限时连输出目录都不该建——拒绝要在写盘动作之前',
+      '超限时不写图片；允许保存失败任务的诊断记录',
     )
   })
 })

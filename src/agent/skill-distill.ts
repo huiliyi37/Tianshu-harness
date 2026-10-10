@@ -17,9 +17,12 @@ import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { writeFileAtomicSync } from '../fs-atomic.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import type { TrajectoryEntry } from './trajectory.js'
 import type { VerificationMetadata } from '../tools/types.js'
 import { parseSkillMarkdown, type SkillDefinition } from '../skills/skill-loader.js'
+import { isVerificationIntent } from './verification-activity.js'
+import { WRITE_TOOL_NAMES } from '../tools/write-tool-helpers.js'
 
 // ─── Tool phase classification ──────────────────────────────────
 
@@ -28,17 +31,16 @@ const READ_TOOLS = new Set([
   'repo_map', 'repo_graph', 'file_info', 'lsp_goto_definition',
   'lsp_find_references', 'related_tests',
 ])
-const WRITE_TOOLS = new Set(['edit_file', 'write_file', 'hash_edit', 'apply_patch'])
+// P2 名单收编：写工具全族同一真源（WRITE_TOOL_NAMES，含 ast_edit）。
 const VERIFY_TOOLS = new Set(['run_tests', 'deliver_task'])
-const VERIFY_BASH_RE = /\b(test|tsc|type-?check|lint|eslint|build|vitest|jest|pytest|cargo\s+(test|check)|go\s+test|npm\s+(run\s+)?(test|build|typecheck))\b/i
 
 type Phase = 'read' | 'write' | 'verify' | 'other'
 
 function classifyPhase(tool: string, target: string): Phase {
   if (READ_TOOLS.has(tool)) return 'read'
-  if (WRITE_TOOLS.has(tool)) return 'write'
+  if (WRITE_TOOL_NAMES.has(tool)) return 'write'
   if (VERIFY_TOOLS.has(tool)) return 'verify'
-  if (tool === 'bash') return VERIFY_BASH_RE.test(target) ? 'verify' : 'read'
+  if (tool === 'bash') return isVerificationIntent(target) ? 'verify' : 'read'
   return 'other'
 }
 
@@ -238,7 +240,7 @@ export function persistSkillDraft(cwd: string, draft: SkillDraft): { written: bo
   // Dedup by draft-key across all existing drafts (same procedure → no re-draft).
   if (existsSync(dir)) {
     for (const name of readdirSync(dir)) {
-      if (!name.endsWith('.md')) continue
+      if (!name.endsWith('.md') || isFilesystemMetadata(name)) continue
       try {
         if (extractDraftKey(readFileSync(join(dir, name), 'utf-8')) === draft.draftKey) {
           return { written: false, path: join(dir, name) }
@@ -269,7 +271,7 @@ export function listSkillDrafts(cwd: string): SkillDraftSummary[] {
   if (!existsSync(dir)) return []
   const out: SkillDraftSummary[] = []
   for (const file of readdirSync(dir).sort()) {
-    if (!file.endsWith('.md')) continue
+    if (file.startsWith('._') || !file.endsWith('.md')) continue
     const path = join(dir, file)
     const name = file.replace(/\.md$/, '')
     let description = ''

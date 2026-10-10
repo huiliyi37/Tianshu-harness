@@ -136,6 +136,25 @@ describe('ProfileRegistry', () => {
     assert.deepEqual(names, ['adversarial_verifier', 'architect', 'code_scout', 'council_expert', 'designer', 'doc_scout', 'doc_syncer', 'format_checker', 'goal_judge', 'import_organizer', 'lint_fixer', 'patcher', 'perspective_planner', 'planner', 'reviewer', 'test_scaffolder', 'troubleshooter', 'type_fixer', 'verifier', 'verify_scout'])
   })
 
+  it('ignores filesystem metadata without rejecting ordinary dotfile profiles', async () => {
+    const tmp = makeTmpDir()
+    try {
+      const markdown = (name: string) => `---\nname: ${name}\nrole: readonly\ntools: ["read_file"]\n---\nReal profile.`
+      writeFileSync(join(tmp, '.notes.md'), markdown('dot_notes'))
+      writeFileSync(join(tmp, '._metadata.md'), markdown('metadata_worker'))
+      writeFileSync(join(tmp, '._bad.md'), 'not frontmatter')
+      writeFileSync(join(tmp, '.DS_Store'), 'not a profile')
+      const result = await registry.loadFromDirectory(tmp)
+      assert.deepEqual(result.loaded, ['dot_notes'])
+      assert.deepEqual(result.errors, [])
+      assert.equal(registry.get('dot_notes')?.expertisePrompt, 'Real profile.')
+      assert.equal(registry.get('metadata_worker'), undefined)
+      assert.equal(registry.list().length, 21)
+    } finally {
+      rmSync(tmp, { recursive: true })
+    }
+  })
+
   it('rejects overriding built-in profiles', async () => {
     const tmp = makeTmpDir()
     try {

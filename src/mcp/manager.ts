@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { Tool } from '../tools/types.js'
 import type { McpConfig, McpServerConfig } from './config.js'
@@ -304,11 +303,10 @@ export class McpManager {
       const pid = (conn.transport as { pid?: number | null }).pid
       if (typeof pid !== 'number' || pid <= 0) continue
       if (isWindows) {
-        // Windows has no process-group kill; taskkill /T terminates the whole
-        // subtree (child + grand-children) matching the spawned pid.
-        try {
-          execSync(`taskkill /T /F /PID ${pid}`, { windowsHide: true, stdio: 'ignore' })
-        } catch { /* already gone */ }
+        // 退出/注销路径零 spawn（issue #398）：注销阶段会话拆除中 spawn taskkill
+        // 会撞 0xC0000142 加载器硬错误框阻塞关机。改为进程内直杀（TerminateProcess，
+        // 不 spawn）；MCP stdio server 的孙进程在注销场景由会话拆除收余。
+        try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
       } else {
         try { process.kill(-pid, 'SIGKILL') } catch {
           try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }

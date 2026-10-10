@@ -42,18 +42,54 @@ async function openAttachment(url, request) {
 export async function verifyDownload(url, expected, request = fetch) {
   const response = await openAttachment(url, request)
   if (!response.ok || !response.body) throw staged(`Anonymous package download failed: HTTP ${response.status}`, 'anonymous-download')
-  const hash = createHash('sha256'); let size = 0
-  for await (const chunk of response.body) { size += chunk.length; if (size > expected.size) throw new Error('Package exceeds expected size'); hash.update(chunk) }
+  const hash = createHash('sha256'); let size = 0, prefix = Buffer.alloc(0)
+  for await (const chunk of response.body) { size += chunk.length; if (size > expected.size) throw new Error('Package exceeds expected size'); hash.update(chunk); if (prefix.length < 1024) prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 1024-prefix.length)]) }
   const digest = hash.digest('hex')
   if (size !== expected.size || digest !== expected.sha256) throw new Error('Package SHA-256 or size mismatch')
   // 稳定入口验收以 **Range GET** 为准（206 + content-range）：它是存在性加可寻址性的直接
   // 证据。HEAD 在 AtomGit 的附件入口恒 404（2026-10-08 实测，同一 URL 的 GET 正常 206），
   // 所以只记录进证据、不作门禁——否则每次都会误杀成 "HEAD/Range acceptance failed"。
-  const head = await request(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(15000) })
-  const range = await request(url, { headers: { Range: 'bytes=0-1023' }, redirect: 'follow', signal: AbortSignal.timeout(15000) })
-  const rangeSupported = range.status === 206 && /^bytes 0-\d+\/\d+$/.test(range.headers.get('content-range') ?? '')
-  await range.body?.cancel()
-  return { url, verified: true, anonymous: true, verifiedAt: new Date().toISOString(), sha256: digest, size, headStatus: head.status, rangeSupported }
+  const [head, range] = await Promise.allSettled([
+    Promise.resolve().then(() => request(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(5000) })),
+    Promise.resolve().then(() => request(url, { headers: { Range: 'bytes=0-1023' }, redirect: 'follow', signal: AbortSignal.timeout(15000) })),
+  ])
+  let rangeSupported = false
+  if (range.status === 'fulfilled') {
+    const r = range.value
+    if (r.status === 206 && r.headers.get('content-range') === `bytes 0-${prefix.length-1}/${size}` && r.body) {
+      const reader = r.body.getReader(); const chunks = []; let received = 0
+      try {
+        for (;;) { const { value, done } = await reader.read(); if (done) { rangeSupported = received === prefix.length && Buffer.concat(chunks).equals(prefix); break }; received += value.length; if (received > prefix.length) break; chunks.push(Buffer.from(value)) }
+      } catch { /* Failed range verification leaves the source disabled. */ }
+      finally { await reader.cancel().catch(() => {}) }
+    } else await r.body?.cancel().catch(() => {})
+  }
+  if (head.status === 'fulfilled') await head.value.body?.cancel().catch(() => {})
+  return { url, verified: true, anonymous: true, verifiedAt: new Date().toISOString(), sha256: digest, size, headStatus: head.status === 'fulfilled' ? head.value.status : null, rangeSupported }
+}
+
+export function atomgitManifest(catalog) {
+  validateCatalog(catalog)
+  const updates = catalog.artifacts.filter(a => a.purpose === 'update')
+  if (!updates.length || updates.some(a => {
+    const s = a.sources.atomgit
+    return !s?.anonymous || !s.verified || !s.qualificationVerified || !s.rangeSupported || s.sha256 !== a.sha256 || s.size !== a.size || s.url !== downloadURL(`v${catalog.version}`, a.fileName)
+  })) throw staged('All update platforms must have qualified AtomGit assets before publishing immutable metadata; finish --assets-only first', 'metadata-readiness')
+  return { version: catalog.version, notes: catalog.notes ?? '', pub_date: catalog.publishedAt, platforms: Object.fromEntries(updates.map(a => [a.platform, { url: a.sources.atomgit.url, signature: a.signature }])) }
+}
+export function qualifyProof(previous, proof, acceptance) {
+  const qualified = acceptance || previous?.qualificationVerified === true
+  // Diagnostic HEAD differences must not rewrite an already qualified immutable catalog.
+  if (previous?.verified && previous.qualificationVerified && previous.rangeSupported && previous.anonymous && previous.url === proof.url && previous.sha256 === proof.sha256 && previous.size === proof.size) return previous
+  return { ...proof, verified: qualified, qualificationVerified: qualified, ...(previous?.anonymous && previous.sha256 === proof.sha256 && previous.size === proof.size ? {verifiedAt:previous.verifiedAt} : {}) }
+}
+export async function publishMetadata(api, tag, assets, catalog, request = fetch, catalogBytes = Buffer.from(JSON.stringify(catalog,null,2)+'\n')) {
+  const manifest = atomgitManifest(catalog)
+  if (catalogBytes.length > 256*1024 || JSON.stringify(JSON.parse(catalogBytes)) !== JSON.stringify(catalog)) throw staged('Catalog bytes must match the validated catalog and fit the metadata limit', 'metadata-readiness')
+  for (const [name, value] of [['latest.json', manifest], ['release-catalog.json', catalog]]) {
+    const path = join(assets, name); writeFileSync(path, name === 'release-catalog.json' ? catalogBytes : JSON.stringify(value,null,2)+'\n')
+    await uploadImmutable(api, tag, path, { size: statSync(path).size, sha256: await sha256(path) }, request)
+  }
 }
 
 function credential() {
@@ -106,6 +142,14 @@ async function main() {
   const assets = resolve(arg('--assets') ?? 'release')
   const catalogPath = arg('--catalog') ?? 'release-catalog.json'
   const catalog = validateCatalog(JSON.parse(readFileSync(catalogPath, 'utf8')))
+  if (process.argv.includes('--metadata-only')) {
+    if (process.argv.includes('--assets-only')) throw staged('Choose assets-only or metadata-only', 'arguments')
+    const manifest = atomgitManifest(catalog)
+    if (!process.argv.includes('--publish')) { console.log(`Dry run: v${catalog.version} complete AtomGit metadata (${Object.keys(manifest.platforms).join(', ')}); package bytes will not be uploaded`); return }
+    const token = credential(); if (!token) { const error = new Error('AtomGit credential unavailable'); error.code='CREDENTIAL_UNAVAILABLE'; throw error }
+    await publishMetadata(atomgitClient(token), `v${catalog.version}`, assets, catalog, fetch, readFileSync(catalogPath))
+    console.log(`Verified complete AtomGit metadata: v${catalog.version}`); return
+  }
   const target = catalog.artifacts.find(a => a.platform === (arg('--platform') ?? 'windows-x86_64') && a.purpose === (arg('--purpose') ?? 'update'))
   if (!target) throw new Error('Missing platform artifact')
   const file = join(assets, target.fileName)
@@ -129,14 +173,9 @@ async function main() {
   let proof = await uploadImmutable(api, tag, file, target)
   if (!proof.rangeSupported) throw staged('Full download verified, but range acceptance failed; source remains disabled', 'acceptance')
   const previous = target.sources.atomgit
-  // Re-verification must not change immutable metadata on an idempotent retry.
-  const qualified = acceptance || previous?.qualificationVerified === true
-  proof.verified = qualified
-  proof.qualificationVerified = qualified
-  if (previous?.anonymous && previous.sha256 === proof.sha256 && previous.size === proof.size) {
-    proof.verifiedAt = previous.verifiedAt
-    if (previous.verified !== qualified) catalog.revision += 1
-  } else catalog.revision += 1
+  proof = qualifyProof(previous, proof, acceptance)
+  const qualified = proof.verified
+  if (JSON.stringify(previous) !== JSON.stringify(proof)) catalog.revision += 1
   for (const a of catalog.artifacts.filter(a => a.platform === target.platform && a.fileName === target.fileName)) a.sources.atomgit = proof
   writeFileSync(catalogPath,JSON.stringify(validateCatalog(catalog),null,2)+'\n')
   const extra = async path => uploadImmutable(api, tag, path, { size: statSync(path).size, sha256: await sha256(path) })
@@ -145,11 +184,8 @@ async function main() {
   const checksumPath = join(assets,`${target.fileName}.sha256`)
   writeFileSync(checksumPath,`${target.sha256}  ${target.fileName}\n`); await extra(checksumPath)
   if (process.argv.includes('--assets-only')) { console.log(`Verified ${target.platform} assets; metadata publication deferred until all intended platforms are ready`); return }
-  const platforms = Object.fromEntries(catalog.artifacts.filter(a => a.purpose === 'update' && a.sources.atomgit?.anonymous).map(a => [a.platform, { url:a.sources.atomgit.url, signature:a.signature }]))
-  const manifest = { version: catalog.version, notes: catalog.notes ?? '', pub_date: catalog.publishedAt, platforms }
-  const manifestPath = join(assets,'latest.json'); writeFileSync(manifestPath,JSON.stringify(manifest,null,2)+'\n'); await extra(manifestPath)
   if (!qualified) { console.log('Anonymous bytes/HEAD/Range passed. AtomGit remains disabled pending recorded Tauri redirects, stable entry, disconnect retry, distinct domestic networks and limits observations (--acceptance).'); return }
-  const output = join(assets,'release-catalog.json'); writeFileSync(output,JSON.stringify(validateCatalog(catalog),null,2)+'\n'); await extra(output)
+  await publishMetadata(api, tag, assets, catalog, fetch, readFileSync(catalogPath))
   writeFileSync(catalogPath,JSON.stringify(catalog,null,2)+'\n')
   console.log(`Verified anonymous AtomGit download: ${target.fileName}, ${proof.size} bytes. Catalog saved; publish it to GitHub/OSS before enabling routing.`)
 }
@@ -160,6 +196,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (error.code === 'CREDENTIAL_UNAVAILABLE') console.error('AtomGit credential unavailable. Configure ATOMGIT_ACCESS_TOKEN or the system Git credential helper; do not paste credentials into chat.')
   else if (error.pubStage) console.error(`AtomGit publication did not complete [stage=${error.pubStage}]: ${error.message}`)
   else if (typeof error.status === 'number') console.error(`AtomGit publication did not complete [stage=api ${error.status}]: ${error.message}`)
-  else console.error(`AtomGit publication did not complete [stage=${error.name ?? 'unknown'}]: ${String(error.message).slice(0, 300)}`)
+  else console.error('AtomGit publication did not complete [stage=transport-or-validation]; no remote URL or credential details are printed. Check local artifact and catalog validation, then retry.')
   process.exitCode = 1
 })

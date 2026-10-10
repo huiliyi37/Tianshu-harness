@@ -238,7 +238,7 @@ export function resolveTersenessFlags(ctx: {
 }
 
 export interface ToolHistoryEntry {
-  verificationAttempted?: boolean
+  verificationAttempted?: boolean; verificationPurpose?: import('./../agent/verification-intent.js').VerificationPurpose
   modelTurn?: number
   tool: string
   target: string
@@ -261,6 +261,11 @@ export interface ToolHistoryEntry {
    *  turn-scoped queries ("did the previous turn call any tool") instead of
    *  sliding-window scans. Not rendered into any prompt block. */
   turn?: number
+  /** P1：写工具执行效果（course-file-progress 三态判定，执行完成后回填）。
+   *  changed=真实变化；unchanged=确定无变化（含 no-op/预览）；unknown=不可判
+   *  （失败/回滚/无目标）。undefined=未接线/旧条目——消费方按旧口径（成功即
+   *  编辑）处理。不渲染进任何 prompt 块。 */
+  writeOutcome?: 'changed' | 'unchanged' | 'unknown'
 }
 
 export interface VolatileContext {

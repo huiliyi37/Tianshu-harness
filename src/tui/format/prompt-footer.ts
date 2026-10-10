@@ -40,7 +40,7 @@ export function formatPromptFooter(input: PromptFooterInput, theme: RivetTheme):
   const hints = input.newlineMode
     ? ['Enter 换行', input.shiftEnterAvailable ? 'Ctrl+Enter 发送' : 'Ctrl+X Enter 发送', `${key('history')} 历史`]
     : input.agentBusy
-      ? ['Esc 停止', 'Enter 补充', 'Ctrl+J 换行']
+      ? ['Esc 停止', 'Enter 排队', 'Alt+Enter 插队', 'Ctrl+J 换行']
       : [input.stashedDraft ? `${key('stash')} 恢复草稿` : 'Enter 发送', 'Ctrl+J 换行', `${key('history')} 历史`]
   while (hints.length > 1 && displayWidth(hints.join(' · '), { ambiguousAsWide: ambiguousWideEnabled() }) > input.width - 1) hints.pop()
   return displayWidth(hints[0] ?? '', { ambiguousAsWide: ambiguousWideEnabled() }) > input.width - 1 ? [] : [color(hints.join(' · '), theme.muted)]

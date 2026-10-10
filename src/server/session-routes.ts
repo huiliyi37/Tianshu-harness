@@ -1285,7 +1285,7 @@ export function buildSessionRoutes(
       const workerId = decodeURIComponent(params!.workerId!)
       if (!isSafeFileName(workerId)) return { status: 400, body: { error: 'Invalid worker id' } }
       const log = await manager.getWorkerLog(params!.id!, workerId, {
-        full: params?.full === '1',
+        full: params?.full === '1', dispatchId: params?.dispatchId, attemptId: params?.attemptId,
       })
       if (!log) return { status: 404, body: { error: 'Session not found' } }
       return { status: 200, body: log }
@@ -2274,14 +2274,23 @@ export function buildSessionRoutes(
       // 消费端真正会读的字段，见 isImportableSnapshot）——四条都过了才把内容交回
       // 前端预览。快照导入**不改会话状态**（回灌由用户在 composer 里显式发出），
       // 所以这里没有任何写路径。
+      // 与 file-content/file-preview/list-dir 同一条沙箱不变量：请求体 path 不
+      // 受信，先 validatePath 落到会话 cwd 内，越界 403（否则 400 文案分叉成
+      // 存在性 oracle，且快照形状文件正文可被读出）。
+      let absPath: string
+      try {
+        absPath = validatePath(record.cwd, path, 'read')
+      } catch {
+        return { status: 403, body: { error: 'Path outside session cwd' } }
+      }
       let stat: ReturnType<typeof statSync>
-      try { stat = statSync(path) } catch { return { status: 400, body: { error: 'Snapshot file not found or unreadable' } } }
+      try { stat = statSync(absPath) } catch { return { status: 400, body: { error: 'Snapshot file not found or unreadable' } } }
       if (!stat.isFile() || stat.size > MAX_SNAPSHOT_BYTES) {
         return { status: 400, body: { error: 'Snapshot file invalid or too large' } }
       }
       let parsed: unknown
       try {
-        parsed = JSON.parse(readFileSync(path, 'utf8'))
+        parsed = JSON.parse(readFileSync(absPath, 'utf8'))
       } catch {
         return { status: 400, body: { error: 'Snapshot file is not valid JSON' } }
       }

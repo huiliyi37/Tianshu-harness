@@ -217,6 +217,20 @@ describe('createLlmSpeculationEngine', () => {
     assert.equal(request.prefixProbe, true)
   })
 
+  it('stamps diagnostics.purpose=llm_speculation so call-audit never bills speculation to main_execution', async () => {
+    const client = mockClient('[]')
+    const engine = createLlmSpeculationEngine({
+      client, config: { enabled: true }, enqueue: () => {},
+    })
+    // The spec request spreads the main request; without an explicit stamp it
+    // would inherit undefined diagnostics and requestAuditContext would default
+    // the audit row to main_execution, hiding speculation cost inside "main".
+    engine.maybeSpeculate({ request: makeRequest(), toolUses: SLOW_BATCH, turn: 1 })
+    await settle(engine)
+
+    assert.equal(client.calls[0]!.request.diagnostics?.purpose, 'llm_speculation')
+  })
+
   it('books usage via recordUsage and stamps token fields into telemetry (cost blind spot fix)', async () => {
     const usage = { input_tokens: 95_000, output_tokens: 320, cache_read_input_tokens: 94_000, cache_creation_input_tokens: 500 }
     const client = mockClient('[]', { usage })

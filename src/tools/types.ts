@@ -423,6 +423,7 @@ export interface VerificationMetadata {
 export type ToolErrorClass = 'environment' | 'exec-failure' | 'timeout'
 
 export interface ToolResult {
+  generatedImageId?: string
   /** Runtime presentation contract, never sent as model-generated metadata. */
   presentation?: { kind: 'worker_packet'; bounded: true }
   /** Content sent to model as tool_result */

@@ -48,7 +48,7 @@ test('generator validates local bytes, remote digest and signature before public
 })
 test('anonymous full download checks bytes; range never triggers a second full download', async () => {
   const calls=[]
-  const request=async (url,opts)=>{calls.push(opts);return opts.method==='HEAD'?new Response(null,{status:200}):opts.headers?.Range?new Response(bytes.subarray(0,4),{status:206,headers:{'content-range':`bytes 0-3/${bytes.length}`}}):new Response(bytes)}
+  const request=async (url,opts)=>{calls.push(opts);return opts.method==='HEAD'?new Response(null,{status:200}):opts.headers?.Range?new Response(bytes,{status:206,headers:{'content-range':`bytes 0-${bytes.length-1}/${bytes.length}`}}):new Response(bytes)}
   const proof=await verifyDownload(entry('atomgit').url,{size:bytes.length,sha256:digest},request)
   assert.equal(proof.anonymous,true);assert.equal(proof.rangeSupported,true);assert.ok(calls.every(c=>!c.headers?.Authorization&&!c.headers?.Cookie))
   await assert.rejects(verifyDownload(entry('atomgit').url,{size:bytes.length,sha256:'0'.repeat(64)},request),/mismatch/)

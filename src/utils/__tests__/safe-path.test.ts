@@ -33,3 +33,26 @@ test('allows names that merely contain a reserved token', () => {
     assert.equal(isSafeFileName(name), true, name)
   }
 })
+
+test('rejects colons, ADS streams, drive-relative prefixes, and Windows forbidden characters', () => {
+  for (const name of [
+    'test.txt:stream',
+    ':stream',
+    'C:file.txt',
+    'D:',
+    'a<b',
+    'a>b',
+    'a"b',
+    'a|b',
+    'a?b',
+    'a*b',
+    'file\x01name',
+    'file\x1Fname',
+    'trail.',
+    'trail ',
+    'test.txt.',
+    'test.txt ',
+  ]) {
+    assert.equal(isSafeFileName(name), false, name)
+  }
+})

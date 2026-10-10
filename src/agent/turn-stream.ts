@@ -55,7 +55,10 @@ export interface TurnStreamCallbacks {
 export interface TurnStreamDeps {
   recordContextBudget?: (budget: import('../server/protocol.js').ContextBudgetSnapshot) => import('../server/protocol.js').ContextBudgetSnapshot
   client: StreamClient
-  abortSignal: AbortSignal
+  /** 惰性取信号：watchdog 误报恢复（AgentLoop.resetAbortAfterRescue）会在 run 中途
+   *  更换 AbortController，构造期按值捕获会把已中止的旧信号喂给恢复后的下一次
+   *  stream（openai-client 入口即抛 AbortError → 回滚用户消息、run 结束）。 */
+  getAbortSignal: () => AbortSignal
   getStreamedTextLength: () => number
   appendStreamedText: (text: string) => void
   truncateStreamedText: (length: number) => void
@@ -311,7 +314,7 @@ export class TurnStreamController {
     try {
       streamStartMs = now()
       input.callbacks.onStreamStart?.()
-      await this.deps.client.stream(input.request, streamCallbacks, this.deps.abortSignal)
+      await this.deps.client.stream(input.request, streamCallbacks, this.deps.getAbortSignal())
     } catch (err) {
       // TTSR: extract triggeredRule from RuleTriggeredError, suppress as error
       if (err instanceof RuleTriggeredError) {

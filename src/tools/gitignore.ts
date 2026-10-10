@@ -85,14 +85,13 @@ export class GitignoreFilter {
   }
 
   private matchGlob(pattern: string, str: string): boolean {
+    // 含 glob 元字符的模式必须整体翻译——精确与前缀/后缀分支只对纯字面量模式成立。
+    // 否则未闭合字符类（`x[`）会经 `pattern === str` 命中，而 git 实测使整条模式
+    // 不匹配（`git check-ignore` 对 `x[` vs `x[` 报 not ignored）。
+    if (hasGlobMeta(pattern)) return globToRegex(pattern).test(str)
+
     // Exact match
     if (pattern === str) return true
-
-    // Wildcard patterns
-    if (pattern.includes('*')) {
-      const re = globToRegex(pattern)
-      return re.test(str)
-    }
 
     // Prefix match — "src" matches "src/anything"
     if (str.startsWith(pattern + '/') || str === pattern) return true
@@ -106,6 +105,22 @@ export class GitignoreFilter {
 
 /** Backslash, built without a literal so the escape survives any transform. */
 const BACKSLASH = String.fromCharCode(92)
+
+/** 触发 glob 翻译的模式元字符：`*` / `?` / `[`（字符类）/ `\`（转义下一个字符）。
+ *  只有全字面量的模式才走精确与前缀/后缀分支——混合模式必须整体翻译，否则
+ *  字面分支会给出与 git 不一致的结果（未闭合 `[` 的误命中即由此而来）。
+ *  用字符判断而非正则字面量：正则里的字符类要写出包含 `[` 与 `\` 的方括号组，
+ *  多重转义下极易写成未终结的类。 */
+function hasGlobMeta(pattern: string): boolean {
+  for (const ch of pattern) {
+    if (ch === '*' || ch === '?' || ch === '[' || ch === BACKSLASH) return true
+  }
+  return false
+}
+
+
+/** 永不匹配的正则：未闭合 `[` 使整条 gitignore 模式失效（git check-ignore 实测）。 */
+const NEVER_MATCH = /(?!)/
 
 /** Regex metacharacters that must be escaped when interpolated as literals. */
 const RE_SPECIAL = new Set([
@@ -138,6 +153,20 @@ function globToRegex(glob: string): RegExp {
       }
     } else if (ch === '?') {
       re += '[^/]'
+    } else if (ch === BACKSLASH) {
+      // 转义下一个字符为字面量；末尾孤立反斜杠退化为字面反斜杠。
+      const next = glob[i + 1]
+      if (next === undefined) {
+        re += BACKSLASH + BACKSLASH
+      } else {
+        re += RE_SPECIAL.has(next) ? BACKSLASH + next : next
+        i++
+      }
+    } else if (ch === '[') {
+      const cls = translateCharClass(glob, i)
+      if (cls === null) return NEVER_MATCH
+      re += cls.re
+      i = cls.end
     } else if (RE_SPECIAL.has(ch)) {
       re += BACKSLASH + ch
     } else {
@@ -145,4 +174,30 @@ function globToRegex(glob: string): RegExp {
     }
   }
   return new RegExp('^(?:' + re + ')(?:/.*)?$')
+}
+
+/**
+ * `[...]` 字符类 → 正则片段。三条语义均以 `git check-ignore` 实测为准：
+ * - 否定类同时接受 `[!...]` 与 `[^...]`（实测 `[^abc].txt` 既忽略 `z.txt` 也忽略 `^.txt`）；
+ * - 类不跨目录分隔符（实测 `a[bc]` 不忽略 `a/b`）→ 类体里的斜杠剔除；
+ * - 未闭合方括号（找不到闭合符）→ 返回 null，由调用方令整条模式不匹配
+ *   （实测 `x[` 对同名文件报 not ignored）。
+ *
+ * 不支持的形态（POSIX 类 `[[:alpha:]]`、嵌套方括号）同样返回 null —— 降级为
+ * 「整条不匹配」只造成漏判，不会产生误拦（安全的失败方向）。
+ */
+function translateCharClass(glob: string, start: number): { re: string; end: number } | null {
+  const close = glob.indexOf(']', start + 1)
+  if (close === -1) return null
+  const body = glob.slice(start + 1, close)
+  if (body.includes('[')) return null
+
+  const negated = body.startsWith('!') || body.startsWith('^')
+  let inner = negated ? body.slice(1) : body
+  // 类体里的正则元字符按字面量处理：反斜杠先自身转义，首字符 `^` 避免被读成否定。
+  inner = inner.split(BACKSLASH).join(BACKSLASH + BACKSLASH)
+  if (!negated && inner.startsWith('^')) inner = BACKSLASH + inner
+  inner = inner.split('/').join('')
+  if (inner === '') return null
+  return { re: '[' + (negated ? '^' : '') + inner + ']', end: close }
 }

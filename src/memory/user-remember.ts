@@ -45,6 +45,11 @@ export function rememberUserNote(cwd: string, text: string, sessionId?: string):
     sessionId,
     topic: 'user',
   })
+  // 上游已过 containsSensitive + scrubMemoryText，此处 null 理论不可达（内层 scrub 幂等）；
+  // 仍 fail-closed 防御，避免解引用空值。
+  if (!entry) {
+    return { ok: false, message: '内容被敏感信息过滤器拦截——不会写入记忆。' }
+  }
   return { ok: true, message: `已记住（${entry.id}）：${scrubbed}`, entryId: entry.id }
 }
 

@@ -19,7 +19,7 @@ export function persistWorkerDispatch(order: WorkOrder, nonce: string, results: 
   run: { sessionMessages?: readonly OaiMessage[]; checkpoint?: WorkerSessionRun['checkpoint']; frozenSnapshot?: WorkerSessionRun['frozenSnapshot']; prefixProof?: WorkerSessionRun['prefixProof'] },
   stages: Record<string, ReturnType<typeof auditWorkerStage>>, fingerprint?: string): void {
   const outcome = run.sessionMessages?.length
-    ? saveWorkerSession(order.id, order.profile, order.objective, run.sessionMessages, undefined, run.checkpoint, { frozenSnapshot: run.frozenSnapshot, prefixProof: run.prefixProof })
+    ? saveWorkerSession(order.id, order.profile, order.objective, run.sessionMessages, undefined, run.checkpoint, { frozenSnapshot: run.frozenSnapshot, prefixProof: run.prefixProof }, nonce)
     : { ok: false, error: 'no complete execution history captured' }
   for (const result of results) {
     if (!outcome.ok) {

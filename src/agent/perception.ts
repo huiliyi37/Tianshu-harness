@@ -1,4 +1,5 @@
 import { recentVerification } from './verification-activity.js'
+import { WRITE_TOOL_NAMES } from '../tools/write-tool-helpers.js'
 import type { ReasoningEffort } from './auto-reasoning.js'
 import type { Sensorium, StrategyProfile } from './sensorium.js'
 import type { StarPhaseContext } from './star-event.js'
@@ -15,6 +16,9 @@ export interface StarPhaseContextInput {
   /** 交付证据门（evidence.deliveryStatus === 'verified'）——YOLO 无最终轮，
    *  归航改由交付证据抬升（2026-07-25 复盘修复）。 */
   deliveryVerified?: boolean
+  /** 窗口内有后台 job 在推进（2026-10-09：后台跑测试/构建时主线程「空闲」
+   *  是假空闲——后台活动也是推进证据，相位不得退回规划兜底）。 */
+  backgroundWorkActive?: boolean
 }
 
 export interface ThetaTelemetrySnapshot {
@@ -92,7 +96,9 @@ export function adaptThetaInterval(baseInterval: number, gitChangeRate: number):
 export function buildStarPhaseContext(input: StarPhaseContextInput): StarPhaseContext {
   return {
     turn: input.turn,
-    isWriting: input.recentTools.some(t => t === 'write_file' || t === 'edit_file'),
+    // 写工具全族同一真源（WRITE_TOOL_NAMES）：只认 write_file/edit_file 会把
+    // hash_edit/ast_edit/apply_patch 的写码轮误判成「没在写」（2026-10-09 用户报告）。
+    isWriting: input.recentTools.some(t => WRITE_TOOL_NAMES.has(t)),
     isRunningTests: input.recentToolHistory !== undefined
       ? !!recentVerification(input.recentToolHistory, input.modelTurn ?? input.turn)
       : input.recentTools.some(t => t === 'run_tests'),
@@ -106,6 +112,8 @@ export function buildStarPhaseContext(input: StarPhaseContextInput): StarPhaseCo
     // 语义保持「最终轮才归航」不变。
     readyByEvidence: input.maxTurns <= 0 && (input.deliveryVerified ?? false),
     hasEnteredHighComplexity: input.hasEnteredHighComplexity,
+    // 条件字段不置空值——下游 deepEqual 形状断言按「缺席 = 关」判定。
+    ...(input.backgroundWorkActive ? { backgroundWorkActive: true } : {}),
   }
 }
 

@@ -1,14 +1,14 @@
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'crypto'
 import { relative } from 'node:path'
-import type { Tool, ToolCallParams } from './types.js'
+import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { validatePath } from './path-validate.js'
 import { checkSyntax } from './syntax-check.js'
 import { detectPointerPlaceholder, pointerPlaceholderError, resolveIdempotentPointer } from './pointer-guard.js'
 import { asBool } from './write-tool-helpers.js'
 import { getFileReadContentHash, noteFileObserved, recordSuccessfulEdit, incrementEditFailCount, resetEditFailCount } from './read-file.js'
 import { landingWriteFile, delegatedToToolResult, isDelegateRejected } from './client-delegate.js'
-import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
+import { withFileChangeTracking, restoreFileChange, type FileChangeRecord } from '../agent/recovery-stack.js'
 import { detectEol, chooseEol, toLf, applyEol } from './line-endings.js'
 import { getTargetEol } from '../platform.js'
 import { buildFileDiff, computeChangedLineRanges, type LineRange } from './edit-diff.js'
@@ -68,13 +68,13 @@ async function finalizeHashEdit(
   cwd: string,
   newContent: string,
   sessionId: string | undefined,
+  capture: FileChangeRecord,
   successContent: string,
   extraWarning: string,
 ): Promise<{ content: string; isError?: boolean; errorKind?: 'syntax_error' }> {
   const check = await checkSyntax(filePath, newContent)
   if (check.fatal) {
-    const relPath = relative(cwd, filePath)
-    const restored = await restoreLatestBackup(cwd, relPath, sessionId)
+    const restored = await restoreFileChange(cwd, capture, sessionId)
     // 回滚后 mtime 会变（copyFileSync 不保留原始时间戳），但内容已恢复。
     // 刷新读文件 mtime 追踪器——否则后续 hash_edit 的仅位置锚点检查会误报
     // "文件已变化，请重新 read_file"。
@@ -327,7 +327,7 @@ new_string 必须是真实文件内容；把历史里的
     },
   },
 
-  async execute(params: ToolCallParams) {
+  execute: withFileChangeTracking(async (params: ToolCallParams, trackFileChange): Promise<ToolResult> => {
     let filePath: string
     try {
       filePath = validatePath(params.cwd, params.input.file_path as string, 'write')
@@ -449,7 +449,7 @@ new_string 必须是真实文件内容；把历史里的
             return buildHashDryRunPreview(params.cwd, filePath, content, newContent)
           }
           const relPath = relative(params.cwd, filePath)
-          await trackFileChange(params.cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'hash_edit' })
+          const capture = await trackFileChange(params.cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'hash_edit' })
 
           {
             const land = await landingWriteFile(params, filePath, content, applyEol(newContent, eol))
@@ -462,7 +462,7 @@ new_string 必须是真实文件内容；把历史里的
             : ''
           const freshAnchors = buildFreshAnchors(newContent.split('\n'), before.length, newLines.length)
           return await finalizeHashEdit(
-            filePath, params.cwd, newContent, params.sessionId,
+            filePath, params.cwd, newContent, params.sessionId, capture,
             `hash_edit${recoveredInfo} 已应用到 ${filePath}：将 L${firstLine}-L${lastLine}（${lastLine - firstLine + 1} 行）替换为 ${newLines.length} 行${freshAnchors}`,
             '',
           )
@@ -495,7 +495,7 @@ new_string 必须是真实文件内容；把历史里的
 
     // Record file change for recovery tracking (backup created by trackFileChange)
     const relPath = relative(params.cwd, filePath)
-    await trackFileChange(params.cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'hash_edit' })
+    const capture = await trackFileChange(params.cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'hash_edit' })
 
     {
       const land = await landingWriteFile(params, filePath, content, applyEol(newContent, eol))
@@ -505,11 +505,11 @@ new_string 必须是真实文件内容；把历史里的
     }
     const freshAnchors = buildFreshAnchors(newContent.split('\n'), before.length, newLines.length)
     return await finalizeHashEdit(
-      filePath, params.cwd, newContent, params.sessionId,
+      filePath, params.cwd, newContent, params.sessionId, capture,
       `hash_edit 已应用到 ${filePath}：将 L${firstLine}-L${lastLine}（${lastLine - firstLine + 1} 行）替换为 ${newLines.length} 行${freshAnchors}`,
       '',
     )
-  },
+  }),
 
   requiresApproval: () => true,
   isConcurrencySafe: () => false,

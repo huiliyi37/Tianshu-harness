@@ -744,8 +744,11 @@ export class InputLine {
    * 提交后重置缓冲：清空文本、归零光标、复位历史游标、清空图片附件。
    * 不触发 onChangeCallback —— submit 路径自己负责后续渲染，
    * 避免在 submit 回调里又触发一次 change 渲染造成竞态。
+   *
+   * public：Alt+Enter 插队入口（app.ts 的 submitSteer）不经 onSubmit 回调直接
+   * 提交，需要调用方自行重置缓冲——与 /steer 命令共用同一通路。
    */
-  private clearAfterSubmit(): void {
+  clearAfterSubmit(): void {
     this._value = ''
     this._cursor = 0
     this._historyIdx = -1

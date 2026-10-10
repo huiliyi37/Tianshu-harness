@@ -1,15 +1,67 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, delimiter } from 'node:path'
 import { createRouter } from '../index.js'
 import { buildSessionRoutes } from '../session-routes.js'
 import { repositorySnapshot } from '../git-workbench.js'
 import type { DelegateWorkerInput, RuntimeSessionManager } from '../session-manager.js'
 import { delegateWorkerOnCoordinator } from '../serve-agent.js'
 import { ArtifactStore } from '../../artifact/store.js'
+
+test('pr review rejects leading-dash baseRefName before fetching (option-injection guard)', async () => {
+  // 回归测试：baseRefName 来自 GitHub API 的 PR JSON，未校验时会被 git 当作选项解析
+  // （git fetch <remote> --upload-pack=x 等选项置换）。守卫必须在 fetch 之前拒绝。
+  const root = mkdtempSync(join(tmpdir(), 'git-review-guard-'))
+  const cwd = join(root, 'repo'), home = join(root, 'data'), bin = join(root, 'bin')
+  const previousHome = process.env.RIVET_HOME, previousPath = process.env.PATH
+  mkdirSync(cwd, { recursive: true }); mkdirSync(home); mkdirSync(bin)
+  writeFileSync(join(home, 'config.json'), '{}'); process.env.RIVET_HOME = home
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  const manager = {
+    getDefaultCwd: () => cwd, listSessions: () => [{ id: 'parent', cwd }], getSession: () => undefined,
+    createSession: (options: { cwd: string }) => ({ id: 'child', cwd: options.cwd }),
+    delegate: async () => ({ ok: true, workerId: 'worker' }),
+    cancelDelegate: () => true,
+    getEventsAsync: async () => ({ events: [] }),
+    getWorkerLog: async () => ({ result: {} }),
+    readArtifact: async () => null,
+    listArtifacts: () => [],
+  } as unknown as RuntimeSessionManager
+  try {
+    git('init', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
+    writeFileSync(join(cwd, 'a.txt'), 'x\n'); git('add', 'a.txt'); git('commit', '-m', 'base')
+    const sha = git('rev-parse', 'HEAD').trim()
+    git('remote', 'add', 'origin', 'https://github.com/o/r.git')
+    // 伪造 gh：pr view 返回 baseRefName = --upload-pack=x（恶意分支名，git 合法引用）
+    const fakeGh = join(bin, 'gh')
+    writeFileSync(fakeGh, `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === 'pr' && args[1] === 'view') {
+  const sha = process.env.FAKE_HEAD_SHA
+  process.stdout.write(JSON.stringify({ number: 1, state: 'OPEN', headRefName: 'feature', headRefOid: sha, baseRefName: '--upload-pack=x', baseRefOid: sha }))
+  process.exit(0)
+}
+process.stderr.write('unexpected gh call: ' + args.join(' '))
+process.exit(1)
+`)
+    chmodSync(fakeGh, 0o755)
+    process.env.PATH = bin + delimiter + previousPath
+    process.env.FAKE_HEAD_SHA = sha
+    const before = await repositorySnapshot(cwd)
+    const router = createRouter(buildSessionRoutes(manager, 'test'))
+    const response = await router('POST', '/git/workbench/review-job', { cwd, version: before.repository.version, scope: 'pr', mode: 'review', number: 1, headSha: sha, remote: 'origin', maxMs: 60_000 }, { authorization: 'Bearer test' })
+    assert.equal(response.status, 400, JSON.stringify(response.body))
+    assert.equal((response.body as any).code, 'invalid_base', JSON.stringify(response.body))
+  } finally {
+    process.env.PATH = previousPath as string
+    delete process.env.FAKE_HEAD_SHA
+    if (previousHome === undefined) delete process.env.RIVET_HOME; else process.env.RIVET_HOME = previousHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('real review route isolates cancelling staged/unstaged edits and passes budget to coordinator', async () => {
   const root = mkdtempSync(join(tmpdir(), 'git-review-')), cwd = join(root, 'repo'), home = join(root, 'data')

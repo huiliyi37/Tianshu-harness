@@ -1,3 +1,6 @@
+import { drainSteerGuidance } from './course-episodes.js'
+import { executeWithCourseProgress } from './course-file-progress.js'
+import { courseExecutionCallbacks, type CourseExecutionCallbacks } from './course-verification-execution.js'
 import type { ContentBlock } from '../api/types.js'
 import type { ToolErrorClass } from '../tools/types.js'
 import type { TurnBudget } from './turn-budget.js'
@@ -21,7 +24,7 @@ import type { Sensorium } from './sensorium.js'
 import type { TrajectoryRecorder } from './trajectory.js'
 import type { ReliabilityDecision } from './reliability-mode.js'
 import { PrewarmCache } from './prewarm.js'
-import { executeToolUse, type ToolPipelineDeps } from './tool-pipeline.js'
+import type { ToolPipelineDeps } from './tool-pipeline.js'
 import type { CacheAdvisor } from '../cache/advisor.js'
 import type { P3Integration } from './p3-integration.js'
 import type { ImmuneHook } from './immune-hook.js'
@@ -45,7 +48,9 @@ import { createRuntimeHookContext } from './runtime-hooks.js'
 import { toolTargetFromInput } from './tool-target.js'
 import { sanitizeToolOutput } from '../tools/output-sanitizer.js'
 
-export interface ToolExecutionDeps {
+export interface ToolExecutionDeps extends CourseExecutionCallbacks {
+  /** 文件进展三态消费（P0）：执行结果由消费侧（WorkProgressFacts）盖执行序号章。 */
+  onCourseFileChange?: (fact: import('./course-file-progress.js').FileProgressFact) => void
   config: AgentConfig
   cwd: string
   harness: TurnHarness
@@ -259,6 +264,7 @@ export class ToolExecutionController {
     return {
       config: this.deps.config,
       cwd: this.deps.cwd,
+      ...courseExecutionCallbacks(this.deps),
       harness: this.deps.harness,
       prewarm: this.deps.prewarm,
       evidence: this.deps.evidence,
@@ -386,7 +392,7 @@ export class ToolExecutionController {
         const batch = indexed.slice(batchStart, cursor)
 
         const results = await Promise.all(
-          batch.map(({ tu }) => executeToolUse(
+          batch.map(({ tu }) => executeWithCourseProgress(this.deps,
             tu,
             this.buildDeps({ traceStore, importGraph, lastConflictCheckCount, latestRisk, artifactIdsEvicted, artifactIdsAccessed, abortSignal: input.abortSignal }),
             callbacks,
@@ -425,7 +431,7 @@ export class ToolExecutionController {
           continue
         }
 
-        const result = await executeToolUse(
+        const result = await executeWithCourseProgress(this.deps,
           tu,
           this.buildDeps({ traceStore, importGraph, lastConflictCheckCount, latestRisk, artifactIdsEvicted, artifactIdsAccessed, abortSignal: input.abortSignal }),
           callbacks,
@@ -586,21 +592,16 @@ export class ToolExecutionController {
       }
     }
 
-    // Drain steer guidance ONLY when there is a tool_result to attach it to.
-    // onSteerDrain() empties the buffer, so calling it without a valid injection
-    // target (e.g. abort broke the loop before any result, or last block is not
-    // a tool_result) would discard the guidance. Peek the target first; if absent,
-    // leave the buffer intact so the next tool-using turn injects it.
-    //
-    // Runs AFTER budgets/storm-guard/tiering: those transforms replace content
-    // wholesale (tier-2 minimal, budget-summarized), and appending steer text
-    // before them silently dropped the user's guidance for large results.
+    // Drain only with a valid result, after result budgeting; acknowledge once committed.
+    let acceptGuidance: (() => void) | null = null
     const lastResult = toolResults.length > 0 ? toolResults[toolResults.length - 1]! : null
     if (lastResult && lastResult.type === 'tool_result') {
-      const steerText = await input.callbacks.onSteerDrain?.()
+      const guidance = await drainSteerGuidance(input.callbacks)
+      const steerText = guidance?.text
       if (steerText) {
         const existing = typeof lastResult.content === 'string' ? lastResult.content : ''
         toolResults[toolResults.length - 1] = { ...lastResult, content: existing + '\n\n' + steerText }
+        acceptGuidance = guidance!.accepted
       }
     }
 
@@ -659,6 +660,7 @@ export class ToolExecutionController {
       }
     }
     this.deps.addToolResults(toolResults)
+    acceptGuidance?.()
 
     // Vision channel: forward tool-carried screenshots to the model as a
     // TRAILING user message (append-only after the tool results — same

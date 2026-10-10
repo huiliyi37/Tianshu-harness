@@ -160,6 +160,7 @@ test('test route really generates (not just probes /models) and reports the size
     modelId: 'flux-pro',
     apiKey: 'sk-test',
     sizeField: 'image_size',
+    size: '1024x1024',
   }, AUTH)
   assert.equal(res.status, 200, JSON.stringify(res.body))
   assert.equal(generationCount, before + 1, '真测必须真的发一次生图请求')

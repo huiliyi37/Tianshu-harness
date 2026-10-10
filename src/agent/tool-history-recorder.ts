@@ -1,4 +1,4 @@
-import { verificationAttempted } from './verification-activity.js'
+import { verificationToolFacts } from './verification-activity.js'
 import type { AgentLoop } from './loop.js'
 import type { HealthSignal } from './trajectory-health.js'
 import type { ToolErrorClass } from '../tools/types.js'
@@ -8,6 +8,7 @@ import { TYPECHECK_CMD_RE } from './typecheck-gate.js'
 import { classifyBashCommandActivity, toolTargetFromInput } from './tool-target.js'
 import { isUiFilePath, isVisualVerifyTool } from './hooks/render-verify-hook.js'
 import { POINTER_GUARD_ERROR_MARKER } from '../tools/pointer-guard.js'
+import { WRITE_TOOL_NAMES } from '../tools/write-tool-helpers.js'
 import { isReadOnlyToolCall } from './convergence-detector.js'
 
 /**
@@ -29,6 +30,25 @@ export function isImmunityNeutralized(errorClass?: ToolErrorClass, errorKind?: F
 
 export function isConvergenceTransient(errorKind?: FailureClass, result?: string): boolean {
   return (result?.includes(POINTER_GUARD_ERROR_MARKER) ?? false) || errorKind === 'syntax_error' || errorKind === 'refused'
+}
+
+/**
+ * P1：把文件进展三态结果回填到最近一条未标注的写工具历史条目——收敛的
+ * editRatio 依据"执行效果"（真实变化）而非"工具名 + 成功"计编辑。
+ * 从末尾向前找第一条写工具条目；已被标注则不再回溯（并行批下每次回调
+ * 对应其自己的执行，最新的未标注条目即本次）。
+ */
+export function tagLatestWriteOutcome(
+  self: AgentLoop,
+  outcome: 'changed' | 'unchanged' | 'unknown',
+): void {
+  for (let i = self.recentToolHistory.length - 1; i >= 0; i--) {
+    const entry = self.recentToolHistory[i]!
+    if (!WRITE_TOOL_NAMES.has(entry.tool)) continue
+    if (entry.writeOutcome !== undefined) return
+    entry.writeOutcome = outcome
+    return
+  }
 }
 
 /**
@@ -70,7 +90,7 @@ export function recordToolHistory(
     const isTransientGuard = isError && isConvergenceTransient(errorKind, result)
     self.recentToolHistory.push({
       tool: name,
-      verificationAttempted: verificationAttempted(name, input),
+      ...verificationToolFacts(name, input, self.cwd),
       modelTurn: self.modelObservationTurn,
       target,
       status: isError ? 'failed' : 'success',

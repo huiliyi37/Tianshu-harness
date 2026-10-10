@@ -43,7 +43,7 @@ export function formatDeliveryVerificationPlan(cwd: string, required: readonly s
           createRequire(resolve(directory, 'package.json')).resolve('tsx')
           argv.splice(invocation.runnerIndex + 1, 0, '--import', 'tsx')
         }
-        runner = (argv[0] === 'rtk' ? '' : 'rtk ') + argv.map(word => /^[\w./:-]+$/.test(word) ? word : shellWord(word)).join(' ')
+        runner = argv.map(word => /^[\w./:-]+$/.test(word) ? word : shellWord(word)).join(' ')
       }
       // Current completion argv cannot preserve shell expansions or escaped quotes.
       if (files.some(file => /[\n\r`$%'\\]/.test(file)) || /[\n\r`$%'\\]/.test(directory)) runner = undefined

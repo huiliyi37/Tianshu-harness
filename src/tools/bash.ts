@@ -510,6 +510,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     let snap
     try { snap = params.jobs.spawn({ command: wrapSandboxCommand(verificationRun.command, params.cwd).command, rawCommand, cwd: params.cwd, env, onCompleted: verificationRun.onCompleted }) }
     catch (error) { verificationRun.dispose(); tcLock?.release(); throw error }
+    params.jobs.recordVerificationMeta(snap.id, verificationRun.intent, params.input)
     if (tcLock) {
       void params.jobs.await(snap.id, { timeoutMs: 10 * 60_000 }).then(
         () => tcLock.release(),
@@ -710,7 +711,7 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
       const meta = { command: headerCommand, exitCode, durationMs }
       const coverage = completion?.read(exitCode)
       completion?.dispose()
-      const verification = coverage ? { command: rawCommand, kind: 'test' as const, status: exitCode === 0 ? 'passed' as const : 'failed' as const, scope: inferBashVerificationScope(rawCommand)?.scope === 'targeted' ? 'targeted' as const : 'full' as const, exitCode, coverage } : undefined
+      const verification = coverage ? { command: rawCommand, kind: 'test' as const, status: exitCode === 0 ? 'passed' as const : 'failed' as const, scope: inferBashVerificationScope(rawCommand, params.cwd)?.scope === 'targeted' ? 'targeted' as const : 'full' as const, exitCode, coverage } : undefined
       const { isError, errorClass } = classifyBashOutcome(exitCode, stderr, process.platform === 'win32')
       // Sandbox attribution: a bare "Operation not permitted" sends the model
       // into a sudo/chmod retry loop. Name the path and route it to

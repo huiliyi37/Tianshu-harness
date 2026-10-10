@@ -11,6 +11,9 @@ import { buildInjectedMessage, type MessageVariant } from './convergence-message
 
 import type { ToolHistoryEntry } from '../prompt/volatile.js'
 import type { EvidenceState } from './evidence.js'
+import { WRITE_TOOL_NAMES } from '../tools/write-tool-helpers.js'
+import type { EditExpectation } from './edit-expectation.js'
+import { analyzeScoreDecline, effectiveScoreRegimeKey, type ConvergenceScoreHistoryEntry } from './score-history.js'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -25,7 +28,7 @@ export interface ConvergenceInput {
   /** Context window size (200_000 or 1_000_000) */
   contextWindow: number
   /** Recent tool history (last N entries) */
-  recentToolHistory: ReadonlyArray<Pick<ToolHistoryEntry, 'tool' | 'status' | 'target' | 'argsHash' | 'bashActivity'>>
+  recentToolHistory: ReadonlyArray<Pick<ToolHistoryEntry, 'tool' | 'status' | 'target' | 'argsHash' | 'bashActivity' | 'writeOutcome'>>
   /** Evidence state with edit/verification tracking */
   evidenceState: Pick<EvidenceState, 'filesModified' | 'filesRead' | 'deliveryStatus'>
   /** Optional tool call fingerprints for oscillation detection (A→B→A→B patterns). */
@@ -39,6 +42,8 @@ export interface ConvergenceInput {
    *  Used to detect cross-turn text repetition — the model produces similar
    *  analysis text over multiple turns without making progress. */
   textFingerprints?: ReadonlyArray<string>
+  /** Content-free observations from the same text signal extractor (replay). */
+  textObservation?: { count: number; repetitionPenalty: number; hasData: boolean; hasReportLength: boolean }
   /** Provider name for provider-specific thresholds (e.g. 'glm' gets tighter cutoffs).
    *  When absent, uses default DeepSeek-tuned values. */
   providerName?: string
@@ -67,6 +72,15 @@ export interface ConvergenceInput {
      *  > 0 = the task list is demonstrably advancing → cap score-based
      *  escalation at L1 (no-tool stagnation levels are unaffected). */
     todoCompletedDelta: number
+    /** 等待验证（2026-10-10 狂轰事故方向 2，会话 20261009c40f5c2262ea）：后台有
+     *  running 的验证型 job——agent 正在等门禁钦定的证据。判据不再由 detector
+     *  侧猜命令：由 spawn 侧（tools/bash.ts）写入 SessionJobs 的私有验证元数据
+     *  （SessionJobs.waitingVerificationJob()，源自共同命令事实
+     *  VerificationExecutionIntent 的 waitingEligible）。执行相位的
+     *  「无编辑」是等待的合理形态 → 与 todoCompletedDelta 同级的硬 veto：
+     *  cap score-based escalation at L1。job 结束信标即消失，仍停滞则正常
+     *  升级；no-tool stagnation levels 不受影响（不变式同 todo 注释）。 */
+    awaitingVerification?: boolean
     /** An approved plan file is active (plan execution session). Long
      *  multi-wave turns are the legitimate shape of this work — widen the
      *  nLow/nMid/nHigh turn thresholds by 1.5×. */
@@ -96,8 +110,12 @@ export interface ConvergenceInput {
   phaseRelativeTurn?: number
   /** Score history from recent turns (most recent last). Used to detect
    *  sustained decline vs isolated dip for L3 score-based abort decisions.
-   *  Length should be ≥ signalWindow for meaningful trend detection. */
-  scoreHistory?: number[]
+   *  Length should be ≥ signalWindow for meaningful trend detection.
+   *  P3：条目可带口径键（regimeKey）与质量——趋势只取末尾连续、同口径、
+   *  有效的样本；纯 number 为 legacy 样本（旧行为逐位不变）。 */
+  scoreHistory?: ReadonlyArray<ConvergenceScoreHistoryEntry>
+  /** 当前评分所属口径；旧调用缺省时保留 legacy 行为。 */
+  scoreRegimeKey?: string | null
   /** True if an L2+ convergence advisory was already emitted in a strictly
    *  earlier turn. This is the grace-turn precondition for score-based L3
    *  aborts: the model must have been warned before we conclude it ignored
@@ -109,6 +127,23 @@ export interface ConvergenceInput {
    * 此时收敛 score 降级——agent 在绕工具 bug 不是 doom-loop。
    * 缺席时走旧行为（向后兼容）。由 loop.ts runConvergenceCheck 计算。 */
   recentToolErrorRatio?: number
+  /**
+   * P1 编辑期待投影（任务语义 × 当前步骤）。缺席 → 按 'required' 处理
+   * （旧行为逐位不变）。not-required/unknown 时 editRatio 不参与评分
+   * （权重按原比例归一 + 关闭乘半惩罚）——错误的相位标签不能仅因无编辑
+   * 把已确认验证/只读步骤压到 L2；required 时保留原惩罚（正例仍提示）。
+   */
+  editExpectation?: EditExpectation
+  /**
+   * P1 重复验证软判据摘要（loop 从 WorkProgressFacts 预计算）。命中时在
+   * level 仲裁（todo/等待 veto 之前）把 level 上探到 2——只提出收束/换策略，
+   * 不独立触发 L3 abort/split；不越过真实等待保护。
+   */
+  repeatedVerification?: {
+    count: number
+    currentRerun: boolean
+    turnsSinceProgress: number
+  }
 }
 
 /** W3（incident 20b9714e）：会话活动模式。diagnostic = 近窗口以只读工具为主
@@ -252,6 +287,18 @@ export interface ConvergenceResult {
    * diagnosable.
    */
   reasoningActive: boolean
+  /**
+   * P1：评分口径质量。'insufficient' = 所有信号都缺数据/不可适用，
+   * 分数没有有效证据支撑——此时不按分数分级（不补满分、也不误伤）。
+   */
+  scoreQuality: 'ok' | 'insufficient'
+  /**
+   * P3：本轮实际参与加权的有效权重（editRatio 期待归一与缺数据重分配后；
+   * 不含 penalty 乘数）。观测/回放消费——不同权重口径的分数不可直接比较
+   * （见 score-history.regimeKey）。
+   */
+  effectiveWeights: PhaseWeights
+  scoreRegimeKey?: string | null
 }
 
 export interface ConvergenceSignals {
@@ -321,7 +368,7 @@ function lerp(a: number, b: number, t: number): number {
 
 // ─── Phase-Aware Weights ────────────────────────────────────────────
 
-interface PhaseWeights {
+export interface PhaseWeights {
   editRatio: number
   targetNovelty: number
   toolEntropy: number
@@ -358,22 +405,42 @@ function normalizedShannonEntropy(distribution: Map<string, number>, total: numb
 }
 
 /**
- * editRatio: fraction of turns in the window that produced edits.
- * Uses evidenceState.filesModified as a cumulative proxy — we track
- * whether filesModified grew during the window by checking against tool history.
+ * editRatio: fraction of the window that produced real edits.
+ *
+ * P1 口径（共享写工具族 + 执行效果）：
+ * - 写工具族 = WRITE_TOOL_NAMES（edit_file/write_file/hash_edit/ast_edit/apply_patch）——
+ *   旧实现只认前两个，其余写工具的编辑不计入比率。
+ * - writeOutcome='changed' 才计编辑；'unchanged'（no-op/预览）确认无变化，不计；
+ *   'unknown'（失败/回滚/无目标）从分子分母都剔除——不伪造 0 或 1。
+ * - writeOutcome 缺席（旧条目/未接线）按旧口径处理（success 即编辑），
+ *   保证未接线路径逐位不变。
+ * - 窗口里写工具效果全部不可判（denom=0）→ 信号不可用（insufficient），
+ *   走统一的权重处理而非额外惩罚。
  */
 function computeEditRatio(
   windowSize: number,
   history: ConvergenceInput['recentToolHistory'],
-  _evidence: ConvergenceInput['evidenceState'],
-): number {
+): { value: number; insufficient: boolean } {
   const window = history.slice(-windowSize)
-  if (window.length === 0) return 0.0
-  const editTools = new Set(['edit_file', 'write_file'])
-  const successfulEdits = window.filter(
-    h => editTools.has(h.tool) && h.status === 'success',
-  ).length
-  return successfulEdits / window.length
+  if (window.length === 0) return { value: 0, insufficient: false }
+  let edits = 0
+  let writes = 0
+  let unknownWrites = 0
+  for (const h of window) {
+    if (!WRITE_TOOL_NAMES.has(h.tool)) continue
+    writes++
+    if (h.writeOutcome === 'unknown') { unknownWrites++; continue }
+    const countsAsEdit = h.writeOutcome === 'changed'
+      || (h.writeOutcome === undefined && h.status === 'success')
+    if (countsAsEdit) edits++
+  }
+  // 窗口里有写工具但效果全部不可判（失败/回滚/无目标）→ 信号不可用：
+  // 走统一的权重处理，不拿 0 当证据（"unknown 不伪造 0 或 1"）。
+  if (writes > 0 && unknownWrites === writes) return { value: 0, insufficient: true }
+  // 无写工具（writes=0）是事实（窗口里确实没有编辑尝试），保持 0；
+  // unknown 条目不占分母（中性化，不被 read 条目稀释成"确定未编辑"）。
+  const denom = window.length - unknownWrites
+  return { value: denom > 0 ? edits / denom : 0, insufficient: false }
 }
 
 /**
@@ -458,7 +525,9 @@ function computeTokenEfficiency(
   if (window.length === 0) return 0.5
 
   const readTools = new Set(['read_file', 'grep', 'glob', 'repo_map', 'repo_graph', 'inspect_project', 'lsp_goto_definition', 'lsp_find_references'])
-  const writeTools = new Set(['edit_file', 'write_file'])
+  // P2 名单收编：写工具全族同一真源（WRITE_TOOL_NAMES）——旧内联只认 edit_file/
+  // write_file，hash_edit/ast_edit/apply_patch 的产出被漏计。
+  const writeTools = WRITE_TOOL_NAMES
   const testTools = new Set(['run_tests', 'bash'])
 
   let reads = 0
@@ -680,7 +749,7 @@ function distanceSinceLastProductive(
  * 诊断探针的存在说明 agent 在"主动诊断"而非"被动读取"——
  * 有 hypothesis 并用探针验证，不应与纯只读停滞同等惩罚。
  */
-function hasDiagnosticProbes(
+export function hasDiagnosticProbes(
   history: ConvergenceInput['recentToolHistory'],
 ): boolean {
   // 诊断探针的特征模式
@@ -715,6 +784,11 @@ function isProducingReport(
   return recent.some(fp => fp.length >= REPORT_TEXT_MIN_LEN)
 }
 
+export function convergenceTextObservation(fingerprints: ReadonlyArray<string>): NonNullable<ConvergenceInput['textObservation']> {
+  return { count: fingerprints.length, repetitionPenalty: computeTextRepetitionPenalty(fingerprints),
+    hasData: textRepetitionHasData(fingerprints), hasReportLength: fingerprints.slice(-3).some(fp => fp.length >= REPORT_TEXT_MIN_LEN) }
+}
+
 // ─── Score Computation ──────────────────────────────────────────────
 
 function computeConvergenceScore(
@@ -729,7 +803,8 @@ function computeConvergenceScore(
   producingReport = false,
   windowSize = 6,
   activityMode?: ActivityMode,
-): number {
+  editExpectationKind: 'required' | 'not-required' | 'unknown' = 'required',
+): { score: number; effectiveWeights: PhaseWeights } {
   // Weight re-allocation for no-data signals: when a penalty signal lacks
   // sufficient data, its default 1.0 ("no penalty") would otherwise enter the
   // weighted sum at full weight and inflate the score — making the agent look
@@ -742,6 +817,19 @@ function computeConvergenceScore(
   // window-period no-data sentinels. errorPenalty's empty-window 1.0 is
   // semantically correct (no errors = full marks) and is NOT re-allocated.
   const w: PhaseWeights = { ...weights }
+  // P1：编辑期待投影——not-required/unknown 时 editRatio 不参与评分：其份额
+  // 按其余信号的原权重比例归一（有效权重之和保持 1）。先于缺数据重分配执行：
+  // 两者各处理各自份额，不重分配两遍；已被置 0 的 editRatio 在下方缺数据
+  // 循环里因 !excess 被跳过（不会二次分发）。
+  if (editExpectationKind !== 'required' && w.editRatio > 0) {
+    const excess = w.editRatio
+    w.editRatio = 0
+    const shareTargets = ['targetNovelty', 'toolEntropy', 'errorPenalty', 'tokenEfficiency', 'oscillationPenalty', 'textRepetitionPenalty'] as const
+    const total = shareTargets.reduce((sum, key) => sum + w[key], 0)
+    if (total > 0) {
+      for (const key of shareTargets) w[key] += excess * (w[key] / total)
+    }
+  }
   if (signalsMissingData.size > 0) {
     // Re-allocate only to signals that are independent of editRatio: editRatio
     // is already a composite (gated by novelty below), so adding weight to it
@@ -777,9 +865,15 @@ function computeConvergenceScore(
   // deliberately excluded — its deliverable can be a text report or design
   // document, not necessarily file edits. Verify phase is also excluded —
   // its job is running tests/typechecks and reading diagnostics.
+  //
+  // P1：仅在 editExpectation=required 时施加——not-required（显式只读/审查/
+  // 验证步骤）与 unknown（未分类）都不得因缺编辑被额外惩罚；editRatio 信号
+  // 本身不可用（insufficient）同样跳过（统一走权重处理）。
   const editExpectedPhases: PhaseClass[] = ['execute']
   let penalty = 1.0
-  if (editExpectedPhases.includes(phaseClass) && signals.editRatio < 0.1) {
+  if (editExpectedPhases.includes(phaseClass) && signals.editRatio < 0.1
+      && editExpectationKind === 'required'
+      && !signalsMissingData.has('editRatio')) {
     // Severity scales with how far below expectation we are
     penalty = 0.5
   }
@@ -872,7 +966,12 @@ function computeConvergenceScore(
     }
   }
 
-  return Math.min(1.0, Math.max(0.0, raw * penalty))
+  return {
+    score: Math.min(1.0, Math.max(0.0, raw * penalty)),
+    // P3：归一后的有效权重（含 editRatio 期待归一与缺数据重分配）——
+    // 遥测/回放消费；不同口径的分数不可直接比较（regimeKey 切片）。
+    effectiveWeights: { ...w },
+  }
 }
 
 // 注入消息的构造与结构化变体标识沿接缝拆到 ./convergence-message.ts
@@ -934,14 +1033,15 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   const weights = PHASE_WEIGHTS[input.phaseClass]
   const windowSize = tier.signalWindow
 
+  const editRatioComputed = computeEditRatio(windowSize, input.recentToolHistory)
   const signals: ConvergenceSignals = {
-    editRatio: computeEditRatio(windowSize, input.recentToolHistory, input.evidenceState),
+    editRatio: editRatioComputed.value,
     targetNovelty: computeTargetNovelty(windowSize, input.recentToolHistory),
     toolEntropy: computeToolEntropy(windowSize, input.recentToolHistory),
     errorPenalty: computeErrorPenalty(windowSize, input.recentToolHistory),
     tokenEfficiency: computeTokenEfficiency(windowSize, input.recentToolHistory, input.evidenceState, input.outputTokens),
     oscillationPenalty: computeOscillationPenalty(input.toolFingerprints ?? []),
-    textRepetitionPenalty: computeTextRepetitionPenalty(input.textFingerprints ?? []),
+    textRepetitionPenalty: input.textObservation?.repetitionPenalty ?? computeTextRepetitionPenalty(input.textFingerprints ?? []),
   }
 
   // Track which penalty signals lack sufficient data so their default-1.0
@@ -950,7 +1050,10 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   // empty-window 1.0 is a legitimate "no errors = full marks".
   const signalsMissingData = new Set<keyof ConvergenceSignals>()
   if (!oscillationHasData(input.toolFingerprints ?? [])) signalsMissingData.add('oscillationPenalty')
-  if (!textRepetitionHasData(input.textFingerprints ?? [])) signalsMissingData.add('textRepetitionPenalty')
+  if (!(input.textObservation?.hasData ?? textRepetitionHasData(input.textFingerprints ?? []))) signalsMissingData.add('textRepetitionPenalty')
+  // P1：窗口内写工具效果全部不可判（无目标/回滚/未接线）→ editRatio 信号
+  // 不可用——统一走权重处理，而不是拿 0 当证据额外惩罚。
+  if (editRatioComputed.insufficient) signalsMissingData.add('editRatio')
 
   // Fix 2 — a read-heavy task that is emitting a substantial, non-repetitive
   // text report (code review / audit / investigation) is producing its
@@ -969,9 +1072,13 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
     && input.evidenceState.filesModified.size > 0
     && input.evidenceState.deliveryStatus !== 'verified'
   const producingReport = !hasUnverifiedEdits
-    && isProducingReport(input.textFingerprints ?? [], signals.textRepetitionPenalty)
+    && (input.textObservation ? input.textObservation.hasReportLength && signals.textRepetitionPenalty >= 0.7
+      : isProducingReport(input.textFingerprints ?? [], signals.textRepetitionPenalty))
 
-  const score = computeConvergenceScore(signals, weights, input.phaseClass, input.noToolTurnCount ?? 0, input.turn, input.recentToolHistory, input.providerName, signalsMissingData, producingReport, windowSize, input.activityMode)
+  const scoreComputed = computeConvergenceScore(signals, weights, input.phaseClass, input.noToolTurnCount ?? 0, input.turn, input.recentToolHistory, input.providerName, signalsMissingData, producingReport, windowSize, input.activityMode, input.editExpectation?.kind ?? 'required')
+  const score = scoreComputed.score
+  const scoreRegimeKey = input.scoreRegimeKey === undefined ? undefined
+    : effectiveScoreRegimeKey(input.scoreRegimeKey, scoreComputed.effectiveWeights as unknown as Record<string, number>, signalsMissingData, input.phaseClass)
 
   // W4 噪音洪流修复：工具错误受阻时降级收敛 score。最近窗口中 ≥40% 的
   // 工具返回 failed → agent 很可能在与坏掉的工具搏斗而非 doom-loop。
@@ -985,6 +1092,16 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   let level: 0 | 1 | 2 | 3 = 0
   const turn = input.turn
   const noToolCount = input.noToolTurnCount ?? 0
+
+  // P1：无有效评分信号（窗口与指纹全空）→ scoreQuality=insufficient：
+  // 分数没有证据支撑，不按分数分级（不补满分、也不误伤）；no-tool /
+  // productiveStagnation 等硬路径不受影响。
+  const scoreQuality: 'ok' | 'insufficient' =
+    input.recentToolHistory.length === 0
+    && (input.toolFingerprints ?? []).length === 0
+    && (input.textObservation?.count ?? (input.textFingerprints ?? []).length) === 0
+      ? 'insufficient'
+      : 'ok'
 
   // No-tool stagnation: fire earlier than normal thresholds. When the model
   // produces multiple turns with no tool calls, it's clearly stuck — don't
@@ -1057,11 +1174,11 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
     level = 2 // kick on 3+ consecutive no-tool turns
   } else if (noToolCount >= 2 && turn >= 4) {
     level = 2 // kick after 2 no-tool turns if we're past the very early turns
-  } else if (turn >= tier.nHigh && effectiveScore <= 0.2) {
+  } else if (scoreQuality === 'ok' && turn >= tier.nHigh && effectiveScore <= 0.2) {
     level = 3
-  } else if (turn >= tier.nMid && effectiveScore <= 0.4) {
+  } else if (scoreQuality === 'ok' && turn >= tier.nMid && effectiveScore <= 0.4) {
     level = 2
-  } else if (turn >= tier.nLow && effectiveScore <= 0.6) {
+  } else if (scoreQuality === 'ok' && turn >= tier.nLow && effectiveScore <= 0.6) {
     level = 1
   }
 
@@ -1073,6 +1190,18 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
     level = 0
   }
 
+  // P1 重复验证软判据（level 计算后、Todo/有限等待 veto 前仲裁）：同一工作
+  // 版本上以同一身份重复跑有限验证、长期无新进展、且当前仍在重跑同一验证
+  // ——只上探到 L2（收束/换策略），不独立触发 L3 abort/split；后续
+  // todo/等待 veto 与既有护栏仍可压低，不越过真实等待保护。
+  if (input.repeatedVerification
+      && input.repeatedVerification.count >= 2
+      && input.repeatedVerification.currentRerun
+      && input.repeatedVerification.turnsSinceProgress >= tier.nMid
+      && level < 2) {
+    level = 2
+  }
+
   // Progress-beacon veto: the todo list advanced within the recent window —
   // the hardest possible "not stuck" evidence, strictly stronger than the
   // trajectory-shape heuristics (novelty/entropy/efficiency). Cap score-based
@@ -1080,6 +1209,14 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   // requires a tool call, so a genuine no-tool spiral cannot carry this beacon
   // (noToolCount < 2 guard is belt-and-braces for stale deltas).
   if ((input.progressBeacons?.todoCompletedDelta ?? 0) > 0 && noToolCount < 2 && level > 1) {
+    level = 1
+  }
+
+  // Awaiting-verification veto（2026-10-10 狂轰事故方向 2）：后台有 running 的
+  // 验证型 job（等门禁钦定证据，如全量套件）→ 与 todo 同级 cap score-based
+  // escalation at L1。no-tool 层级不受影响（noToolCount < 2 guard 同 todo：
+  // 等待中的真无工具螺旋仍需提醒——job await 本身就是工具动作）。
+  if ((input.progressBeacons?.awaitingVerification ?? false) && noToolCount < 2 && level > 1) {
     level = 1
   }
 
@@ -1108,18 +1245,11 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   //    chance for the model to self-correct.
   // These guard bands prevent the penalty multiplication chain (no-tool × read-only
   // × phase-expectation) from false-triggering on a single low-score evaluation.
+  // P3：趋势只取末尾连续、同口径（regimeKey）、有效的样本——混合口径的
+  // 旧分数不得触发 score-abort（同口径样本不足 = 不燃）；口径与质量语义
+  // 见 score-history.ts。legacy number 样本按原语义参与，逐位兼容。
   const scoreDeclining = input.scoreHistory != null
-    && input.scoreHistory.length >= windowSize
-    && (() => {
-      const window = input.scoreHistory.slice(-windowSize)
-      // Count reversals (where a later value is higher than an earlier neighbor)
-      let reversals = 0
-      for (let i = 1; i < window.length; i++) {
-        if (window[i]! > window[i - 1]!) reversals++
-      }
-      // Allow at most 1 micro-bounce; overall trend must still be downward
-      return reversals <= 1 && window[window.length - 1]! < window[0]!
-    })()
+    && analyzeScoreDecline(input.scoreHistory, windowSize, scoreRegimeKey).declining
   const warnedButNotAdopted = input.priorWarningAtL2Plus === true
   const scoreAbort = level >= 3 && score < 0.05 && scoreDeclining && warnedButNotAdopted
   const shouldAbort = scoreAbort || noToolForceAbort
@@ -1128,7 +1258,7 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   const shouldForceSplit = level >= 3 && !noToolForceAbort
   const shouldKick = level >= 2
   const built = (level >= 2)
-    ? buildInjectedMessage(level as 2 | 3, score, signals, input.phaseClass, tier, input.evidenceState.deliveryStatus, noToolCount, productiveStagnation, input.repeatCount, input.activityMode, input.runtimeAdvice)
+    ? buildInjectedMessage(level as 2 | 3, score, signals, input.phaseClass, tier, input.evidenceState.deliveryStatus, noToolCount, productiveStagnation, input.repeatCount, input.activityMode, input.runtimeAdvice, input.editExpectation)
     : null
   const injectedMessage = built?.text ?? null
   const messageVariant = built?.variant ?? null
@@ -1144,5 +1274,8 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
     signals,
     abortCause: shouldAbort ? (noToolForceAbort ? 'no-tool' : 'score') : undefined,
     reasoningActive,
+    scoreQuality,
+    effectiveWeights: scoreComputed.effectiveWeights,
+    ...(scoreRegimeKey !== undefined ? { scoreRegimeKey } : {}),
   }
 }

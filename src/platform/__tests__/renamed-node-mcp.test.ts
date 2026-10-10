@@ -1,4 +1,6 @@
 import { test } from 'node:test'
+import { build } from 'esbuild'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -38,7 +40,15 @@ test('npm and npx use renamed host while preserving arguments and child PATH', (
     assert.equal(resolveNodeStdioCommand(kind, [], deps).command, kind)
   }
   const env = buildStdioEnvWithNodePath(undefined, { ...deps, getDefaultEnvironment: () => ({ SystemRoot: 'C:\\Windows' }) })
-  assert.equal(env.PATH, 'C:\\天枢 App\\node-runtime\\win-x64;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem')
+  // issue #408：gen-3 的 Windows bundled 目录里 node.exe 已被改名成
+  // tianshu-runtime.exe，只剩 node.cmd 转发器（deps.existsSync 恒 false 正是这个
+  // 布局）。此时不该抢占 PATH 首位——否则 cmd 解析 `node` 命中转发器，劫持系统真
+  // node，npm exec / npm run 里经 cmd 层启动 node 的脚本失败。**排在系统目录之后、
+  // 仍留在 PATH 中**才是正确排位。
+  assert.equal(
+    env.PATH,
+    'C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\天枢 App\\node-runtime\\win-x64',
+  )
 })
 
 test('production transport consumes the rename-aware resolver', () => {
@@ -65,7 +75,19 @@ test('renamed runtime performs a real production npx MCP handshake and lists too
         process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');
       });
     `)
-    const module = new URL('../../mcp/transport-factory.ts', import.meta.url).href
+    // Compile the real transport and SDK; this fixture tests the renamed host,
+    // npx resolver and MCP protocol without adding tsx cold-loading to its budget.
+    const bundle = join(dir, 'production-transport.cjs')
+    await build({
+      entryPoints: [fileURLToPath(new URL('../../mcp/transport-factory.ts', import.meta.url))],
+      outfile: bundle,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      target: 'node24',
+      logLevel: 'silent',
+    })
+    const module = pathToFileURL(bundle).href
     const script = join(dir, 'probe.mjs')
     writeFileSync(script, `
       import assert from 'node:assert/strict';
@@ -77,7 +99,7 @@ test('renamed runtime performs a real production npx MCP handshake and lists too
         console.log('handshake OK');
       } finally { await transport.close(); }
     `)
-    const { stdout } = await promisify(execFile)(executable, ['--import', import.meta.resolve('tsx'), script], { timeout: 15000 })
+    const { stdout } = await promisify(execFile)(executable, [script], { timeout: 15000 })
     assert.match(stdout, /handshake OK/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

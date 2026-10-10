@@ -65,18 +65,21 @@ describe('persist rounds (L1: per-dispatch archive)', () => {
     const dir = subagents(home)
     const key = orderFileKey('batch:0')
     // 第二轮先写、第一轮后写——靠 mtime 而非写入顺序排
-    writeFileSync(join(dir, `${key}.bbb22.json`), JSON.stringify(resultOf('batch:0', 'r2')), 'utf-8')
-    writeFileSync(join(dir, `${key}.aaa11.json`), JSON.stringify(resultOf('batch:0', 'r1')), 'utf-8')
+    writeFileSync(join(dir, `${key}.aaa11.json`), JSON.stringify(resultOf('batch:0', 'r2')), 'utf-8')
+    writeFileSync(join(dir, `${key}.bbb22.json`), JSON.stringify(resultOf('batch:0', 'r1')), 'utf-8')
     // 干扰项：最新副本、指纹文件、前缀撞名的 batch:01
     writeFileSync(join(dir, `${key}.json`), JSON.stringify(resultOf('batch:0', 'latest')), 'utf-8')
     writeFileSync(join(dir, 'deadbeefcafe1234.json'), JSON.stringify(resultOf('batch:0', 'fp copy')), 'utf-8')
     writeFileSync(join(dir, `${orderFileKey('batch:01')}.ccc33.json`), JSON.stringify(resultOf('batch:01', 'other id')), 'utf-8')
-    utimesSync(join(dir, `${key}.aaa11.json`), new Date(1000), new Date(1000))
-    utimesSync(join(dir, `${key}.bbb22.json`), new Date(2000), new Date(2000))
+    // exFAT 不支持 1980 年以前的日期；整分钟间隔也不依赖 mtime 精度。
+    const firstSavedAt = Date.UTC(2020, 0, 1)
+    const secondSavedAt = firstSavedAt + 60_000
+    utimesSync(join(dir, `${key}.bbb22.json`), new Date(firstSavedAt), new Date(firstSavedAt))
+    utimesSync(join(dir, `${key}.aaa11.json`), new Date(secondSavedAt), new Date(secondSavedAt))
 
     const rounds = listPersistedResultRounds('batch:0', home)
-    assert.deepEqual(rounds.map(r => r.nonce), ['aaa11', 'bbb22'])
-    assert.deepEqual(rounds.map(r => r.savedAt), [1000, 2000])
+    assert.deepEqual(rounds.map(r => r.nonce), ['bbb22', 'aaa11'])
+    assert.deepEqual(rounds.map(r => r.savedAt), [firstSavedAt, secondSavedAt])
     // 撞名 id 的归档属于自己的列表
     assert.deepEqual(listPersistedResultRounds('batch:01', home).map(r => r.nonce), ['ccc33'])
   })
@@ -119,14 +122,20 @@ describe('persist rounds (L1: per-dispatch archive)', () => {
     assert.deepEqual(listPersistedResultRounds('batch:0', home).map(r => r.nonce), ['aaa11'])
   })
 
-  it('旧格式归档（未编码文件名）在读/列路径回退兼容（POSIX 存量）', { skip: process.platform === 'win32' }, () => {
+  it('旧格式归档回退（POSIX 存量）：原名安全的 id 可读，裸冒号名保持不读（跨平台统一 fail-closed）', { skip: process.platform === 'win32' }, () => {
     // Windows 无法物化含冒号的普通文件名（会变 ADS）——回退只对 POSIX 存量有意义。
     const home = makeHome()
     const dir = subagents(home)
+    // ① 裸冒号 legacy 文件不再回退（安全决定：冒号即 NTFS ADS 暗道，跨平台统一；
+    //    新格式 batch%3A0.json 主路径不受影响，见上方归档用例）。
     writeFileSync(join(dir, 'batch:0.aaa11.json'), JSON.stringify(resultOf('batch:0', 'legacy r1')), 'utf-8')
     writeFileSync(join(dir, 'batch:0.json'), JSON.stringify(resultOf('batch:0', 'legacy latest')), 'utf-8')
-    assert.equal(loadPersistedResultRound('batch:0', 'aaa11', home)?.summary, 'legacy r1')
-    assert.equal(loadPersistedResult('batch:0', home)?.summary, 'legacy latest')
-    assert.deepEqual(listPersistedResultRounds('batch:0', home).map(r => r.nonce), ['aaa11'])
+    assert.equal(loadPersistedResultRound('batch:0', 'aaa11', home), null)
+    assert.equal(loadPersistedResult('batch:0', home), null)
+    assert.deepEqual(listPersistedResultRounds('batch:0', home), [])
+    // ② 编码差异但原名安全的 id（% 编码差异）回退仍可读——回退通路本身健在。
+    writeFileSync(join(dir, 'a%b.aaa11.json'), JSON.stringify(resultOf('a%b', 'legacy safe r1')), 'utf-8')
+    assert.equal(loadPersistedResultRound('a%b', 'aaa11', home)?.summary, 'legacy safe r1')
+    assert.deepEqual(listPersistedResultRounds('a%b', home).map(r => r.nonce), ['aaa11'])
   })
 })

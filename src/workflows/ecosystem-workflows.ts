@@ -332,6 +332,9 @@ If the objective IS a Markdown plan file path (e.g. .rivet/knowledge/...md or do
   2. Call plan_task with { objective, files: [planPath, plus the source files mentioned in the plan], execute: true }.
      plan_task auto-detects the plan file, turns its - [ ] checklist into self-contained patcher shards,
      and stores the plan so team_orchestrate can pick it up automatically.
+     The FULL path is required — detection is prefix-whitelisted to .rivet/plans/,
+     .rivet/knowledge/ and docs/superpowers/plans/; without it plan_task silently falls
+     back to free-form sharding (and may add a scout dependency that gates every shard).
   3. Workers write into the shared workspace. Review the aggregate changes (git diff/git status) — there is nothing to manually merge.
   4. team_orchestrate auto-advances through the remaining waves by default — do NOT re-invoke it per wave.
      Pass fromWave only for manual recovery (e.g. resuming after an interruption): it runs just that one wave.

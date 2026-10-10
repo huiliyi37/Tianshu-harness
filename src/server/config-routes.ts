@@ -34,7 +34,8 @@
 import { decodeRouteParam, type RouteHandler } from './index.js'
 import { buildProviderUsageRoutes } from './provider-usage-routes.js'
 import { isAuthorizedRequest } from './auth.js'
-import { readCallAudit } from '../api/call-audit.js'
+import { readCallAudit, summarizeCallAudit } from '../api/call-audit.js'
+import { findUsagePricing } from '../utils/deepseek-pricing.js'
 import {
   loadConfig,
   getApiKeyStatus,
@@ -106,6 +107,7 @@ import { queryDeepSeekBalance } from '../api/balance-client.js'
 import { resolveAccountCredential, type AccountCredential } from './account-credential.js'
 import { discoverVisionModels, validateVisionModel } from '../api/vision-model-onboarding.js'
 import { generateImage } from '../api/image-gen-client.js'
+import { imageGenerationNetwork } from '../api/image-generation-parameters.js'
 import {
   getImageGenModelConfig,
   registerImageGenModelConfig,
@@ -162,6 +164,7 @@ function parseImageGenRequest(body: unknown, options: { requireProviderName?: bo
 }
 import { probeForTestKey, matchModelDefaults } from './provider-probe-adapter.js'
 import { buildProviderKeyRoutes } from './config-routes-keys.js'
+import { buildImageGenerationRoutes } from './image-generation-routes.js'
 import { buildProFeatureRoutes } from './pro-feature-routes.js'
 import { buildZenRoutes } from './config-routes-zen.js'
 import { buildPermissionRoutes } from './config-routes-permissions.js'
@@ -280,6 +283,9 @@ export interface ConfigRouteHooks {
   /** provider/模型/密钥写盘成功后的快照刷新通知（serve 侧据此原地重建启动快照，
    *  「替换 key」「inline 压 env」对新解析即刻生效）。实现必须 fail-open。 */
   onProviderConfigChanged?: () => void
+  /** 已注册工作区列表（issue #221 同族加固）：`GET /workspace/file-context` 的 cwd
+   *  必须命中已注册工作区，防止 Bearer 持有者枚举任意目录。 */
+  knownWorkspaces?: () => string[]
 }
 
 export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): Record<string, RouteHandler> {
@@ -289,7 +295,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     try { hooks?.onProviderConfigChanged?.() } catch { /* best-effort */ }
   }
   return {
-    ...buildWorkspaceRoutes(apiToken), ...buildProviderUsageRoutes(apiToken),
+    ...buildWorkspaceRoutes(apiToken, hooks?.knownWorkspaces ?? (() => [])), ...buildProviderUsageRoutes(apiToken), ...buildImageGenerationRoutes(apiToken, hooks?.knownWorkspaces),
     // OAuth 型 provider（codex）的登录/登出路由按接缝外提（config-routes-oauth.ts），
     // 与 config-routes-keys.ts / config-routes-zen.ts 同先例。
     ...buildOAuthRoutes(apiToken, notifyProviderConfigChanged),
@@ -329,6 +335,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
             supportsVision: m.supportsVision,
             supportsVideo: m.supportsVideo,
             supportsImageGen: m.supportsImageGen,
+            imageGen: m.imageGen,
             // 免费徽章数据源：schema 的 pricing.free（真正免费——区别于订阅折算价）。
             // undefined 即"未知/付费"，desktop 以 === true 判定渲染。
             free: m.pricing?.free,
@@ -646,7 +653,14 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     //    盲测 models[0]（撞 embedding/未开通型号会误报，且用户此时要测的是
     //    「URL 连接」）：/models 200 → ok=true + completionSkipped（UI 提示
     //    「未测模型对话」）；/models 失败 → ok=false 带原因。
-    'GET /config/provider-calls': withAuth((_body, params) => ({ status: 200, body: { calls: readCallAudit({ model: params?.model, sessionId: params?.sessionId, purpose: params?.purpose, since: Number(params?.since) || undefined }) } }), apiToken),
+    'GET /config/provider-calls': withAuth((_body, params) => ({ status: 200, body: readCallAudit({ model: params?.model, sessionId: params?.sessionId, purpose: params?.purpose, group: params?.group as import('../api/call-audit.js').CallSourceGroup | undefined, since: Number(params?.since) || undefined, limit: Number(params?.limit) || undefined, before: Number(params?.before) || undefined }) }), apiToken),
+    // 调用来源分组统计(Insights 面板):与明细同账本,汇总恒等于明细卷积;
+    // 定价只覆盖配置里查得到的模型,查不到只报 token(cost=0 + costKnown=false)。
+    'GET /config/provider-calls/summary': withAuth((_body, params) => {
+      const days = Math.max(1, Math.min(366, Math.floor(Number(params?.days) || 7)))
+      const cfg = loadConfig()
+      return { status: 200, body: summarizeCallAudit({ since: Date.now() - days * 86_400_000, resolvePricing: (model, provider, timestamp) => findUsagePricing(cfg.provider.providers, provider ?? cfg.provider.default, model, timestamp) }) }
+    }, apiToken),
     'POST /config/providers/test': withAuth(async (body) => {
       const { provider, apiKey, baseUrl: override, protocol, model, vision } = body as {
         provider?: string
@@ -660,10 +674,14 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
       const target = resolveProviderProbeTarget(provider, apiKey, override)
       if ('error' in target) return { status: 400, body: { error: target.error } }
       const stored = loadConfig().provider.providers[provider]
+      const storedModel = stored?.models?.find(candidate => candidate.id === model)
       const report = await probeProvider({
         baseUrl: target.baseUrl, apiKey: target.apiKey,
         protocol: protocol ?? stored?.protocol ?? resolvePresetProtocol(provider),
-        providerName: provider, probeModel: model || undefined, vision,
+        providerName: provider, probeModel: model || undefined,
+        // 已保存模型按用户声明测试；未声明视觉时保守地只测文本。
+        // 尚未保存的向导请求继续使用显式参数或模型表启发。
+        vision: vision ?? (storedModel ? storedModel.supportsVision === true : undefined),
         skipCompletion: !model,
       })
       const completionSkipped = !report.probedModel
@@ -1233,9 +1251,10 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
           ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
           model: parsed.modelId,
           prompt: IMAGE_GEN_TEST_PROMPT,
-          size: '512x512',
+          ...(typeof (body as { size?: unknown })?.size === 'string' ? { size: (body as { size: string }).size } : {}),
           ...(parsed.sizeField ? { sizeField: parsed.sizeField } : {}),
           timeoutMs: 60_000,
+          ...imageGenerationNetwork(loadConfig()),
         })
         return {
           status: 200,
@@ -1246,27 +1265,10 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
       }
     }, apiToken),
 
-    // 注册 + 选槽一次写入。`skipTest: true` 跳过真测（用户在 Settings 里已单独
-    // 测过，或额度敏感时显式跳过）。
+    // 保存仅写配置；生成验证由显式试画操作触发。
     'POST /config/image-gen-model/onboard': withAuth(async (body) => {
       const parsed = parseImageGenRequest(body, { requireProviderName: true })
       if (parsed.error) return { status: 400, body: { error: parsed.error } }
-      const skipTest = (body as { skipTest?: unknown } | undefined)?.skipTest === true
-      if (!skipTest) {
-        try {
-          await generateImage({
-            baseUrl: parsed.baseUrl,
-            ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
-            model: parsed.modelId,
-            prompt: IMAGE_GEN_TEST_PROMPT,
-            size: '512x512',
-            ...(parsed.sizeField ? { sizeField: parsed.sizeField } : {}),
-            timeoutMs: 60_000,
-          })
-        } catch (err) {
-          return { status: 400, body: { error: (err as Error).message } }
-        }
-      }
       try {
         const config = registerImageGenModelConfig({
           providerName: parsed.providerName as string,

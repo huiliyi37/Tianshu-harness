@@ -1,3 +1,4 @@
+import { workerDispatchKey } from '../../tools/worker-identity.js'
 /**
  * T9 TuiApp — 主事件循环（替代 app.tsx 的 React 组件）。
  *
@@ -125,6 +126,7 @@ import {
 import { formatSpinnerStatus, formatTurnWorkSummary, formatJobAwaitWait, type JobAwaitCall } from '../format/spinner-status.js'
 import { formatSlashHint, formatSlashMenu, slashCompletionTarget, slashArgsHint, SLASH_HINT_MAX_VISIBLE, computeSlashMenuBudget, type SlashHintEntry } from '../format/slash-hint.js'
 import { OrchestrationHint, formatOrchestrationHint } from './orchestration-hint.js'
+import { notifySequence } from './terminal-notify.js'
 import { extractAtToken, getCompletions, applyCompletion } from '../file-completer.js'
 import stringWidth from 'string-width'
 import { resolve } from 'node:path'
@@ -340,6 +342,7 @@ export interface AgentCallbacks {
   onIntentNote?: (intent: IntentPreview) => void
   onDomainDrift?: (drift: DomainDriftResult) => void
   onSteerDrain?: () => string | null
+  onHumanGuidanceDrain?: () => import('../../agent/course-episodes.js').HumanGuidance | null
   /** C3 — autonomy checkpoint pause (cruise) / progress ping (unleashed). */
   onAutonomyCheckpoint?: (info: AutonomyCheckpointInfo) => void
   /** T4 — structured per-worker delegation status/progress feeding the fleet read model. */
@@ -858,6 +861,14 @@ export class TuiApp {
   // ── W4b: 输入辅助（W-B5: fields moved to InputController） ───
   /** W-B5: input state manager (slash/file-completion/history/ctrl+c/esc) */
   private inputController = new InputController()
+  private fileCompletionGeneration = 0
+  private fileCompletionQuery?: AbortController
+  private cancelFileCompletionQuery(): void {
+    this.fileCompletionGeneration++
+    this.fileCompletionQuery?.abort()
+    this.fileCompletionQuery = undefined
+    this.inputController.fileCompletion = null
+  }
   /** 协同建议（/team /scout /council 输入时情境提示）——见 engine/orchestration-hint.ts。 */
   private readonly orchHint: OrchestrationHint
   /** 输入框最近一次获得焦点的时间戳，用于 Ctrl+V 剪贴板图片防抖 */
@@ -1071,6 +1082,7 @@ export class TuiApp {
     // 审批/意图/overlay 模式下不处理粘贴——粘贴文本会"穿透"到输入框，
     // 退出模式后出现幽灵文本。
     this.input.onPaste(async (text) => {
+      this.cancelFileCompletionQuery()
       const generation = this.inputHandoffGeneration
       if (this.terminalRestored || this.editorActive) return
       const mode = this.input.getMode()
@@ -1176,6 +1188,7 @@ export class TuiApp {
 
     // Wire input: character input → inputLine → live region update
     this.input.onAnyKey((key) => {
+      if (key.name !== 'tab') this.cancelFileCompletionQuery()
       if (this.editorActive) return
       if (key.name === 'ctrl_c' && !this.approvalIntentController.approvalPending && !this.pendingPlanApproval && !this.pendingAskFlow && this.copyFrontendSelection()) return
       if (this.overlay.activeId() === 'ui-history') {
@@ -1498,6 +1511,22 @@ export class TuiApp {
         this.renderLive()
         return
       }
+      // Alt+Enter 插队引导（对齐 Codex CLI 的 pending_steers）：与 /steer 同一条
+      // 通路，在当前轮次的工具边界立即注入，不等本轮结束。空输入不响应。
+      if (key.name === 'return' && key.meta && !key.shift) {
+        const steerText = this.inputLine.value
+        const steerImages = [...this.inputLine.images]
+        if (steerText.trim() || steerImages.length > 0) {
+          // 该路径不经 InputLine 的 onSubmit 回调，缓冲由调用方重置。
+          this.inputLine.clearAfterSubmit()
+          this.inputController.closeSlash()
+          void this.submitSteer(steerText, steerImages).catch((err: unknown) => {
+            this.commitStatic(color(`⚠ 插队引导处理出错：${err instanceof Error ? err.message : String(err)}`, this.theme.warning))
+          })
+          this.renderLive()
+        }
+        return
+      }
       // ── W4a: Up 箭头取回最近 queued 消息到输入框编辑 ─────────
       if (key.name === 'up' && !this.inputLine.value && this.steerBuffer.hasPending()) {
         const msg = this.steerBuffer.popLast()
@@ -1625,7 +1654,7 @@ export class TuiApp {
       onAutonomyCheckpoint: (info) => this.handleAutonomyCheckpoint(info),
       // 工具边界只注入紧急意图（halt=now / redirect=next）：普通消息（later）
       // 留在队列，等本轮结束后自动作为下一轮发出——不混进当前轮 [User guidance]。
-      onSteerDrain: () => this.steerBuffer.drain('next'),
+      onHumanGuidanceDrain: () => this.steerBuffer.drainHuman('next'),
       onDelegationActivity: (activity) => this.handleDelegationActivity(activity),
       // issue #247 第 1–3 条：CVM 拦截发生时提示（分级/文案在 agent/cvm-notice.ts）
       onCvmInterception: (notice) => this.handleCvmInterception(notice),
@@ -1886,8 +1915,17 @@ export class TuiApp {
   /** 确认后绕过预览门禁一次性直提。 */
   private contractBypass = false
 
+  /**
+   * 提交插队引导（Alt+Enter / /steer）：busy 时以 now 优先级进 steer 队列，
+   * 在下一个工具边界作为 [User guidance] 立即注入；idle 时等价一次普通提交。
+   * 与普通 Enter 的唯一差别是 busy 分支的优先级（普通消息是 later，轮末发出）。
+   */
+  async submitSteer(text: string, images?: string[]): Promise<void> {
+    await this.handleInputSubmit(text, images, false, undefined, true)
+  }
+
   /** 输入提交主流程（InputLine onSubmit 回调；原构造器闭包提取，逻辑零改动）。 */
-  private async handleInputSubmit(text: string, images?: string[], decision = false, questionRequestId?: string): Promise<void> {
+  private async handleInputSubmit(text: string, images?: string[], decision = false, questionRequestId?: string, steer = false): Promise<void> {
     // 提交 = 继续对话：取消 Ctrl+C 退出确认（同 Esc/编辑键/粘贴，防残留误退）。
     if (this.inputController.ctrlCPendingSince > 0) this.inputController.clearExitConfirm()
     // 入口先规范化图片数组，后续气泡/渲染/回调看到的是同一份。
@@ -1976,8 +2014,11 @@ export class TuiApp {
     // W4a: agent 执行中 → 入队（turn 边界 drain 注入）。
     // 同时立即 commit 用户气泡到 scrollback，确保用户始终能看到自己说了什么。
     if (this.agentBusy && trimmed) {
-      await this.awaitUserCommit(trimmed, images, questionRequestId)
-      this.steerBuffer.push(trimmed)
+      // 显式插队（Alt+Enter / /steer）→ now 优先级，本轮工具边界立即注入；
+      // 普通 Enter → later，本轮结束后自动作为下一轮发出（见 onSteerDrain 注释）。
+      await this.awaitUserCommit(steer ? `[⚡ 插队引导] ${trimmed}` : trimmed, images, questionRequestId)
+      if (steer) this.steerBuffer.pushNow(trimmed)
+      else this.steerBuffer.push(trimmed)
       // 插话只走文本：图片暂存到下一轮随 prompt 发出，并明确告知去向。此前这里是
       // 静默丢弃——气泡里图已经显示出来了，用户以为模型看到了，实际从未收到。
       if (images?.length) {
@@ -2265,6 +2306,7 @@ export class TuiApp {
 
   /** 设置输入文本（外部更新，如 slash command） */
   setInput(text: string): void {
+    this.cancelFileCompletionQuery()
     this.inputLine.setValue(text, text.length)
     this.renderLive()
   }
@@ -2282,6 +2324,7 @@ export class TuiApp {
    * 再调 setGitBranch()。
    */
   setCwd(cwd: string): void {
+    this.cancelFileCompletionQuery()
     // cwd 变化 = 旧目录的会话面结束：挂着的提问卡先归档再清面板（与
     // setUIHistorySession/dispose 同手法）——只清面板不归档的话，提问在会话内
     // 彻底不可见，直到 dispose 才以「未作答」入历史。
@@ -3148,7 +3191,9 @@ export class TuiApp {
     if (gone.length === 0) return
     for (const w of gone) {
       const activity: DelegationActivity = {
-        workOrderId: w.workerId,
+        workOrderId: w.workOrderId ?? w.workerId,
+        dispatchId: w.dispatchId,
+        attemptId: w.attemptId,
         parentToolId: w.parentToolId,
         status: 'failed',
         progressLine: 'worker 失联（进程不在跑），终态由 CLI reconcile 补发',
@@ -4069,6 +4114,7 @@ export class TuiApp {
 
   /** 销毁资源 */
   dispose(): void {
+    this.cancelFileCompletionQuery()
     this.archiveAskCards()
     this.decisions.clear()
     this.rejectPendingApprovals()
@@ -4641,15 +4687,24 @@ export class TuiApp {
 
     const token = extractAtToken(value, cursor)
     if (token === null) return false
-    const candidates = getCompletions(token, process.cwd(), 8)
-    if (candidates.length === 0) return false
-
-    this.inputController.fileCompletion = { baseText: value, baseCursor: cursor, candidates, idx: 0 }
-    const applied = applyCompletion(value, cursor, candidates[0]!)
-    this.inputLine.setValue(applied.text, applied.cursor)
-    if (candidates.length === 1) {
-      this.inputController.fileCompletion = null // 唯一候选，无需循环
-    }
+    this.cancelFileCompletionQuery()
+    const generation = this.fileCompletionGeneration
+    const query = new AbortController()
+    this.fileCompletionQuery = query
+    const cwd = this.sessionCwd ?? process.cwd()
+    void getCompletions(token, cwd, 8, query.signal).then(candidates => {
+      if (generation !== this.fileCompletionGeneration || query.signal.aborted || this.terminalRestored
+        || this.inputLine.value !== value || this.inputLine.cursor !== cursor
+        || (this.sessionCwd ?? process.cwd()) !== cwd || this.overlay.isActive()
+        || this.input.getMode() !== 'input' || this.editorActive) return
+      this.fileCompletionQuery = undefined
+      if (candidates.length === 0) return
+      this.inputController.fileCompletion = { baseText: value, baseCursor: cursor, candidates, idx: 0 }
+      const applied = applyCompletion(value, cursor, candidates[0]!)
+      this.inputLine.setValue(applied.text, applied.cursor)
+      if (candidates.length === 1) this.inputController.fileCompletion = null
+      this.renderLive()
+    })
     return true
   }
 
@@ -5077,19 +5132,20 @@ export class TuiApp {
    * 据此实时刷新）。终态清理在委派工具 result 到达时统一处理。
    */
   private handleDelegationActivity(activity: DelegationActivity): void {
-    const prev = this.fleet.getWorkerById(activity.workOrderId)
+    const key = workerDispatchKey(activity)
+    const prev = this.fleet.getWorkerById(key)
     // 已终态的 id 又起跑 = 新一轮派发（稳定 order id 如 batch:0 跨轮复用）。
     // 去重集按 id 记，不撤销的话第二次派发就永远不打卡了。
     if (prev?.terminal && activity.status === 'running') {
-      this.dispatchCardShown.delete(activity.workOrderId)
+      this.dispatchCardShown.delete(key)
     }
     this.fleet.apply(activity)
     this.mirror.apply(activity)
     // 派发契约卡：worker 起跑瞬间沉淀「目标 + 范围」到 scrollback。
     // 必须同时卡住 status==='running'——contract 只随首条 running 事件携带，
     // 终态回放（resume/归档）若也带上就会为已结束的 worker 补打派发卡。
-    if (activity.status === 'running' && activity.contract && !this.dispatchCardShown.has(activity.workOrderId)) {
-      this.dispatchCardShown.add(activity.workOrderId)
+    if (activity.status === 'running' && activity.contract && !this.dispatchCardShown.has(key)) {
+      this.dispatchCardShown.add(key)
       const card = formatWorkerDispatchCard(activity.contract, activity.workOrderId, {
         columns: this.columns,
         theme: this.theme,
@@ -5099,11 +5155,21 @@ export class TuiApp {
     // 终态转变 → 主区完成通知行（CC 后台任务完成对标）。
     // 只在「见过 running」的 worker 上通知，避免纯终态回放（resume/归档）刷屏。
     if (prev && !prev.terminal) {
-      const now = this.fleet.getWorkerById(activity.workOrderId)
+      const now = this.fleet.getWorkerById(key)
       if (now?.terminal) this.notifyWorkerTerminal(now)
     }
     this.markActivity()
     this.writeBatcher.schedule()
+  }
+
+  /**
+   * 终端通知出口（计划 C1）：OSC 序列（RIVET_NOTIFY_OSC，缺省 auto——未识别终端不发）
+   * + 既有 BEL（RIVET_NOTIFY_BELL=1）。两条路径互不影响：BEL 关着也能发 OSC，反之亦然。
+   */
+  private emitTerminalNotify(title: string, body: string): void {
+    const sequence = notifySequence({ title, body })
+    if (sequence) this.stdout.write(sequence)
+    if (process.env.RIVET_NOTIFY_BELL === '1') this.stdout.write('\x07')
   }
 
   /** worker 终态完成通知：一行摘要入 scrollback + 可选终端 bell（RIVET_NOTIFY_BELL=1）。 */
@@ -5131,7 +5197,7 @@ export class TuiApp {
     const head = `子代理${verb} ${label}`
     const line = ` ${glyph} ${head}${detail ? `  ${detail}` : ''}${statsStr}`
     this.commitStatic(color(line, ok ? this.theme.success : this.theme.warning))
-    if (process.env.RIVET_NOTIFY_BELL === '1') this.stdout.write('\x07')
+    this.emitTerminalNotify(head, `${detail}${statsStr}`.trim() || label)
   }
 
   /**
@@ -5165,7 +5231,7 @@ export class TuiApp {
     const code = row.status === 'exited' && row.exitCode !== 0 ? ` (exit ${row.exitCode})` : ''
     const line = ` ${glyph} 后台任务${verb}: ${cmd}${code} (${elapsed})`
     this.commitStatic(color(line, ok ? this.theme.success : this.theme.warning))
-    if (process.env.RIVET_NOTIFY_BELL === '1') this.stdout.write('\x07')
+    this.emitTerminalNotify(`后台任务${verb}`, `${cmd}${code} (${elapsed})`)
   }
 
   /** overlay 数据 provider：当前 job 行 + 选中索引（按 id 解析，防重排漂移）。 */
@@ -5562,6 +5628,8 @@ export class TuiApp {
       }, this.theme)
       this.commitBlock(summary)
       this.frontend.record({ kind: 'notice', name: 'turn-complete', text: summary })
+      // 终端通知：离开窗口的用户也能被唤起（OSC；BEL 仍走 RIVET_NOTIFY_BELL）。
+      this.emitTerminalNotify('天枢 · 任务完成', summary)
 
       // max_tokens 截断提醒（dsh 式）：输出被 token 上限截断时此前完全静默——
       // 用户以为回答说完了。截断内容保留在历史里，发「继续」自然续上（不自动续写）。
@@ -5674,6 +5742,7 @@ export class TuiApp {
         })
       }
     })
+    this.emitTerminalNotify('天枢 · 任务失败', error.message)
     // 输入框已有草稿时不抢写（用户正在输入的内容优先）
     if (refill && !this.inputLine.value) {
       this.inputLine.setValue(refill)
@@ -5944,6 +6013,7 @@ export class TuiApp {
       this.onSubmitCallback?.('continue', undefined, { origin: 'runtime_command' })
     }
     this.onAbortCallback?.()
+    this.emitTerminalNotify('天枢 · 任务已停止', reason ?? '已中止当前执行')
   }
 
   // ── Rendering Pipeline ───────────────────────────────────────
@@ -6050,7 +6120,7 @@ export class TuiApp {
   /** Classic live chrome keeps a bounded high-water height; fullscreen owns its fixed grid. */
   private getDynamicBudget(chromeRows: number, dynamicRows: number): number {
     const rows = this.rows || 24
-    const expanded = !!(this.approvalIntentController.approvalPending || this.pendingPlanApproval
+    const expanded = !!(this.approvalIntentController.approvalPending || this.decisions.active
       || this.inputController.slashMenu.open || this.inputLine.value.startsWith('/'))
     const cap = expanded ? liveMaxRowsFor(rows) : Math.min(liveMaxRowsFor(rows), Math.ceil(rows / 2))
     if (!expanded && this.state.phase === 'idle') {
@@ -6122,7 +6192,7 @@ export class TuiApp {
 
   private mergeSidePanel(lines: LiveRegionLine[], panelLines: string[], contentCols: number, panelWidth: number): LiveRegionLine[] {
     const merged: LiveRegionLine[] = []
-    const totalRows = Math.max(lines.length, panelLines.length)
+    const totalRows = lines.some(line => line.decisionPart) ? lines.length : Math.max(lines.length, panelLines.length)
     const RESET = '\x1B[0m'
     for (let i = 0; i < totalRows; i++) {
       const mainRaw = lines[i]?.text ?? ''
@@ -6498,7 +6568,7 @@ export class TuiApp {
 
     const decision = this.decisions.active
     if (decision && !this.overlay.isActive() && !this.approvalIntentController.approvalPending) {
-      if (decision.visible) lines.push(...renderDecisionCard(decision, cols, Math.max(5, Math.min(18, this.rows - 7)), this.theme, this.decisions.count, decision.kind === 'plan' ? this.planAutoApproveRemainSec : undefined))
+      if (decision.visible) lines.push(...renderDecisionCard(decision, cols, Math.max(3, Math.min(18, Math.max(5, this.rows - 7), this.rows - 2)), this.theme, this.decisions.count, decision.kind === 'plan' ? this.planAutoApproveRemainSec : undefined))
       else lines.push({ text: color(`${decision.kind === 'plan' ? '待审批' : '待回答'} · Tab 返回卡片`, this.theme.warning), decisionPart: 'footer' })
     }
     let chromeStart = this.screenReader ? gateStart : lines.length
@@ -6821,8 +6891,9 @@ export class TuiApp {
     }
 
     const decisionRows = lines.slice(0, chromeStart).filter(line => line.decisionPart).length
-    if (decisionRows && this.rows < 14 && !this.screenReader && !this.frontend.isFullscreen) {
-      const chrome = lines.slice(chromeStart), keep = Math.max(1, this.rows - 1 - decisionRows)
+    if (decisionRows && !this.screenReader) {
+      const cap = this.frontend.isFullscreen ? this.rows : liveMaxRowsFor(this.rows)
+      const chrome = lines.slice(chromeStart), keep = Math.max(1, cap - decisionRows)
       lines = [...lines.slice(0, chromeStart), ...budgetInputChrome(chrome, keep)]
     }
     if (this.screenReader) {

@@ -1,4 +1,4 @@
-import { createVerificationRecorder } from './verification-recorder.js'
+import { createVerificationRecorder, beginCourseToolExecution, type CourseExecutionCallbacks } from './course-verification-execution.js'
 import type { AgentConfig, AgentCallbacks } from './loop-types.js'
 import type { TurnBudget } from './turn-budget.js'
 import type { ContentBlock } from '../api/types.js'
@@ -31,13 +31,14 @@ import { startTraceEvent, finishTraceEvent, fingerprintToolCall, fingerprintTool
 import { summarizeRepairTelemetry } from './repair-pipeline.js'
 import { extractErrorHead, generateToolSummary } from './tool-summary.js'
 import type { InterventionLevel } from './prediction-error.js'
-import { assessToolRisk, CONFIDENCE_THRESHOLDS, hasOutOfWorkspaceWriteTarget, isDestructiveGitAction, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval } from './approval-risk.js'
+import { CONFIDENCE_THRESHOLDS, hasOutOfWorkspaceWriteTarget, isDestructiveGitAction, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval } from './approval-risk.js'
 import type { Sensorium } from './sensorium.js'
 import { isToolAllowed, isToolDenied, isBashCommandAllowlisted, isBashCommandDenied, learnBashPrefix, learnFileApproval, extractBashPrefix } from './permissions.js'
 import { appendBashAllowPrefix } from '../config/bash-permissions.js'
 import { isSelfDestructiveKill, selfProcessTree } from './self-preservation.js'
 import { isSandboxActive, sandboxCoversCommand } from '../tools/sandbox-profile.js'
 import { applyApprovalEdit, type ApprovalResult } from './approval-edit.js'
+import { ApprovedInputBoundaryError, assessCurrentToolRisk, assertApprovedInputBoundary, ToolClaimBoundary } from './approval-input-boundary.js'
 import { debugEnabled, debugLog } from '../utils/debug.js'
 import { suggestStrategyShift, type TrajectorySummary } from './strategy-shift.js'
 import { PrewarmCache } from './prewarm.js'
@@ -344,7 +345,7 @@ function withToolTimeout<T>(
  })
 }
 
-export interface ToolPipelineDeps {
+export interface ToolPipelineDeps extends CourseExecutionCallbacks {
   config: AgentConfig
   cwd: string
   harness: TurnHarness
@@ -711,7 +712,7 @@ async function executeToolUseInner(
   let checkpointFailureNote: string | undefined
   // v2（认领即租约）：本回合 R2 写前守卫「自动接管」过的认领。供结果尾部点名——
   // 静默接管是禁止的（设计文档 §6）。声明必须早于 R2 块（后者在函数中段）。
-  const claimTakeovers: Array<{ claimPath: string; level: string; reason: string; owner: string | null }> = []
+  const claimBoundary = new ToolClaimBoundary(deps)
 
   // 无进展哨兵的活动 key（工具级，2026-09-10 纵深修复）：pre 段（审批/checkpoint/
   // 快照）与 post 段（hooks/LSP/artifact/账本/影响面）都打在它上面——stall 告警
@@ -743,9 +744,8 @@ async function executeToolUseInner(
     tu = { ...tu, name: canonicalToolName }
   }
 
-  const recordVerification = createVerificationRecorder(deps)
+  let recordVerification = createVerificationRecorder(deps)
   const params: ToolCallParams = {
-    onVerificationCompleted: recordVerification,
     input: tu.input,
     toolUseId: tu.id,
     cwd: deps.cwd,
@@ -1035,9 +1035,8 @@ async function executeToolUseInner(
 
     // Approval gate — with sensorium-driven adaptive confidence
     const needsApproval = deps.config.toolRegistry.needsApproval(tu.name, params)
-    const antibodies = deps.config.contextClaimStore?.listClaims({ kind: ['failure_pattern'], status: ['active', 'durable_candidate', 'durable'] }) ?? []
     const sensorium = deps.getSensorium?.() ?? null
-    const risk = assessToolRisk(tu.name, tu.input, deps.getDoomLoopLevel(), antibodies, sensorium ?? undefined, deps.config.toolRegistry?.get(tu.name)?.definition?.capability as import('../mcp/policy.js').McpCapability | undefined)
+    const risk = assessCurrentToolRisk(tu.name, tu.input, deps, sensorium ?? undefined)
     latestRisk = risk
     const isHighRisk = risk.level === 'high'
     const approvalMode = deps.config.approvalMode ?? 'manual'
@@ -1254,9 +1253,38 @@ async function executeToolUseInner(
         return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: denyMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
      }
       if (finalInput !== tu.input) {
+        const originalInput = tu.input
         tu.input = finalInput
         params.input = finalInput
+        // Re-gate (2026-10 approval-path audit): the deny / bash-deny / self-kill
+        // gates above ran against the ORIGINAL input. An approval-time edit
+        // (editedInput) can swap in a command those gates never saw — e.g. approve
+        // a benign `echo`, edit it into `rm -rf /` or `pkill node`. Re-run the same
+        // three gates on the final input BEFORE execution; on a hit, refuse exactly
+        // like the original gate at the top (error tool result, no throw). The edit
+        // itself is still allowed — only a gated final input is rejected.
+        const editDenied = isToolDenied(tu.name, tu.input, denyRules)
+        const editBashDenied = tu.name === 'bash' && typeof tu.input.command === 'string'
+          ? isBashCommandDenied(tu.input.command, bashDenyPrefixes)
+          : false
+        const editSelfKill = tu.name === 'bash' && typeof tu.input.command === 'string'
+          ? isSelfDestructiveKill(tu.input.command, selfProcessTree())
+          : false
+        if (editDenied || editBashDenied || editSelfKill) {
+          // Restore the pre-approval input before returning so downstream consumers
+          // (fingerprint, artifact/trace records) never see the rejected command as
+          // if it were the executed one.
+          tu.input = originalInput
+          params.input = originalInput
+          const reason = editSelfKill
+            ? "Tool execution blocked: this command would terminate the agent's own runtime (the Rivet sidecar / Node process it runs in). That aborts the session and drops its API auth. To restart a local dev server, use a targeted command like `npx kill-port <port>` or kill a specific non-agent PID; otherwise ask the user to restart it manually."
+            : `Tool execution denied: the approved edit to ${tu.name} matches an active deny rule. This is a user-configured permission boundary, not a dead end — continue via another route: gather evidence with read-only tools (read_file/grep/glob), write probes under .rivet/scratch/, or ask the user to adjust the permissions deny rules if this operation is genuinely required.`
+          deps.onGateBlocked?.(editSelfKill ? 'self-kill' : 'deny')
+          callbacks.onToolResult(tu.id, tu.name, reason, true)
+          return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: reason, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+        }
      }
+      latestRisk = assertApprovedInputBoundary(tu.name, tu.input, deps, params)
       // Thermocline 2: learn bash command prefix into session allowlist after approval
       if (tu.name === 'bash' && typeof tu.input.command === 'string') {
         learnBashPrefix(tu.input.command, deps.config.permissions)
@@ -1300,7 +1328,6 @@ async function executeToolUseInner(
     // an unguarded side door. Only active when a registry is present — CLI /
     // single-session / no-registry paths are completely unaffected.
     if (deps.sessionRegistry && deps.sessionId) {
-      const staked: string[] = []
       for (const claimPath of preWriteClaimPaths(tu, deps.cwd)) {
         const acquired = deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')
         if (!acquired) {
@@ -1334,8 +1361,7 @@ async function executeToolUseInner(
                 ? deps.sessionRegistry.releaseClaimIfUnchanged(liveness.ownerSessionId, claimPath, liveness.lastTouchedAt)
                 : true
               if (released && deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')) {
-                claimTakeovers.push({ claimPath, level: decision.level, reason: decision.reason, owner: liveness.ownerSessionId ?? null })
-                staked.push(claimPath)
+                claimBoundary.stake(claimPath, liveness.ownerSessionId ?? null, decision)
                 continue
               }
             }
@@ -1374,7 +1400,7 @@ async function executeToolUseInner(
               ? deps.sessionRegistry.releaseClaimIfUnchanged(owner.sessionId, claimPath, expectedTouchedAt)
               : !deps.sessionRegistry.checkClaim(claimPath)
             if (released && deps.sessionRegistry.acquireClaim(deps.sessionId, claimPath, 'exclusive')) {
-              staked.push(claimPath)
+              claimBoundary.stake(claimPath, owner.sessionId)
               continue
             }
           }
@@ -1382,12 +1408,7 @@ async function executeToolUseInner(
           // ast_edit 多 paths）中途被拦时，把本次已认领的路径放回去——否则补丁被拒
           // 却留下无主 exclusive claim（claims 表无 TTL，只随进程死亡回收），反把
           // peer 挡在门外。范式同 coordinator 重试认领的回滚。
-          for (const p of staked) deps.sessionRegistry.releaseClaim(deps.sessionId, p)
-          // 上面若已自动接管过别的路径，回滚时把认领**还回原持有方**：夺走再放弃会让
-          // 对方以为仍持有、实际无人持有，是最坏形状。
-          for (const t of claimTakeovers) {
-            if (t.owner) deps.sessionRegistry.acquireClaim(t.owner, t.claimPath, 'exclusive')
-          }
+          claimBoundary.rollback()
           const ownerTag = owner?.sessionId ? `（会话 ${owner.sessionId.slice(0, 8)}）` : ''
           const blockMsg =
             `文件「${claimPath}」正被另一个会话${ownerTag}独占编辑，已阻断本次写入以避免并发冲突。` +
@@ -1395,7 +1416,7 @@ async function executeToolUseInner(
           callbacks.onToolResult(tu.id, tu.name, blockMsg, true)
           return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: blockMsg, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
         }
-        staked.push(claimPath)
+        claimBoundary.stake(claimPath)
       }
     }
 
@@ -1537,8 +1558,14 @@ async function executeToolUseInner(
           const composedSignal = deps.abortSignal
             ? AbortSignal.any([deps.abortSignal, toolAbort.signal])
             : toolAbort.signal
+          // Claim approvals and durable intent writes can await while runtime
+          // policy changes. Recheck immediately before dispatch, without asking again.
+          latestRisk = assertApprovedInputBoundary(tu.name, tu.input, deps, params)
+          composedSignal.throwIfAborted()
           // Zen 相位下未注册工具（幻觉调用）不晋升，但把 registry 的裸
           // Unknown tool 报错变成可行动的 zen_unlock 指引，避免死路重试。
+          if (toolDef) params.onVerificationCompleted = recordVerification = beginCourseToolExecution(deps, tu.name, params.input)
+          claimBoundary.executionStarted = true
           const execution = deps.config.toolRegistry.execute(tu.name, { ...params, approvalMode, approvalGrantedAt: shouldAsk ? Date.now() : undefined, abortSignal: composedSignal })
           const zenGuardedExecution = execution.catch(err => {
             const zenHint = deps.getZenUnregisteredHint?.(tu.name)
@@ -1597,8 +1624,8 @@ async function executeToolUseInner(
     let finalContent = postHookResult.result ?? harnessResult.content
     const declaredVerificationKind = tu.name === 'bash' ? classifyDeclaredCommand(bashCommand, loadDeclaredVerify(deps.cwd)) : undefined
     const bashVerification = tu.name === 'bash' && !rawToolResult?.backgroundJobId
-      && (isVerificationCommand(bashCommand) || declaredVerificationKind)
-      ? buildBashVerification(rawToolResult?.command ?? bashCommand, rawToolResult, harnessResult) : undefined
+      && (isVerificationCommand(bashCommand, deps.cwd) || declaredVerificationKind)
+      ? buildBashVerification(rawToolResult?.command ?? bashCommand, rawToolResult, harnessResult, deps.cwd) : undefined
     // Normalize: strip trailing whitespace to produce stable byte sequences
     // for DeepSeek exact-prefix cache. Non-deterministic trailing whitespace
     finalContent = finalContent.trimEnd()
@@ -1794,15 +1821,7 @@ async function executeToolUseInner(
 
     // v2：自动接管必须点名（静默接管是禁止的）。追加在结果尾部 = 对话历史末尾、
     // 模型与 UI 都能看到；**不新增注入点、已冻结前缀字节不变**（不碎前缀缓存）。
-    if (claimTakeovers.length > 0) {
-      const notes = claimTakeovers
-        .map((t) => `[claim-takeover] 已接管会话 ${t.owner ? t.owner.slice(0, 8) : '(无主)'} 对「${t.claimPath}」的独占认领（判据 ${t.level}：${t.reason}）。`)
-        .join('\n')
-      finalContent = `${finalContent}\n\n${notes}`
-      for (const t of claimTakeovers) {
-        console.warn(`[claim-takeover] ${t.claimPath} ← ${t.owner ?? '(无主)'} via ${t.level}：${t.reason}`)
-      }
-    }
+    finalContent = claimBoundary.appendTakeoverNotes(finalContent)
 
     // 工具尾部反馈在 artifact/截断后追加，模型与 UI 都能收到；不改变验证状态。
     if (bashVerification?.userGuidance && bashVerification.status !== 'failed') {
@@ -1818,7 +1837,7 @@ async function executeToolUseInner(
     // DEBUG: unconditional trace for TUI rendering-loss investigation.
     // Log file: ~/.rivet/sessions/<project-slug>/<sessionId>/tool-result-trace.jsonl
     void emitToolResultTrace({ cwd: deps.cwd, sessionId: deps.sessionId, id: tu.id, name: tu.name, isError: harnessResult.isError, contentLen: finalContent.length, source: 'pipeline', errorKind: rawToolResult?.errorKind ?? harnessResult.errorClass })
-    callbacks.onToolResult(tu.id, tu.name, finalContent, harnessResult.isError ?? false, rawToolResult?.rawPath, rawToolResult?.uiContent, { command: rawToolResult?.command, outputText: rawToolResult?.displayOutput ?? rawToolResult?.uiContent ?? rawToolResult?.content, outputTruncated: rawToolResult?.displayOutputTruncated, images: rawToolResult?.images, exitCode: rawToolResult?.exitCode, lossiness: rawToolResult?.lossiness })
+    callbacks.onToolResult(tu.id, tu.name, finalContent, harnessResult.isError ?? false, rawToolResult?.rawPath, rawToolResult?.uiContent, { command: rawToolResult?.command, outputText: rawToolResult?.displayOutput ?? rawToolResult?.uiContent ?? rawToolResult?.content, outputTruncated: rawToolResult?.displayOutputTruncated, images: rawToolResult?.images, exitCode: rawToolResult?.exitCode, lossiness: rawToolResult?.lossiness, ...(rawToolResult?.generatedImageId ? { generatedImageId: rawToolResult.generatedImageId } : {}) })
 
     deps.recordToolHistory(tu.name, tu.input, harnessResult.isError, harnessResult.content, rawToolResult?.errorClass, rawToolResult?.errorKind)
 
@@ -2192,6 +2211,12 @@ async function executeToolUseInner(
 
     return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: starSig ? finalContent + starSig : finalContent, is_error: harnessResult.isError }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk, endTurn: rawToolResult?.endTurn === true ? true : undefined, images: rawToolResult?.images, errorKind: harnessResult.isError ? resolveErrorKind(rawToolResult) : undefined, presentation: rawToolResult?.presentation }
  } catch (err) {
+    claimBoundary.rollback()
+    if (err instanceof ApprovedInputBoundaryError) {
+      latestRisk = err.risk
+      callbacks.onToolResult(tu.id, tu.name, err.message, true)
+      return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: err.message, is_error: true }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk }
+    }
     // AbortError: user cancelled — not a tool failure.
     // Skip failure recording so immune/doom-loop signals aren't polluted.
     if ((err as Error).name === 'AbortError') {

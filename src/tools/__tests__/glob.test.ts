@@ -141,4 +141,21 @@ describe('GLOB_TOOL', () => {
     assert.equal(GLOB_TOOL.requiresApproval(makeParams({ pattern: 'test' })), false)
     assert.equal(GLOB_TOOL.isConcurrencySafe(), true)
   })
+  it('excludes filesystem metadata even when explicitly targeted and preserves ordinary dotfiles', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'glob-metadata-'))
+    try {
+      mkdirSync(join(dir, 'nested'))
+      mkdirSync(join(dir, '._metadata-directory'))
+      for (const file of ['note.txt', '.notes.txt', '._note.txt', '.DS_Store', 'nested/real.txt', 'nested/._real.txt', '._metadata-directory/leak.txt']) {
+        writeFileSync(join(dir, file), 'synthetic fixture')
+      }
+      const execute = (pattern: string) => GLOB_TOOL.execute({ input: { pattern }, toolUseId: 'metadata', cwd: dir })
+      assert.equal((await execute('**/*.txt')).content, '.notes.txt\nnested/real.txt\nnote.txt')
+      assert.equal((await execute('._*')).content, GLOB_EMPTY_RESULT)
+      assert.equal((await execute('.DS_Store')).content, GLOB_EMPTY_RESULT)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    }
+  })
+
 })

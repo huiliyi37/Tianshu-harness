@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop } from '../loop.js'
@@ -200,5 +200,40 @@ describe('AgentLoop tool gating + escape hatch', () => {
   it('enableTool reports gating-off when gating is disabled', () => {
     const { agent } = makeAgent({ gatingEnabled: false })
     assert.equal(agent.enableTool('browser').status, 'gating-off')
+  })
+})
+
+// 外部工具（MCP）晚到注入——**会话内冻结**（2026-10-09）。
+// 实测事故：会话 202610098c9331a42102 turn 86，MCP 连上后工具被热注入，请求流
+// 中途改写 tools 数组 → tools 段之后的整段已缓存前缀作废（create 432,713 /
+// 命中 4.5% / ttft 7.4s）。挂起到下个 user 边界只是把碎裂挪个位置（前缀照样从
+// tools 段断开，且覆盖的历史更长），故已上网的会话一律不再注入。
+describe('外部工具晚到注入：会话内冻结', () => {
+  const setPublished = (a: AgentLoop, v: boolean): void => {
+    ;(a as unknown as { _toolSetPublished: boolean })._toolSetPublished = v
+  }
+
+  it('首个请求上网前：直接刷新（无已缓存前缀可碎）', () => {
+    const { agent, engine, registry } = makeAgent({ gatingEnabled: false })
+    registry.register(fakeTool('mcp_late') as never)
+    agent.refreshToolsAtBoundary()
+    assert.ok(engineToolNames(engine).includes('mcp_late'))
+  })
+
+  it('已上网：一律不注入——宁可本会话不生效，也不碎前缀', () => {
+    const { agent, engine, registry } = makeAgent({ gatingEnabled: false })
+    setPublished(agent, true)
+    registry.register(fakeTool('mcp_late') as never)
+    agent.refreshToolsAtBoundary()
+    assert.ok(!engineToolNames(engine).includes('mcp_late'), '已上网的会话工具表必须冻结')
+    agent.refreshToolsAtBoundary()
+    assert.ok(!engineToolNames(engine).includes('mcp_late'), '再调一次也不得放行（无「攒到边界」旁路）')
+  })
+
+  it('接线守卫：run() 边界确实把工具表定稿（冻结点被删则红）', () => {
+    const src = readFileSync(new URL('../loop.ts', import.meta.url), 'utf8')
+    const sealAt = src.indexOf('this._toolSetPublished = true')
+    assert.ok(sealAt > 0, 'run() 内应有工具表定稿点')
+    assert.ok(src.indexOf('awaitExtraRegistrations') < sealAt, '定稿紧随注册闸门之后')
   })
 })

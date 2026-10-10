@@ -360,6 +360,18 @@ function normalizePathForMatch(p: string): string {
 }
 
 /**
+ * 命令文本是否点名了该测试文件——coverage 缺失时的兜底归因。
+ * 只做仓库相对路径的子串匹配：调用方（run_tests / 门禁分批命令）传的都是
+ * 相对路径，绝对路径也含该子串，不会误配到别的文件。
+ * 命令侧同样归一化（405bfc4c1 评审遗留）：Windows 反斜杠路径与 ./ 前缀形态
+ * 也要命中，否则该平台上兜底归因整档失效（漏配方向=退回旧行为，非误配）。
+ */
+function commandMentionsTest(command: string, test: string): boolean {
+  const normalizedCommand = command.replace(/\\/g, '/').replace(/(^|\s|['"])\.\//g, '$1')
+  return normalizedCommand.includes(normalizePathForMatch(test))
+}
+
+/**
  * Assess which Meridian-impacted tests were actually covered by passed
  * verifications. Pure function — filesystem access is injected via existsFn.
  *
@@ -378,6 +390,18 @@ export function assessImpactedTestCoverage(
   const failedFiles = new Set<string>()
   for (const v of verifications) {
     const c = readCompletionCoverage(v.coverage)
+    // coverage 缺失的失败记录不能静默消失：下面的 `if (!c) continue` 会把它整条跳过，
+    // 其点名的文件随后落进 uncovered——而 uncovered 的语义是「从未跑过」，那一档
+    // 没有归因、直接硬拦。实测现场：run_tests 的隔离快照里失败（快照只含本会话的
+    // owned diff，未跟踪的依赖不在其中 → 模块缺失），拿不到 per-file coverage，
+    // 于是共享工作区下的 required 覆盖义务成为永久缺口（跑多少次都填不上）。
+    // 这里按命令文本兜底归因，把它送回 failed 档——failed 档的归因门槛不放宽
+    //（仍要求外部在途改动证据或隔离配对），只是不让它逃逸到错误的档位。
+    if (!v.stale && v.status === 'failed' && v.kind === 'test' && !c && v.command) {
+      for (const test of impactedTests) {
+        if (commandMentionsTest(v.command, test)) failedFiles.add(normalizePathForMatch(test))
+      }
+    }
     if (repositoryRoot) {
       if (!c) continue
       const inside = relative(canonicalRoot(c.repositoryRoot), canonicalRoot(repositoryRoot))
@@ -387,7 +411,15 @@ export function assessImpactedTestCoverage(
       ? normalizePathForMatch(relative(canonicalRoot(repositoryRoot), resolve(canonicalRoot(c.repositoryRoot), path)))
       : normalizePathForMatch(path)
     if (!v.stale && v.status === 'failed' && v.kind === 'test' && c && !hasIsolatedComparison(v, verifications)) for (const f of c.files) if (f.outcome === 'failed') failedFiles.add(pathForScope(f.path))
-    if (v.stale || v.status !== 'passed' || v.kind !== 'test' || v.exitCode !== 0 || !c?.complete || c.filtered) continue
+    // 覆盖判定逐文件（证据粒度 = 责任粒度）：同批其他文件的失败不得作废本文件
+    // 已拿到的通过证据。`status` / `exitCode` 是**整批**判据，用它筛掉整批会丢掉
+    // 批内逐文件证据——现场：一次全量运行里 7862 个文件通过，因同批混入 1 个既有
+    // 失败而全部作废，于是 required 全覆盖义务在共享工作区下不可满足。
+    // 三条完整性判据原样保留：stale（记录失效）、complete（reporter 完整落盘）、
+    // filtered（名称过滤不证明整文件执行）——它们管「证据可不可信」，与「这批整体
+    // 成不成功」正交，不能一起放开（同构先例：编译器不因一文件报错丢掉其他文件的
+    // 诊断；CI 矩阵里 job 红不过作废别的 job 结果）。
+    if (v.stale || v.kind !== 'test' || !c?.complete || c.filtered) continue
     for (const f of c.files) {
       if (f.outcome === 'passed' && f.tests > f.skipped && f.cancelled === 0) coveredFiles.add(pathForScope(f.path))
     }

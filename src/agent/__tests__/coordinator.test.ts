@@ -550,7 +550,9 @@ describe('DelegationCoordinator', () => {
         scope: { files: ['src/main.tsx'] },
       },
       {
-        parentTurnId: 'turn_1',
+        // parentTurnId 是 dispatch 归属键——真实批路径每项唯一（delegate-batch 的
+        // `${toolUseId}:batch:${i}`），批内共享会被 ownDispatch 硬抛。
+        parentTurnId: 'turn_2',
         objective: 'Review coordinator risk patterns across the delegation module boundary.',
         kind: 'review',
         profile: 'reviewer',
@@ -561,6 +563,48 @@ describe('DelegationCoordinator', () => {
     assert.equal(run.status, 'completed')
     assert.equal(run.results.length, 2)
     assert.ok(run.results.every(r => r.status === 'passed'))
+  })
+
+  it('rejects a batch sharing one parentTurnId atomically (no partial dispatch registration)', async () => {
+    const coordinator = new DelegationCoordinator({
+      baseToolRegistry: makeRegistry(),
+      modelCards: cards,
+      maxWorkers: 2,
+      runtimeFactory: (order, card, workerRegistry) => ({
+        order,
+        client: {} as StreamClient,
+        promptEngine: new PromptEngine({ model: card.model, maxTokens: 1024, staticCtx: { tools: workerRegistry.getDefinitions() }, volatileCtx: { cwd: '/repo' } }),
+        toolRegistry: workerRegistry,
+        cwd: '/repo',
+        maxTurns: 2,
+        contextWindow: card.contextWindow,
+        compact: { enabled: false, autoThreshold: 800_000, autoFloor: 500_000, model: 'flash' },
+      }),
+      runWorker: async config => ({
+        result: resultFor(config.order.id),
+        transcript: { text: '', thinking: '', toolUses: [], toolResults: [], errors: [], repairAttempts: 0 },
+        session: { getTurnCount: () => 1 } as never,
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      }),
+    })
+
+    await assert.rejects(
+      coordinator.delegateBatch([
+        { parentTurnId: 'turn_dup', objective: 'Search for routing seams in main module.', kind: 'code_search', profile: 'code_scout', scope: { files: ['src/main.tsx'] } },
+        { parentTurnId: 'turn_dup', objective: 'Review coordinator risk patterns across the delegation module boundary.', kind: 'review', profile: 'reviewer', scope: { files: ['src/agent/coordinator.ts'] } },
+      ]),
+      /Duplicate active worker dispatch: turn_dup/,
+    )
+
+    // 原子性：失败不得留下任何注册——同一 parentTurnId 之后必须能正常单发。
+    const run = await coordinator.delegate({
+      parentTurnId: 'turn_dup',
+      objective: 'Search for routing seams in main module.',
+      kind: 'code_search',
+      profile: 'code_scout',
+      scope: { files: ['src/main.tsx'] },
+    })
+    assert.equal(run.status, 'completed')
   })
 
   it('delegateBatch 透传 tierFloor 到 WorkOrder（瑶光门 batch 路径——曾只传 modelOverride 丢 tierFloor）', async () => {
@@ -1204,7 +1248,7 @@ describe('DelegationCoordinator', () => {
         scope: { files: ['src/main.tsx'] },
       },
       {
-        parentTurnId: 'turn_b1',
+        parentTurnId: 'turn_b2',
         objective: 'Review coordinator risk patterns across the delegation module boundary.',
         kind: 'review',
         profile: 'reviewer',

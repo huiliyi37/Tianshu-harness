@@ -419,3 +419,70 @@ describe('redundant obligations (quorum evidence)', () => {
     assert.equal(ob.redundancy!.k, 2)
   })
 })
+
+/**
+ * 无出口义务复核补修（2026-10-10；诊断文档《evidence-obligation：两类永不消解的义务》复核后收口）。
+ *
+ * 实测形态（改前）：`spec-verify-gate-hook` 创建的 external_claim 义务
+ * （requiredAction='micro_probe'）经 3 探针 + 3 验证后仍停在 attempted——
+ * 探针侧的 micro_probe 分支只记尝试（语义正确：读文件≠写探针），而验证侧
+ * 家族白名单不含 external_claim。两条路都断 = 义务永久悬挂在 prompt 里。
+ */
+describe('无出口义务复核补修（external_claim 核销 / 空 targets 探针）', () => {
+  const externalClaim = {
+    family: 'external_claim' as const,
+    claim: '诊断文档 docs/handoff-2026-10.md 的声明未经独立验证',
+    targets: ['docs/handoff-2026-10.md'],
+    risk: 'medium' as const,
+    requiredAction: 'micro_probe' as const,
+  }
+
+  it('external_claim：独立验证能关闭义务——即使验证载体是代码而非被质疑的文档', () => {
+    let store = upsertObligation(emptyObligationStore(), externalClaim)
+    // 真实核销形态：跑测试。targetFiles 是代码、命令文本不含 doc 路径——
+    // 义务问的是「做没做过独立验证」，证据载体与被质疑的文档天然不同轴。
+    store = applyVerificationEvent(store, verification({ targetFiles: ['src/agent/loop.ts'] }))
+    assert.equal(store.obligations[0]!.state, 'satisfied', '独立验证通过应关闭 external_claim 义务')
+    assert.match(store.obligations[0]!.evidenceRefs[0]!, /^verified:/)
+  })
+
+  it('external_claim：验证失败/受阻不关闭（只记尝试，与其它家族同构）', () => {
+    let failed = applyVerificationEvent(
+      upsertObligation(emptyObligationStore(), externalClaim),
+      verification({ status: 'failed', targetFiles: ['src/agent/loop.ts'] }),
+    )
+    assert.equal(failed.obligations[0]!.state, 'attempted')
+    let blocked = applyVerificationEvent(
+      upsertObligation(emptyObligationStore(), externalClaim),
+      verification({ status: 'blocked', targetFiles: ['src/agent/loop.ts'] }),
+    )
+    assert.equal(blocked.obligations[0]!.state, 'attempted')
+  })
+
+  it('空 targets 的义务：任意探针都算相关（与 verification 侧空 targets 语义同向）', () => {
+    for (const family of ['existence', 'behavior', 'external_claim'] as const) {
+      let store = upsertObligation(emptyObligationStore(), { family, claim: `${family} 空目标`, risk: 'medium' })
+      store = applyProbeEvent(store, { tool: 'read_file', target: 'src/foo.ts' })
+      assert.equal(store.obligations[0]!.state, 'satisfied', `空 targets 的 ${family} 不应永久悬挂`)
+    }
+  })
+
+  it('有损探针仍不关闭空 targets 的义务（保守语义不被削弱）', () => {
+    let store = upsertObligation(emptyObligationStore(), { family: 'behavior', claim: '空目标', risk: 'medium' })
+    store = applyProbeEvent(store, { tool: 'grep', target: 'src/foo.ts', lossy: true })
+    assert.equal(store.obligations[0]!.state, 'attempted', '有损观察不能关闭断言')
+  })
+
+  it('非空 targets 的匹配语义不变（回归护栏）', () => {
+    let hit = applyProbeEvent(
+      upsertObligation(emptyObligationStore(), { family: 'existence', claim: 'x', targets: ['src/foo.ts'], risk: 'medium' }),
+      { tool: 'read_file', target: 'src/foo.ts' },
+    )
+    assert.equal(hit.obligations[0]!.state, 'satisfied')
+    let miss = applyProbeEvent(
+      upsertObligation(emptyObligationStore(), { family: 'existence', claim: 'x', targets: ['src/foo.ts'], risk: 'medium' }),
+      { tool: 'read_file', target: 'src/bar.ts' },
+    )
+    assert.equal(miss.obligations[0]!.state, 'open', '目标不匹配不得误关')
+  })
+})

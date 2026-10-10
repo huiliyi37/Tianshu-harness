@@ -17,6 +17,22 @@ const SENSITIVE_PATTERN = new RegExp(
     String.raw`AKIA[0-9A-Z]{16}`,
     // Bearer token（含 JWT）
     String.raw`Bearer\s+[A-Za-z0-9._~+/=\-]{16,}`,
+    // GitHub token（ghp_/gho_/ghu_/ghs_/ghr_ 五类前缀，后接 36+ 位 base62；\b 防嵌入正文词）
+    String.raw`\bgh[pousr]_[A-Za-z0-9]{36,}`,
+    // GitLab Personal Access Token
+    String.raw`\bglpat-[A-Za-z0-9_\-]{20,}`,
+    // HuggingFace user access token
+    String.raw`\bhf_[A-Za-z0-9]{30,}`,
+    // Slack bot/user/app token（xoxb-/xoxp-/xoxa-/xoxr-/xoxs-）
+    String.raw`\bxox[baprs]-[A-Za-z0-9\-]{10,}`,
+    // Stripe 活密钥（sk_live_ 机密 / rk_live_ 受限）
+    String.raw`\b(?:sk|rk)_live_[A-Za-z0-9]{16,}`,
+    // Telegram bot token（<8~10 位 bot_id>:<35 位随机串>；长度约束避免误杀 "14:30" 一类时间）
+    String.raw`\b[0-9]{8,10}:[A-Za-z0-9_\-]{30,}`,
+    // npm access token
+    String.raw`\bnpm_[A-Za-z0-9]{30,}`,
+    // PyPI API token
+    String.raw`\bpypi-[A-Za-z0-9_\-]{20,}`,
     // JWT（三段 base64url）
     String.raw`eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}`,
     // 显式赋值的凭据

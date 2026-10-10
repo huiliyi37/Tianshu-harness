@@ -58,7 +58,7 @@ test('Gemini retry discards failed attempt tools and text before committing the 
     const controller = new TurnStreamController({
       client: new GeminiClient({ ...config, requestTimeoutMs: 1000, maxRetries: 1,
         retry: { backoff: { baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }, maxTotalDurationMs: 5000 } }),
-      abortSignal: new AbortController().signal,
+      getAbortSignal: () => new AbortController().signal,
       getStreamedTextLength: () => streamed.length, appendStreamedText: text => { streamed += text },
       truncateStreamedText: length => { streamed = streamed.slice(0, length) }, getLastPrewarmAt: () => 0,
       setLastPrewarmAt() {}, maybePrewarm() {}, addUsage() {}, recordTurnCache() {},

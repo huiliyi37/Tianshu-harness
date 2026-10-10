@@ -15,7 +15,15 @@ export function buildApprovalRoutes(manager: ApprovalManager, apiToken?: string)
 
     'POST /sessions/:id/interventions/:requestId/answer': withAuth((body, params) => {
       const data = (body ?? {}) as { decision?: string; editedInput?: Record<string, unknown>; remember?: boolean }
-      const decision = data.decision ?? 'approve'
+      // Fail-closed: the decision field is the authorization itself, so a missing
+      // or unrecognized value must NOT default to approval. Only 'approve' and
+      // 'deny' are legal (vscode ApprovalAnswer contract; serve.ts sends 'deny').
+      // Previously `data.decision ?? 'approve'` let an empty body silently approve
+      // a high-risk pending intervention.
+      const decision = data.decision
+      if (decision !== 'approve' && decision !== 'deny') {
+        return { status: 400, body: { error: 'Invalid or missing "decision" (expected "approve" or "deny")' } }
+      }
       const ok = manager.answerIntervention(
         params!.id!, params!.requestId!, decision, data.editedInput, data.remember === true,
       )

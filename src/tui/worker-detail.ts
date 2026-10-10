@@ -1,3 +1,4 @@
+import { loadWorkerSession } from '../agent/worker-session-persist.js'
 /**
  * Worker Detail 内容构建器 — 为 `/tasks` Enter 提供可分页、可搜索的详情。
  *
@@ -44,7 +45,7 @@ function formatRoundTime(ms: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-function formatOaiMessages(messages: OaiMessage[]): string {
+function formatOaiMessages(messages: readonly OaiMessage[]): string {
   const lines: string[] = []
   for (const msg of messages) {
     switch (msg.role) {
@@ -138,7 +139,13 @@ export function buildWorkerDetailContent(
   }
 
   // ── 持久化结果 ──
-  const result = loadPersistedResult(workerId)
+  const logicalId = liveView?.workOrderId ?? workerId
+  const roundsForWorker = listPersistedResultRounds(logicalId)
+  const matches = (r: ReturnType<typeof loadPersistedResult>) => !liveView?.dispatchId || (r?.dispatchId === liveView.dispatchId && (!liveView.attemptId || r.attemptId === liveView.attemptId))
+  const selectedRound = roundsForWorker.filter(round => matches(loadPersistedResultRound(logicalId, round.nonce))).at(-1)
+  const result = liveView?.dispatchId
+    ? selectedRound ? loadPersistedResultRound(logicalId, selectedRound.nonce) : null
+    : loadPersistedResult(logicalId)
   if (result) {
     lines.push('')
     lines.push('── 结果 ──')
@@ -199,12 +206,12 @@ export function buildWorkerDetailContent(
   }
 
   // ── 派发轮次（L1：稳定 id 复用时每轮各一份归档，上面 Result 展示最新一轮） ──
-  const rounds = listPersistedResultRounds(workerId)
+  const rounds = roundsForWorker.filter(round => matches(loadPersistedResultRound(logicalId, round.nonce)))
   if (rounds.length > 1) {
     lines.push('')
     lines.push(`── Rounds ── 该 id 派发了 ${rounds.length} 次，Result 为最新一轮`)
     rounds.forEach((round, i) => {
-      const r = loadPersistedResultRound(workerId, round.nonce)
+      const r = loadPersistedResultRound(logicalId, round.nonce)
       const status = r?.status ?? '?'
       const summary = r ? ` · ${truncate(r.summary, 60)}` : ''
       lines.push(`  #${i + 1} ${formatRoundTime(round.savedAt)} · ${status}${summary}`)
@@ -216,7 +223,9 @@ export function buildWorkerDetailContent(
   const persist = new SessionPersist(sessionId, cwd)
   let transcriptText = ''
   try {
-    const messages = persist.loadOai()
+    const messages = liveView?.dispatchId
+      ? selectedRound ? loadWorkerSession(logicalId, undefined, selectedRound.nonce)?.messages ?? [] : []
+      : persist.loadOai()
     transcriptText = formatOaiMessages(messages)
   } catch {
     transcriptText = '(worker transcript not available)'

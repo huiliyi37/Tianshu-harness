@@ -1,4 +1,5 @@
 import { verificationAttempted } from './verification-activity.js'
+import { CourseCorrectionTracker } from './course-correction-tracker.js'
 /**
  * Advisory Readback — advisory 采纳核销闭环（P1a, 2026-07-04 生命周期设计）。
  *
@@ -31,6 +32,10 @@ export interface ObservedToolEvent {
   target: string
   isError: boolean
   verificationAttempted?: boolean
+  verificationPurpose?: import('./verification-intent.js').VerificationPurpose
+  /** 明确只读的 shell 调用（由 bash 活动分类填充）——与 read 族同归一类，
+   *  只读侦察换外衣（只读 bash → read_file）不算改道。 */
+  readonlyShell?: boolean
 }
 
 export type AdvisoryOutcome = 'adopted' | 'ignored'
@@ -41,6 +46,7 @@ export interface AdvisoryOutcomeEvent {
   profile: 'main' | 'worker'
   key: string
   outcome: AdvisoryOutcome
+  episodeId?: number
   expectKind: AdvisoryExpectation['kind']
   deliveredTurn: number
   evaluatedTurn: number
@@ -56,6 +62,7 @@ export interface AdvisoryOutcomeEvent {
 export interface UnresolvedExpectation {
   deliveryId: string
   profile: 'main' | 'worker'
+  episodeId?: number
   reason: 'session_ended' | 'superseded' | 'contaminated'
   key: string
   expectKind: AdvisoryExpectation['kind']
@@ -86,6 +93,8 @@ interface PendingExpectation {
   deliveredTurn: number
   /** holdout 反事实组 — 核销进 shadow 桶,不影响 adopted/ignored/streak */
   shadow: boolean
+  /** 投递时的策略周期（§3）——周期边界处未决项记 superseded，不跨任务算 ignored。 */
+  episode: number
 }
 
 /** 各谓词的缺省观察窗口（轮），含送达轮 */
@@ -97,26 +106,6 @@ const DEFAULT_WINDOW: Record<AdvisoryExpectation['kind'], number> = {
   pattern_absent: 4,
   // 改道需要至少一轮新动作：送达轮 + 1
   course_changed: 2,
-}
-
-/** course_changed 前置对照窗（轮）——须 ≤ EVENT_RETENTION_TURNS 减最大观察窗 */
-const COURSE_PRE_WINDOW_TURNS = 3
-
-/** 工具族映射——course_changed 粗签名的第一维。未列出的工具以自身名为族。 */
-const TOOL_FAMILY: ReadonlyMap<string, string> = new Map([
-  ['edit_file', 'edit'], ['write_file', 'edit'], ['hash_edit', 'edit'],
-  ['apply_patch', 'edit'], ['ast_edit', 'edit'],
-  ['read_file', 'read'], ['read_section', 'read'], ['grep', 'read'],
-  ['glob', 'read'], ['list_dir', 'read'], ['file_info', 'read'],
-  ['run_tests', 'verify'], ['typecheck', 'verify'], ['lsp_diagnostics', 'verify'],
-])
-
-/** 粗签名：read/edit 族的 target 是文件路径 → 文件面进签名；
- *  其余（bash 命令文本等）只看族——命令文本逐字比对太细，会把
- *  "换了个参数重跑同一条死路"误判为改道。 */
-function courseSignature(e: ObservedToolEvent): string {
-  const family = TOOL_FAMILY.get(e.name) ?? e.name
-  return family === 'read' || family === 'edit' ? `${family}:${e.target}` : family
 }
 
 /** 观察日志保留的最大轮跨度 — pattern_absent 最长窗口 + 余量 */
@@ -156,13 +145,18 @@ export class AdvisoryReadback {
   hasPending(key: string): boolean { return this.pending.some(p => p.key === key && !p.shadow) }
   drainUnresolved(): UnresolvedExpectation[] { const out = this.unresolved; this.unresolved = []; return out }
   private censor(p: PendingExpectation, turn: number, reason: UnresolvedExpectation['reason']): UnresolvedExpectation {
-    return { deliveryId: p.deliveryId, profile: this.profile, reason, key: p.key, expectKind: p.expect.kind,
+    return { deliveryId: p.deliveryId, profile: this.profile, episodeId: p.episode, reason, key: p.key, expectKind: p.expect.kind,
       deliveredTurn: p.deliveredTurn, turnsShort: Math.max(0, (p.expect.withinTurns ?? DEFAULT_WINDOW[p.expect.kind]) - this.opportunities(p, turn)), shadow: p.shadow }
   }
   private opportunities(p: PendingExpectation, turn: number): number {
     return this.requireOpportunity ? [...this.completedTurns].filter(t => t >= p.deliveredTurn && t <= turn).length : turn - p.deliveredTurn + 1
   }
   private events: ObservedToolEvent[] = []
+  /** 策略核销周期（§3）：周期内首次出现的新族才核销，取代滚动的「前 3 轮」对照窗。 */
+  private courseTracker = new CourseCorrectionTracker()
+  /** 本策略周期内实际投递过（非 shadow）的 key——周期边界据此授予一次 probation。 */
+  private episodeDeliveredKeys = new Set<string>()
+  private courseKeys = new Set<string>()
   private stats = new Map<string, AdvisoryKeyStats>()
   private outcomes: AdvisoryOutcomeEvent[] = []
   /** 跨会话效能先验 — 只喂三个消费方(holdout 资格/副驾闸门/Top-N 次级排序),
@@ -190,17 +184,24 @@ export class AdvisoryReadback {
         this.pending = this.pending.filter(p => p !== existing)
         // A held-out sample following a real delivery is contaminated too.
         if (shadow && !existing.shadow) {
-          this.unresolved.push(this.censor({ key: d.key, expect: d.expect, deliveredTurn: turn, shadow, deliveryId: `${this.profile}:${++this.sequence}` }, turn, 'contaminated'))
+          this.unresolved.push(this.censor({ key: d.key, expect: d.expect, deliveredTurn: turn, shadow, deliveryId: `${this.profile}:${++this.sequence}`, episode: this.courseTracker.episode }, turn, 'contaminated'))
           continue
         }
       }
-      this.pending.push({ deliveryId: `${this.profile}:${++this.sequence}`, key: d.key, expect: d.expect, deliveredTurn: turn, shadow })
+      const deliveryId = `${this.profile}:${++this.sequence}`
+      if (d.expect.kind === 'course_changed') this.courseTracker.deliver(deliveryId)
+      if (d.expect.kind === 'course_changed' || ['convergence', 'turn-call-limit'].includes(d.key)) {
+        this.courseKeys.add(d.key)
+        if (!shadow) this.episodeDeliveredKeys.add(d.key)
+      }
+      this.pending.push({ deliveryId, key: d.key, expect: d.expect, deliveredTurn: turn, shadow, episode: this.courseTracker.episode })
     }
   }
 
   /** 行为观察 — postTool 喂入本轮工具事件 */
   observeTool(event: ObservedToolEvent): void {
     this.events.push(event)
+    this.courseTracker.observe(event)
     // 按轮跨度修剪（不按条数——重轮次 20+ 工具调用不能把窗口内证据挤掉）
     const cutoff = event.turn - EVENT_RETENTION_TURNS
     if (this.events.length > 0 && this.events[0]!.turn < cutoff) {
@@ -225,7 +226,7 @@ export class AdvisoryReadback {
           outcome = this.checkPatternAbsent(p.expect) ? 'adopted' : 'ignored'
         }
       } else {
-        const satisfied = this.checkPositive(p.expect, p.deliveredTurn, turn)
+        const satisfied = this.checkPositive(p.expect, p.deliveredTurn, turn, p.deliveryId)
         if (satisfied) outcome = 'adopted'
         else if (expired) outcome = 'ignored'
       }
@@ -417,9 +418,39 @@ export class AdvisoryReadback {
     return { adopted: session.adopted + pAdopted, ignored: session.ignored + pIgnored }
   }
 
+  /** 周期边界（§3 的结构化信号：人类新任务 / 人工引导 / 真实进展）。周期重启后
+   *  此前见过的族重新变「新」，但周期起点时的当前动作继承为基线——重置本身
+   *  不得制造新族。
+   *
+   *  发射侧同步贯通（计划 §3）：旧周期的未决观察记 superseded（那是「上一个任务
+   *  里没等到机会」，不是「听了不做」——判 ignored 会经 ignoredStreak / efficacy
+   *  负反馈 / lift 先验三条路径把本可能有效的提醒压死）；episode 内 ignoredStreak
+   *  归零（不跨任务继承成永久门禁），但会话累计计数保留。返回本周期实际投递过的
+   *  key——调用方据此授予 bus 一次 probation 资格（仍受正常候选门禁、预算与
+   *  holdout 约束，实际非 shadow 投递后才消费）。
+   */
+  startCourseEpisode(reason: string, currentFamilies: Iterable<string> = []): string[] {
+    const previous = this.courseTracker.episode
+    this.courseTracker.startEpisode(reason, currentFamilies)
+    // 属于刚结束那个周期的未决项：转 superseded 报出（"没等到机会"≠"听了不做"）。
+    const superseded = this.pending.filter(p => p.episode === previous && this.courseKeys.has(p.key))
+    for (const p of superseded) this.unresolved.push(this.censor(p, p.deliveredTurn, 'superseded'))
+    this.pending = this.pending.filter(p => !superseded.includes(p))
+    for (const key of this.courseKeys) { const s = this.stats.get(key); if (s) s.ignoredStreak = 0 }
+    const keys = [...this.episodeDeliveredKeys]
+    this.episodeDeliveredKeys.clear()
+    return keys
+  }
+
+  /** 当前策略周期号（观测用）——由 task/guidance/进展边界推进。 */
+  get courseEpisode(): number { return this.courseTracker.episode }
+
   reset(): void {
     this.pending = []
     this.events = []
+    this.courseTracker.reset()
+    this.courseKeys.clear()
+    this.episodeDeliveredKeys.clear()
     this.stats.clear()
     this.outcomes = []
     this.priors.clear()
@@ -440,6 +471,7 @@ export class AdvisoryReadback {
     expect: Exclude<AdvisoryExpectation, { kind: 'pattern_absent' }>,
     from: number,
     to: number,
+    deliveryId?: string,
   ): boolean {
     const windowEvents = this.events.filter(e => e.turn >= from && e.turn <= to)
     switch (expect.kind) {
@@ -455,14 +487,13 @@ export class AdvisoryReadback {
         )
       case 'file_touched':
         return windowEvents.some(e => expect.paths.some(p => e.target.includes(p)))
-      case 'course_changed': {
-        // 改道 = 观察窗内出现前置对照窗未见过的 (工具族×文件面) 粗签名。
-        // 前置窗空（no-tool 僵局）→ 任意工具事件即改道。
-        const preEvents = this.events.filter(e => e.turn >= from - COURSE_PRE_WINDOW_TURNS && e.turn < from)
-        if (preEvents.length === 0) return windowEvents.length > 0
-        const preSigs = new Set(preEvents.map(courseSignature))
-        return windowEvents.some(e => !preSigs.has(courseSignature(e)))
-      }
+      case 'course_changed':
+        // 核销路径（有投递基线）按策略周期判：投递后同周期首次出现的新族才算改道。
+        // Phase 2 自愈（挂起条目，无投递）退回「窗口起点后出现新族」——同一族事实，
+        // 对照周期内累积而非滚动三轮窗口（滚动窗口曾让同一失败验证每周期重新变「新」）。
+        return deliveryId !== undefined
+          ? this.courseTracker.satisfies(deliveryId)
+          : this.courseTracker.sawNovelFamilySince(from)
     }
   }
 

@@ -1,3 +1,4 @@
+import { workerDispatchKey } from '../tools/worker-identity.js'
 /**
  * WorkerMirrorStore — worker 消息镜像（CC teammate 视图对标）。
  *
@@ -69,16 +70,18 @@ export class WorkerMirrorStore {
   }
 
   apply(activity: DelegationActivity, now: number = Date.now()): void {
+    const key = workerDispatchKey(activity)
     const terminal = activity.status !== 'running'
-    let r = this.recordOf(activity.workOrderId)
+    let r = this.recordOf(key)
 
     // 已终态的 id 又来非终态事件 = 新一轮派发。order id 对 batch / team /
     // council 是 `batch:0` 这类稳定值（deriveStableWorkOrderId），同一会话里
     // 多派几次必然撞 id——不换记录的话，这一轮的转录会续在上一轮后面，worker
     // 视图于是把两个不同目标的执行过程当成一条连续时间线。
+    if (r.closed && !terminal && activity.dispatchId) return
     if (r.closed && !terminal) {
       r = { messages: [], openText: '', openTextAt: 0 }
-      this.records.set(activity.workOrderId, r)
+      this.records.set(key, r)
     }
 
     if (terminal) {

@@ -11,9 +11,11 @@ export function parseSemver(version: string): [number, number, number, prereleas
   const clean = version.replace(/^v/, '')
   const plusIdx = clean.indexOf('+')
   const base = plusIdx >= 0 ? clean.slice(0, plusIdx) : clean
-  const split = base.split('-', 2)
-  const core = split[0] ?? '0'
-  const pre = split[1]
+  // 只在第一个 '-' 处切分：prerelease 自身可含 '-'（如 `rc-1`），
+  // `split('-', 2)` 会把剩余部分直接丢弃（收编公开仓 PR #410）。
+  const dash = base.indexOf('-')
+  const core = dash >= 0 ? base.slice(0, dash) : base
+  const pre = dash >= 0 ? base.slice(dash + 1) : undefined
   const parts = core.split('.').map(x => {
     const n = Number.parseInt(x, 10)
     return Number.isFinite(n) ? n : 0
@@ -31,17 +33,18 @@ function comparePrerelease(a: string, b: string): number {
     const xb = pb[i]
     if (xa === undefined) return -1
     if (xb === undefined) return 1
-    const na = Number.parseInt(xa, 10)
-    const nb = Number.parseInt(xb, 10)
-    const bothNumeric = Number.isFinite(na) && Number.isFinite(nb)
-    if (bothNumeric) {
-      if (na !== nb) return na - nb
-    } else {
-      const sa = bothNumeric ? undefined : xa
-      const sb = bothNumeric ? undefined : xb
-      if (sa !== undefined && sb !== undefined) {
-        if (sa !== sb) return sa < sb ? -1 : 1
-      }
+    // semver §11：只含数字的标识按数值比；`parseInt('1a')` 会得 1，不能用它判数字
+    // （收编公开仓 PR #410——半数字标识此前被误当数字，`1a` 与 `1b` 判等）。
+    const numA = /^\d+$/.test(xa)
+    const numB = /^\d+$/.test(xb)
+    if (numA && numB) {
+      const d = Number(xa) - Number(xb)
+      if (d !== 0) return d
+    } else if (numA !== numB) {
+      // 数字标识优先级恒低于字母数字标识
+      return numA ? -1 : 1
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1
     }
   }
   return 0
@@ -53,7 +56,9 @@ function coreSegments(version: string): number[] {
   const clean = version.replace(/^v/, '')
   const plusIdx = clean.indexOf('+')
   const base = plusIdx >= 0 ? clean.slice(0, plusIdx) : clean
-  const core = (base.split('-', 2)[0] ?? '0').split('.')
+  // 同 parseSemver：只在第一个 '-' 处切分，prerelease 内的 '-' 不参与 core 切分
+  const dash = base.indexOf('-')
+  const core = (dash >= 0 ? base.slice(0, dash) : base).split('.')
   return core.map(x => {
     const n = Number.parseInt(x, 10)
     return Number.isFinite(n) ? n : 0

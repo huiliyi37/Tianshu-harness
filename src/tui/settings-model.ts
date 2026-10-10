@@ -150,10 +150,11 @@ export const APPROVAL_OPTIONS: readonly SettingsOption[] = [
 ]
 
 export const TOOL_PRESET_OPTIONS: readonly SettingsOption[] = [
-  { id: 'minimal', label: 'minimal — 30 个工具，省 token（默认）' },
-  { id: 'frontend', label: 'frontend — 31 个，含 browser_debug' },
-  { id: 'full', label: 'full — 51 个全集，含 computer_use / 办公工具' },
-  { id: 'taiyi', label: 'taiyi — 14 个最小集（评测档；太一域钉定默认此档）' },
+  // 「可用」= 主控可调用件数（token 成本口径）；「装配」= kernel + bootstrap 完整体量。见 tool-preset.ts 文件头。
+  { id: 'minimal', label: 'minimal — 30 可用 / 33 装配，省 token（默认）' },
+  { id: 'frontend', label: 'frontend — 31 可用 / 34 装配，含 browser_debug' },
+  { id: 'full', label: 'full — 42 可用 / 54 装配（全集，含办公工具）' },
+  { id: 'taiyi', label: 'taiyi — 13 可用 / 14 装配（评测档；太一域钉定默认此档）' },
 ]
 
 export const MIRROR_PRESET_OPTIONS: readonly SettingsOption[] = [

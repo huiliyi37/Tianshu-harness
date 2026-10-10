@@ -468,6 +468,22 @@ export function createTeamOrchestrateTool(
         return { content: lines.join('\n'), uiContent: `🚀 team 方案 · ${tasks?.length ?? '?'} 任务` }
       }
 
+      // 0 任务硬拦（2026-10-09 实测踩坑）：markdown 提供了但解析 0 任务时，此前
+      // 静默走到 executePlanWaves → "team skeleton: no task drafts"（isError:false），
+      // 调用方无从区分「计划确实无任务」与「格式不匹配解析器」。最常见来源：把
+      // 设计文档（`## 分波实施` + `- [ ]`）当任务清单传——任务行需 `Task N`/`TN`/
+      // `Step N` 起头。此处给出改走 plan_task 的完整指引（proposal 的友好展示不受影响）。
+      if (effectiveMode === 'standard' && !tasks && markdown && parseTeamTasks(markdown).length === 0) {
+        return {
+          content: 'team_orchestrate 已拦截：Markdown 已提供但解析出 0 个任务。'
+            + '任务行需以 `Task N` / `TN` / `Step N` 起头（如 `### Step 1: 实现 X`）；'
+            + '若传入的是设计文档（`## 分波实施` + `- [ ]` 清单），请改走 plan_task：'
+            + '把计划完整路径放进 files（如 files: [".rivet/plans/<slug>.md", ...源文件]），'
+            + '它会走 checklist 快速路径按 H2/H3 切分，并把计划存入本会话 store 供后续 team_orchestrate 续跑。',
+          isError: true,
+        }
+      }
+
       // D8 L2：从计划解析反目标与待验证假设，自动注入 worker 工单。
       // markdown 路径零额外 IO（已读进内存）；planJson 路径用契约自身的
       // nonGoals/obligations（议事会「拒绝」裁决与暂缓/高危缓解承诺）。

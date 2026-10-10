@@ -24,6 +24,7 @@ import { projectStateAllowed } from '../config/project-trust.js'
 import { appendKnowledgeJsonl, acquireLock } from '../context/project-memory-writer.js'
 import { writeFileAtomicSync } from '../fs-atomic.js'
 import { tokenizeRecallQuery } from './query-terms.js'
+import { scrubMemoryText } from './memory-scrub.js'
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 
@@ -166,13 +167,23 @@ export function isCurrentEntry(entry: MemoryEntry): boolean {
 
 // ── Write ──────────────────────────────────────────────────────────────────
 
-/** Append a memory entry to the unified log (project-local since Wave 2). */
+/** Append a memory entry to the unified log (project-local since Wave 2).
+ *
+ *  写入前 scrub（安全收口）：上游调用者可能把原文直接喂进来（essence-gate /
+ *  problem-attack-hook / deliver-task 均不 scrub）。缺这道防线，含 key 的文本会
+ *  经 appendKnowledgeJsonl 长期落盘 memory.jsonl，随后经 loader 回到 prompt。
+ *  text 几乎只剩敏感片段时返回 null（整条丢弃，不落盘）；evidence 同理，但只丢
+ *  字段本身、不牵连整条。 */
 export function appendMemoryEntry(
   cwd: string,
   partial: Omit<MemoryEntry, 'id' | 'ts' | 'repeatCount'> & { id?: string; ts?: number },
-): MemoryEntry {
+): MemoryEntry | null {
+  // scrub 返回 null = 整条几乎只剩敏感片段 → 丢弃（fail-closed，不落盘）。
+  const scrubbedText = scrubMemoryText(partial.text)
+  if (scrubbedText === null) return null
+
   // Count existing similar entries for repeatCount — streaming scan, no full parse.
-  const normalized = partial.text.trim().toLowerCase().slice(0, 200)
+  const normalized = scrubbedText.trim().toLowerCase().slice(0, 200)
   let repeatCount = 1
   const path = memoryPath(cwd)
   if (existsSync(path)) {
@@ -187,14 +198,19 @@ export function appendMemoryEntry(
     } catch { /* count failure → use 1 */ }
   }
 
+  // evidence 同样落盘——纯敏感的 evidence 丢弃字段本身（不牵连整条）。
+  const scrubbedEvidence = partial.evidence !== undefined
+    ? (scrubMemoryText(partial.evidence) ?? undefined)
+    : undefined
+
   const entry: MemoryEntry = {
     id: partial.id ?? generateId(),
-    text: partial.text.slice(0, 500),
+    text: scrubbedText.slice(0, 500),
     kind: partial.kind,
     confidence: partial.confidence,
     source: partial.source,
     status: partial.status,
-    evidence: partial.evidence,
+    evidence: scrubbedEvidence,
     sessionId: partial.sessionId,
     tags: partial.tags,
     ts: partial.ts ?? Date.now(),

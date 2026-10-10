@@ -28,6 +28,14 @@ test('run claims the instance synchronously before awaiting idle compaction', as
     // toolRegistry 的异步注册清零状态。裸 fake 缺 config，同款「fake 过时」形态
     // （补前的症状一样：cancelCalls 恒为 0）——最小桩即可，与本轮不变量无关。
     config: { toolRegistry: { awaitExtraRegistrations: async () => {} } },
+    // 改道卡候选登记迁进 DecisionShiftDelivery（2026-10-10 0c8840f60）：run() 在
+    // 首个 await 前 discard 上一轮候选。裸 fake 缺这个字段 → 同款「fake 过时」红
+    // （症状与前三次一致：_running 看着像没被同步置位）。最小桩，与本轮不变量无关。
+    decisionShifts: { discard: () => {} },
+    // CourseEpisodes 接线（同一次改动）：run() 用它把 callbacks 包一层，补
+    // onHumanGuidanceAccepted（指导被接受后推进核销周期）。桩成透传即可——本用例
+    // 断言的是「守卫先于首个 await 被占」，与包装本身无关。
+    courseEpisodes: { callbacks: (cb: unknown) => cb },
     // run/runObserved 拆分（2026-09-27）：run() 现在只做「早退 + observeRun 包裹」，
     // 主体搬进 runObserved。裸 fake 只实现叶子依赖（_runInner/cancelIdleCompaction…），
     // 没有这条原型方法 → `this.runObserved is not a function`，且因为是 async 里抛的，

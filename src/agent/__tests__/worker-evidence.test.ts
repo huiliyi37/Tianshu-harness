@@ -516,3 +516,10 @@ test('unsupported verification passed is removed locally and qualification is id
   assert.match(first.summary, /未经执行验证/)
   assert.deepEqual(verifyWorkerEvidence(first, 'code_scout', captured), first)
 })
+
+test('worker reconciliation never invents verification from query filenames or quoted commands', () => {
+  for (const command of ['ls scripts/build.sh', 'rg "npm test" src', 'cat a.test.ts', 'pytest --help']) {
+    const checked = reconcileCapturedWorkerFacts(result({}), transcript(['bash'], [], [command]))
+    assert.equal(checked.verification, undefined, command)
+  }
+})

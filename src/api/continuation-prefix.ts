@@ -14,7 +14,7 @@ export interface ContinuationPrefixProof {
 }
 
 export interface RequestDiagnostics {
-  purpose: 'worker_execution' | 'worker_finalize' | 'worker_report_repair' | 'compact_summary' | 'side_question' | 'vision_description' | 'vision_question' | 'reasoning_recovery' | 'essence_gate'
+  purpose: 'worker_execution' | 'worker_finalize' | 'worker_report_repair' | 'compact_summary' | 'side_question' | 'vision_description' | 'vision_question' | 'reasoning_recovery' | 'essence_gate' | 'llm_speculation' | 'risk_explain'
   workOrderId?: string
   routeReason?: string
   parentRequestId?: string

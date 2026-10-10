@@ -17,6 +17,7 @@
  * - sidecar 装配 → 源码正则接线检查 + allowlist
  */
 import { describe, test } from 'node:test'
+import { readFile } from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -62,6 +63,41 @@ function collectAllTsFiles(dir: string, results: string[] = []): string[] {
 const allSrcFiles = collectTsFiles(SRC_ROOT)
 const productionFiles = allSrcFiles.filter(f => !f.includes('/__tests__/'))
 const allFilesIncludingTests = collectAllTsFiles(SRC_ROOT)
+
+/** Freeze the audit corpus once; field and registry scans share these exact bytes. */
+async function snapshotSourceCorpus(files: string[]): Promise<Map<string, string>> {
+  const uniqueFiles = [...new Set(files)]
+  const corpus = new Map<string, string>()
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(4, uniqueFiles.length) }, async () => {
+    while (next < uniqueFiles.length) {
+      const file = uniqueFiles[next++]!
+      corpus.set(file, await readFile(file, 'utf8'))
+    }
+  }))
+  return corpus
+}
+
+const sourceCorpus = await snapshotSourceCorpus(allFilesIncludingTests)
+
+test('source corpus keeps complete immutable production and test bytes across repeated scans', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'assembly-snapshot-'))
+  try {
+    mkdirSync(join(dir, '__tests__'))
+    const production = join(dir, 'source.ts')
+    const fixture = join(dir, '__tests__', 'fixture.test.ts')
+    writeFileSync(production, 'value.decisionStyle\n')
+    writeFileSync(fixture, 'process.env.RIVET_DEBUG\n')
+    writeFileSync(join(dir, '._source.ts'), 'filesystem metadata')
+    const corpus = await snapshotSourceCorpus(collectAllTsFiles(dir))
+    assert.deepEqual([...corpus.keys()].map(file => relative(dir, file).replaceAll('\\', '/')).sort(),
+      ['__tests__/fixture.test.ts', 'source.ts'])
+    writeFileSync(production, 'changed after collection')
+    writeFileSync(fixture, 'changed after collection')
+    assert.equal(corpus.get(production), 'value.decisionStyle\n')
+    assert.equal(corpus.get(fixture), 'process.env.RIVET_DEBUG\n')
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
+})
 
 test('audit collectors exclude metadata while preserving production and test coverage', () => {
   const dir = mkdtempSync(join(tmpdir(), 'assembly-corpus-'))
@@ -163,7 +199,7 @@ function scanFieldConsumers(fieldName: string, excludeFiles: string[]): string[]
   const bracketPattern = new RegExp(`\\[['"\`]${fieldName}['"\`]\\]`)
   for (const file of productionFiles) {
     if (excludeFiles.some(e => file.endsWith(e))) continue
-    const content = readFileSync(file, 'utf8')
+    const content = sourceCorpus.get(file)!
     if (dotPattern.test(content) || bracketPattern.test(content)) {
       // 归一为 POSIX 形态：下游判据（tui/ 前缀归类、main.ts 特判）与报告展示
       // 都以正斜杠书写；Windows 上 relative() 产反斜杠会让归类静默失配。
@@ -377,7 +413,7 @@ describe('assembly audit — env registry completeness', () => {
     const fnPattern = /\b(?:envInt|envStr|envBool)\s*\(\s*'(RIVET_[A-Z_]+)'\)/g
 
     for (const file of files) {
-      const content = readFileSync(file, 'utf8')
+      const content = sourceCorpus.get(file) ?? readFileSync(file, 'utf8')
       for (const pattern of [directPattern, bracketPattern, destructuredPattern, fnPattern]) {
         let m
         while ((m = pattern.exec(content)) !== null) {

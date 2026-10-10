@@ -25,11 +25,20 @@ describe('headless CLI parsing', () => {
     )
   })
 
-  it('--goal defaults budget to 100', () => {
+  it('--goal 缺省 budget = undefined —— 缺省值由定价层负责，解析层不预置', () => {
     const result = parseCliArgs(['--goal', 'fix lint'])
     assert.equal(result.goal, 'fix lint')
-    assert.equal(result.budget, 100)
+    // 解析层填缺省（曾经的 100）会让定价层把它当成 explicitBudget 而短路——
+    // 缺省 100 只允许有一个来源：agent/goal-budget.ts 的 GOAL_BUDGET_BASE。
+    assert.equal(result.budget, undefined)
     assert.equal(result.headless, true)
+  })
+
+  it('--budget 非数字/非正值归为"没给"（NaN 会让上限静默变成无上限）', () => {
+    assert.equal(parseCliArgs(['--goal', 'x', '--budget', 'abc']).budget, undefined)
+    assert.equal(parseCliArgs(['--goal', 'x', '--budget', '0']).budget, undefined)
+    assert.equal(parseCliArgs(['--goal', 'x', '--budget', '-5']).budget, undefined)
+    assert.equal(parseCliArgs(['--goal', 'x', '--budget', '20']).budget, 20)
   })
 })
 

@@ -1,4 +1,4 @@
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -15,6 +15,11 @@ import {
   extractPrinciples,
   type SeedCapsule,
 } from '../seed-capsule-store.js'
+
+// 信任门（2026-10-09）：加载项目 docs/ 胶囊需项目已授信。本文件绝大多数用例以
+// 临时 cwd 的 docs/ 为素材，显式授信（与 skills/knowledge 等测试同惯例）；
+// 信任门双态用例在文件尾部单列（用 RIVET_TRUST_PROJECT='0' 强制未授信）。
+process.env.RIVET_TRUST_PROJECT = '1'
 
 describe('seed-capsule-store', () => {
   let tmpDir: string
@@ -523,5 +528,57 @@ describe('renderAllCapsulesBlock', () => {
     assert.equal(getCapsuleByStar(tmpDir, '破军'), undefined)
     assert.deepEqual(listCapsuleStars(tmpDir), ['天权'])
     cleanup()
+  })
+})
+
+// ── 信任门（2026-10-09 安全审计补门族）──────────────────────────────
+// 项目 docs/ 的胶囊是「随仓库分发」的内容：未授信必须不读不注入（与
+// .rivet.md / 项目记忆 / 知识索引同契约）。bundled 内置胶囊不受信任态影响
+// （tsx 直跑无 dist/seed-capsules，本环境测不到 bundled 分支，由 loadAllCapsules
+// 的 dirs 构造保证）。
+describe('trust gate — project docs/ capsules', () => {
+  let gateDir: string
+  const originalTrust = process.env.RIVET_TRUST_PROJECT
+
+  beforeEach(() => {
+    clearCapsuleCache()
+    gateDir = mkdtempSync(join(os.tmpdir(), 'capsule-gate-'))
+    const docsDir = join(gateDir, 'docs')
+    mkdirSync(docsDir)
+    writeFileSync(join(docsDir, 'seed-capsule-tianxuan.md'), [
+      '<seed-capsule star="天璇" sealed="2026-05-21">',
+      '  天璇的方法。',
+      '</seed-capsule>',
+    ].join('\n'))
+  })
+
+  afterEach(() => {
+    if (originalTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = originalTrust
+    clearCapsuleCache()
+    try { rmSync(gateDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  it('untrusted: project docs capsules are NOT loaded', () => {
+    process.env.RIVET_TRUST_PROJECT = '0' // 强制未授信（project-trust.ts 内建语义）
+    assert.deepEqual(loadAllCapsules(gateDir), [], '未授信不得加载项目 docs/ 胶囊')
+    assert.equal(getCapsuleByStar(gateDir, '天璇'), undefined)
+    assert.equal(renderResidentCapsuleBlock(gateDir), undefined)
+  })
+
+  it('trusted: project docs capsules are loaded', () => {
+    process.env.RIVET_TRUST_PROJECT = '1'
+    const capsules = loadAllCapsules(gateDir)
+    assert.equal(capsules.length, 1)
+    assert.equal(capsules[0]!.star, '天璇')
+  })
+
+  it('trust switch on same cwd reloads (cache key includes trust state)', () => {
+    process.env.RIVET_TRUST_PROJECT = '0'
+    assert.deepEqual(loadAllCapsules(gateDir), [], 'untrusted first — must be empty')
+    process.env.RIVET_TRUST_PROJECT = '1'
+    assert.equal(loadAllCapsules(gateDir).length, 1, '授信后同一 cwd 必须重载并拿到胶囊')
+    process.env.RIVET_TRUST_PROJECT = '0'
+    assert.deepEqual(loadAllCapsules(gateDir), [], '撤信后不得复用授信缓存')
   })
 })

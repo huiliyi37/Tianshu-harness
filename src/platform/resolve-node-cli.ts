@@ -21,6 +21,28 @@ export interface ResolvedStdioCommand {
   args: string[]
 }
 
+/**
+ * 判定目录里是否有「真 node」，而不是转发器（issue #408）。
+ *
+ * 背景：桌面端 bundled 的 node-runtime 目录，Windows 上只有 `node.cmd` 转发器
+ * （`@ECHO OFF` + `"%~dp0tianshu-runtime.exe" %*`），没有真 `node.exe`。把这种目录
+ * prepend 到 PATH 前部，cmd.exe 解析 `node` 时会命中转发器，劫持用户系统里的真
+ * Node——`npm exec` / `npm run` 里经 cmd 层启动 node 的脚本随之失败。
+ *
+ * 判据：win32 看 `node.exe` 是否在（转发器是 `.cmd` 形态，不构成命中）；POSIX 看 `node`。
+ * 只做存在性判定，不试跑——调用方要的是「该目录该不该排在系统 node 前面」，
+ * 不是「该目录里的 node 能不能用」。
+ */
+export function hasRealNode(
+  nodeDir: string,
+  platform: NodeJS.Platform,
+  existsFn: (path: string) => boolean = existsSync,
+): boolean {
+  const p = pathApi(platform)
+  const exe = platform === 'win32' ? 'node.exe' : 'node'
+  return existsFn(p.join(nodeDir, exe))
+}
+
 function pathApi(platform: NodeJS.Platform) {
   return platform === 'win32' ? winPath : posixPath
 }
@@ -144,8 +166,11 @@ function sanitizePathext(value: string | undefined): string {
 
 /**
  * Build an env object for MCP stdio transports: always explicit, with the
- * hosting Node directory prepended to PATH so npx-cli can find the same node.
- * User-supplied env is merged, but nodeDir is written last onto PATH.
+ * hosting Node directory on PATH so npx-cli can find the same node. User-supplied
+ * env is merged, but PATH is written last onto it.
+ *
+ * PATH 位置取决于目录内容（issue #408）：有真 node → prepend（子进程优先命中它）；
+ * 只有转发器（无真 node）→ append 到末尾，让系统真 node 优先，避免劫持。
  */
 export function buildStdioEnvWithNodePath(
   userEnv?: Record<string, string>,
@@ -172,9 +197,15 @@ export function buildStdioEnvWithNodePath(
   const pathRest = user.PATH ?? user.Path ?? base.PATH ?? base.Path ?? ''
   const fallback = pathRest ? [] : systemPathFallback(platform, base)
   const merged = { ...base, ...user }
+  // issue #408：nodeDir 里只有转发器（无真 node）时不抢占 PATH 首位——改 append 到
+  // 末尾，让系统 PATH 里的真 node 优先命中，bundled 目录仍留在 PATH 中可找到；
+  // 有真 node 时保持 prepend（issue #149：确保子进程能找到 node）。
+  const pathParts = pathRest ? [pathRest] : fallback
   const env: Record<string, string> = {
     ...merged,
-    PATH: [nodeDir, ...(pathRest ? [pathRest] : fallback)].join(pathSep),
+    PATH: hasRealNode(nodeDir, platform, deps.existsSync ?? existsSync)
+      ? [nodeDir, ...pathParts].join(pathSep)
+      : [...pathParts, nodeDir].join(pathSep),
   }
   if (platform === 'win32') {
     // issue #149 根因 B：npx 分发的 bin 由 `cmd /d /s /c <bin名>` 执行，cmd 按

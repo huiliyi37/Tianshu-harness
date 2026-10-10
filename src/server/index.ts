@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer, type ServerOptions as TlsServerOptions } from 'node:https'
-import { assertSecureBind } from './serve-transport.js'
+import { assertSecureBind, resolveLanDirect } from './serve-transport.js'
 import { defaultLanHosts } from './host-policy.js'
 import { readFileSync, realpathSync } from 'node:fs'
 import { join, resolve, sep, extname } from 'node:path'
@@ -119,6 +119,13 @@ export interface StartServerOptions {
   host?: string
   /** Host header allowlist（不带端口）。配置后非回环 Host 仅 allowlist 放行。 */
   allowedHosts?: string[]
+  /**
+   * LAN Direct 显式 opt-in（设计 §5.3 Wave 1）：允许「非回环 + 无 TLS」的局域网
+   * 明文监听，并把默认 Host allowlist 收窄到私网（见 host-policy 的
+   * `filterLanDirectHosts`）。缺省读 env `RIVET_SERVE_LAN_DIRECT`（仅 `'1'` 开启）；
+   * 未 opt-in 时行为与历史完全一致。
+   */
+  lanDirect?: boolean
   /** Explicit HTTPS proxy host registered by the authenticated desktop settings. */
   additionalAllowedHosts?: () => string[]
   /**
@@ -244,10 +251,13 @@ export async function startServer(
   const corsOrigin = allowedCorsOrigin
 
   const bindHost = opts.host?.trim() || '127.0.0.1'
-  assertSecureBind(bindHost, opts.tls)
+  // LAN Direct opt-in：显式 opts > env（RIVET_SERVE_LAN_DIRECT=1）。单一真源见
+  // serve-transport.resolveLanDirect——与 runServe 同源，避免两处判定漂移。
+  const lanDirect = resolveLanDirect(opts.lanDirect)
+  assertSecureBind(bindHost, opts.tls, { lanDirect })
   // LAN 模式：显式绑定到非回环地址（0.0.0.0 / LAN IP / ::）。
   const lanMode = !isLoopbackBind(bindHost)
-  const allowlist = (opts.allowedHosts ?? (lanMode ? defaultLanHosts(bindHost) : [])).map((h) => h.trim().toLowerCase()).filter(Boolean)
+  const allowlist = (opts.allowedHosts ?? (lanMode ? defaultLanHosts(bindHost, { lanDirect }) : [])).map((h) => h.trim().toLowerCase()).filter(Boolean)
   const allowlistConfigured = allowlist.length > 0
   const mobileRoot = opts.mobileDir?.trim() ? resolve(opts.mobileDir.trim()) : undefined
   // root 的 realpath 启动时解析一次——逐请求符号链接防护的比较基准（root 自身

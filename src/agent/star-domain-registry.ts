@@ -89,6 +89,27 @@ export class StarDomainRegistry {
     return this.domains.get(id)
   }
 
+  /** Resolve a star-domain reference to its canonical pinyin id.
+   *  Accepts an id (case-insensitive) or a Chinese `name` (e.g. 天机 → tianji).
+   *  Returns the canonical id, or undefined when nothing matches.
+   *
+   *  Single source of truth for authority normalization: delegate-task /
+   *  delegate-batch / galaxy all route through it, so the value reaching
+   *  DelegationRequest.authority is always a real pinyin id。worker 侧
+   *  toolsForAuthority（work-order.ts）对未知名 fail-closed 返回零工具——
+   *  若只在 schema 放宽而不归一化，中文名会静默拿到 [] 而非被拒。 */
+  resolve(idOrName: string): string | undefined {
+    this.ensureInit()
+    const key = idOrName.trim()
+    if (!key) return undefined
+    const lower = key.toLowerCase()
+    if (this.domains.has(lower)) return lower
+    for (const domain of this.domains.values()) {
+      if (domain.name === key) return domain.id
+    }
+    return undefined
+  }
+
   /** Get all registered domain ids */
   getDomainIds(): string[] {
     this.ensureInit()

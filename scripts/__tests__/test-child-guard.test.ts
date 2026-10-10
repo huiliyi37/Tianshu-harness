@@ -18,11 +18,14 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { runGuardedChild } from '../test-child-guard.js'
 
 /** 汇总行文本与 node --test 的 spec reporter 逐字一致。 */
 const summary = (tests: number, pass: number, fail: number): string =>
-  [`ℹ tests ${tests}`, `ℹ pass ${pass}`, `ℹ fail ${fail}`].join('\n')
+  [`ℹ tests ${tests}`, `ℹ pass ${pass}`, `ℹ fail ${fail}`, 'ℹ cancelled 0'].join('\n')
 
 const run = (script: string, opts: { idleMs?: number; hardMs?: number } = {}) =>
   runGuardedChild({
@@ -51,6 +54,45 @@ test('fail>0 的汇总 → 非零退出码', async () => {
   assert.equal(r.summarySeen, true)
   assert.equal(r.fail, 1)
   assert.equal(r.code, 1)
+})
+
+test('a completed summary cannot erase a real nonzero process exit', async () => {
+  const r = await run(`console.log(${JSON.stringify(summary(1, 1, 0))}); process.exitCode = 7`)
+  assert.equal(r.summarySeen, true)
+  assert.equal(r.code, 7)
+})
+
+test('a cancelled real Node test is failed verification even with fail zero', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'guard-cancelled-'))
+  try {
+    const file = join(dir, 'cancelled.fixture.mjs')
+    writeFileSync(file, "import { test } from 'node:test'; test('unfinished promise', async () => { await new Promise(() => {}) })\n")
+    const r = await runGuardedChild({ args: ['--test-reporter=spec', '--test-timeout=500', '--test', file], env: process.env, idleMs: 3000, hardMs: 10000, forwardOutput: false })
+    assert.equal(r.summarySeen, true, r.tailExcerpt)
+    assert.equal(r.fail, 0)
+    assert.equal(r.cancelled, 1)
+    assert.notEqual(r.code, 0, 'cancelled tests did not finish their assertions')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('idle cleanup must not make a cancelled summary pass', async () => {
+  const text = summary(1, 0, 0).replace('cancelled 0', 'cancelled 1')
+  const r = await run(`console.log(${JSON.stringify(text)}); setInterval(() => {}, 50)`)
+  assert.equal(r.killed, 'idle')
+  assert.equal(r.cancelled, 1)
+  assert.notEqual(r.code, 0)
+})
+
+test('an interrupted summary header alone is incomplete verification', async () => {
+  const r = await run("console.log('ℹ tests 1')")
+  assert.equal(r.summarySeen, false)
+  assert.notEqual(r.code, 0)
+})
+
+test('a summary interrupted before the cancellation count is incomplete', async () => {
+  const r = await run("console.log('ℹ tests 1\\nℹ pass 1\\nℹ fail 0')")
+  assert.equal(r.summarySeen, false)
+  assert.notEqual(r.code, 0)
 })
 
 test('进程退出但没打印汇总 → 判非零（fail-closed：等价于什么都没验证）', async () => {

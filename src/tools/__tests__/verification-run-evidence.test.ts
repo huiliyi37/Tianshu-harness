@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { prepareCompletionCapture } from '../test-completion.js'
+import { shellWord } from '../verification-command.js'
 import { completionFacts } from '../verification-facts.js'
 import { SessionJobs } from '../job-store.js'
 import { BASH_TOOL } from '../bash.js'
@@ -22,6 +23,7 @@ function fixture() {
   execFileSync('git', ['init', '-q'], { cwd })
   execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '--allow-empty', '-qm', 'base'], { cwd })
   symlinkSync(join(repo, 'node_modules'), join(cwd, 'node_modules'), 'junction')
+  writeFileSync(join(cwd, '.gitignore'), 'node_modules\n')
   return { cwd, dispose: () => rmSync(cwd, { recursive: true, force: true }) }
 }
 
@@ -29,7 +31,8 @@ it('multi-batch totals survive compressed output, output clipping and repeated f
   const f = fixture()
   try {
     const loader = pathToFileURL(join(repo, 'node_modules/tsx/dist/loader.mjs')).href
-    const script = `node --import ${loader} ${join(repo, 'scripts/run-node-tests.ts')}`
+    const script = ['node', '--import', loader, join(repo, 'scripts/run-node-tests.ts')]
+      .map(word => process.platform === 'win32' ? word : shellWord(word)).join(' ')
     writeFileSync(join(f.cwd, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: script } }))
     for (let i = 0; i < 55; i++) {
       const directory = join(f.cwd, 'src', ...Array.from({ length: 4 }, (_, j) => `${j}-${'a'.repeat(150)}`), String(i))
@@ -148,7 +151,7 @@ it('spawn error and close settle once, and lifetime termination preserves timeou
     assert.equal(completed, 1)
     writeFileSync(join(f.cwd, 'timeout.test.mjs'), "import {test} from 'node:test';test('timeout',async()=>await new Promise(r=>setTimeout(r,10000)));")
     const records: VerificationMetadata[] = []
-    const registry = { spawn: (opts: Parameters<SessionJobs['spawn']>[0]) => jobs.spawn({ ...opts, maxLifetimeMs: 100 }), await: jobs.await.bind(jobs), logs: jobs.logs.bind(jobs), list: jobs.list.bind(jobs), kill: jobs.kill.bind(jobs) }
+    const registry = { spawn: (opts: Parameters<SessionJobs['spawn']>[0]) => jobs.spawn({ ...opts, maxLifetimeMs: 100 }), await: jobs.await.bind(jobs), logs: jobs.logs.bind(jobs), list: jobs.list.bind(jobs), kill: jobs.kill.bind(jobs), recordVerificationMeta: jobs.recordVerificationMeta.bind(jobs) }
     const exit = new Promise<void>(resolve => jobs.on('event', event => { if (event.kind === 'exit' && event.job.command.includes('timeout.test')) resolve() }))
     await BASH_TOOL.execute({ cwd: f.cwd, toolUseId: 'timeout', input: { command: 'node --test timeout.test.mjs', run_in_background: true }, jobs: registry, onVerificationCompleted: v => records.push(v) })
     await exit

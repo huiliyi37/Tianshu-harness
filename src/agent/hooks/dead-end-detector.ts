@@ -21,7 +21,7 @@ import type { PostToolRuntimeHook, RuntimeHookContext, RuntimeToolEvent } from '
 import type { AdvisoryBus } from '../advisory-bus.js'
 import type { PheromoneDeposit } from '../../context/stigmergy.js'
 import { createHash } from 'node:crypto'
-import { VERIFY_BASH_RE } from './self-verify-hook.js'
+import { isVerificationIntent } from '../verification-activity.js'
 import { WRITE_TOOL_NAMES, extractWriteFilePaths } from '../../tools/write-tool-helpers.js'
 import { renderRouteAnnotation, STALL_ROUTE_TABLE } from '../failure-taxonomy.js'
 
@@ -62,7 +62,7 @@ function isVerifyEvent(tool: RuntimeToolEvent): boolean {
   if (tool.name === 'run_tests') return true
   if (tool.name === 'bash') {
     const cmd = (tool.input?.command as string) ?? tool.target ?? ''
-    return VERIFY_BASH_RE.test(cmd)
+    return isVerificationIntent(cmd)
   }
   return false
 }

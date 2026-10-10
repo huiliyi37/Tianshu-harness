@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { validateCatalog, assertCatalogUpdate, CATALOG_URLS } from './catalog.mjs'
 import { validateReleaseNotes } from './release-notes.mjs'
+import { guardStablePublication } from './guard-stable-publication.mjs'
 
 const publish = process.argv.includes('--publish')
 const catalog = validateCatalog(JSON.parse(readFileSync('release-catalog.json','utf8')))
+await guardStablePublication(catalog.version, readFileSync('release-catalog.json'))
 const manifest = JSON.parse(readFileSync('latest.json','utf8'))
 if (catalog.version !== manifest.version) throw new Error('Manifest/catalog versions differ')
 if (!catalog.artifacts.every(a => a.sources.github?.verified)) throw new Error('GitHub artifacts must be verified before publishing the catalog')

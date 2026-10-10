@@ -54,6 +54,8 @@ it('argv normalization handles wrappers/loaders/Windows paths without loader tar
   assert.equal(inferBashVerificationScope('node --test > out').scope, 'full')
   assert.equal(inferBashVerificationScope('cd repo && rtk node --test').scope, 'full')
   for (const option of ['--test-name-pattern=x', '--test-skip-pattern x']) assert.equal(classifyVerificationCommand(`rtk node --test ${option} a.test.ts`).filtered, true)
+  assert.equal(inferBashVerificationScope('node --test "src/dir%20name/a.test.ts"').kind, 'test')
+  assert.equal(inferBashVerificationScope('node --test %VAR%').scope, 'unknown')
 })
 
 it('actual completion covers glob targets, not discovery or same-name files in another suite', () => {

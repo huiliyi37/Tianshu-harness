@@ -1,115 +1,162 @@
-/**
- * RIVET_FORCE_RECOVERY_CLI readline fallback CLI.
- *
- * A minimal terminal interface used when the T9 ANSI engine cannot start or is
- * explicitly bypassed. It wires AgentLoop callbacks to plain stdout text and
- * reads user input through `node:readline/promises`.
- */
-
-import { createInterface, type Interface as ReadlineInterface } from 'node:readline/promises'
+/** Plain, line-oriented frontend for limited terminals and explicit recovery. */
+import type { Interface as ReadlineInterface } from 'node:readline/promises'
 import type { BootstrapContext } from './bootstrap.js'
 import type { AgentCallbacks } from './agent/loop-types.js'
+import { parseAskUserQuestions, renderAskUserQuestionText, type AskUserQuestionItem, type AskAnswerDraft } from './tools/ask-user-question.js'
+import { restorePlanModeFromMeta } from './plan/restore-plan-mode.js'
+import { RecoveryOutput } from './recovery/output.js'
+import { RecoveryInput } from './recovery/input.js'
+import { RecoveryCommands } from './recovery/commands.js'
+import { answerDraft, composeAnswers, restoreRecoveryQuestions } from './recovery/questions.js'
 
 export interface RecoveryCliOptions {
-  /** Readline interface; defaults to a stdin/stdout interface with prompt "> ". */
   rl?: ReadlineInterface
-  /** Input stream when creating the default readline interface. */
   input?: NodeJS.ReadableStream
-  /** Output stream when creating the default readline interface. */
   output?: NodeJS.WritableStream
+  terminalProfile?: 'native' | 'captured-pty'
 }
-
 const EXIT_COMMANDS = new Set(['/exit', '/quit', 'exit', 'quit'])
 
 export async function runRecoveryCli(ctx: BootstrapContext, options: RecoveryCliOptions = {}): Promise<void> {
-  const input = options.input ?? process.stdin
-  const output = options.output ?? process.stdout
-  const rl = options.rl ?? createInterface({ input, output, prompt: '> ' })
-
-  const write = (s: string) => {
-    output.write(s)
+  const output = new RecoveryOutput(options.output ?? process.stdout)
+  const metadata = ctx.persist?.loadMetadata()
+  if (metadata?.planModeState === 'planning') {
+    const draft = restorePlanModeFromMeta(ctx.agent, ctx.cwd, metadata)
+    if (draft) output.line(`[plan] Restored planning mode: ${draft}. Source writes remain blocked until approval.`)
   }
-  const writeln = (s: string) => write(s + '\n')
-
-  writeln('[recovery] RIVET Recovery CLI (readline fallback)')
-  writeln('[recovery] Type a prompt and press Enter. Type /exit or /quit to leave.\n')
-
-  let running = true
-  const stop = () => {
-    running = false
+  let active = false
+  let agentRunning = false
+  let stopped = false
+  let interrupted = false
+  let pendingQuestions: AskUserQuestionItem[] = restoreRecoveryQuestions(ctx.session?.getMessages?.() ?? [])
+  const questionCalls = new Map<string, { questions: AskUserQuestionItem[]; success: boolean }>()
+  let approvalTail: Promise<void> = Promise.resolve()
+  const interrupt = (exit: boolean) => {
+    if (!active) return false
+    interrupted = true
+    if (exit) stopped = true
+    if (agentRunning) ctx.agent.abort?.()
+    output.line(exit ? '[recovery] Exiting.' : '[recovery] Interrupt requested.')
+    return true
   }
+  const input = new RecoveryInput(options.input ?? process.stdin, output, options.rl, interrupt)
+  const onSignal = () => {
+    if (!active) stopped = true
+    interrupt(false)
+    input.cancelWait()
+  }
+  process.on('SIGINT', onSignal)
+  const commands = new RecoveryCommands(ctx, output, () => active && !stopped && !interrupted)
+  output.line(`[recovery] RIVET Recovery CLI${options.terminalProfile === 'captured-pty' ? ' (captured-pty: plain text)' : ''}`)
+  output.line('[recovery] Type a prompt and press Enter. /help shows commands; /abort interrupts; /exit leaves.\n')
 
+  const callbacks: AgentCallbacks = {
+    onTextDelta: text => output.delta(text),
+    onThinkingDelta: () => {},
+    onToolUse: (id, name, toolInput) => {
+      output.line(`\n[tool] ${name}(${JSON.stringify(toolInput)})`)
+      if (name === 'ask_user_question') questionCalls.set(id, { questions: parseAskUserQuestions(toolInput), success: false })
+    },
+    onToolResult: (id, name, result, isError, _rawPath, uiContent) => {
+      const text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+      const call = name === 'ask_user_question' ? questionCalls.get(id) : undefined
+      if (call) call.success = !isError
+      const questions = call?.questions
+      const display = questions?.length && !isError ? renderAskUserQuestionText(questions) : (uiContent ?? text)
+      // Questions must never be truncated: every displayed option is selectable.
+      const snippet = name === 'ask_user_question' ? display : display.length > 2000 ? `${display.slice(0, 2000)}...` : display
+      output.line(`${isError ? '[tool error]' : '[tool result]'} ${name}:\n  ${snippet.replace(/\n/g, '\n  ')}`)
+    },
+    onTurnComplete: (usage, turnNumber) => output.line(`\n[turn ${turnNumber} complete]${usage && Object.keys(usage).length ? ` usage: ${JSON.stringify(usage)}` : ''}`),
+    onError: error => output.line(`\n[error] ${error.message}`),
+    onAbort: reason => { pendingQuestions = []; questionCalls.clear(); output.line(`\n[abort] ${reason ?? 'interrupted'}`) },
+    onApprovalRequired: (id, name, toolInput) => {
+      const decision = approvalTail.then(async () => {
+        if (interrupted || stopped) return false
+        output.line(`\n[approval ${id}] ${name}\n${JSON.stringify(toolInput, null, 2)}`)
+        const answer = await input.read('Type /approve (or yes) to allow; /reject to deny: ', true)
+        if (answer === null) { interrupt(false); return false }
+        if (EXIT_COMMANDS.has(answer.trim().toLowerCase())) { interrupt(true); return false }
+        if (answer.trim() === '/abort') { interrupt(false); return false }
+        return !interrupted && !stopped && ['/approve', 'y', 'yes'].includes(answer.trim().toLowerCase())
+      })
+      approvalTail = decision.then(() => {}, () => {})
+      return decision
+    },
+    onSteerDrain: () => null,
+    onAutonomyCheckpoint: info => output.line(`[checkpoint] ${info.digest}\nType continue to resume.`),
+    onPhaseChange: (_phase, detail) => { if (detail?.reason) output.line(`[status] ${detail.reason}`) },
+  }
   try {
-    while (running) {
-      const line = await rl.question('> ')
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      if (EXIT_COMMANDS.has(trimmed)) {
-        break
+    while (!stopped) {
+      active = false
+      interrupted = false
+      let prompt: string | undefined
+      let origin: 'human' | 'runtime_command' = 'human'
+      if (pendingQuestions.length) {
+        const questions = pendingQuestions
+        pendingQuestions = []
+        const drafts: AskAnswerDraft[] = []
+        for (const question of questions) {
+          output.line(renderAskUserQuestionText([question]))
+          while (!stopped) {
+            const answer = await input.read(`Answer ${question.id}> `)
+            if (answer === null) { stopped = true; break }
+            const text = answer.trim()
+            if (EXIT_COMMANDS.has(text.toLowerCase())) { stopped = true; break }
+            if (text === '/abort') { interrupted = true; break }
+            if (text.startsWith('/') && text !== '/skip') {
+              // Inspect/help commands are available while answering; state-changing
+              // commands remain explicit fresh prompts after the question is handled.
+              if (['/help', '/plan-list', '/plan-view'].includes(text.split(/\s+/)[0]!)) {
+                active = true
+                try { await commands.handle(text) } finally { active = false }
+                if (interrupted) break
+              }
+              else output.line('[question] Answer with option numbers, text, or /skip; /exit leaves.')
+              continue
+            }
+            const draft = answerDraft(question, text)
+            if (!draft) { output.line('[question] Invalid selection. Use listed numbers or your own text.'); continue }
+            drafts.push(draft)
+            break
+          }
+          if (stopped || interrupted) break
+        }
+        if (stopped || interrupted) continue
+        prompt = composeAnswers(questions, drafts)
+      } else {
+        const line = await input.read('> ')
+        if (line === null) break
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        if (EXIT_COMMANDS.has(trimmed.toLowerCase())) break
+        active = true
+        try {
+          const command = await commands.handle(trimmed)
+          if (command.handled && !command.prompt) continue
+          prompt = command.prompt ?? trimmed
+          if (command.prompt) origin = 'runtime_command'
+        } catch (error) { output.line(`[error] ${(error as Error).message}`); continue }
+        finally { active = false }
       }
-
-      writeln(`\n[you] ${trimmed}`)
-
-      const callbacks = buildRecoveryCallbacks(rl, output)
-      try {
-        await ctx.agent.run(trimmed, callbacks)
-      } catch (err) {
-        writeln(`\n[error] ${(err as Error).message}`)
+      if (!prompt || stopped || interrupted) continue
+      output.line(`\n[you] ${prompt}`)
+      active = true
+      agentRunning = true
+      try { await ctx.agent.run(prompt, callbacks, undefined, { origin }) }
+      catch (error) { output.line(`\n[error] ${(error as Error).message}`) }
+      finally {
+        active = false
+        agentRunning = false
+        pendingQuestions = interrupted ? [] : [...questionCalls.values()].filter(call => call.success).flatMap(call => call.questions)
+        questionCalls.clear()
+        output.line()
       }
-      writeln('')
     }
   } finally {
-    stop()
-    rl.close()
-  }
-}
-
-function buildRecoveryCallbacks(rl: ReadlineInterface, output: NodeJS.WritableStream): AgentCallbacks {
-  const write = (s: string) => {
-    output.write(s)
-  }
-  const writeln = (s: string) => write(s + '\n')
-
-  return {
-    onTextDelta: (text) => {
-      write(text)
-    },
-    onThinkingDelta: () => {
-      // Recovery CLI omits thinking content to keep the transcript readable.
-    },
-    onToolUse: (_id, name, input) => {
-      writeln(`\n[tool] ${name}(${JSON.stringify(input)})`)
-    },
-    onToolResult: (_id, name, result, isError) => {
-      const prefix = isError ? '[tool error]' : '[tool result]'
-      // issue #120 — result 不保证是字符串（工具可能回传对象/数字/undefined）：
-      // 直接调 .length/.slice/.replace 会在回调内抛 TypeError，打断 recovery 循环。
-      const text = typeof result === 'string' ? result : JSON.stringify(result ?? '')
-      const snippet = text.length > 500 ? `${text.slice(0, 500)}...` : text
-      writeln(`${prefix} ${name}:\n  ${snippet.replace(/\n/g, '\n  ')}`)
-    },
-    onTurnComplete: (usage, turnNumber) => {
-      if (usage && Object.keys(usage).length > 0) {
-        writeln(`\n[turn ${turnNumber} complete] usage: ${JSON.stringify(usage)}`)
-      } else {
-        writeln(`\n[turn ${turnNumber} complete]`)
-      }
-    },
-    onError: (error) => {
-      writeln(`\n[error] ${error.message}`)
-    },
-    onAbort: (reason) => {
-      writeln(`\n[abort] ${reason ?? 'interrupted'}`)
-    },
-    onApprovalRequired: async (_id, name, _input) => {
-      const answer = await rl.question(`Approve ${name}? (y/N) `)
-      const normalized = answer.trim().toLowerCase()
-      return normalized === 'y' || normalized === 'yes'
-    },
-    onCheckpoint: () => {},
-    onPhaseChange: () => {},
-    onIntentNote: () => {},
-    onSteerDrain: () => null,
-    onDelegationActivity: () => {},
+    process.off('SIGINT', onSignal)
+    input.close()
+    output.close()
   }
 }

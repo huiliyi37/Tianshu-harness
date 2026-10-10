@@ -26,15 +26,6 @@ after(() => {
   rmSync(tempDir, { recursive: true, force: true })
 })
 
-/** Poll until the async write chain lands the metadata patch. */
-async function waitForPrompt(persist: SessionPersist, expected: number): Promise<void> {
-  for (let i = 0; i < 50; i++) {
-    const meta = persist.loadMetadata()
-    if (meta?.tokenUsage?.prompt === expected) return
-    await new Promise(r => setTimeout(r, 10))
-  }
-}
-
 describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
   it('worker knowledge and runtime instructions never replace a human session title', async () => {
     const session = new SessionContext(), persist = new SessionPersist('origin-title', tempDir)
@@ -54,7 +45,7 @@ describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
     const session = new SessionContext()
     const persist = new SessionPersist('meta-prompt-2x', tempDir)
     persist.initMetadata({ model: 'deepseek-v4-pro' })
-    attachSessionPersistListener({ session, persist })
+    const listener = attachSessionPersistListener({ session, persist })
 
     // DeepSeek semantics: input = hit + miss.
     session.addUsage({
@@ -66,7 +57,7 @@ describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
     // Trigger the listener via a message append (the hot path that patches meta).
     session.addUserMessage('hello')
 
-    await waitForPrompt(persist, 1000)
+    await listener.drain()
     const meta = persist.loadMetadata()
     assert.ok(meta?.tokenUsage)
     assert.equal(meta.tokenUsage.prompt, 1000)
@@ -78,7 +69,7 @@ describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
     const session = new SessionContext()
     const persist = new SessionPersist('persisted-strip', tempDir)
     persist.initMetadata({ model: 'test' })
-    attachSessionPersistListener({ session, persist })
+    const listener = attachSessionPersistListener({ session, persist })
 
     const img = 'data:image/png;base64,' + 'A'.repeat(128)
     session.addUserMessage('看这张图', [img])
@@ -90,9 +81,7 @@ describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
         : ''
 
     // 前置：图片先按常规 append 落盘（user 消息 flushNow=true）。
-    for (let i = 0; i < 50 && !rawTranscript().includes('A'.repeat(128)); i++) {
-      await new Promise(r => setTimeout(r, 10))
-    }
+    await listener.drain()
     assert.ok(rawTranscript().includes('A'.repeat(128)), '前置：图片 base64 已进 transcript')
 
     // 服务端明确拒图（唯一 URL）→ 写回历史；replace → compactOaiAsync 原子重写。
@@ -100,9 +89,7 @@ describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
       persistStrippedImagesIfUnambiguous(session, { removedCount: 1, uniqueUrlCount: 1 }),
       true,
     )
-    for (let i = 0; i < 50 && rawTranscript().includes('A'.repeat(128)); i++) {
-      await new Promise(r => setTimeout(r, 10))
-    }
+    await listener.drain()
     const onDisk = rawTranscript()
     assert.ok(!onDisk.includes('A'.repeat(128)), '重写后的 transcript 不得再含图片 base64')
     assert.ok(onDisk.includes('no longer visible'), '占位符必须落盘（模型知道图已被移除）')

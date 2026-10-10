@@ -59,6 +59,10 @@ export const CVM_VECTOR_DECISION_KIND = 'cvm-vector-decision'
  *  晋级回放的证据底座，超限接受、不裁剪（量级 ≤1 行/轮，有规则冷却）。 */
 const LITE_KINDS: ReadonlySet<string> = new Set([
   'phase-source',
+  // P3：work-stage 确认观测（candidate/committed/转换/拒绝原因/编号）——
+  // 约 200B，含诊断原因字符串的超限属已知例外（同 cvm-vector-decision）。
+  'work-stage',
+  'decision-shift-delivery', 'course-episode', 'verification-wait-beacon',
   VITALS_LITE_KIND,
   PERF_SUMMARY_KIND,
   COGNITIVE_FRAME_LITE_KIND,

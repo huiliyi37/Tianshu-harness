@@ -59,6 +59,25 @@ export function parseTaskSelection(selection: string): number[] {
 }
 
 function findTaskBlocks(lines: string[]): TaskBlock[] {
+  // 三级识别（2026-10-09 去格式约定化）：
+  //   1. ### Task N / ### Wave N / ### 任务 N —— 显式编号，taskNumber = N；
+  //   2. 任意 ## / ### 标题分块 —— 按出现顺序编号 1..n，只收块内含 checkbox 的
+  //      （「## 需求提炼」这类非任务标题自然被跳过）；
+  //   3. 无标题 —— 整篇当一个块（含 checkbox 时）。
+  //
+  // 为什么容错而非要求格式：markdown 任务清单的通行写法就是裸 `- [ ]`
+  // （GitHub task list；claude-code 系插件同样用 .llm/todo.md 的裸 checkbox），
+  // 没有实现对标题形态提要求。把格式约束推给提示词，等于让「怎么写都该能闭环」
+  // 变成「模型必须背格式」——分发给终端用户时尤其不可取。
+  const numbered = findNumberedBlocks(lines)
+  if (numbered.length > 0) return numbered
+  const headed = findHeadedBlocks(lines)
+  if (headed.length > 0) return headed
+  return findWholeDocumentBlock(lines)
+}
+
+/** 显式编号标题分块（既有语义，行为不变）。 */
+function findNumberedBlocks(lines: string[]): TaskBlock[] {
   const blocks: TaskBlock[] = []
   let inFence = false
 
@@ -69,11 +88,6 @@ function findTaskBlocks(lines: string[]): TaskBlock[] {
     }
     if (inFence) continue
 
-    // 任务块标题三种合法形态：### Task N（基础模板）、### Wave N（>8 任务大计划
-    // 的 submit 门禁强制分波格式，见 prompt/volatile.ts plan-methodology）、
-    // ### 任务 N（中文习惯写法）。只认 Task 时，按门禁要求分波的计划 close 永远
-    // 0 匹配——「No matching task blocks found for selection: all」（2026-08-09
-    // 会话 mskl1neqgwksu66h 实录，模型被迫手工编辑计划文件闭环）。
     const match = lines[i]!.match(/^###\s+(?:Task|Wave|任务)\s+(\d+)\b/)
     if (!match) continue
     if (blocks.length > 0) {
@@ -82,6 +96,40 @@ function findTaskBlocks(lines: string[]): TaskBlock[] {
     blocks.push({ taskNumber: Number(match[1]), startLine: i, endLineExclusive: lines.length })
   }
   return blocks
+}
+
+/** 兜底一：任意 ## / ### 标题分块，仅保留块内含 checkbox 的段。 */
+function findHeadedBlocks(lines: string[]): TaskBlock[] {
+  const fenceMask = computeFenceMask(lines)
+  const starts: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (fenceMask[i]) continue
+    if (/^#{2,3}\s+\S/.test(lines[i]!)) starts.push(i)
+  }
+
+  const blocks: TaskBlock[] = []
+  for (const [index, start] of starts.entries()) {
+    const end = index + 1 < starts.length ? starts[index + 1]! : lines.length
+    if (!hasCheckbox(lines, fenceMask, start, end)) continue
+    blocks.push({ taskNumber: blocks.length + 1, startLine: start, endLineExclusive: end })
+  }
+  return blocks
+}
+
+/** 兜底二：无标题时整篇单块（含 checkbox 才成立）。 */
+function findWholeDocumentBlock(lines: string[]): TaskBlock[] {
+  const fenceMask = computeFenceMask(lines)
+  return hasCheckbox(lines, fenceMask, 0, lines.length)
+    ? [{ taskNumber: 1, startLine: 0, endLineExclusive: lines.length }]
+    : []
+}
+
+function hasCheckbox(lines: string[], fenceMask: boolean[], start: number, endExclusive: number): boolean {
+  for (let i = start; i < endExclusive; i++) {
+    if (fenceMask[i]) continue
+    if (/^\s*- \[[ xX]\]/.test(lines[i]!)) return true
+  }
+  return false
 }
 
 function computeFenceMask(lines: string[]): boolean[] {

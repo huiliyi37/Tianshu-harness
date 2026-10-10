@@ -232,6 +232,9 @@ export function createLlmSpeculationEngine(deps: LlmSpeculationEngineDeps): LlmS
       // (the next main turn then reports a phantom wireDiverged). Side-path
       // requests must never carry the probe flag.
       prefixProbe: undefined,
+      // The spread would also inherit the main turn's diagnostics; stamp the
+      // side-path purpose so call-audit never bills speculation to main_execution.
+      diagnostics: { purpose: 'llm_speculation' },
       ...(params.request.reasoning_effort !== undefined ? { reasoning_effort: 'low' as const } : {}),
     }
 

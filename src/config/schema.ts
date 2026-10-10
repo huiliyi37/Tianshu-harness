@@ -103,6 +103,7 @@ export const modelConfigSchema = z.object({
    *  direction, and overloading it would leak image-gen models into the vision
    *  auto-bridge candidate pool. Default undefined = not an image generator. */
   supportsImageGen: z.boolean().optional(),
+  imageGen: z.object({ sizeField: z.enum(['size', 'image_size']).optional(), sizes: z.array(z.string().regex(/^\d{1,5}x\d{1,5}$/)).optional(), defaultSize: z.string().optional() }).optional(),
   /** Pricing per 1M tokens (USD). Optional — used by insights / cost visualization. */
   pricing: z.object({
     input: z.number().min(0).optional(),

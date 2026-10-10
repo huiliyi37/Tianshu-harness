@@ -101,6 +101,47 @@ describe('mission-store', () => {
     })
   })
 
+  describe('removeSession', () => {
+    it('摘除已有 session 并保持其余顺序；更新 updatedAt', () => {
+      let t = 1000
+      const store = makeStore(() => t)
+      const m = store.create('/p', '任务')
+      store.addSession(m.id, 's1')
+      store.addSession(m.id, 's2')
+      store.addSession(m.id, 's3')
+      t = 3000
+      const after = store.removeSession(m.id, 's1')
+      assert.deepEqual(after?.sessionIds, ['s2', 's3'])
+      assert.equal(after?.updatedAt, 3000)
+      assert.equal(after?.state, 'active', '摘空与否都不在 store 里归档')
+    })
+
+    it('不在列表里原样返回，不改 updatedAt', () => {
+      let t = 1000
+      const store = makeStore(() => t)
+      const m = store.create('/p', '任务')
+      store.addSession(m.id, 's1')
+      const before = store.get(m.id)!
+      t = 4000
+      const again = store.removeSession(m.id, 's-missing')
+      assert.deepEqual(again?.sessionIds, ['s1'])
+      assert.equal(again?.updatedAt, before.updatedAt)
+    })
+
+    it('摘空后仍是 active', () => {
+      const store = makeStore()
+      const m = store.create('/p', '任务')
+      store.addSession(m.id, 's1')
+      const after = store.removeSession(m.id, 's1')
+      assert.deepEqual(after?.sessionIds, [])
+      assert.equal(after?.state, 'active')
+    })
+
+    it('不存在的 mission 返回 null', () => {
+      assert.equal(makeStore().removeSession('m_nope', 's1'), null)
+    })
+  })
+
   describe('update / archive / list', () => {
     it('update 改 title 持久化，get 回读一致', () => {
       const store = makeStore()

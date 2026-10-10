@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
+import { purgeFilesystemMetadataRows } from './meridian-metadata-cleanup.js'
 
 
 import { resolveBetterSqlite3 } from './native-resolver.js'
@@ -202,8 +203,11 @@ export class MeridianDb {
         // (observed 376MB); autocheckpoint alone never truncates it.
         this.conn.pragma('journal_size_limit = 67108864')
         migrateToV2(this.conn)
+        purgeFilesystemMetadataRows(this.conn)
         this.cleanupExpiredRows()
       } catch (err) {
+        try { this.conn?.close() } catch { /* best-effort */ }
+        this.conn = null
         // Packaged sidecar with a broken native bundle: fail loud, never degrade.
         if ((err as { code?: string })?.code === 'ESQLITE_BUNDLE_BROKEN') throw err
         const reason = err instanceof Error ? err.message : String(err)
@@ -945,4 +949,3 @@ function purgeExpiredRows(db: any): void {
   db.prepare(`DELETE FROM access_log WHERE accessed_at < datetime('now', ?)`).run(`-${LOG_RETENTION_DAYS} days`)
   db.prepare(`DELETE FROM sensorimotor_log WHERE created_at < datetime('now', ?)`).run(`-${LOG_RETENTION_DAYS} days`)
 }
-

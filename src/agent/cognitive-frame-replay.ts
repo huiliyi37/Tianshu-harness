@@ -10,8 +10,8 @@ import { QUALITY_ORDER, QUALITY_CODE } from './cognitive-quality.js'
  *
  * 回放纪律（与设计钉死）：
  * - 纯函数，无 IO、无时钟；同 records 两次调用输出深相等。
- * - 只重算 structure-flow（输入全在 facts 内、完全确定）；convergence 摘要
- *   仅作记录对账，不重算（其输入面远大于 frame 承载——审查修正 ①）。
+ * - 重算 structure-flow；有 convergenceInput 的新记录还重算评分/等级/熔断。
+ *   旧帧缺该输入时报告 legacyScoreTurns，不以摘要冒充完整回放。
  * - fingerprint 重算失配 = facts 被篡改/序列化漂移，优先级最高。
  * - 硬线不变量机检：硬收紧事实（needs_user / stalled / 用户干预 / 验证债务）
  *   为真时 relaxation 必须为 0；relaxation ∉ [0, 0.25] 一律违规。
@@ -28,7 +28,11 @@ import {
   type CognitiveFrameFacts,
 } from './cognitive-frame.js'
 import { computeStructureFlowControl, type StructureFlowSnapshot } from './structure-flow-controller.js'
-import type { ConvergenceResult } from './convergence-detector.js'
+import { evaluateConvergence, type ConvergenceInput, type ConvergenceResult, type PhaseWeights } from './convergence-detector.js'
+import { replayConvergenceInput, type RecordedConvergenceInput } from './convergence-replay.js'
+import { confirmWorkStage, createWorkStageState, type WorkStageConfirmInput, type WorkStageTransition } from './work-stage.js'
+import { buildRegimeKey, analyzeScoreDecline, type ConvergenceScoreHistoryEntry } from './score-history.js'
+import type { PhaseClass } from './phase-class.js'
 
 export const COGNITIVE_FRAME_KIND = 'cognitive-frame'
 export const COGNITIVE_FRAME_LITE_KIND = 'cognitive-frame-lite'
@@ -43,6 +47,7 @@ export type CognitiveFrameRecord = {
   inputFingerprint: string
   quality: Record<CognitiveFactSource, CognitiveFactQuality>
   facts: CognitiveFrameFacts
+  convergenceInput?: RecordedConvergenceInput
   structureFlow: Pick<StructureFlowSnapshot,
     'mode' | 'relaxation' | 'planRecommendation' | 'tddRecommendation' | 'reasons'> | null
   convergence: {
@@ -56,14 +61,24 @@ export type CognitiveFrameRecord = {
      *  user-intervention …）。让「这几次被什么放行」只从落盘数据可答。
      *  可选：同上，旧记录无此字段。 */
     gate?: { emitted: boolean; suppressedBy: string | null } | null
+    /** P3 评分口径：本轮分数/质量/有效权重与口径键。可选——旧记录无此字段
+     *  （评分口径的消费按 legacy 处理，不冒充已回放）。 */
+    score?: number
+    scoreQuality?: 'ok' | 'insufficient'
+    effectiveWeights?: PhaseWeights
+    regimeKey?: string | null
   } | null
 }
 
 export function buildCognitiveFrameRecord(
   frame: CognitiveFrame,
   structureFlow: StructureFlowSnapshot | null,
-  convergence: Pick<ConvergenceResult, 'level' | 'shouldAbort' | 'abortCause' | 'messageVariant'> | null,
+  convergence: (Pick<ConvergenceResult, 'level' | 'shouldAbort' | 'abortCause' | 'messageVariant'>
+    & Partial<Pick<ConvergenceResult, 'score' | 'scoreQuality' | 'effectiveWeights'>>) | null,
   gate: { emitted: boolean; suppressedBy: string | null } | null = null,
+  /** P3：本轮评分的口径键（loop 侧 buildRegimeKey；与分数历史记录同源）。 */
+  scoreRegimeKey?: string | null,
+  convergenceInput?: RecordedConvergenceInput | null,
 ): CognitiveFrameRecord {
   return {
     kind: COGNITIVE_FRAME_KIND,
@@ -73,6 +88,7 @@ export function buildCognitiveFrameRecord(
     inputFingerprint: frame.inputFingerprint,
     quality: { ...frame.quality },
     facts: frame.facts,
+    ...(convergenceInput ? { convergenceInput } : {}),
     structureFlow: structureFlow
       ? {
         mode: structureFlow.mode,
@@ -89,6 +105,11 @@ export function buildCognitiveFrameRecord(
         abortCause: convergence.abortCause ?? null,
         variant: convergence.messageVariant ?? null,
         gate,
+        // P3 评分口径（可选——旧调用/旧记录缺省，条件写入不冒充已记录）
+        ...(convergence.score !== undefined ? { score: convergence.score } : {}),
+        ...(convergence.scoreQuality !== undefined ? { scoreQuality: convergence.scoreQuality } : {}),
+        ...(convergence.effectiveWeights !== undefined ? { effectiveWeights: { ...convergence.effectiveWeights } } : {}),
+        ...(scoreRegimeKey !== undefined ? { regimeKey: scoreRegimeKey } : {}),
       }
       : null,
   }
@@ -148,6 +169,10 @@ export interface ReplayReport {
   violations: ReplayViolation[]
   /** 关键 source（efe/sensorium）质量非 measured 的 turn——degraded，非 healthy。 */
   degradedTurns: number[]
+  /** P3：缺工作观测字段（facts.work）的帧——旧记录，相位/评分口径无从对账，
+   *  报 legacy 而非失败（旧帧 fingerprint 的解释不因此改变）。 */
+  legacyFrameTurns: number[]
+  legacyScoreTurns: number[]
 }
 
 /** relaxation 数值比较容差——记录经 JSON 往返，双精度逐位可保，但防御性给 1e-9。 */
@@ -157,6 +182,8 @@ export function replayCognitiveFrames(records: readonly CognitiveFrameRecord[]):
   const divergences: ReplayDivergence[] = []
   const violations: ReplayViolation[] = []
   const degradedTurns: number[] = []
+  const legacyFrameTurns: number[] = []
+  const legacyScoreTurns: number[] = []
 
   for (const record of records) {
     if (record.v !== 1 && record.v !== 2) {
@@ -246,7 +273,110 @@ export function replayCognitiveFrames(records: readonly CognitiveFrameRecord[]):
         }
       }
     }
+
+    // ⑤ P3 工作观测：缺字段 → legacy（不冒充已回放）；有字段 → 自洽检查
+    //（committed 非空时帧 phaseClass 应与同一确认点同源）。
+    const work = record.facts.work
+    if (work == null) {
+      legacyFrameTurns.push(record.turn)
+    } else if (work.committedPhase !== null && work.committedPhase !== record.phaseClass) {
+      violations.push({
+        turn: record.turn, rule: 'work-committed-phaseclass-mismatch',
+        detail: `phaseClass=${record.phaseClass} 与 work.committedPhase=${work.committedPhase} 不一致（同一确认点应同源）`,
+      })
+    }
+    if (!record.convergenceInput) legacyScoreTurns.push(record.turn)
+    else if (record.convergence) {
+      const scored = replayConvergenceInput(record.convergenceInput)
+      const comparable = { score: scored.score, scoreQuality: scored.scoreQuality, level: scored.level,
+        shouldAbort: scored.shouldAbort, abortCause: scored.abortCause ?? null,
+        regimeKey: scored.scoreRegimeKey ?? null, effectiveWeights: scored.effectiveWeights }
+      for (const [field, recomputed] of Object.entries(comparable)) {
+        const recorded = record.convergence[field as keyof typeof record.convergence]
+        if (JSON.stringify(recorded) !== JSON.stringify(recomputed)) divergences.push({ turn: record.turn,
+          field: `convergence.${field}`, recorded, recomputed })
+      }
+    }
   }
 
-  return { checkedCount: records.length, divergences, violations, degradedTurns }
+  return { checkedCount: records.length, divergences, violations, degradedTurns, legacyFrameTurns, legacyScoreTurns }
+}
+
+// ─── P3：阶段/评分夹具 replay ───────────────────────────────────────
+
+/** 单个 modelTurn 的确认输入——与感知确认点（WorkStage.confirm）同一类型，
+ *  由同一纯 reducer（confirmWorkStage）求值：loop 装配与 replay 输入同源。 */
+export interface StageScoreReplayFixture {
+  confirm: WorkStageConfirmInput
+  convergenceInput?: Omit<ConvergenceInput, 'scoreHistory' | 'scoreRegimeKey'>
+}
+
+export interface StageScoreReplayResult {
+  transitions: Array<{
+    modelObservationTurn: number
+    committedPhase: PhaseClass | null
+    transition: WorkStageTransition
+    provisional: boolean
+    reason: string
+  }>
+  /** 每位点后的评分口径键（与 loop 同一 buildRegimeKey——趋势切片依据）。
+   *  editExpectation 缺席 → kind=null（不冒充 'required'）。 */
+  regimes: Array<{ modelObservationTurn: number; taskEpoch: number; stageEpoch: number; regimeKey: string }>
+  /** 兼容旧夹具的历史趋势摘要；并非实际评分结果。 */
+  score: { declining: boolean; sampleCount: number } | null
+  scoring: Array<ConvergenceResult | null>
+}
+
+/**
+ * 夹具 replay：同一事实序列 → 相同转换与评分口径。纯函数、无 IO、无时钟
+ *（modelObservationTurn/taskEpoch 全部由夹具注入，无真实 IO 命令）。
+ * 缺字段不填成「正常」：snapshot=null → no-fact（不初始化/不转换）；
+ * 缺 convergenceInput → scoring=null；scoreHistory 仅用于兼容旧趋势夹具。
+ */
+export function replayStageScoreFixture(input: {
+  stages: readonly StageScoreReplayFixture[]
+  scoreHistory?: readonly ConvergenceScoreHistoryEntry[]
+  scoreWindowSize?: number
+}): StageScoreReplayResult {
+  let state = createWorkStageState()
+  const transitions: StageScoreReplayResult['transitions'] = []
+  const regimes: StageScoreReplayResult['regimes'] = []
+  const scoring: StageScoreReplayResult['scoring'] = []
+  const history: ConvergenceScoreHistoryEntry[] = [...(input.scoreHistory ?? [])]
+  for (const fixture of input.stages) {
+    const { state: next, decision } = confirmWorkStage(state, fixture.confirm)
+    state = next
+    transitions.push({
+      modelObservationTurn: fixture.confirm.modelObservationTurn,
+      committedPhase: decision.committedPhase,
+      transition: decision.transition,
+      provisional: decision.provisional,
+      reason: decision.reason,
+    })
+    regimes.push({
+      modelObservationTurn: fixture.confirm.modelObservationTurn,
+      taskEpoch: state.taskEpoch,
+      stageEpoch: state.stageEpoch,
+      regimeKey: buildRegimeKey({
+        taskEpoch: state.taskEpoch,
+        stageEpoch: state.stageEpoch,
+        editExpectationKind: fixture.convergenceInput?.editExpectation?.kind ?? fixture.confirm.editExpectation?.kind ?? null,
+      }),
+    })
+    const result = fixture.convergenceInput ? evaluateConvergence({ ...fixture.convergenceInput,
+      phaseClass: decision.committedPhase ?? fixture.convergenceInput.phaseClass,
+      scoreHistory: history,
+      scoreRegimeKey: regimes.at(-1)!.regimeKey,
+    }) : null
+    scoring.push(result)
+    if (result) {
+      regimes.at(-1)!.regimeKey = result.scoreRegimeKey!
+      history.push({ score: result.score, quality: result.scoreQuality, regimeKey: result.scoreRegimeKey ?? null })
+      if (history.length > 20) history.shift()
+    }
+  }
+  const score = input.scoreHistory
+    ? analyzeScoreDecline(input.scoreHistory, input.scoreWindowSize ?? 6)
+    : null
+  return { transitions, regimes, score, scoring }
 }

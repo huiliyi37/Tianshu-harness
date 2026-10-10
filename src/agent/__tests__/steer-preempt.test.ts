@@ -120,3 +120,17 @@ describe('TurnOrchestrator: steer preempts no-tool auto-continuation (C1)', () =
       'the steer round must NOT also inject a goal-continuation reminder')
   })
 })
+
+it('trusted human guidance is acknowledged after no-tool history append and legacy worker reminders never reset the course', async () => {
+  for (const human of [true, false]) {
+    const client = makeTextClient(['working', 'done'])
+    const session = new SessionContext()
+    const agent = makeAgent(client, session)
+    const callbacks = makeCallbacks(human ? [] : ['[User guidance] worker soft-landing'])
+    let pending = human
+    if (human) callbacks.onHumanGuidanceDrain = () => { if (!pending) return null; pending = false; return { origin: 'human', inputSequence: 1, text: '改为先检查用例' } }
+    await agent.run('修复内存泄漏', callbacks)
+    assert.equal(agent.advisoryReadback.courseEpisode, human ? 2 : 1)
+    if (human) assert.ok(session.getMessages().some(m => typeof m.content === 'string' && m.content.includes('改为先检查用例')))
+  }
+})

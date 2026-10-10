@@ -107,6 +107,36 @@ describe('StarDomainRegistry — built-in domains', () => {
   })
 })
 
+// ─── issue #411：resolve() 双向归一化（收编 PR #417）────────────
+describe('StarDomainRegistry — resolve(idOrName)', () => {
+  test('拼音 id 原样返回（大小写不敏感）', () => {
+    const reg = new StarDomainRegistry()
+    assert.equal(reg.resolve('tianji'), 'tianji')
+    assert.equal(reg.resolve('TIANQUAN'), 'tianquan')
+  })
+
+  test('中文星名归一化为规范 id', () => {
+    const reg = new StarDomainRegistry()
+    assert.equal(reg.resolve('天机'), 'tianji')
+    assert.equal(reg.resolve('瑶光'), 'yaoguang')
+  })
+
+  test('未知值 / 空串 / 纯空白返回 undefined', () => {
+    const reg = new StarDomainRegistry()
+    assert.equal(reg.resolve('yuheng'), undefined, 'yuheng 是阶段命名空间 id，不是星域 id')
+    assert.equal(reg.resolve('not_a_domain'), undefined)
+    assert.equal(reg.resolve(''), undefined)
+    assert.equal(reg.resolve('  '), undefined)
+  })
+
+  test('全部内建域 id 自洽：resolve(id) === id', () => {
+    const reg = new StarDomainRegistry()
+    for (const id of reg.getDomainIds()) {
+      assert.equal(reg.resolve(id), id)
+    }
+  })
+})
+
 describe('StarDomainRegistry — user domain loading', () => {
   const tmpBase = makeTestDir('rivet-domain-reg-test-')
 

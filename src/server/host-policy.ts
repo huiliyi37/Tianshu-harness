@@ -39,13 +39,65 @@ export function isLoopbackBind(addr: string): boolean {
 }
 
 /** Default to this machine's literal addresses; unknown hosts remain denied. */
-export function defaultLanHosts(bindHost: string): string[] {
+export function defaultLanHosts(bindHost: string, opts?: DefaultLanHostsOptions): string[] {
   const hosts = new Set<string>()
   if (!['0.0.0.0', '::'].includes(bindHost)) hosts.add(bindHost.toLowerCase())
   for (const addresses of Object.values(networkInterfaces())) for (const address of addresses ?? []) {
     hosts.add(address.family === 'IPv6' ? `[${address.address.toLowerCase()}]` : address.address)
   }
-  return [...hosts]
+  const list = [...hosts]
+  return opts?.lanDirect === true ? filterLanDirectHosts(list) : list
+}
+
+/** `defaultLanHosts` 选项——普通模式（不传/`lanDirect` 非 true）行为与历史完全一致。 */
+export interface DefaultLanHostsOptions {
+  /** LAN Direct 模式：剔除公网地址，allowlist 只留私网/link-local/回环/本机名。 */
+  lanDirect?: boolean
+}
+
+/** IPv4：回环 127/8、RFC1918（10/8、172.16/12、192.168/16）、link-local 169.254/16。 */
+function isPrivateOrLocalIpv4(addr: string): boolean {
+  const parts = addr.split('.')
+  if (parts.length !== 4) return false
+  const octets = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : NaN))
+  if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+  const [a, b] = octets as [number, number, number, number]
+  return a === 10 || a === 127
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254)
+}
+
+/** IPv6：回环、IPv4-mapped（按映射后的 IPv4 判）、link-local `fe80::/10`、ULA `fc00::/7`。 */
+function isPrivateOrLocalIpv6(addr: string): boolean {
+  const a = addr.split('%')[0]! // 去 zone id（fe80::1%en0）
+  if (a === '::1' || a === '::') return true
+  const mapped = /^::ffff:(.+)$/.exec(a)
+  if (mapped) return isPrivateOrLocalIpv4(mapped[1]!)
+  if (/^fe[89ab]/.test(a)) return true // fe80::/10 link-local
+  if (/^f[cd]/.test(a)) return true // fc00::/7 unique-local（IPv6 侧的 RFC1918 对应物）
+  return false
+}
+
+/**
+ * LAN Direct 模式下的 Host allowlist 收窄（设计 §5.3 Wave 1 第 3 条）：只保留
+ * 局域网可达的条目——RFC1918 私网、link-local、回环，以及非 IP 字面量的主机名。
+ *
+ * 防线语义：即使机器处于公网 IP 直连场景（`--host <公网IP>` + opt-in），公网
+ * Host 也被拒绝（双保险）；结果是 allowlist 可能为空，此时 `isHostAllowed`
+ * 对任何非回环 Host 一律 403（fail-closed，不是「空 allowlist 放行」）。
+ *
+ * 有意不含 CGNAT（100.64/10）：它不是本地局域网可达集合。需要放行时用显式
+ * `RIVET_SERVE_HOSTS_ALLOW` / `allowedHosts`——该路径优先于本过滤。
+ */
+export function filterLanDirectHosts(hosts: string[]): string[] {
+  return hosts.filter((h) => {
+    const addr = unbracket(h)
+    const family = isIP(addr)
+    if (family === 4) return isPrivateOrLocalIpv4(addr)
+    if (family === 6) return isPrivateOrLocalIpv6(addr)
+    return true // 非 IP 字面量 → 主机名，保留
+  })
 }
 
 /** 拆 Host 头为 host / port 两部分（port 缺省为 undefined）。 */

@@ -70,7 +70,19 @@ export interface StarPhaseContext {
   /** True if complexity > 0.5 was ever reached this session.
    *  Enables contracting phase (plan was decomposed, now settled). */
   hasEnteredHighComplexity: boolean
+  /** 窗口内有后台 job 在推进（2026-10-09）：后台跑测试/构建时主线程「空闲」
+   *  是假空闲——不得因此退回规划兜底相位。 */
+  backgroundWorkActive?: boolean
+  /** 上一相位（同一 run 内的相位记忆）。plan 类相位的进入门禁：
+   *  执行/验证/交付中的会话不得无进入信号退回规划——「还没交付就又进 plan」
+   *  的误报会引导出错误的收敛话术（2026-10-09 用户报告）。 */
+  previousPhase?: StarPhase
 }
+
+/** plan 类相位（进入需要信号）。探索（locating）不在其列——explore→plan 是早期自然流。 */
+const PLAN_CLASS_PHASES: ReadonlySet<StarPhase> = new Set(['tianshu-planning', 'tianji-decomposing', 'tianquan-contracting'])
+/** 已在干活/验证/交付的相位——退回 plan 类必须被门禁挡住。 */
+const WORKING_PHASES: ReadonlySet<StarPhase> = new Set(['yuheng-implementing', 'kaiyang-testing', 'yaoguang-delivering'])
 
 /**
  * Emitted whenever the star phase changes.
@@ -107,6 +119,23 @@ export interface StarEvent {
  * 移除；`StarPhaseContext` 也不再携带该字段。
  */
 export function mapSensoriumToPhase(
+  s: Sensorium,
+  ctx: StarPhaseContext,
+): StarPhase {
+  const phase = computePhaseFromSensorium(s, ctx)
+  // 后台活动守卫：后台有活在跑（job 在跑测试/构建）时主线程「空闲」是假空闲——
+  // 不落「规划」兜底相位（2026-10-09：写码任务在后台 job 里跑时被误报 plan 阶段停滞）。
+  if (ctx.backgroundWorkActive && phase === 'tianshu-planning') return 'tianxuan-locating'
+  // plan 相位进入门禁：执行/验证/交付中的会话退回 plan 类需要明确的进入信号
+  // （新 run 首评没有 previousPhase，不受影响；perception.reset() 在每个新用户
+  // run 起点清空相位记忆）。「还没交付就又进 plan」的退回会把收敛话术引向错误相位。
+  if (ctx.previousPhase && WORKING_PHASES.has(ctx.previousPhase) && PLAN_CLASS_PHASES.has(phase)) {
+    return ctx.previousPhase
+  }
+  return phase
+}
+
+function computePhaseFromSensorium(
   s: Sensorium,
   ctx: StarPhaseContext,
 ): StarPhase {

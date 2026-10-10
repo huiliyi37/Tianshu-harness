@@ -15,6 +15,7 @@ import { getKnowledgeIndex } from '../memory/knowledge-index.js'
 import { getRecallTracker } from '../memory/recall-efficacy.js'
 import { renderGateFeedbackHint } from '../memory/gate-ledger.js'
 import { readCommitFacts } from '../context/project-memory-writer.js'
+import { projectStateAllowed } from '../config/project-trust.js'
 import { tokenizeRecallQuery } from '../memory/query-terms.js'
 import { createEmbeddingProvider, type EmbeddingProvider } from '../search/embedding-provider.js'
 import {
@@ -174,7 +175,15 @@ export function createMemoryTool(store: ContextClaimStore, ctx?: MemoryContext):
         }
         // 告警行（链校验/闸门健康）可能存在于零命中的响应里——仍要明确"没找到"
         if (hits.length === 0 && commitFacts.length === 0) {
-          lines.push(`未找到与「${query}」相关的记忆。`)
+          // issue #416：未授信项目跳过索引构建（knowledge-index rebuild 的信任门），
+          // 此时的空结果此前与「库中确实无匹配记忆」不可区分——调用方无从得知是
+          // 「未检索」而非「没有」。显式点明原因并给出 /trust 出路；信任门本身不动
+          // （未授信不摄入项目状态是应保留的 fail-closed 设计）。
+          if (!projectStateAllowed(cwd)) {
+            lines.push(`项目未授信，未检索知识库——无法确认是否存在与「${query}」相关的记忆；\`/trust\` 后重试。`)
+          } else {
+            lines.push(`未找到与「${query}」相关的记忆。`)
+          }
         }
         return { content: lines.join('\n') }
       }

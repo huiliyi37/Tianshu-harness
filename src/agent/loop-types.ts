@@ -351,6 +351,7 @@ export interface DomainResolvedPayload {
 }
 
 export interface ToolDisplayEvidence {
+  generatedImageId?: string
   command?: string
   outputText?: string
   outputTruncated?: boolean
@@ -416,6 +417,9 @@ export interface AgentCallbacks {
   onIntentNote?: (intent: IntentPreview) => void
   /** Called to drain any pending steer guidance for injection into tool results */
   onSteerDrain?: () => string | null | Promise<string | null>
+  onHumanGuidanceDrain?: () => import('./course-episodes.js').HumanGuidance | null | Promise<import('./course-episodes.js').HumanGuidance | null>
+  /** Internal acknowledgement after guidance has reached the history tail. */
+  onHumanGuidanceAccepted?: (item: import('./course-episodes.js').HumanGuidance) => void
   /** C3 Auto 模式检查点 — 仅在 auto-safe 模式下、checkpointEveryTurns > 0
    *  时触发。run 暂停等待用户确认（"continue" 继续）。digest 为进度摘要。 */
   onAutonomyCheckpoint?: (info: AutonomyCheckpointInfo) => void

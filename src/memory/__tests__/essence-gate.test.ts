@@ -161,7 +161,7 @@ describe('essence-gate', () => {
     const old = appendMemoryEntry(cwd, {
       text: 'Project uses jest for testing',
       kind: 'project_rule', confidence: 0.9, source: 'manual', status: 'verified', tags: [], topic: 'testing',
-    })
+    })!
 
     const result = await runEssenceGate(
       {
@@ -256,7 +256,7 @@ describe('essence-gate', () => {
     const old = appendMemoryEntry(cwd, {
       text: 'Old rule: use jest for testing',
       kind: 'project_rule', confidence: 0.9, source: 'manual', status: 'verified', tags: [],
-    })
+    })!
     const result = await runEssenceGate(
       {
         cwd,

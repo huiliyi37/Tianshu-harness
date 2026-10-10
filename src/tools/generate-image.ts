@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { resolve } from 'node:path'
 import type { Tool } from './types.js'
 import type { Config, ProviderConfig } from '../config/schema.js'
 import { getImageGenModelConfig } from '../config/image-gen-model.js'
@@ -7,6 +7,8 @@ import type { ImageGenModelConfigSnapshot } from '../config/image-gen-schema.js'
 import { loadConfig } from '../config/manager.js'
 import { resolveApiKey } from '../api/factory.js'
 import { expandHome } from '../platform.js'
+import { ImageGenerationService, imageGenerationService } from '../api/image-generation-service.js'
+import { resolveImageGeneration, imageGenerationNetwork } from '../api/image-generation-parameters.js'
 import {
   generateImage as defaultGenerateImage,
   MAX_IMAGE_BYTES,
@@ -26,13 +28,6 @@ import {
  *  3. **不动 primary**：baseUrl/model/key 全部取自生图槽与它引用的专用 provider；
  *     `agent.defaultModel` 与 `provider.default` 在此路径上从不被读写。
  */
-
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-}
 
 export interface GenerateImageToolDeps {
   /** 生图槽读取。默认走真实 config；测试注入用。 */
@@ -56,12 +51,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** 把槽里的风格前缀与用户 prompt 拼起来。前缀是约束，不是替换。 */
-function composePrompt(prefix: string | undefined, prompt: string): string {
-  const trimmedPrefix = prefix?.trim()
-  return trimmedPrefix ? `${trimmedPrefix}，${prompt}` : prompt
-}
-
 export function createGenerateImageTool(deps: GenerateImageToolDeps = {}): Tool {
   const getConfig = deps.getConfig ?? getImageGenModelConfig
   const readConfig = deps.loadConfig ?? loadConfig
@@ -69,6 +58,11 @@ export function createGenerateImageTool(deps: GenerateImageToolDeps = {}): Tool 
   const generate = deps.generateImage ?? defaultGenerateImage
   const baseCwd = deps.cwd ?? process.cwd()
   const maxBytes = deps.maxBytes ?? MAX_IMAGE_BYTES
+  const service = deps.generateImage ? new ImageGenerationService(undefined, async options => {
+    const image = await generate(options)
+    if (image.bytes.length > maxBytes) throw new Error('生成的图片过大，超过上限，已放弃写盘')
+    return image
+  }) : imageGenerationService
 
   return {
     definition: {
@@ -120,36 +114,20 @@ Bad: 用 create_image 画复杂照片级场景（它只能写 SVG 矢量图）`,
         if (!prompt) return { content: '错误：prompt 为必填项', isError: true }
 
         const size = input.size ?? slot.size
-        const result = await generate({
-          baseUrl: provider.baseUrl,
-          apiKey: resolveKey(provider),
-          model: slot.model,
-          prompt: composePrompt(slot.prompt, prompt),
-          ...(size ? { size } : {}),
-          ...(slot.sizeField ? { sizeField: slot.sizeField } : {}),
-          ...(slot.timeoutMs ? { timeoutMs: slot.timeoutMs } : {}),
+        const cwd = params.cwd || baseCwd
+        const selection = { parameters: { provider: slot.provider, model: slot.model, prompt, prefix: slot.prompt, size, sizeField: slot.sizeField, timeoutMs: slot.timeoutMs }, connection: { baseUrl: provider.baseUrl, apiKey: resolveKey(provider), ...imageGenerationNetwork(cfg, provider) } }
+        const resolved = deps.generateImage ? selection : resolveImageGeneration(selection.parameters, cfg)
+        const started = await service.start({ cwd, requestId: params.toolUseId || randomUUID(), origin: 'chat', signal: params.abortSignal, sessionId: params.sessionId,
+          ...resolved,
+          ...(input.output_path ? { outputPath: resolve(expandHome(input.output_path.trim())) } : {}),
         })
-
-        // 第二道防线：客户端已按 maxBytes 拦过，但那一层是可注入的（测试替身、
-        // 将来的其他实现）。写盘是不可逆动作，落盘前再核一次字节数——超限时宁可
-        // 报错，也不要写出一个来路不明的大文件。
-        if (result.bytes.byteLength > maxBytes) {
-          return {
-            content: `错误：生成的图片过大（${(result.bytes.byteLength / (1024 * 1024)).toFixed(1)}MB），超过上限——已放弃写盘。`,
-            isError: true,
-          }
-        }
-
-        const ext = EXT_BY_MIME[result.mimeType] ?? 'png'
-        const target = input.output_path
-          ? resolve(expandHome(input.output_path.trim()))
-          : join(baseCwd, '.rivet', 'artifacts', 'images', `generated-${Date.now()}.${ext}`)
-        await mkdir(dirname(target), { recursive: true })
-        await writeFile(target, result.bytes)
-
+        const result = await service.wait(cwd, started.id)
+        if (result?.state !== 'succeeded' || !result.path) return { content: `错误：${result?.error?.message ?? '生成未完成'}`, isError: true }
+        params.onFileWrite?.(result.path)
         return {
-          content: `已生成图片（${formatSize(result.bytes.length)}，${slot.model}）：${target}`,
-          rawPath: target,
+          content: `已生成图片（${formatSize(result.bytes ?? 0)}，${slot.model}）：${result.path}${result.recordSaved === false ? '\n图片已保存，历史记录保存失败，可在画图工作台补记。' : ''}`,
+          rawPath: result.path,
+          generatedImageId: result.id,
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)

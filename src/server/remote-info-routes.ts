@@ -19,6 +19,11 @@ export interface RemoteInfoOptions {
   host: string
   /** Host allowlist（有配置时随响应返回，供 UI 显示收紧状态）。 */
   allowedHosts?: string[]
+  /**
+   * LAN Direct opt-in 是否生效（设计 §5.3 Wave 1 第 4 条）——UI 据此显示
+   * 「局域网明文直连」状态徽章。缺省 false，与未 opt-in 的默认形态一致。
+   */
+  lanDirect?: boolean
   endpoint?: ReturnType<typeof createRemoteAccessEndpoint>
 }
 
@@ -75,6 +80,7 @@ export function buildRemoteInfoRoutes(apiToken?: string, opts?: RemoteInfoOption
         body: {
           mode: lanMode ? 'lan' : 'loopback',
           protocol: opts?.protocol ?? 'http',
+          lanDirect: opts?.lanDirect === true,
           listenHost: opts?.host ?? '127.0.0.1',
           lanUrls: sortLanUrls(rawUrls),
           remoteBaseUrl: opts?.endpoint?.get() ?? '',

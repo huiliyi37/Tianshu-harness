@@ -91,6 +91,48 @@ test('team_orchestrate dispatches a standard plan first wave', async () => {
   assert.equal(result.orchestration?.totalWaves, panel.totalWaves)
 })
 
+test('0 任务硬拦：设计文档形态 markdown 不再静默——isError + 改走 plan_task 指引（2026-10-09 踩坑）', async () => {
+  let dispatched = 0
+  const tool = createTeamOrchestrateTool({
+    delegateBatch: async () => { dispatched++; return stubRun() },
+  })
+  const designDoc = [
+    '## 分波实施',
+    '',
+    '### Wave 1',
+    '',
+    '- [ ] 实现 A',
+    '- [ ] 实现 B',
+    '',
+    '### Wave 2',
+    '',
+    '- [ ] 实现 C',
+  ].join('\n')
+  const result = await tool.execute({
+    input: { mode: 'standard', objective: 'force: 执行设计文档', planMarkdown: designDoc },
+    cwd: process.cwd(),
+    toolUseId: 'tu-zero',
+  })
+  assert.equal(result.isError, true, '解析 0 任务必须报错（改动前是 isError:false 的静默空派发）')
+  assert.equal(dispatched, 0, '0 任务不得派发任何 worker')
+  assert.match(String(result.content), /Task N/, '报错应说明任务行文法')
+  assert.match(String(result.content), /plan_task/, '报错应给出改走 plan_task 的指引')
+  assert.match(String(result.content), /\.rivet\/plans\//, '应带完整路径示例')
+})
+
+test('0 任务 + confirm:false：proposal 仍走友好展示（不报错，守住既有行为）', async () => {
+  const tool = createTeamOrchestrateTool({
+    delegateBatch: async () => stubRun(),
+  })
+  const result = await tool.execute({
+    input: { mode: 'standard', objective: 'force: x', planMarkdown: '## 设计\n\n- [ ] a', confirm: false },
+    cwd: process.cwd(),
+    toolUseId: 'tu-zero-proposal',
+  })
+  assert.notEqual(result.isError, true, 'proposal 阶段不拦（展示语义，守卫在其之后）')
+  assert.match(String(result.content), /解析未产生任务/)
+})
+
 test('team_orchestrate 透传条件依赖边（收编 #6：markdown → DependencyEdge）', async () => {
   let captured: DelegationRequest[] = []
   const tool = createTeamOrchestrateTool({

@@ -474,3 +474,31 @@ export interface ProviderUsageSnapshot {
   defaultAccount: { provider: string; keyId: string } | null
   accounts: ProviderUsageAccount[]
 }
+export interface ImageGenerationParameters {
+  provider: string
+  model: string
+  prompt: string
+  prefix?: string
+  size?: string
+  sizeField?: 'size' | 'image_size'
+  timeoutMs?: number
+}
+export interface ImageGenerationRecord {
+  id: string
+  requestId: string
+  requestFingerprint?: string
+  cwd: string
+  origin: 'workbench' | 'chat' | 'test' | 'legacy'
+  sessionId?: string
+  parameters: ImageGenerationParameters
+  state: 'generating' | 'downloading' | 'saving' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+  startedAt: number
+  finishedAt?: number
+  path?: string
+  mimeType?: string
+  bytes?: number
+  width?: number
+  height?: number
+  error?: { stage: string; message: string }
+  recordSaved?: boolean
+}

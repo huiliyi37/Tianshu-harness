@@ -30,24 +30,25 @@ describe('getCompletions', () => {
     }
   })
   after(() => rmSync(cwd, { recursive: true, force: true }))
-  it('returns matching files from cwd', () => {
+  it('returns matching files from cwd', async () => {
     // TUI 2.x 后 app.ts 位于 src/tui/engine/
-    const results = getCompletions('src/tui/engine/app', cwd, 5)
+    const results = await getCompletions('src/tui/engine/app', cwd, 5)
     assert.ok(results.length > 0)
     assert.ok(results[0]!.includes('src/tui/engine/app'))
   })
 
-  it('limits results', () => {
-    const results = getCompletions('src/', cwd, 3)
+  it('limits results', async () => {
+    const results = await getCompletions('src/', cwd, 3)
     assert.ok(results.length <= 3)
   })
 
-  it('returns empty array for nonexistent path', () => {
-    const results = getCompletions('nonexistent-xyz-123/', cwd, 5)
+  it('returns empty array for nonexistent path', async () => {
+    const results = await getCompletions('nonexistent-xyz-123/', cwd, 5)
     assert.equal(results.length, 0)
   })
-  it('returns actual Unicode paths instead of Git quoted octal strings', () => {
-    assert.deepEqual(getCompletions('截图', cwd, 5), ['src/中文/截图(一).png'])
+  it('returns actual Unicode paths instead of Git quoted octal strings', async () => {
+    assert.deepEqual(await getCompletions('截图', cwd, 5), ['src/中文/截图(一).png'])
+    assert.deepEqual(await getCompletions('src\\中文\\截图', cwd, 5), ['src/中文/截图(一).png'])
   })
 })
 

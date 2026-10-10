@@ -58,6 +58,7 @@ function stubJobs(): JobRegistry & { spawned: JobSpawnOptions[] } {
     list: () => [],
     logs: () => null,
     kill: () => false,
+    recordVerificationMeta: () => {},
   }
 }
 
@@ -130,4 +131,19 @@ describe('BASH_TOOL background branch', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
+
+it('spawn forwards raw explicit timeout presence to private verification waiting metadata', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rivet-bash-budget-'))
+  try {
+    for (const extra of [{}, { timeout: 30000 }, { timeout: 120000 }]) {
+      const jobs = stubJobs()
+      let seen: Record<string, unknown> | undefined
+      jobs.recordVerificationMeta = (_id, _meta, input) => { seen = input }
+      const input = { command: 'node --test a.test.ts', run_in_background: true, ...extra }
+      await BASH_TOOL.execute({ input, toolUseId: 'private-budget', cwd: dir, jobs })
+      assert.equal(seen, input)
+      assert.equal(Object.hasOwn(seen!, 'timeout'), Object.hasOwn(extra, 'timeout'))
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

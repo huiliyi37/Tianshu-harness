@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, statSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listScratchEntries, removeScratchEntries } from '../scratch-cleanup.js'
+import { isFilesystemMetadata } from '../../utils/file-metadata.js'
 
 // 临时会话隔离根（<rivetHome>/workspace）的枚举与清理。
 // 真实临时目录而非 mock：删除是破坏性操作，路径判定必须用真实 fs 语义
@@ -16,7 +17,13 @@ function makeRoot(): string {
 function makeEntry(root: string, name: string, fileBytes = 0): string {
   const dir = join(root, name)
   mkdirSync(dir, { recursive: true })
-  if (fileBytes > 0) writeFileSync(join(dir, 'payload.bin'), Buffer.alloc(fileBytes))
+  if (fileBytes > 0) {
+    writeFileSync(join(dir, 'payload.bin'), Buffer.alloc(fileBytes))
+    // Keep this owned payload-only fixture exact on sidecar-generating filesystems.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isFile() && isFilesystemMetadata(entry.name)) rmSync(join(dir, entry.name))
+    }
+  }
   return dir
 }
 

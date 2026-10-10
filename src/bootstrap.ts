@@ -48,7 +48,7 @@ import {
 import { FileHistory } from './agent/file-history.js'
 import { makeOwnershipGuard } from './agent/checkpoint.js'
 import { createDefaultToolRegistry } from './tools/default-registry.js'
-import { presetIncludes, resolveToolPreset } from './tools/tool-preset.js'
+import { presetIncludes, resolveToolPreset, type ToolPreset } from './tools/tool-preset.js'
 import { BROWSER_DEBUG_TOOL } from './tools/browser-debug/tool.js'
 import { defaultStore as defaultTodoStore } from './tools/todo.js'
 import { TodoStore } from './tools/todo-store.js'
@@ -66,6 +66,7 @@ import { GATE_TSC_TIMEOUT_MS } from './agent/typecheck-gate.js'
 import { createCouncilConveneTool, type CouncilConveneCoordinator } from './tools/council-convene.js'
 import { needsTemplatesInit } from './bootstrap/project-templates.js'
 import { debugLog } from './utils/debug.js'
+import { plainText } from './utils/terminal-text.js'
 import { persistCouncilRoutingShadow } from './agent/council/council-routing.js'
 import { recordCouncilSession } from './agent/council/council-telemetry.js'
 import { createRecallCapsuleTool } from './tools/recall-capsule.js'
@@ -294,7 +295,7 @@ export function resolveProviderAndAuth(
   const name = providerName ?? config.provider.default
   const provider = config.provider.providers[name]
   if (!provider) {
-    console.error(`Provider "${name}" not configured. Available: ${Object.keys(config.provider.providers).join(', ')}`)
+    console.error(plainText(`Provider "${name}" not configured. Available: ${Object.keys(config.provider.providers).join(', ')}`))
     process.exit(1)
   }
 
@@ -541,7 +542,7 @@ export function createInteractiveToolRegistry(
   refs: RuntimeRefs,
   config: Config,
   cwd: string,
-): { registry: ReturnType<typeof createDefaultToolRegistry> } {
+): { registry: ReturnType<typeof createDefaultToolRegistry>; toolPreset: ToolPreset } {
   // 域工具档位：defaultDomain 钉定某域且该域配置了 toolPreset 时按域装配
   // （如 taiyi 域默认 taiyi 档）。运行期 /domain 切换不改（装配已过）。
   const toolPreset = resolveToolPreset(cwd, config.agent.defaultDomain)
@@ -902,7 +903,8 @@ export function createInteractiveToolRegistry(
     ))
   }
 
-  return { registry: reg }
+  // 档位一并回传：调用方在本函数之外还要装工具（memory），那两处同样要按档位门控。
+  return { registry: reg, toolPreset }
 }
 
 // ── Agent Runtime ──────────────────────────────────────────────
@@ -1824,26 +1826,7 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
   }
 }
 
-// ── Plan-mode restore（resume/切换会话共用）─────────────────────
-
-/**
- * Re-enter plan mode from persisted session metadata after a resume or an
- * in-app session switch. The runtime plan-mode state lives in AgentLoop memory
- * and dies with the process; the meta mirror (written by syncPlanModeToConfig)
- * lets us restore it. Returns the restored draft path, or null when the session
- * was not planning / the draft file no longer exists (silent downgrade to off).
- */
-export function restorePlanModeFromMeta(
-  agent: AgentLoop,
-  cwd: string,
-  meta: Pick<import('./context/types.js').SessionMetadata, 'planModeState' | 'activePlanFilePath'> | null | undefined,
-): string | null {
-  if (meta?.planModeState !== 'planning' || !meta.activePlanFilePath) return null
-  const rel = meta.activePlanFilePath.replace(/\\/g, '/')
-  if (!existsSync(join(cwd, rel))) return null
-  agent.enterPlanMode({ planFilePath: rel })
-  return rel
-}
+export { restorePlanModeFromMeta } from './plan/restore-plan-mode.js'
 
 // ── /cd：会话中途切换工作目录（保前缀缓存）──────────────────────
 
@@ -2296,23 +2279,26 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   }
 
   // 10. Tool registry
-  const { registry: toolRegistry } = createInteractiveToolRegistry(refs, config, cwd)
+  const { registry: toolRegistry, toolPreset } = createInteractiveToolRegistry(refs, config, cwd)
 
   // 11. Memory tool (unified recall + remember + deep_recall)
   // deep_recall 的侧路通道晚绑定到 step 12 的 agent（compact 廉价路由同源）。
+  // 档位门控：taiyi 评测档的 14 名最小集不含 memory（见 TAIYI_EXCLUDES）。
   let runtimeAgent: ReturnType<typeof createAgentRuntime>['agent'] | undefined
-  toolRegistry.register(createMemoryTool(claimStore, {
-    sessionId,
-    getTurn: () => session.getTurnCount(),
-    cwd,
-    deepRecallComplete: async (prompt, timeoutMs) => {
-      const client = runtimeAgent?.config.compactClient ?? runtimeAgent?.config.primaryClient ?? runtimeAgent?.config.client
-      if (!client) throw new Error('deep recall: no client')
-      return runGateCompletion(client, () => {}, prompt, timeoutMs)
-    },
-    sessionDir: getSessionDir(cwd),
-    excludeSessionId: sessionId,
-  }))
+  if (presetIncludes(toolPreset, 'memory')) {
+    toolRegistry.register(createMemoryTool(claimStore, {
+      sessionId,
+      getTurn: () => session.getTurnCount(),
+      cwd,
+      deepRecallComplete: async (prompt, timeoutMs) => {
+        const client = runtimeAgent?.config.compactClient ?? runtimeAgent?.config.primaryClient ?? runtimeAgent?.config.client
+        if (!client) throw new Error('deep recall: no client')
+        return runGateCompletion(client, () => {}, prompt, timeoutMs)
+      },
+      sessionDir: getSessionDir(cwd),
+      excludeSessionId: sessionId,
+    }))
+  }
 
   // 12. Agent runtime
   // 启动 resume 模型亲和（决策见 decideStartupResumeModel 注释）。

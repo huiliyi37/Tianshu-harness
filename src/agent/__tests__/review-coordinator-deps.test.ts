@@ -143,6 +143,8 @@ describe('createCoordinatorReviewDeps', () => {
 
     assert.equal(capturedPolicy, 'all_required')
     assert.equal(capturedRequests.length, 5)
+    // 同批并发的 dispatch 归属键必须唯一（ownDispatch 拒绝同键并发）。
+    assert.equal(new Set(capturedRequests.map(r => r.parentTurnId)).size, capturedRequests.length)
     assert.ok(capturedRequests.every(request => request.profile === 'reviewer'))
     assert.ok(capturedRequests.every(request => request.kind === 'review'))
     assert.ok(capturedRequests.every(request => request.reviewDepth === 1))
@@ -244,6 +246,8 @@ describe('createCoordinatorReviewDeps', () => {
     const result = await deps.spawnWiringReviewer!({ files: ['src/a.ts'], crossModule: false, isFix: false })
 
     assert.equal(requests.length, 2, 'auto review spawns 2 inspectors (Wiring + Silence)')
+    assert.notEqual(requests[0]?.parentTurnId, requests[1]?.parentTurnId,
+      '同批并发的 dispatch 归属键必须唯一（ownDispatch 拒绝同键并发）')
     assert.equal(requests[0]?.profile, 'reviewer')
     assert.equal(requests[0]?.kind, 'review')
     assert.equal(requests[0]?.budget?.timeoutMs, 300_000)

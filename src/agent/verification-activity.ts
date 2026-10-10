@@ -1,32 +1,23 @@
-import { splitShellSegments } from './permissions.js'
+import { classifyVerificationIntent, type VerificationPurpose } from './verification-intent.js'
+import { classifyBashCommandActivity } from './tool-target.js'
 
-export function verificationAttempted(name: string, input?: Record<string, unknown>): boolean {
+/** Consumer policy: readback/radio/production flow count test and typecheck attempts. */
+export function verificationAttempted(name: string, input?: Record<string, unknown>, cwd = ''): boolean {
   if (['run_tests', 'typecheck', 'lsp_diagnostics'].includes(name)) return true
-  if (name !== 'bash' || typeof input?.command !== 'string') return false
-  // The denylist splitter deliberately over-approximates shell syntax. Hide
-  // quoted prose first; ambiguous substitutions/heredocs are not evidence.
-  if (/\$\(|`|<</.test(input.command)) return false
-  const masked = input.command.replace(/'(?:[^']*)'|"(?:\\.|[^"\\])*"/g, '__quoted__')
-  return splitShellSegments(masked).some(segment => {
-    const words = segment.replace(/^(?:[A-Za-z_]\w*=\S+\s+)*/, '').trim().split(/\s+/)
-    if (words[0] === 'rtk' || words[0] === 'npx') words.shift()
-    const bin = words.shift()?.replace(/^.*[\\/]/, '').replace(/\.exe$/, '')
-    if (words.some(w => ['--help', '-h', '--version'].includes(w))) return false
-    if (['pytest', 'vitest', 'jest', 'mocha', 'tsc'].includes(bin ?? '')) return true
-    if (bin === 'python' || bin === 'python3') return words[0] === '-m' && words[1] === 'pytest'
-    if (['npm', 'pnpm', 'yarn', 'bun'].includes(bin ?? '')) {
-      if (words[0] === 'run' || words[0] === 'run-script') words.shift()
-      return /^(?:test|typecheck)(?::[\w-]+)?$/.test(words[0] ?? '')
-    }
-    if (bin === 'node' || bin === 'tsx') {
-      for (let i = 0; i < words.length; i++) {
-        if (words[i] === '--test') return true
-        if (['--import', '--require', '-r'].includes(words[i]!)) { i++; continue }
-        if (!words[i]!.startsWith('-') || ['-e', '--eval', '-p', '--print'].includes(words[i]!)) return false
-      }
-    }
-    return false
-  })
+  return name === 'bash' && typeof input?.command === 'string'
+    && ['test', 'typecheck'].includes(classifyVerificationIntent(input.command, cwd).purpose)
+}
+/** Broad intent policy for course families, workers and self-verification; never proof of passing. */
+export function isVerificationIntent(command: string, cwd = ''): boolean {
+  return classifyVerificationIntent(command, cwd).purpose !== 'none'
+}
+export function verificationToolFacts(name: string, input?: Record<string, unknown>, cwd = ''):
+  { verificationAttempted: boolean; verificationPurpose: VerificationPurpose; readonlyShell?: boolean } {
+  const command = name === 'bash' && typeof input?.command === 'string' ? input.command : null
+  const purpose = command !== null ? classifyVerificationIntent(command, cwd).purpose
+    : name === 'run_tests' ? 'test' : ['typecheck', 'lsp_diagnostics'].includes(name) ? 'typecheck' : 'none'
+  return { verificationAttempted: ['test', 'typecheck'].includes(purpose), verificationPurpose: purpose,
+    ...(command !== null ? { readonlyShell: classifyBashCommandActivity(command) === 'readonly' } : {}) }
 }
 export function recentVerification(history: ReadonlyArray<{ verificationAttempted?: boolean; modelTurn?: number }>, turn: number) {
   return history.filter(h => h.verificationAttempted && h.modelTurn !== undefined && h.modelTurn <= turn && h.modelTurn >= turn - 1).at(-1)

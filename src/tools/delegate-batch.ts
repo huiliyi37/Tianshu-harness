@@ -57,11 +57,16 @@ const profileStringSchema = z.string().refine(
   (val) => ({ message: `未知 profile "${val}"。可用：${profileRegistry.getProfileNames().join(', ')}` }),
 )
 
-/** Dynamic star-domain (authority) validation — see delegate-task.ts. */
-const authorityStringSchema = z.string().refine(
-  (val) => starDomainRegistry.getDomainIds().includes(val),
-  (val) => ({ message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}` }),
-)
+/** Dynamic star-domain (authority) validation — see delegate-task.ts.
+ *  校验 + 归一化：接受拼音 id（大小写不敏感）或中文星名，输出规范 id。 */
+const authorityStringSchema = z.string().transform((val, ctx) => {
+  const resolved = starDomainRegistry.resolve(val)
+  if (resolved === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}（亦可传中文星名，如 天机）` })
+    return z.NEVER
+  }
+  return resolved
+})
 
 /** 条件依赖边（星河收编 #6 入口）：index 引用批内任务，失败时按 onFailure
  *  分支——skip 跳过本任务、alternate 改等 alternateOrderId（同为批内索引）。 */
@@ -196,7 +201,7 @@ export function createDelegateBatchTool(
                 delivery: { type: 'string', enum: ['diagnosis', 'patch', 'verification'] },
                 kind: { type: 'string', enum: [...workOrderKindSchema.options] },
                 profile: { type: 'string', enum: profileRegistry.getProfileNames(), description: 'worker profile。默认：code_scout。能力按实际工具集合检查：adversarial_verifier 可运行 run_tests，其他只读档不能改文件。写文件声明 delivery=patch，实测声明 delivery=verification。' },
-                authority: { type: 'string', description: '可选星域人格（如 tianquan、tianji、yuheng）。' },
+                authority: { type: 'string', description: '可选星域人格（如 tianquan、tianji、yaoguang）。可传中文星名（如 天权），会被归一化为规范 id。' },
                 files: { type: 'array', items: { type: 'string' } },
                 symbols: { type: 'array', items: { type: 'string' } },
                 dependsOn: {

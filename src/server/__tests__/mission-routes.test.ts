@@ -165,6 +165,41 @@ describe('mission-routes + session-manager Mission 关联', () => {
     assert.deepEqual(store.get(m1!)?.sessionIds, [r1.id])
   })
 
+  test('永久删除只摘掉被删会话；同 Mission 还有会话时保持 active', () => {
+    const manager = makeManager()
+    const r1 = manager.createSession({ cwd: '/proj', title: '同一任务' })
+    const r2 = manager.createSession({ cwd: '/proj', title: '同一任务' })
+    assert.equal(manager.archiveSession(r1.id), true)
+    assert.deepEqual(store.get(r1.missionId!)?.sessionIds, [r1.id, r2.id], '仅归档不摘除')
+    assert.equal(manager.deleteSession(r1.id).ok, true)
+    const mission = store.get(r2.missionId!)
+    assert.deepEqual(mission?.sessionIds, [r2.id])
+    assert.equal(mission?.state, 'active')
+  })
+
+  test('永久删除最后一条会话后 Mission 归档且文件仍在', () => {
+    const manager = makeManager()
+    const rec = manager.createSession({ cwd: '/proj', title: '单独任务' })
+    assert.equal(manager.archiveSession(rec.id), true)
+    assert.equal(manager.deleteSession(rec.id).ok, true)
+    const mission = store.get(rec.missionId!)
+    assert.deepEqual(mission?.sessionIds, [])
+    assert.equal(mission?.state, 'archived')
+  })
+
+  test('record 没有 missionId 时，仍从 sessionIds 反查摘除', () => {
+    const manager = makeManager()
+    const rec = manager.createSession({ cwd: '/proj' })
+    const mission = store.create('/proj', '手工挂上')
+    store.addSession(mission.id, rec.id)
+    assert.equal(manager.getSession(rec.id)?.missionId, undefined)
+    assert.equal(manager.archiveSession(rec.id), true)
+    assert.equal(manager.deleteSession(rec.id).ok, true)
+    const after = store.get(mission.id)
+    assert.deepEqual(after?.sessionIds, [])
+    assert.equal(after?.state, 'archived')
+  })
+
   test('隐式路径双检：显式路径已关联的 session 不重复创建', () => {
     const manager = makeManager()
     const rec = manager.createSession({ cwd: '/proj', title: '显式任务' })

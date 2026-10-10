@@ -14,6 +14,7 @@ import { persistRawOutput, buildUiOutput } from './output-store.js'
 import { getResolvedEnv } from './resolved-env.js'
 import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 import { completionFacts } from './verification-facts.js'
 import { toPosixPath } from '../path-format.js'
 import { loadDeclaredVerify } from '../config/verify-config.js'
@@ -38,6 +39,15 @@ export interface RunnableTestCommand {
   /** True for declared/fingerprint commands that are full shell strings
    *  (e.g. "cargo test", "go test ./...") rather than argv arrays. */
   shell?: boolean
+}
+
+/** Node's loader runs the same targeted tests without the tsx CLI's IPC server. */
+function withNodeTsxLoader(cwd: string, command: RunnableTestCommand): RunnableTestCommand {
+  let loader = 'tsx'
+  try { loader = pathToFileURL(createRequire(join(cwd, 'package.json')).resolve('tsx')).href } catch { /* Missing project dependency remains a Node invocation error. */ }
+  const args = ['--import', loader, ...command.args]
+  const displayArgs = command.args.map(arg => /^[A-Za-z0-9_./=:-]+$/.test(arg) ? arg : shellWord(arg))
+  return { ...command, command: process.execPath, args, display: `node --import tsx ${displayArgs.join(' ')}` }
 }
 
 interface BlockedTestCommand {
@@ -357,7 +367,7 @@ async function buildTestCommand(cwd: string, filter?: string): Promise<TestComma
       return buildUnresolvedFilter(runner, safeFilter)
     }
     if (base.includes('tsx') || base.includes('run-node-tests')) {
-      return { type: 'run', command: 'tsx', args: ['--test', resolvedFilter], display: `tsx --test ${resolvedFilter}`, runner, scope: 'targeted' }
+      return withNodeTsxLoader(cwd, { type: 'run', command: 'tsx', args: ['--test', resolvedFilter], display: `tsx --test ${resolvedFilter}`, runner, scope: 'targeted' })
     }
     return { type: 'run', command: 'node', args: ['--test', resolvedFilter], display: `node --test ${resolvedFilter}`, runner, scope: 'targeted' }
   }
@@ -366,7 +376,7 @@ async function buildTestCommand(cwd: string, filter?: string): Promise<TestComma
   if (runner === 'node-test' && safeFilter.length > 0) {
     const resolved = await resolveFilterToTestFile(cwd, safeFilter)
     if (resolved && (base.includes('tsx') || base.includes('run-node-tests'))) {
-      return { type: 'run', command: 'tsx', args: ['--test', resolved], display: `tsx --test ${resolved}`, runner, scope: 'targeted' }
+      return withNodeTsxLoader(cwd, { type: 'run', command: 'tsx', args: ['--test', resolved], display: `tsx --test ${resolved}`, runner, scope: 'targeted' })
     }
     if (resolved) {
       return { type: 'run', command: 'node', args: ['--test', resolved], display: `node --test ${resolved}`, runner, scope: 'targeted' }
@@ -800,6 +810,7 @@ export function runTestCommandIn(
       })
 
       let stdout = ''
+      let hasNonWhitespaceOutput = false
       let stderr = ''
       const displayOutput = new DisplayOutputBuffer()
 
@@ -814,6 +825,7 @@ export function runTestCommandIn(
       child.stdout!.on('data', (data: Buffer) => {
         if (settled) return
         const text = stdoutDecoder.write(data)
+        hasNonWhitespaceOutput ||= text.trim().length > 0
         stdout += text
         displayOutput.append(text)
         uiOutput.push(text)
@@ -895,6 +907,7 @@ export function runTestCommandIn(
         // skip the late async work (persistRawOutput on cleaned-up temp dirs).
         if (!claimSettlement()) return
         const stdoutTail = stdoutDecoder.end()
+        hasNonWhitespaceOutput ||= stdoutTail.trim().length > 0
         const stderrTail = stderrDecoder.end()
         const finalStdout = stdout + stdoutTail
         const finalStderr = stderr + stderrTail
@@ -906,12 +919,12 @@ export function runTestCommandIn(
         uiOutput.dispose()
         const raw = finalStdout + (finalStderr ? '\n' + finalStderr : '')
 
-        // EPERM auto-degradation: tsx IPC pipe fails in sandboxed environments.
-        // When stderr contains EPERM and the runner is tsx, retry once with
-        // node --import tsx (equivalent semantics, no IPC pipe).
-        if (testCommand.command === 'tsx' && raw.includes('EPERM') && testCommand.args[0] === '--test') {
-          const args = ['--import', 'tsx', '--test', ...testCommand.args.slice(1)]
-          const retryCmd: RunnableTestCommand = { ...testCommand, command: 'node', args, display: `node --import tsx --test ${testCommand.args.slice(1).join(' ')}` }
+        // Preserve the existing EPERM fallback. ENOTSUP is retryable only when
+        // the tsx IPC server failed before running tests, not for test failures.
+        const unsupportedTsxIpc = code !== 0 && !hasNonWhitespaceOutput && /\blisten ENOTSUP\b/.test(finalStderr)
+          && /\bcreateIpcServer\b/.test(finalStderr) && /\.pipe\b/.test(finalStderr) && /tsx[/\\]dist[/\\]cli\.mjs\b/.test(finalStderr)
+        if (testCommand.command === 'tsx' && testCommand.args[0] === '--test' && (raw.includes('EPERM') || unsupportedTsxIpc)) {
+          const retryCmd = withNodeTsxLoader(cwd, testCommand)
           completion?.dispose()
           resolve(await runTestCommandIn(cwd, retryCmd, params, filter, Math.max(0, timeout - (Date.now() - startTime)), deps, repositoryRoot))
           return

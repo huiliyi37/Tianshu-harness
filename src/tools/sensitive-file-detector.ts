@@ -1,4 +1,5 @@
 import { realpathSync } from 'fs'
+import { GIT_GLOBAL_OPTS_SRC } from './destructive-patterns.js'
 
 /**
  * 敏感文件检测 — fail-closed 工具层拦截。
@@ -207,8 +208,9 @@ function stripQuotes(arg: string): string {
 export function detectSensitiveGitAdd(command: string): string[] {
   // 匹配 `git add <file>` — 提取文件参数（PowerShell/cmd 命令名不区分大小写 → /gi）
   // 来源：prompt security 段 "发现此类文件出现在 git add 中时中止"
-  // `git -C <dir> add` / `git -c k=v add` 等全局选项形态同样是暂存命令，一并捕获。
-  const gitAddRe = /\bgit(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+add\s+(.+)/gi
+  // `git -C <dir> add` / `git -c k=v add` 等全局选项形态同样是暂存命令，一并捕获；
+  // 语法与 clear 门 / 审批门同源（GIT_GLOBAL_OPTS_SRC，含紧贴与空格分隔值形态）。
+  const gitAddRe = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS_SRC}\s+add\s+(.+)`, 'gi')
   const sensitiveFiles: string[] = []
   let sawAggregate = false
 

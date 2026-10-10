@@ -59,11 +59,15 @@ const EFFORT_DESCRIPTIONS = {
 import { maybePrintStaticPromptCacheWarning } from './cli/prompt-version-warning.js'
 import { HELP_TEXT } from './cli/help-text.js'
 import { formatVersionLine } from './cli/version.js'
+import { detectTerminalProfile, setActiveTerminalProfile } from './tui/terminal-profile.js'
+import { plainText } from './utils/terminal-text.js'
 import { applyEarlyCliEnv, routeEarlyCli } from './cli/early-routing.js'
 import { getOnboardingState, markWelcomeGuideShown, shouldShowWelcomeGuide } from './onboarding.js'
 import { loadConfig as loadRivetConfig, removeProvider, setDefaultProvider, setUiConfig, setApprovalMode as persistApprovalDefault, setDefaultDomainConfig, setDefaultModelConfig } from './config/manager.js'
 import { isProFeatureEnabled } from './config/pro-license.js'
 import type { GoalTracker as GoalTrackerInstance } from './agent/goal-tracker.js'
+import { GOAL_BUDGET_BASE, resolveGoalBudget } from './agent/goal-budget.js'
+import { persistGoalActual, readGoalActualSamples } from './agent/goal-actual-index.js'
 import { createUpdateGoalTool } from './tools/update-goal.js'
 import { presetIncludes } from './tools/tool-preset.js'
 import { applySandboxPolicyForApprovalMode } from './tools/sandbox-profile.js'
@@ -194,6 +198,7 @@ const skipWelcome = args.includes('--skip-welcome')
 // create the sink and never attach it, so `-p` mirrored nothing at all.)
 const wantScreenReader = args.includes('--screen-reader')
 let screenReaderMode = false
+let recoveryActive = false
 
 const streamEventsIdx = args.indexOf('--stream-events')
 const streamEventsArg = streamEventsIdx >= 0 ? args[streamEventsIdx + 1] : undefined
@@ -275,7 +280,11 @@ const exitFuse = createExitFuse({
   forceExit: code => process.exit(code),
   log: message => console.error(`[tui] ${message}`),
 })
-process.on('SIGINT', () => exitFuse.signal('SIGINT'))
+process.on('SIGINT', () => {
+  // The line frontend owns interruption while its input/approval loop is live.
+  if (recoveryActive) return
+  exitFuse.signal('SIGINT')
+})
 process.on('SIGTERM', () => exitFuse.signal('SIGTERM'))
 
 // 进程退出兜底清场（终端态恢复 + MCP 子进程 + tracked 进程树）——独立模块，
@@ -455,14 +464,17 @@ async function main() {
     const sessionId = getOrCreateSessionId()
 
     // --budget N (default 100) is the hard turn cap for goal mode; it doubles as
-    // the GoalTracker iteration budget so the two limits coincide. Non-goal -p
-    // runs keep the original tight 15-turn cap — benchmark/eval harnesses can
-    // raise it via RIVET_HEADLESS_MAX_TURNS (JobBench 多文档任务实证 15 轮不够：
-    // agent 分析到一半被掐断，交付物残缺但进程仍以 success:false 退出)。
-    const goalBudget = parsed.budget ?? 100
-    const headlessMaxTurns = parsed.goal
-      ? goalBudget
-      : Math.max(1, Number(process.env.RIVET_HEADLESS_MAX_TURNS) || 15)
+    // the GoalTracker iteration budget so the two limits coincide. The default is
+    // now priced by task shape (agent/goal-budget.ts) and only ever raised —
+    // goal-side budget exhaustion is terminal (goal-tracker's budget_exhausted,
+    // and isRolloverDue requires iteration < maxIterations, so handoff is
+    // suppressed too): there is no worker-style continuation to bail it out.
+    // Non-goal -p runs keep the original tight 15-turn cap — benchmark/eval
+    // harnesses can raise it via RIVET_HEADLESS_MAX_TURNS (JobBench 多文档任务
+    // 实证 15 轮不够：agent 分析到一半被掐断，交付物残缺但进程仍以
+    // success:false 退出)。
+    // Goal 预算定价挪到下方 `headlessIndexer` 之后（紧邻 agent 创建之前）：
+    // 定价要读跨会话的历史实际用量（goal_actual 索引），那份 db 由 indexer 持有。
     // Tracker is created inside createAgent (attached to the agent) but referenced
     // here so we can read achievement state after the run completes. A ref object
     // (not a bare let) is used so the opaque runHeadless() call invalidates CFA
@@ -496,6 +508,12 @@ async function main() {
     // 与上方 pluginTools、plugin-session-cache.ts 同形。
     const mcpTools = excludeBuiltinTools(mcpStageRegistry.getAll(), builtinNames)
 
+    // CLI meridian 接线（2026-09-06）：headless 与交互 TUI 同缺——写工具收尾走
+    // importGraph fallback 每会话全量扫仓。headless 短进程不调度 backfill，只建
+    // indexer（db 懒开），写工具 analyzeImpact 落库供后续会话增量复用。
+    // 位置说明：在 createAgent 闭包**之外**创建——收尾段的 goal_actual 预算回馈
+    // 也要用它，闭包内的声明在收尾处不可见。
+    const headlessIndexer = new MeridianIndexer(process.cwd())
     const result = await runHeadless({
       prompt: effectivePrompt,
       json: parsed.json,
@@ -603,10 +621,23 @@ async function main() {
           cwd: process.cwd(),
         }))
 
-        // CLI meridian 接线（2026-09-06）：headless 与交互 TUI 同缺——写工具收尾
-        // 走 importGraph fallback 每会话全量扫仓。headless 短进程不调度 backfill，
-        // 只建 indexer（db 懒开），写工具 analyzeImpact 落库供后续会话增量复用。
-        const headlessIndexer = new MeridianIndexer(process.cwd())
+        // indexer 在外层创建（见 runHeadless 调用之前）——收尾段的预算回馈也要用它。
+        // Goal 预算定价（2026-10-10）：`--budget` 缺省不再固定 100，按任务形状定价
+        // 且只抬不降——goal 侧预算耗尽是终止（goal-tracker 的 budget_exhausted；
+        // isRolloverDue 还要求 iteration < maxIterations，接力一并被抑制），没有
+        // worker 那样的续跑兜底。历史信号走 goal_actual 索引（惰性读：显式
+        // --budget 直接短路，不读库）。非 goal 的 -p 运行保持原 15 轮帽，可用
+        // RIVET_HEADLESS_MAX_TURNS 抬高（JobBench 多文档任务实证 15 轮不够：
+        // agent 分析到一半被掐断，交付物残缺但进程仍以 success:false 退出）。
+        const goalDecision = resolveGoalBudget(parsed, () =>
+          readGoalActualSamples(headlessIndexer.getDb(), parsed.goal ?? ''))
+        const goalBudget = goalDecision?.maxIterations ?? parsed.budget ?? GOAL_BUDGET_BASE
+        if (goalDecision && goalDecision.source === 'shaped') {
+          process.stderr.write(`[goal] budget=${goalDecision.maxIterations} (${goalDecision.rationale.join('; ')})\n`)
+        }
+        const headlessMaxTurns = parsed.goal
+          ? goalBudget
+          : Math.max(1, Number(process.env.RIVET_HEADLESS_MAX_TURNS) || 15)
         const agentCfg = createAgentConfig(createMainAgentConfigInput({
           apiKey: key,
           meridianIndexer: headlessIndexer,
@@ -699,6 +730,16 @@ async function main() {
     // In goal mode, success is "goal achieved", not merely "no API error". A run
     // that exhausts the iteration/context budget without the completion marker
     // exits non-zero so CI/scripts can detect incomplete goals.
+    const finishedTracker = goalTrackerRef.current
+    if (parsed.goal && finishedTracker) {
+      // 预算发准回馈（与 worker_actual 同族）：本次实际用量落一行，下一次同一
+      // objective 的定价据此抬地板。best-effort——写失败绝不影响退出码。
+      persistGoalActual(headlessIndexer.getDb(), parsed.goal, {
+        iterationsUsed: finishedTracker.getIteration(),
+        exhausted: finishedTracker.getTerminalReason() === 'budget_exhausted',
+        budget: { maxIterations: finishedTracker.getMaxIterations() },
+      })
+    }
     const exitCode = parsed.goal
       ? (goalTrackerRef.current?.isGoalAchieved() ? 0 : 1)
       : result.exitCode
@@ -711,7 +752,13 @@ async function main() {
 
   // ── Interactive TUI (requires TTY) ──────────────────────────
 
-  const forceRecoveryCli = process.env.RIVET_FORCE_RECOVERY_CLI === '1'
+  const terminalProfile = await detectTerminalProfile({ args })
+  setActiveTerminalProfile(terminalProfile)
+  const forceRecoveryCli = process.env.RIVET_FORCE_RECOVERY_CLI === '1' || terminalProfile.kind === 'captured-pty'
+  if (terminalProfile.kind === 'captured-pty') {
+    process.stderr.write('[terminal] Captured PTY detected; using the plain-text interface. Use --terminal-mode native to override.\n')
+    setReducedMotion(true)
+  }
 
   if (!forceRecoveryCli && (!stdout.isTTY || !stdin.isTTY)) {
     process.stderr.write('[T9] stdout and stdin must be TTY (use -p for headless mode or RIVET_FORCE_RECOVERY_CLI=1).\n')
@@ -769,7 +816,9 @@ async function main() {
       // 无 key：降级启动，由 TUI 首启钩子自动打开 /connect 向导。
       // 此处必为 TTY 交互分支（上方已拦截非 TTY），不再走 readline 向导——
       // readline 版仅保留给 `rivet config setup` CLI（manager.ts）。
-      process.stderr.write(`\n[T9] ${msg}\nStarting in degraded mode — /connect 向导将自动打开...\n\n`)
+      process.stderr.write(forceRecoveryCli
+        ? `\n[T9] ${msg}\nUse rivet config setup to configure a provider, then restart.\n\n`
+        : `\n[T9] ${msg}\nStarting in degraded mode — /connect 向导将自动打开...\n\n`)
       ctx = await bootstrapInteractiveSession({
         cwd: process.cwd(),
         args,
@@ -800,7 +849,7 @@ async function main() {
   }
   const configuredTheme = appearanceChoice ?? ctx.config.ui?.theme ?? 'cobalt'
   let themeName: string = configuredTheme
-  if (configuredTheme === 'auto') {
+  if (configuredTheme === 'auto' && !forceRecoveryCli) {
     // 必须在 TUI 接管 stdin 前查询——此处 raw-mode 探测后即恢复。
     const detected = await detectTerminalBackground()
     themeName = autoThemeFor(detected)
@@ -848,7 +897,12 @@ async function main() {
   // ── Recovery CLI fallback ────────────────────────────────────
   if (forceRecoveryCli) {
     const { runRecoveryCli } = await import('./recovery-cli.js')
-    await runRecoveryCli(ctx)
+    recoveryActive = true
+    try {
+      await runRecoveryCli(ctx, { terminalProfile: terminalProfile.kind })
+    } finally {
+      recoveryActive = false
+    }
     await shutdown(0)
     return
   }
@@ -2257,9 +2311,9 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[T9] Fatal: ${(err as Error)?.message}\n`)
+  process.stderr.write(plainText(`[T9] Fatal: ${(err as Error)?.message}`) + '\n')
   if ((err as Error).stack) {
-    process.stderr.write((err as Error).stack! + '\n')
+    process.stderr.write(plainText((err as Error).stack!) + '\n')
   }
   void shutdown(1)
 })

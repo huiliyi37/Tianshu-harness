@@ -16,6 +16,7 @@ import { ArtifactStore } from '../../artifact/store.js'
 import { _setSandboxBackendForTest, _resetSandboxBackendCache } from '../../tools/sandbox-profile.js'
 import { isWriteGranted, _resetGrantsForTest, loadPersistedGrants, revokeGrant } from '../../tools/path-grants.js'
 import { rivetHome } from '../../config/paths.js'
+import { executeWithCourseProgress } from '../course-file-progress.js'
 
 import { observeRun } from '../stall-observer.js'
 const executeToolUse: typeof rawExecuteToolUse = (...args) =>
@@ -223,6 +224,63 @@ describe('executeToolUse', () => {
 
     const content = (result.toolResult as any).content as string
     assert.ok(!content.includes('[策略信号：读取循环]'))
+  })
+
+  it('P0 执行包装转发：write 工具的真实变化经 executeWithCourseProgress 送达 onCourseFileChange（§7 矩阵：事实转发接线）', async () => {
+    const path = join(testTmp(), `wrap-target-${process.pid}.ts`)
+    writeFileSync(path, 'before')
+    try {
+      const facts: Array<{ outcome: string }> = []
+      const deps = makeDeps({ cwd: testTmp() })
+      deps.config.toolRegistry.execute = async () => { writeFileSync(path, 'after'); return { content: 'ok', isError: false } }
+      await executeWithCourseProgress(
+        { cwd: testTmp(), onCourseFileChange: (fact: { outcome: string }) => { facts.push(fact) } } as unknown as Parameters<typeof executeWithCourseProgress>[0],
+        { id: 'tu-wrap-1', name: 'write_file', input: { file_path: path, content: 'after' } },
+        deps,
+        noopCallbacks as any,
+        1,
+        false,
+      )
+      assert.equal(facts.length, 1, '执行包装必须把一次文件进展事实转发给 onCourseFileChange')
+      assert.equal(facts[0]!.outcome, 'changed', '真实变化 → changed')
+    } finally { rmSync(path, { force: true }) }
+  })
+
+  it('验证启动只能发生在门禁及持久化屏障之后', async () => {
+    for (const mode of ['truncated', 'durability', 'rejected'] as const) {
+      const starts: unknown[] = []
+      const deps = makeDeps()
+      if (mode === 'rejected') {
+        deps.config.approvalMode = 'manual'
+        deps.config.toolRegistry.needsApproval = () => true
+      }
+      const callbacks = { ...noopCallbacks, onApprovalRequired: async () => false,
+        beforeToolExecute: async () => { if (mode === 'durability') throw new Error('storage unavailable') } }
+      try {
+        await executeWithCourseProgress({ cwd: deps.cwd, onVerificationExecutionStart: (intent: import('../verification-intent.js').VerificationExecutionIntent) => { starts.push(intent) } } as any,
+          { id: `verification-${mode}`, name: 'bash', input: { command: 'npm test' }, argsTruncated: mode === 'truncated' },
+          deps, callbacks as any, 1, false)
+      } catch { /* durable intent may reject */ }
+      assert.equal(starts.length, 0, `${mode}: 未实际执行，不能登记验证`)
+    }
+  })
+
+  it('审批改写后按实际命令及实际启动版本登记验证', async () => {
+    const { WorkProgressFacts } = await import('../work-progress-facts.js')
+    const facts = new WorkProgressFacts({ modelObservationTurn: 7, config: {}, obligations: { getStore: () => ({ obligations: [] }) }, evidence: mockEvidence } as any)
+    const deps = makeDeps({ onVerificationExecutionStart: intent => { facts.recordVerificationExecutionStart(intent) } })
+    deps.config.approvalMode = 'manual'
+    deps.config.toolRegistry.needsApproval = () => true
+    let executedCommand: unknown
+    deps.config.toolRegistry.execute = async (_name, params) => { executedCommand = params.input.command; return { content: 'ok', isError: false } }
+    const callbacks = { ...noopCallbacks, onApprovalRequired: async () => {
+      facts.recordFileProgress({ outcome: 'changed' })
+      return { approved: true, editedInput: { command: 'npm run typecheck' } }
+    } }
+    await executeToolUse({ id: 'approve-verification', name: 'bash', input: { command: 'npm test' } }, deps, callbacks as any, 1, false)
+    assert.equal(executedCommand, 'npm run typecheck')
+    assert.equal(facts.recentVerificationExecutions()[0]?.purpose, 'typecheck')
+    assert.equal(facts.recentVerificationExecutions()[0]?.mutationRevisionAtStart, 1)
   })
 
   it('VSW: injects verificationSnapshot into run_tests params when the manager returns a plan', async () => {
@@ -1073,6 +1131,47 @@ describe('executeToolUse', () => {
     assert.ok((result.toolResult as any).content.includes('denied'))
   })
 
+  it('rechecks deny rules after an approval edit without learning the rejected command', async () => {
+    const deps = makeDeps()
+    let executed = false
+    deps.config.permissions = { allow: [], deny: [{ tool: 'bash', params: { command: 'echo forbidden' } }], bash: { allowlist: [], denylist: [] } }
+    deps.config.permissionsOverlay = createPermissionOverlay()
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async () => { executed = true; return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-deny', name: 'bash', input: { command: 'echo allowed' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => ({ approved: true, editedInput: { command: 'echo forbidden' } }) } as any, 1, true)
+    assert.equal(executed, false)
+    assert.equal((result.toolResult as any).is_error, true)
+    assert.deepEqual(deps.config.permissions.bash!.allowlist, [])
+    assert.deepEqual(deps.config.permissionsOverlay.bashAllow, [])
+  })
+
+  it('rechecks the planning write boundary after editing approved draft parameters', async () => {
+    const deps = makeDeps()
+    let executed = false
+    deps.config.planModeState = 'planning'
+    deps.config.activePlanFilePath = '/tmp/test/draft.md'
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async () => { executed = true; return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-plan', name: 'write_file', input: { file_path: 'draft.md', content: 'fixture' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => ({ approved: true, editedInput: { file_path: 'source.ts', content: 'fixture' } }) } as any, 1, true)
+    assert.equal(executed, false)
+    assert.equal((result.toolResult as any).is_error, true)
+  })
+
+  it('recomputes risk and executes the final approved parameters exactly once', async () => {
+    const deps = makeDeps()
+    let approvals = 0
+    const commands: unknown[] = []
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async (_name, params) => { commands.push(params.input.command); return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-risk', name: 'bash', input: { command: 'echo allowed' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => { approvals++; return { approved: true, editedInput: { command: 'git reset --hard' } } } } as any, 1, true)
+    assert.deepEqual(commands, ['git reset --hard'])
+    assert.equal(approvals, 1)
+    assert.equal(result.latestRisk.level, 'high')
+  })
+
   it('R2: blocks write_file when another session holds an exclusive claim (fail-closed)', async () => {
     let executed = false
     const fakeRegistry = {
@@ -1733,6 +1832,53 @@ describe('executeToolUse', () => {
     assert.equal((result.toolResult as any).is_error, true)
   })
 
+  for (const boundary of ['planning', 'abort'] as const) {
+    it(`R2: ${boundary} during second approval prevents execution and restores every acquired claim`, async () => {
+      const owners = new Map([['src/stale.ts', 'stale-peer'], ['src/fresh.ts', 'fresh-peer']])
+      const touchedAt = new Date().toISOString()
+      const controller = new AbortController()
+      const approvals: string[] = []
+      let executions = 0
+      const deps = makeDeps({
+        sessionId: 'mine', abortSignal: controller.signal, isPathClean: async () => true,
+        sessionRegistry: {
+          acquireClaim: (sid: string, path: string) => {
+            if (owners.has(path) && owners.get(path) !== sid) return false
+            owners.set(path, sid); return true
+          },
+          checkClaim: (path: string) => owners.has(path) ? { sessionId: owners.get(path), claimType: 'exclusive', filePath: path } : null,
+          claimLiveness: (path: string) => ({ ownerSessionId: owners.get(path), ownerPid: process.pid, ownerAlive: path !== 'src/stale.ts', claimType: 'exclusive', acquiredAt: touchedAt, lastTouchedAt: touchedAt }),
+          releaseClaim: (sid: string, path: string) => { if (owners.get(path) === sid) owners.delete(path) },
+          releaseClaimIfUnchanged: (sid: string, path: string, expected: string) => {
+            if (owners.get(path) !== sid || expected !== touchedAt) return false
+            owners.delete(path); return true
+          },
+        } as any,
+      })
+      deps.config.toolRegistry.needsApproval = () => true
+      deps.config.toolRegistry.execute = async () => { executions++; return { content: 'ok', isError: false } }
+      const diff = ['src/free.ts', 'src/stale.ts', 'src/fresh.ts'].map(path => `--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-a\n+b`).join('\n')
+      const result = await executeToolUse({ id: 'second-approval', name: 'apply_patch', input: { diff } }, deps, {
+        ...noopCallbacks,
+        onApprovalRequired: async (id: string) => {
+          approvals.push(id)
+          if (id.endsWith(':claim-takeover')) {
+            if (boundary === 'abort') controller.abort()
+            else { deps.config.planModeState = 'planning'; deps.config.activePlanFilePath = join(deps.cwd, '.rivet/plans/draft.md') }
+          }
+          return true
+        },
+      } as any, 1, true)
+      assert.deepEqual(approvals, ['second-approval', 'second-approval:claim-takeover'])
+      assert.equal(executions, 0, 'a second approval cannot waive the current mode or cancellation')
+      assert.equal(owners.get('src/free.ts'), undefined, 'an uncontended claim must be released when nothing executed')
+      assert.equal(owners.get('src/stale.ts'), 'stale-peer', 'an auto-taken claim must return to its original owner')
+      assert.equal(owners.get('src/fresh.ts'), 'fresh-peer', 'the explicit takeover must return to its original owner')
+      assert.match((result.toolResult as any).content, boundary === 'abort' ? /interrupted/ : /Plan Mode/)
+      if (boundary === 'planning') assert.equal((result.toolResult as any).is_error, true)
+    })
+  }
+
   it('E6: checkpoint creation failure appends a rollback warning and does NOT latch checkpointCreated', async () => {
     let checkpointCalls = 0
     const deps = makeDeps({
@@ -1884,6 +2030,18 @@ describe('executeToolUse', () => {
     const cb = { ...noopCallbacks, onToolResult: (...args: unknown[]) => { evidence = args[6] } }
     await executeToolUse({ id: 'display-call', name: 'read_file', input: { file_path: 'image.png' } }, deps, cb as any, 1, false)
     assert.deepEqual(evidence, { command: undefined, outputText: 'image result', outputTruncated: undefined, images, exitCode: 2, lossiness: 'truncated' })
+  })
+
+  it('generated image identifiers reach display evidence without image bytes entering model context', async () => {
+    const deps = makeDeps()
+    ;(deps.config.toolRegistry as any).execute = async () => ({ content: 'Saved at /tmp/generated.png', generatedImageId: 'generation-ui-only' })
+    let evidence: any
+    const cb = { ...noopCallbacks, onToolResult: (...args: unknown[]) => { evidence = args[6] } }
+    const result = await executeToolUse({ id: 'generated-call', name: 'read_file', input: { file_path: 'image.png' } }, deps, cb as any, 1, false)
+    assert.equal(evidence.generatedImageId, 'generation-ui-only')
+    assert.equal(evidence.images, undefined)
+    assert.equal(JSON.stringify(result).includes('generation-ui-only'), false)
+    assert.equal(JSON.stringify(result).includes('base64'), false)
   })
 
   it('calls onToolResult callback', async () => {

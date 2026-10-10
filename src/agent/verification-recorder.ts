@@ -6,6 +6,7 @@ import type { EvidenceTracker } from './evidence.js'
 export function createVerificationRecorder(deps: {
   taskLedger?: TaskLedger; evidence: Pick<EvidenceTracker, 'trackVerification'>
   destructiveGate?: { noteVerification(status: VerificationMetadata['status']): void }
+  onRecorded?: (verification: VerificationMetadata) => void
 }): (verification: VerificationMetadata, event?: { command?: string; meta?: Record<string, unknown> }) => void {
   const fingerprint = deps.taskLedger?.captureVerificationFingerprint?.()
   const snapshotFingerprint = deps.taskLedger?.captureVerificationFingerprint?.(true)
@@ -24,6 +25,7 @@ export function createVerificationRecorder(deps: {
     }
     deps.taskLedger?.record({ type: 'verification', command: event?.command ?? v.command, status: v.status, meta: { ...verificationMeta(v, !!event?.command), ...event?.meta } })
     deps.evidence.trackVerification(v)
+    deps.onRecorded?.(v)
     if (!v.stale) deps.destructiveGate?.noteVerification(v.status)
   }
 }

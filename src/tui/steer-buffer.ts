@@ -73,6 +73,7 @@ export class SteerBuffer {
   private pending: SteerEntry[] = []
   private listeners: Array<() => void> = []
   private nextId = 1
+  private guidanceSequence = 0
 
   /** Add a user guidance message to the buffer (default priority: later). */
   push(message: string, priority: SteerPriority = 'later'): void {
@@ -159,6 +160,12 @@ export class SteerBuffer {
     if (dist) debugLog(`[steer-intent] ${dist}`)
 
     return formatDrain(ordered)
+  }
+
+  /** Only the top-level human input queues use this envelope; workers keep legacy drains. */
+  drainHuman(maxPriority?: SteerPriority): import('../agent/course-episodes.js').HumanGuidance | null {
+    const text = this.drain(maxPriority)
+    return text === null ? null : { origin: 'human', inputSequence: ++this.guidanceSequence, text }
   }
 
   /** Peek at the highest-priority pending text without removing it. */

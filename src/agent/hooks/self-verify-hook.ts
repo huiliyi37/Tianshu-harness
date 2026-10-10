@@ -1,6 +1,7 @@
 import type { PostTurnRuntimeHook, RuntimeHookContext } from '../runtime-hooks.js'
 import type { AdvisoryBus } from '../advisory-bus.js'
 import type { VerificationMetadata } from '../../tools/types.js'
+import { isVerificationIntent } from '../verification-activity.js'
 
 /**
  * Self-Verify Hook — postTurn check that prevents the model from treating
@@ -44,18 +45,15 @@ const WRITE_TOOLS = new Set([
   'edit_file', 'write_file', 'hash_edit', 'apply_patch',
 ])
 
-/** bash commands that actually establish ground truth (vs. `cat`/`ls` reads). */
-export const VERIFY_BASH_RE = /\b(test|tsc|type-?check|lint|eslint|build|vitest|jest|pytest|mocha|cargo\s+(test|check|build)|go\s+test|npm\s+(run\s+)?(test|build|typecheck)|make\s+(test|check))\b/i
-
 /** browser_debug/browser 的取证类 action（target 由 toolTargetFromInput 生成，
  *  形如 `screenshot` / `console` / `network http://…`）。open/navigate/click
  *  是操作不是取证，不计。 */
 const BROWSER_VERIFY_ACTION_RE = /^(screenshot|snapshot|console|network|network_detail)\b/
 
 /** A tool call that produced independent ground-truth verification. */
-export function isVerifyCall(h: { tool: string; target?: string }): boolean {
+export function isVerifyCall(h: { tool: string; target?: string; verificationPurpose?: string }): boolean {
   if (h.tool === 'run_tests' || h.tool === 'deliver_task') return true
-  if (h.tool === 'bash') return VERIFY_BASH_RE.test(h.target ?? '')
+  if (h.tool === 'bash') return h.verificationPurpose !== undefined ? h.verificationPurpose !== 'none' : isVerificationIntent(h.target ?? '')
   // UI 场景的 ground truth：浏览器截图/控制台/网络取证与 computer_use 可访问性树
   // 快照都是对渲染物理事实的读取——截图验证了还被催「跑测试」是误报。
   if (h.tool === 'browser_debug' || h.tool === 'browser') return BROWSER_VERIFY_ACTION_RE.test(h.target ?? '')

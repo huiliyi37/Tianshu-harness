@@ -1,3 +1,4 @@
+import { drainSteerGuidance } from './course-episodes.js'
 import { sessionStateAdvice } from './runtime-advice-facts.js'
 import { formatBodyGuardNotice, type BodyGuardNotice } from '../api/request-body-guard.js'
 import type { AgentCallbacks } from './loop-types.js'
@@ -32,6 +33,7 @@ import type { AdvisoryEntry } from './advisory-bus.js'
 import { debugLog } from '../utils/debug.js'
 import { hasActionIntent, hasWriteActionIntent, turnUsedOnlyReadTools, DELIVERY_SIGNAL_RE } from './action-intent-detector.js'
 import { b1ReadOnlyLimitForWindow, b2TurnLimitForWindow, isB2ConvergingRecently } from './window-thresholds.js'
+import type { ConvergenceScoreSample } from './score-history.js'
 import { recordInterruption } from './interrupt-marker.js'
 
 // ── Types re-exported for deps interface ──
@@ -291,8 +293,9 @@ export interface TurnOrchestratorDeps {
    *  B2 据此判断轮数高是任务性质还是发散——轨迹收敛（最近均值 >= 0.6，
    *  对齐 detector L1 线，见 window-thresholds.isB2ConvergingRecently 的
    *  bar 标定说明）时静默且不消耗本 run 配额（后续转坏仍可触发）。
+   *  P3：条目可带口径键（regimeKey）——B2 门只取末尾同口径有效样本；
    *  缺省 = 无轨迹 → 照发（旧行为）。 */
-  getConvergenceScoreHistory?: () => readonly number[]
+  getConvergenceScoreHistory?: () => readonly (number | ConvergenceScoreSample)[]
 
   // === Abort signal ===
   // === Abort signal ===
@@ -303,6 +306,8 @@ export interface TurnOrchestratorDeps {
 
   // === Abort reason (watchdog vs user) ===
   getAbortReason: () => string | undefined
+  /** 工具批 drain 完成后恢复 watchdog 信号；用户中止/未知来源返回 false。 */
+  resetAbortAfterRescue: () => boolean
 
   // === 打断留痕（任务 4）===
   /** 用户 Stop 时保留 partial + 追加 [interrupted] 标记的开关（config `agent.interruptMarker` / env 双通道，默认开）。 */
@@ -404,13 +409,6 @@ const ACTION_INTENT_COOLDOWN_MS = 30_000
 export class TurnOrchestrator {
   /** 上次注入 action-intent system-reminder 的时间戳。跨 run 冷却，避免频繁对话下追着提醒。 */
   private lastActionIntentNudgeTime = 0
-
-  /**
-   * P7 write_file ghost-abort 修复：watchdog 误判后，工具批在 drain 窗口内
-   * 成功完成。rescue 路径设此标志 → 下一轮迭代跳过 abort 检查，让 turn 正常
-   * 继续。标志在跳过一次后自动清除。
-   */
-  private _rescuedFromWatchdog = false
 
   constructor(private deps: TurnOrchestratorDeps) {}
 
@@ -565,17 +563,8 @@ export class TurnOrchestrator {
         this.deps.syncPlanModeToConfig()
         const signal = this.deps.getAbortSignal()
         if (signal?.aborted) {
-          if (this._rescuedFromWatchdog) {
-            // P7 ghost-abort rescue: previous turn's batch completed
-            // successfully during the watchdog drain window. The abort
-            // signal is a false positive — clear the flag and let this
-            // turn proceed normally.
-            this._rescuedFromWatchdog = false
-            debugLog('[turn-orch] skipping abort after watchdog rescue')
-          } else {
-            await this.finishInterrupted(callbacks, { turn, assistantResponded, userMessageConsumed, partialText: '' })
-            return
-          }
+          await this.finishInterrupted(callbacks, { turn, assistantResponded, userMessageConsumed, partialText: '' })
+          return
         }
 
         // ── C3 Auto 模式检查点 ──
@@ -1341,6 +1330,9 @@ export class TurnOrchestrator {
             if (abandonedResult.resolved) {
               const abortTag = this.deps.getAbortReason()
               if (abortTag?.includes('watchdog')) {
+                // 先检查 Esc 再处理 endTurn/wedge；后续收尾也必须监听新信号。
+                if (!this.deps.resetAbortAfterRescue()) throw err
+                const rescuedSignal = this.deps.getAbortSignal()!
                 // Watchdog false positive: batch completed, rescue it.
                 r = abandonedResult.value
                 debugLog(`[turn-orch] rescued abandoned batch after watchdog abort (${r.toolCount} tools)`)
@@ -1351,7 +1343,7 @@ export class TurnOrchestrator {
                 // endTurn check
                 if (r.endTurn) {
                   this.emitStop({ source: 'end-turn', turn, voluntary: true }, callbacks)
-                  await this.deps.completeTurn({ turn, isFinal: true, callbacks })
+                  await rejectOnAbort(this.deps.completeTurn({ turn, isFinal: true, callbacks }), rescuedSignal, 'rescued-post-turn')
                   finalTurnCompleted = true
                   break
                 }
@@ -1372,16 +1364,12 @@ export class TurnOrchestrator {
                     voluntary: false,
                     detail: `${toolUses.map(tu => tu.name).join(',')} ×${this.deps.state.wedgeRepeatCount}`,
                   }, callbacks)
-                  await this.deps.completeTurn({ turn, isFinal: true, callbacks })
+                  await rejectOnAbort(this.deps.completeTurn({ turn, isFinal: true, callbacks }), rescuedSignal, 'rescued-post-turn')
                   finalTurnCompleted = true
                   break
                 }
 
-                // Complete the turn and continue. No rejectOnAbort wrapper —
-                // the signal is still aborted from the watchdog; the loop-header
-                // abort check will see _rescuedFromWatchdog and skip it.
-                await this.deps.completeTurn({ turn, isFinal: false, callbacks })
-                this._rescuedFromWatchdog = true
+                await rejectOnAbort(this.deps.completeTurn({ turn, isFinal: false, callbacks }), rescuedSignal, 'rescued-post-turn')
                 continue
               }
             }
@@ -1425,13 +1413,9 @@ export class TurnOrchestrator {
         // No tool calls this turn — increment the counter for convergence detection
         this.deps.state.consecutiveNoToolTurns = this.deps.state.consecutiveNoToolTurns + 1
 
-        // ── User steer takes precedence over any auto-continuation ──
-        // Steer normally drains only at tool-result boundaries, so a no-tool
-        // continuation chain (goal) starves queued user guidance while
-        // injecting its own "keep going" reminder — the user feels unheard.
-        // Drain here FIRST: if the user said something, hand the next turn to
-        // their words alone and skip this round's continuation reminders.
-        const steerText = await callbacks.onSteerDrain?.()
+        // Both tool and no-tool boundaries accept the same trusted human envelope.
+        const guidance = await drainSteerGuidance(callbacks)
+        const steerText = guidance?.text
         if (steerText) {
           debugLog(`[steer-preempt] turn=${turn} user guidance preempted auto-continuation`)
           await rejectOnAbort(
@@ -1442,6 +1426,7 @@ export class TurnOrchestrator {
           // W1 通道分级：steer 是用户的话，user 类无条件放行。
           // 无需 resetSrCount hack——user 不占 discipline 额度。
           this.deps.appendSystemReminder(steerText, 'user')
+          guidance!.accepted()
           continue
         }
 

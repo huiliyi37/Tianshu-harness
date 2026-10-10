@@ -1,3 +1,4 @@
+import { buildWorkerLog, type WorkerLogOptions, type WorkerLog } from './worker-log.js'
 import { SessionTitleCoordinator, titleInput, loadTitleInput, canGenerateTitle, type buildTitleCompletion } from './session-title.js'
 import { legacyReadSkill, legacyWriteSkill, legacyRemoveSkill } from '../skills/skill-management-compat.js'
 import { queueSessionSkillMode } from '../skills/session-skill-policy.js'
@@ -51,13 +52,9 @@ import { ArtifactStore } from '../artifact/store.js'
 import { refreshAgentTools as refreshAgentToolsImpl } from './agent-tool-refresh.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import type { Usage } from '../api/types.js'
-import { isAssistantWithTools, oaiMessageText, type OaiToolCall } from '../api/oai-types.js'
 import { buildUserAnchors, stripInjectedSuffix } from './rewind-anchors.js'
-import { toolArgSummary } from '../tui/tool-label.js'
-import { listPersistedResultRounds, loadPersistedResult, type PersistedResultRound } from '../agent/worker-result-store.js'
 import { reapSessionModuleStores } from '../agent/session-module-store-reaper.js'
 import { deleteSessionFiles, SessionPersist } from '../agent/session-persist.js'
-import { loadWorkerSession } from '../agent/worker-session-persist.js'
 import type { SessionRegistry } from '../agent/session-registry.js'
 import type { DecisionShift } from '../agent/loop-types.js'
 import type { PlanModeState } from '../agent/plan-mode.js'
@@ -175,22 +172,6 @@ export type PlanUpdateOutcome =
       code: 'session-missing' | 'plan-not-found' | 'not-editable' | 'empty-content' | 'conflict'
       reason: string
     }
-
-/** 工具调用参数摘要(worker 转录):优先 toolArgSummary 的领域摘要——它已含未覆盖
- *  工具的通用参数键兜底（tool-label.ts），仅当参数里没有可用字符串/数字时才回退
- *  原始 JSON 截断。展示用途,解析失败不抛。 */
-function summarizeToolCallArgs(call: OaiToolCall | undefined): string | undefined {
-  if (!call) return undefined
-  const raw = call.function.arguments ?? ''
-  try {
-    const parsed = JSON.parse(raw || '{}') as Record<string, unknown>
-    const summary = toolArgSummary(call.function.name, parsed)
-    if (summary) return summary
-  } catch {
-    // 非法 JSON——直接落原文截断
-  }
-  return raw && raw !== '{}' ? raw.slice(0, 200) : undefined
-}
 
 /** PlusMenu — a selectable model across all configured providers. */
 export interface ModelOption {
@@ -2261,53 +2242,11 @@ export class RuntimeSessionManager {
    * 工具调用帧带参数摘要(toolInput)。默认模式保持轻载荷。
    * rounds:稳定 id 复用时的逐轮归档索引(L1),result 始终是最新一轮。
    */
-  async getWorkerLog(id: string, workerId: string, opts?: { full?: boolean }): Promise<{
-    activity: string[]
-    result: ReturnType<typeof loadPersistedResult>
-    rounds: PersistedResultRound[]
-    transcript: { role: string; text: string; toolName?: string; toolInput?: string }[]
-    savedAt: number | null
-    /** true = 默认模式下转录尾部有被截断的更早消息(可用 full=1 拉全量)。 */
-    truncated: boolean
-  } | undefined> {
-    const s = this.sessions.get(id)
-    if (!s) return undefined
-    const full = opts?.full === true
-    // 活动日志:会话事件流中该 worker 的 progressLine / 文本增量 / 状态迁移。
-    // 全历史读取(Phase 2):磁盘直读越过内存环截尾,早于环底的 worker 活动可见。
+  async getWorkerLog(id: string, workerId: string, opts?: WorkerLogOptions): Promise<WorkerLog | undefined> {
+    if (!this.sessions.has(id)) return undefined
     const { events } = (await this.getAllEventsAsync(id)) ?? { events: [] as SessionEvent[] }
-    const activity: string[] = []
-    for (const e of events) {
-      if (e.type !== 'delegation') continue
-      if (String(e.data.workOrderId ?? '') !== workerId) continue
-      const line = e.data.progressLine
-        ?? (e.data.eventKind === 'text' ? e.data.eventDetail : undefined)
-        ?? (e.data.status != null ? `status: ${String(e.data.status)}` : undefined)
-      if (typeof line === 'string' && line) activity.push(line.slice(0, 300))
-    }
-    const result = loadPersistedResult(workerId)
-    // 运行中优先读内存活转录（coordinator per-order 注册）——saveWorkerSession
-    // 只在终态落盘，没有这条通道运行中的转录永远是空/陈旧的上一轮存档。
-    const liveMessages = this.coordinatorBySession.get(id)?.()?.getLiveWorkerMessages(workerId)
-    const record = liveMessages && liveMessages.length > 0 ? null : loadWorkerSession(workerId)
-    const messages = liveMessages && liveMessages.length > 0 ? liveMessages : (record?.messages ?? [])
-    const keep = full ? messages : messages.slice(-50)
-    const textCap = full ? 4000 : 800
-    const transcript = keep.map((m: OaiMessage) => ({
-      role: m.role,
-      // 纯工具调用轮的 assistant.content 为 null——oaiMessageText 此时运行期为 null,必须兜底
-      text: (oaiMessageText(m) ?? '').slice(0, textCap),
-      toolName: isAssistantWithTools(m) ? m.tool_calls[0]?.function.name : undefined,
-      toolInput: isAssistantWithTools(m) ? summarizeToolCallArgs(m.tool_calls[0]) : undefined,
-    }))
-    return {
-      activity: full ? activity : activity.slice(-50),
-      result,
-      rounds: listPersistedResultRounds(workerId),
-      transcript,
-      savedAt: record?.savedAt ?? null,
-      truncated: !full && messages.length > 50,
-    }
+    const liveMessages = this.coordinatorBySession.get(id)?.()?.getLiveWorkerMessages(opts?.dispatchId ?? workerId)
+    return buildWorkerLog(workerId, events, liveMessages, opts)
   }
 
   /** Mark a session's log as most-recently-used in the LRU. */
@@ -2445,6 +2384,8 @@ export class RuntimeSessionManager {
     } else {
       try { this.getRegistry?.()?.releaseAllClaims(id) } catch { /* best-effort */ }
     }
+    // 摘除必须在 sessions.delete 之前：record.missionId 还在。失败不阻断删除。
+    this.detachSessionFromMissions(id, s.record.missionId)
     this.sessions.delete(id)
     const i = this.loadedOrder.indexOf(id)
     if (i !== -1) this.loadedOrder.splice(i, 1)
@@ -2457,6 +2398,38 @@ export class RuntimeSessionManager {
     this.forgetStores(id, true)
     this.notifySessionsChanged('delete')
     return true
+  }
+
+  /**
+   * 永久删除的对称清理：从 Mission.sessionIds 摘掉该会话。
+   * 提示 id 与全表反查都做（record.missionId 缺失时仍能摘到）。
+   * 只有这次确实摘掉、且摘完为空，才归档。不删 JSON。
+   * 仅归档会话不走这里。
+   */
+  private detachSessionFromMissions(sessionId: string, missionId?: string): void {
+    const store = this.missionStore
+    if (!store) return
+    let ids: string[]
+    try {
+      const found = new Set<string>()
+      if (missionId) found.add(missionId)
+      for (const mission of store.list()) {
+        if (mission.sessionIds.includes(sessionId)) found.add(mission.id)
+      }
+      ids = [...found]
+    } catch {
+      return
+    }
+    for (const id of ids) {
+      try {
+        const before = store.get(id)
+        if (!before?.sessionIds.includes(sessionId)) continue
+        const next = store.removeSession(id, sessionId)
+        if (next && next.sessionIds.length === 0 && next.state !== 'archived') {
+          store.archive(id)
+        }
+      } catch { /* best-effort — 一份档案失败不挡住其余，也不挡住删会话 */ }
+    }
   }
 
   private disposeDeletedSessionState(session: InternalSession): void {
@@ -4616,7 +4589,7 @@ export class RuntimeSessionManager {
     if (!snapshot?.complete) return
     for (const event of snapshot.events) {
       const { workerId, attemptId, dispatchId, parentAttemptId } = event.data as { workerId: string; attemptId?: string; dispatchId?: string; parentAttemptId?: string }
-      if (session.backgroundAborts?.has(workerId) || this.isWorkerRunning(session.record.id, workerId)) continue
+      if (session.backgroundAborts?.has(workerId) || this.isWorkerRunning(session.record.id, dispatchId ?? workerId)) continue
       const key = attemptId ?? (dispatchId ? `${dispatchId}:${workerId}` : workerId)
       const started = session.delegationStartedAt ?? (session.delegationStartedAt = new Map())
       if (!started.has(key)) started.set(key, event.ts)
@@ -4971,7 +4944,7 @@ export class RuntimeSessionManager {
 
   isUpdateRestartPreparing(): boolean { return this.updateRestartPreparing }
   cancelUpdateRestart(): void { this.updateRestartPreparing = false }
-  updateRestartActivity(): { sessions: number; tasks: number } {
+  updateRestartActivity(): { sessions: number; tasks: number; failedSessions: number; pendingEvents: number } {
     let sessions = 0, tasks = 0
     for (const s of this.sessions.values()) {
       if (s.running) sessions++
@@ -4979,9 +4952,10 @@ export class RuntimeSessionManager {
       tasks += s.pendingDelegations.size
       tasks += s.jobs?.list().filter(j => j.status === 'running').length ?? 0
     }
-    return { sessions, tasks }
+    const health = this.persistence?.healthSnapshot?.()
+    return { sessions, tasks, failedSessions: health?.failedSessions ?? 0, pendingEvents: health?.pendingEvents ?? 0 }
   }
-  async prepareUpdateRestart(force: boolean, signal: AbortSignal): Promise<void> {
+  async prepareUpdateRestart(force: boolean, signal: AbortSignal, opts?: { allowUnsaved?: boolean }): Promise<void> {
     if (this.updateRestartPreparing) throw new Error('UPDATE_PREPARING')
     this.updateRestartPreparing = true
     try {
@@ -5001,30 +4975,49 @@ export class RuntimeSessionManager {
         }
         await Promise.all(jobCleanups)
       }
-      while (true) {
-        signal.throwIfAborted()
-        const a = this.updateRestartActivity()
-        if (a.sessions + a.tasks === 0) break
-        await new Promise(resolve => setTimeout(resolve, 50))
+      // 「等清零超时」与「此刻忙」分开：UPDATE_BUSY 是点一下就重试的瞬态；
+      // 等到 deadline 仍有会话/任务没收尾（多为僵尸 running）是 UPDATE_BUSY_TIMEOUT——
+      // 前端据此给「停止任务并更新」逃生门，而不是误报成数据保存失败。
+      try {
+        while (true) {
+          signal.throwIfAborted()
+          const a = this.updateRestartActivity()
+          if (a.sessions + a.tasks === 0) break
+          await new Promise(resolve => setTimeout(resolve, 50))
+        }
+      } catch {
+        throw new Error('UPDATE_BUSY_TIMEOUT')
       }
+      // allowUnsaved（用户在前端明示「仍然更新」）：逐会话落盘核对从硬门降级为
+      // 尽力而为——写链已死的会话不更新也不会更安全（损失已经发生），但默认
+      // 保持 fail-closed，未经同意绝不带未核对的缓冲重启。
+      let unsavedFailures = 0
       for (const s of this.sessions.values()) {
         signal.throwIfAborted()
-        this.flushDeltaBuf(s)
-        this.flushToolResultBuf(s)
-        if (s.agent) {
-          if (typeof s.agent.flushPersistence !== 'function') throw new Error('UPDATE_PERSISTENCE_UNAVAILABLE')
-          await s.agent.flushPersistence()
+        try {
+          this.flushDeltaBuf(s)
+          this.flushToolResultBuf(s)
+          if (s.agent) {
+            if (typeof s.agent.flushPersistence !== 'function') throw new Error('UPDATE_PERSISTENCE_UNAVAILABLE')
+            await s.agent.flushPersistence()
+          }
+          this.persistRecord(s)
+          if (!this.persistence?.flushThrough) throw new Error('UPDATE_PERSISTENCE_UNAVAILABLE')
+          const watermark = await this.persistence.flushThrough(s.record.id, s.seq, signal)
+          if (watermark < s.seq) throw new Error('UPDATE_PERSISTENCE_FAILED')
+        } catch (error) {
+          if (!opts?.allowUnsaved || signal.aborted) throw error
+          unsavedFailures++
         }
-        this.persistRecord(s)
-        if (!this.persistence?.flushThrough) throw new Error('UPDATE_PERSISTENCE_UNAVAILABLE')
-        const watermark = await this.persistence.flushThrough(s.record.id, s.seq, signal)
-        if (watermark < s.seq) throw new Error('UPDATE_PERSISTENCE_FAILED')
       }
+      if (unsavedFailures > 0) debugLog(`[update-restart] allowUnsaved: proceeded with ${unsavedFailures} session(s) failing persistence flush`)
       signal.throwIfAborted()
       if (!this.persistence?.flushAllAsync) throw new Error('UPDATE_PERSISTENCE_UNAVAILABLE')
-      await this.persistence.flushAllAsync(5000)
+      if (opts?.allowUnsaved) await this.persistence.flushAllAsync(5000).catch(() => {})
+      else await this.persistence.flushAllAsync(5000)
       signal.throwIfAborted()
-      if (this.persistence.healthSnapshot?.().failedSessions) throw new Error('UPDATE_PERSISTENCE_FAILED')
+      const failedSessions = this.persistence.healthSnapshot?.().failedSessions ?? 0
+      if (failedSessions > 0 && !opts?.allowUnsaved) throw new Error('UPDATE_PERSISTENCE_FAILED')
     } catch (error) { this.updateRestartPreparing = false; throw error }
   }
 
@@ -5499,7 +5492,7 @@ export class RuntimeSessionManager {
     if (approved && remember === true && pend.toolName === 'computer_use') {
       // 单动作取顶层 app；单应用 sequence 从 steps 里解析同一 app；多应用
       // sequence 返回 undefined（不记录，fail closed）。
-      const app = resolveRememberedComputerUseApp(pend.toolInput)
+      const app = resolveRememberedComputerUseApp(result.editedInput ?? pend.toolInput)
       if (app) {
         try {
           grantComputerUseApp(app)
@@ -6243,6 +6236,7 @@ export class RuntimeSessionManager {
           try { this.persistence.saveToolOutput(session.record.id, id, display); outputId = id } catch { /* preview remains available */ }
         }
         const eventData = {
+          ...(evidence?.generatedImageId ? { generatedImageId: evidence.generatedImageId } : {}),
           ...(evidence?.command ? { commandText: redactText(evidence.command) } : {}),
           ...(outputId ? { outputId } : {}),
           outputTruncated: (evidence?.outputTruncated ?? (!!evidence?.lossiness && evidence.lossiness !== 'lossless')) || (!outputId && display.length > 2000),
@@ -6470,10 +6464,10 @@ export class RuntimeSessionManager {
       // 本次 drain 条数），UI 据此把回声卡片标记为「模型已收」。drain 返回值
       // 不带条数——先按 pending 计数（无 maxPriority 的 drain 必清空全部
       // pending，计数即本次条数）。仍仅在 isActive() 时 drain，语义不变。
-      onSteerDrain: () => {
+      onHumanGuidanceDrain: () => {
         if (!isActive()) return null
         const count = session.steer.getPendingEntries().length
-        const drained = session.steer.drain()
+        const drained = session.steer.drainHuman()
         if (drained !== null && count > 0) {
           this.append(session, 'steer_delivered', { count })
         }

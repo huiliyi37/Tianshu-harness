@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { isProjectTrusted, notifyUntrustedOnce } from '../config/project-trust.js'
+
 /**
  * 种子胶囊引擎 — 星域经验自动加载机制。
  *
@@ -107,8 +109,10 @@ ${escapeXml(parsed.content)}
 }
 
 /**
- * 缓存：cwd → 已加载的胶囊列表。多槽 Map（而非单槽 cachedCwd），这样并发
- * worktree / 多会话在不同 cwd 间交替时不会互相清空缓存（单槽会反复重读 docs/）。
+ * 缓存：`(cwd, 信任态)` → 已加载的胶囊列表。多槽 Map（而非单槽 cachedCwd），
+ * 这样并发 worktree / 多会话在不同 cwd 间交替时不会互相清空缓存（单槽会反复
+ * 重读 docs/）；key 并入信任态（`\0T` / `\0U`），/trust 切换后自动重载，
+ * 不让陈旧结果跨信任态泄漏。
  */
 const capsuleCacheByCwd = new Map<string, SeedCapsule[]>()
 
@@ -116,7 +120,8 @@ const capsuleCacheByCwd = new Map<string, SeedCapsule[]>()
  * 定位随安装包 ship 的胶囊目录：tsup 在构建后把 docs/seed-capsule-*.md 拷进
  * dist/seed-capsules/，使 npm / 桌面端用户开箱即用（他们的安装目录旁没有 docs/）。
  * 相对本模块 URL 解析并带上一级兜底；源码/dev(tsx) 未构建 → 返回 null，
- * 此时仅从项目 <cwd>/docs 读（与旧行为一致）。镜像 skill-loader.bundledSkillsDir()。
+ * 此时胶囊仅来自项目 <cwd>/docs（且仅项目已授信时——见 loadAllCapsules 信任门）。
+ * 镜像 skill-loader.bundledSkillsDir()。
  */
 function bundledCapsulesDir(): string | null {
   let base: string
@@ -163,22 +168,45 @@ export function collectCapsules(dirs: string[]): SeedCapsule[] {
 
 /**
  * 发现并加载所有 seed-capsule-*.md 胶囊。来源合并（靠后按文件名覆盖靠前）：
- *   1. 随安装包 ship 的 dist/seed-capsules/（内置，低优先——让装了包的用户可用）
- *   2. 项目 <cwd>/docs/（仓库内 / 项目自定义，高优先——同名覆盖内置）
- * 结果按 sealedAt 排序；按 cwd 缓存在内存中（胶囊静态，session 内不重读）。
+ *   1. 随安装包 ship 的 dist/seed-capsules/（内置，低优先——让装了包的用户可用；
+ *      恒加载，与项目信任无关）
+ *   2. 项目 <cwd>/docs/（仓库内 / 项目自定义，高优先——同名覆盖内置；**仅项目已授信时**）
+ * 结果按 sealedAt 排序；按 (cwd, 信任态) 缓存在内存中（胶囊静态，session 内不重读；
+ * 信任态进 key 保证 /trust 切换后自动重载）。
+ *
+ * 信任门（2026-10-09 安全审计补门族）：项目 docs/ 是**随仓库分发**的内容，与
+ * .rivet 状态面同属「未授信不读不注入」的对象；未授信且存在胶囊文件时发一次性
+ * 提示（静默失效即缺陷，与 projectStateAllowed 同契约）。门下沉在本函数内，
+ * renderResidentCapsuleBlock / getCapsuleByStar / listCapsuleStars / extractPrinciples
+ * 四个消费出口自动过门（防新调用点漏）。
  */
 export function loadAllCapsules(cwd: string): SeedCapsule[] {
-  const cached = capsuleCacheByCwd.get(cwd)
+  const trusted = isProjectTrusted(cwd)
+  const cacheKey = `${cwd}\0${trusted ? 'T' : 'U'}`
+  const cached = capsuleCacheByCwd.get(cacheKey)
   if (cached) return cached
 
   const dirs: string[] = []
   const bundled = bundledCapsulesDir()
   if (bundled) dirs.push(bundled)
-  dirs.push(join(cwd, 'docs'))
+  if (trusted) {
+    dirs.push(join(cwd, 'docs'))
+  } else if (hasProjectCapsuleFiles(cwd)) {
+    notifyUntrustedOnce('capsules', cwd)
+  }
 
   const capsules = collectCapsules(dirs)
-  capsuleCacheByCwd.set(cwd, capsules)
+  capsuleCacheByCwd.set(cacheKey, capsules)
   return capsules
+}
+
+/** cwd/docs 下是否存在 seed-capsule-*.md（未授信时决定是否发提示；任何异常按不存在处理）。 */
+function hasProjectCapsuleFiles(cwd: string): boolean {
+  try {
+    return readdirSync(join(cwd, 'docs')).some(entry => CAPSULE_GLOB.test(entry))
+  } catch {
+    return false
+  }
 }
 
 /**

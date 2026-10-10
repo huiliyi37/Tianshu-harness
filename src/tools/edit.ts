@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises'
 import { relative } from 'node:path'
-import type { Tool, ToolCallParams } from './types.js'
+import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { validatePath } from './path-validate.js'
 import { buildFileDiff, computeChangedLineRanges, type LineRange } from './edit-diff.js'
 import { hashLine } from './hash-edit.js'
@@ -29,7 +29,7 @@ import { detectEol, chooseEol, toLf, applyEol, type Eol } from './line-endings.j
 import { getTargetEol } from '../platform.js'
 import { detectPointerPlaceholder, pointerPlaceholderError, resolveIdempotentPointer } from './pointer-guard.js'
 import { asBool } from './write-tool-helpers.js'
-import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
+import { withFileChangeTracking, restoreFileChange, type FileChangeRecord } from '../agent/recovery-stack.js'
 import { formatActivePlanDraftReceipt } from '../agent/plan-mode.js'
 
 // Large files are common (generated code, lockfiles, big modules). 100KB was
@@ -121,7 +121,7 @@ export const EDIT_FILE_TOOL: Tool = {
     },
   },
 
-  async execute(params: ToolCallParams) {
+  execute: withFileChangeTracking(async (params: ToolCallParams, trackFileChange): Promise<ToolResult> => {
     let filePath: string
     try {
       filePath = validatePath(params.cwd, params.input.file_path as string, 'write')
@@ -189,14 +189,14 @@ export const EDIT_FILE_TOOL: Tool = {
             if (dryRun) {
               return buildDryRunPreview(params.cwd, filePath, freshContent, newContent)
             }
-            await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
+            const capture = await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
             {
               const land = await writeEditLanding(params, filePath, freshContent, newContent, freshEol)
               if ('delegatedRejectOrError' in land) return land.delegatedRejectOrError
             }
             const occurrences = (freshContent.match(new RegExp(escapeRegExp(oldString), 'g')) || []).length
             const expectedCount = params.input.expected_count as number | undefined
-            return await finalizeEdit(params.cwd, filePath, freshContent, newContent, params.sessionId, (warn, ui, changedRanges) => {
+            return await finalizeEdit(params.cwd, filePath, freshContent, newContent, params.sessionId, capture, (warn, ui, changedRanges) => {
               if (expectedCount !== undefined && occurrences !== expectedCount) {
                 const base = `文件已被外部修改，但 old_string 仍能匹配。警告：预期替换 ${expectedCount} 处，实际只替换了 ${occurrences} 处（${filePath}）。请用 grep 核实是否有遗漏——缩进或空白差异可能导致 replace_all 只部分匹配。`
                 return { content: base + (warn ? '\n\n' + warn : ''), uiContent: ui, changedRanges }
@@ -214,12 +214,12 @@ export const EDIT_FILE_TOOL: Tool = {
           if (dryRun) {
             return buildDryRunPreview(params.cwd, filePath, freshContent, recovered)
           }
-          await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
+          const capture = await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
           {
             const land = await writeEditLanding(params, filePath, freshContent, recovered, freshEol)
             if ('delegatedRejectOrError' in land) return land.delegatedRejectOrError
           }
-          return await finalizeEdit(params.cwd, filePath, freshContent, recovered, params.sessionId, (warn, ui, changedRanges) => ({
+          return await finalizeEdit(params.cwd, filePath, freshContent, recovered, params.sessionId, capture, (warn, ui, changedRanges) => ({
             content: `已编辑 ${filePath}（文件已被外部修改，但内容仍能匹配）${warn ? '\n\n' + warn : ''}`,
             uiContent: ui,
             changedRanges,
@@ -302,14 +302,14 @@ export const EDIT_FILE_TOOL: Tool = {
       if (dryRun) {
         return buildDryRunPreview(params.cwd, filePath, content, newContent)
       }
-      await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
+      const capture = await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
       {
         const land = await writeEditLanding(params, filePath, content, newContent, eol)
         if ('delegatedRejectOrError' in land) return land.delegatedRejectOrError
       }
       const occurrences = (content.match(new RegExp(escapeRegExp(oldString), 'g')) || []).length
       const expectedCount = params.input.expected_count as number | undefined
-      return await finalizeEdit(params.cwd, filePath, content, newContent, params.sessionId, (warn, ui, changedRanges) => {
+      return await finalizeEdit(params.cwd, filePath, content, newContent, params.sessionId, capture, (warn, ui, changedRanges) => {
         if (expectedCount !== undefined && occurrences !== expectedCount) {
           const base = `警告：预期替换 ${expectedCount} 处，实际只替换了 ${occurrences} 处（${filePath}）。文件已修改。请用 grep 核实是否有遗漏——缩进或空白差异可能导致 replace_all 只部分匹配。`
           return { content: base + (warn ? '\n\n' + warn : ''), uiContent: ui, changedRanges }
@@ -332,12 +332,12 @@ export const EDIT_FILE_TOOL: Tool = {
         if (dryRun) {
           return buildDryRunPreview(params.cwd, filePath, content, recovered)
         }
-        await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
+        const capture = await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
         {
           const land = await writeEditLanding(params, filePath, content, recovered, eol)
           if ('delegatedRejectOrError' in land) return land.delegatedRejectOrError
         }
-        return await finalizeEdit(params.cwd, filePath, content, recovered, params.sessionId, (warn, ui, changedRanges) => {
+        return await finalizeEdit(params.cwd, filePath, content, recovered, params.sessionId, capture, (warn, ui, changedRanges) => {
           // Surface the whitespace drift so the model can self-correct in
           // subsequent edits — without this, error accumulates across calls.
           const diff = diffBlock(oldString, fuzzy.matchedText)
@@ -372,12 +372,12 @@ export const EDIT_FILE_TOOL: Tool = {
     if (dryRun) {
       return buildDryRunPreview(params.cwd, filePath, content, newContent)
     }
-    await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
+    const capture = await trackFileChange(params.cwd, { filePath: relative(params.cwd, filePath), action: 'edit', toolCallId: params.toolUseId ?? 'edit_file' })
     {
       const land = await writeEditLanding(params, filePath, content, newContent, eol)
       if ('delegatedRejectOrError' in land) return land.delegatedRejectOrError
     }
-    return await finalizeEdit(params.cwd, filePath, content, newContent, params.sessionId, (warn, ui, changedRanges) => {
+    return await finalizeEdit(params.cwd, filePath, content, newContent, params.sessionId, capture, (warn, ui, changedRanges) => {
       const draftReceipt = formatActivePlanDraftReceipt(params.cwd, filePath, params.activePlanFilePath, newContent.length)
       const base = draftReceipt ?? `已编辑 ${filePath}`
       return {
@@ -386,7 +386,7 @@ export const EDIT_FILE_TOOL: Tool = {
         changedRanges,
       }
     })
-  },
+  }),
   requiresApproval: () => true,
   isConcurrencySafe: () => false,
   isEnabled: () => true,
@@ -482,7 +482,7 @@ async function buildDryRunPreview(
 /**
  * Post-write validation + rollback helper.
  * Runs strict syntax/AST checks on the edited file. If a fatal parse error is
- * detected, automatically restores the latest backup and returns an error.
+ * detected, automatically restores its pre-edit capture and returns an error.
  * Otherwise records the successful edit and returns the normal success payload.
  */
 async function finalizeEdit(
@@ -491,12 +491,12 @@ async function finalizeEdit(
   before: string,
   after: string,
   sessionId: string | undefined,
+  capture: FileChangeRecord,
   buildSuccessResult: (warn: string, uiContent: string | undefined, changedRanges: LineRange[]) => { content: string; uiContent?: string; changedRanges: LineRange[] },
 ): Promise<{ content: string; uiContent?: string; changedRanges: LineRange[]; isError?: boolean; errorKind?: 'syntax_error' }> {
   const check = await checkSyntax(filePath, after)
   if (check.fatal) {
-    const relPath = relative(cwd, filePath)
-    const restored = await restoreLatestBackup(cwd, relPath, sessionId)
+    const restored = await restoreFileChange(cwd, capture, sessionId)
     // 回滚后 mtime 会变（copyFileSync 不保留原始时间戳），但内容已恢复。
     // 刷新读文件 mtime 追踪器——否则后续 hash_edit 的仅位置锚点检查会误报
     // "文件已变化，请重新 read_file"，主控白费一轮重读。

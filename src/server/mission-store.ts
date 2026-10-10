@@ -188,6 +188,23 @@ export class MissionStore {
     return cloneMission(next)
   }
 
+  /**
+   * 摘除一个 session（幂等：不在列表里原样返回，不改 updatedAt）。
+   * 不决定归档——摘空后是否 archive 由调用方判断。
+   */
+  removeSession(missionId: string, sessionId: string): Mission | null {
+    const existing = this.get(missionId)
+    if (!existing) return null
+    if (!existing.sessionIds.includes(sessionId)) return existing
+    const next: Mission = {
+      ...existing,
+      sessionIds: existing.sessionIds.filter(id => id !== sessionId),
+      updatedAt: this.now(),
+    }
+    this.save(next)
+    return cloneMission(next)
+  }
+
   archive(id: string): Mission | null {
     return this.update(id, { state: 'archived' })
   }

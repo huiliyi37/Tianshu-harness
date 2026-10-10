@@ -1,6 +1,6 @@
 import type { WorkerResult } from './work-order.js'
 import type { WorkerTranscript } from './worker-session.js'
-import { VERIFY_BASH_RE } from './hooks/self-verify-hook.js'
+import { isVerificationIntent } from './verification-activity.js'
 import { RUN_TESTS_EXIT_CODE_RE, RUN_TESTS_FAILED_RE } from '../tools/run-tests.js'
 
 /** 能在批末口径（transcript=undefined）下保住 evidenceStatus=verified 的 profile。 
@@ -36,12 +36,12 @@ function isFailedRunTestsEvidence(text: string): boolean {
 /** transcript 取证：是否有真实且未失败的验证执行痕迹（run_tests 或验证形状的 bash）。 */
 function provenVerification(transcript: WorkerTranscript): { proven: true } | { proven: false; reason: 'missing' | 'errored' } {
   const ranTests = transcript.toolUses.includes('run_tests')
-  const verifyBashRuns = (transcript.bashCommands ?? []).filter(cmd => VERIFY_BASH_RE.test(cmd))
+  const verifyBashRuns = (transcript.bashCommands ?? []).filter(cmd => isVerificationIntent(cmd))
   if (!ranTests && verifyBashRuns.length === 0) return { proven: false, reason: 'missing' }
 
   // 验证形状 bash 失败不是证据——npm test 跑挂了照样宣称 verified 是本审计
   // 要拦的核心场景。failedBashCommands 缺省（旧固件）时按全部成功处理。
-  const failedVerifyBash = (transcript.failedBashCommands ?? []).filter(cmd => VERIFY_BASH_RE.test(cmd))
+  const failedVerifyBash = (transcript.failedBashCommands ?? []).filter(cmd => isVerificationIntent(cmd))
   const verifyBashSucceeded = verifyBashRuns.length > failedVerifyBash.length
 
   // run_tests 报错检查（纵深：既匹配错误串，也匹配失败特征；后者覆盖 spawn
@@ -93,7 +93,7 @@ export function reconcileCapturedWorkerFacts(result: WorkerResult, transcript: W
 
   const proof = provenVerification(transcript)
   if (proof.proven && !next.verification) {
-    const verifyBash = (transcript.bashCommands ?? []).find(cmd => VERIFY_BASH_RE.test(cmd))
+    const verifyBash = (transcript.bashCommands ?? []).find(cmd => isVerificationIntent(cmd))
     next = {
       ...next,
       verification: {

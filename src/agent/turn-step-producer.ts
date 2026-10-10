@@ -1,3 +1,4 @@
+import { applyHumanInputBoundary } from './human-input-boundary.js'
 import { applySessionSkillModes } from '../skills/session-skill-policy.js'
 import { getTodos } from '../tools/todo.js'
 import type { AgentLoop } from './loop.js'
@@ -17,7 +18,7 @@ import { createThetaState, getThetaPhase } from './star-event.js'
 import { mapQueriedPheromones } from './pheromone-map.js'
 import { getGitInjectedContext } from '../prompt/volatile-git.js'
 import { detectWorktreeReality, type InjectedWorktreeContext, type WorktreeReality } from './worktree-reality.js'
-import { advanceContractStatus, classifyPlanMethodology, classifyTaskDepth, classifyTurnMode, contractStatusFromPhaseClass, extractTaskContract, mergeFollowUpIntoContract, type TurnMode } from '../context/task-contract.js'
+import { advanceContractStatus, classifyPlanMethodology, classifyTaskDepth, classifyTurnMode, contractStatusFromPhaseClass, type TurnMode } from '../context/task-contract.js'
 import { shouldSuggestPlanMode, buildPlanModeSuggestAdvisory, buildPlanModeAutoEnterAdvisory, buildStructureFlowPlanAdvisory, planModeSuggestMode } from './plan-mode-advisor.js'
 import { detectQuizLike } from './intent-retrieval-route.js'
 import { renderMemoryBlock } from '../memory/unified-memory.js'
@@ -279,25 +280,7 @@ export class TurnStepProducer {
     const actionable = turnMode !== 'chat'
     this.self.config.promptEngine.setActionableTurn(actionable)
 
-    if (turnMode === 'task' && this.self.activeInputOrigin === 'human') {
-      this.self.taskContract = extractTaskContract(userInput, this.self.session.getTurnCount())
-      // 证据义务任务边界：上一个用户任务的未决义务全部作废（satisfied 历史
-      // 保留），latch 清空——新任务从干净的义务面开始。
-      this.self.obligations.supersedeOpen()
-    } else if (turnMode === 'followUp' && this.self.activeInputOrigin === 'human') {
-      // P5: inherit the active contract, but fold in any new constraints/files
-      // from this follow-up (multi-line corrections whose constraint sits past
-      // the first line are classified followUp yet must reach the task-anchor).
-      if (this.self.taskContract) {
-        this.self.taskContract = mergeFollowUpIntoContract(
-          this.self.taskContract,
-          userInput,
-          this.self.session.getTurnCount(),
-        )
-      }
-    } else if (!this.self.taskContract || this.self.taskContract.status === 'ready_to_deliver') {
-      this.self.taskContract = undefined
-    }
+    applyHumanInputBoundary(this.self, turnMode, userInput)
 
     if (turnMode !== 'followUp') {
       this.self.todoTaskContext = { key: this.self.todoTaskContext.key + 1, startTurn: this.self.modelObservationTurn + 1,
@@ -525,7 +508,12 @@ export class TurnStepProducer {
    * reliability decision, context ceiling enforcement, cross-session event
    * sync, and OAI request building. Returns the action and request.
    */
-  async buildTurnRequest(
+  async buildTurnRequest(...args: Parameters<TurnStepProducer['buildRequest']>): ReturnType<TurnStepProducer['buildRequest']> {
+    try { return await this.buildRequest(...args) }
+    finally { this.self.decisionShifts.discard('request-aborted-or-failed') }
+  }
+
+  private async buildRequest(
     turn: number,
     currentStrategy: StrategyProfile,
     currentSensorium: Sensorium,
@@ -695,8 +683,8 @@ export class TurnStepProducer {
     // 控制面 tee（Wave 2）：单次 drain → 不可变快照 → 多路分发。readback 与
     // control adapter 消费同一快照；adapter 绝不自行 drain（一次性消费边界）。
     const deliveredSnapshot = this.self.advisoryBus.drainDelivered()
-    this.self.advisoryReadback.track(deliveredSnapshot, this.self.modelObservationTurn)
     this.self.controlPlane.submitAll(signalsFromDelivered(deliveredSnapshot))
+    // Card and readback confirmation wait for the final request; control projection remains here.
 
     // Phase 0 观测：advisory 投递账本落盘（仅有活动时写，避免遥测噪音），
     // 并把 guardian 活动摘要（CCR/改道/丢弃计数）同步进 session meta。
@@ -877,6 +865,10 @@ export class TurnStepProducer {
       },
     ), callbacks)
 
+    if (this.self.abortController?.signal.aborted) return { action: 'abort' }
+    const confirmed = this.self.decisionShifts.confirm(deliveredSnapshot, request, callbacks)
+    this.self.advisoryReadback.track(deliveredSnapshot.filter(d => !d.candidateId || confirmed || d.shadow), this.self.modelObservationTurn)
+
     // ── CVM egress metering ──
     // 盘古呼吸：CVM 保护的资源（context）也是它消耗的资源。账记在字节真正写进
     // <context-update> 的地方——buildOaiRequest 内部。工具轮复用 cachedAppendix、
@@ -1034,6 +1026,9 @@ export class TurnStepProducer {
     pressureResult: import('../context/pressure-monitor.js').PressureResult
   }> {
     this.self.modelObservationTurn++
+    // P0：每 modelTurn 一次的事实快照（感知前唯一装配点）——感知/收敛/核销
+    // 读同一份（WorkProgressFacts 内部单次消费去重事实，不双重消费）。
+    this.self.workFacts.beginModelTurn(this.self.modelObservationTurn)
     // ── StarFlow v2: Sensorium computation ──
     const pressureResult = this.self.pressureMonitor.check(estTokens, this.self.session.getTurnCount())
     if (this.lastTurnMode === 'chat') {
@@ -1074,6 +1069,10 @@ export class TurnStepProducer {
       thetaCheckInFlight: this.self.thetaCheckInFlight,
       baselineFingerprint: this.self.baselineFingerprint,
       convergenceScore: this.self.latestConvergenceResult?.score ?? null,
+      // P2：工作相位确认输入——与收敛检查同轮同源（同一不可变快照与投影）。
+      workFactSnapshot: this.self.workFacts.currentSnapshot(),
+      verificationExecutions: this.self.workFacts.recentVerificationExecutions(),
+      editExpectation: this.self.currentEditExpectation(),
     }, {
       emitPhaseChange: (phase, detail) => { callbacks.onPhaseChange?.(phase, detail) },
       emitDecisionShift: (shift) => {
@@ -1150,7 +1149,7 @@ export class TurnStepProducer {
     const contractStatus = contractStatusFromPhaseClass(phaseClass)
     // 构造统一资格对象，供 TDD gate 和 cognitive prep 共用
     const taskKinds = this.self._lastRetrievalRoute?.taskKinds ?? []
-    const explicitNoMutation = detectExplicitNoMutation(this.self.initialUserMessage ?? '')
+    const explicitNoMutation = this.self.workFacts.explicitNoMutation ?? detectExplicitNoMutation(this.self.initialUserMessage ?? '')
     const eligibility = deriveDisciplineEligibility({
       turnMode: this.lastTurnMode, taskKinds, explicitNoMutation,
       mentionedCodeFileCount: this.self.taskContract?.scope.mentionedFiles.length,
@@ -1164,7 +1163,10 @@ export class TurnStepProducer {
       // TDD Gate: check on every executing turn — keeps reminding until
       // the agent touches a test file. Not one-shot: skipping TDD once
       // should not silence the gate for the rest of the task.
-      if (this.self.taskContract.status === 'executing') {
+      // P2（计划 §3 末条）：判据从合同单调状态改为已确认工作相位（committed
+      // 派生的 phaseClass）——合同曾到 verifying 不再永久跳过后续修复轮
+      // 的既有 TDD 检查；修复后的真实写入会把相位带回 execute。
+      if (phaseClass === 'execute') {
         const es = this.self.evidence.getState()
         const tddHint = checkTddGate({
           filesRead: es.filesRead,

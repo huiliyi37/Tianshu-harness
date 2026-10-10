@@ -144,14 +144,29 @@ export function extractPatchContents(diff: string): WriteFileContent[] {
   return results
 }
 
-/** diff 的目标文件路径（`+++ ` 头，跳过纯删除）。 */
-export function extractPatchTargetPathsFromDiff(diff: string): string[] {
+/** diff 的目标文件路径（`+++ ` 头，跳过纯删除）。
+ *
+ *  opts.includeDeleted：把纯删除的线索路径（`--- a/<path>`，其 `+++` 为
+ *  /dev/null）也收入。后置内容校验（apply-patch 执行器侧）不需要删除路径
+ *  ——没有落盘内容可验；但变化检测（course-file-progress 的进度记账）需要
+ *  "删除"也算目标文件变化，否则 apply_patch 纯删除对进度永远不可见。 */
+export function extractPatchTargetPathsFromDiff(
+  diff: string,
+  opts?: { includeDeleted?: boolean },
+): string[] {
   if (typeof diff !== 'string' || diff.length === 0) return []
   const paths = new Set<string>()
   for (const line of diff.split('\n')) {
     if (!line.startsWith('+++ ')) continue
     const p = normalizePatchPath(line.slice(4))
     if (p !== null) paths.add(p)
+  }
+  if (opts?.includeDeleted) {
+    for (const line of diff.split('\n')) {
+      if (!line.startsWith('--- ')) continue
+      const p = normalizePatchPath(line.slice(4))
+      if (p !== null) paths.add(p)
+    }
   }
   return [...paths]
 }

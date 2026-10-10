@@ -143,4 +143,30 @@ describe('closePlanMarkdown', () => {
     assert.ok(result.content.includes('### 任务 1 — 甲\n\n- [ ] 改：`src/a.ts`'))
     assert.ok(result.content.includes('### 任务 2 — 乙\n\n- [x] 测：`src/a.test.ts`'))
   })
+
+  it('closes heading blocks without numeric ids（任意标题写法都能闭环，不再要求 Task N / Wave N）', () => {
+    const input = `# 计划\n\n## 执行顺序\n\n### 分波实施\n\n- [ ] 改 A\n- [ ] 改 B\n`
+
+    const result = closePlanMarkdown(input, { tasks: 'all', updateClosure: false })
+
+    assert.equal(result.totalChangedCheckboxes, 2)
+    assert.ok(result.content.includes('- [x] 改 A'))
+    assert.ok(result.content.includes('- [x] 改 B'))
+  })
+
+  it('closes a headerless checklist as a single block（无标题的纯 checkbox 也能闭环）', () => {
+    const input = `# 计划\n\n- [ ] 改 A\n- [ ] 改 B\n`
+
+    const result = closePlanMarkdown(input, { tasks: 'all', updateClosure: false })
+
+    assert.equal(result.totalChangedCheckboxes, 2)
+  })
+
+  it('ignores headings whose block carries no checkbox（非任务标题不被误判成任务块）', () => {
+    const input = `# 计划\n\n## 需求提炼\n\n要改 A 与 B。\n\n### 实施\n\n- [ ] 改 A\n`
+
+    const result = closePlanMarkdown(input, { tasks: 'all', updateClosure: false })
+
+    assert.deepEqual(result.changes, [{ taskNumber: 1, checkboxCount: 1, changedCheckboxCount: 1 }])
+  })
 })

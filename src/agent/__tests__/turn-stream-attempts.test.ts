@@ -11,7 +11,7 @@ async function run(client: StreamClient) {
   const notifiedTools: string[] = []
   let text = 'previous turn;'
   const controller = new TurnStreamController({
-    client, abortSignal: new AbortController().signal,
+    client, getAbortSignal: () => new AbortController().signal,
     getStreamedTextLength: () => text.length,
     appendStreamedText: delta => { text += delta },
     truncateStreamedText: length => { text = text.slice(0, length) },
@@ -35,9 +35,11 @@ test('actual incomplete SSE retry discards failed tools, text, reasoning and fin
   let sends = 0
   globalThis.fetch = async () => {
     const id = `tool-${++sends}`
+    // PR #393 后：缺 [DONE] 但带终态 finish_reason 会宽容收尾（不重试）。本用例
+    // 测严格路径（重试 + 丢弃失败残留），首答必须无终态（finish_reason=null）。
     const payload = { choices: [{ delta: { content: sends === 1 ? 'failed-text' : 'final-text', reasoning_content: `thinking-${sends}`,
       tool_calls: [{ index: 0, id, type: 'function', function: { name: 'write_file', arguments: '{"file_path":"fixture.txt","content":"fixture"}' } }] },
-    finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 10 } }
+    finish_reason: sends === 1 ? null : 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 10 } }
     return new Response(`data: ${JSON.stringify(payload)}\n\n${sends === 1 ? '' : 'data: [DONE]\n\n'}`, { headers: { 'content-type': 'text/event-stream' } })
   }
   try {

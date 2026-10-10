@@ -8,6 +8,7 @@
 import { progressiveTimeout, WORKER_EXIT_GRACE_MS } from './timeout-ladder.js'
 import { MAX_BUDGET_CONTINUATIONS, MAX_HANDS_EXTRA_RUNS } from './worker-continuation.js'
 import { normalizeFrontmatterSource } from '../utils/frontmatter.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 export type AgentRole = 'brain' | 'hands' | 'readonly' | 'readonly_plus_test'
 
@@ -533,7 +534,7 @@ export class ProfileRegistry {
     try {
       const { readdirSync } = await import('node:fs')
       const { join } = await import('node:path')
-      const files = readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md')
+      const files = readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md' && !isFilesystemMetadata(f))
       for (const file of files) {
         try {
           const { readFileSync } = await import('node:fs')

@@ -15,6 +15,9 @@
 // 提取时唯一的语义变动：编辑工具集改用 WRITE_TOOL_NAMES，比原内联列表多
 // ast_edit —— 原列表遗漏它属于同类漂移，不是有意排除。
 
+/** 产出流内的验证类 bash 命令：只认 test / typecheck（verificationAttempted 的口径），
+ *  比 isVerificationIntent 窄——这里判的是「编辑-验证节律」，lint/build 不构成该节律的验证半边。 */
+import { verificationAttempted } from './verification-activity.js'
 import { WRITE_TOOL_NAMES } from '../tools/write-tool-helpers.js'
 
 /** 判定所需的最小工具历史字段（recentToolHistory 条目的结构子集）。 */
@@ -22,16 +25,13 @@ export interface ProductionFlowEntry {
   tool: string
   status?: 'success' | 'failed' | 'running'
   target?: string
+  verificationAttempted?: boolean
 }
 
 /** 判定窗口：最近 N 次工具调用。 */
 const FLOW_WINDOW = 6
 /** 窗口内样本下限——不足则证据不够，判定为非产出流。 */
 const FLOW_MIN_SAMPLES = 3
-
-/** 产出流内的验证类 bash 命令。刻意窄于 self-verify 的 VERIFY_BASH_RE：
- *  这里判的是「编辑-验证节律」，lint/build 不构成该节律的验证半边。 */
-const FLOW_VERIFY_BASH_RE = /\b(test|typecheck|tsc)\b/i
 
 /**
  * 主控是否处于产出流。
@@ -44,7 +44,7 @@ export function isInProductionFlow(history: ReadonlyArray<ProductionFlowEntry>):
 
   const hasEdit = recent.some(h => WRITE_TOOL_NAMES.has(h.tool))
   const hasVerify = recent.some(h =>
-    h.tool === 'run_tests' || (h.tool === 'bash' && FLOW_VERIFY_BASH_RE.test(h.target ?? '')))
+    h.tool === 'run_tests' || (h.tool === 'bash' && (h.verificationAttempted ?? verificationAttempted('bash', { command: h.target ?? '' }))))
   const hasFailure = recent.some(h => h.status === 'failed')
 
   return hasEdit && hasVerify && !hasFailure

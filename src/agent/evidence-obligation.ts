@@ -346,9 +346,14 @@ export function applyVerificationEvent(store: ObligationStore, meta: Verificatio
     // 而这里的谓词是「跑没跑过」——把它加进来等于让任意一条 passed 单测关掉
     // 用户级验收义务，正是本机制要修的假绿。核销走 onAcceptance → tracker.satisfy。
     const awaitsVerification = ob.family === 'bugfix' || ob.family === 'delivery'
-      || ob.family === 'regression' || ob.family === 'behavior'
+      || ob.family === 'regression' || ob.family === 'behavior' || ob.family === 'external_claim'
     if (!awaitsVerification) continue
-    const matches = verificationMatchesTargets(meta, ob.targets)
+    // external_claim 的核销**不绑 targets**：义务问的是「这份外部声明的结论有没有
+    // 被独立验证过」，而验证证据的载体（测试结果、运行时日志、探针输出）与被质疑的
+    // 文档天然不同轴——绑 targets 会造出一条永无出口的义务（2026-10-10 复核实测：
+    // 跑测试时命令文本不含 doc 路径 → matches=false → 3 探针 + 3 验证后仍 attempted，
+    // 义务永久悬挂在 prompt 渲染块里）。targets 仍用于义务 ID 与渲染。
+    const matches = ob.family === 'external_claim' ? true : verificationMatchesTargets(meta, ob.targets)
 
     if (meta.status === 'blocked') {
       if (matches) next = recordAttempt(next, ob.id, { failureClass: 'verification_blocked' })
@@ -377,9 +382,12 @@ export function applyVerificationEvent(store: ObligationStore, meta: Verificatio
       if (meta.scope === 'full' || matches) {
         next = satisfyObligation(next, ob.id, `verified:${meta.command}`)
       }
-    } else if ((ob.family === 'regression' || ob.family === 'behavior') && matches) {
+    } else if ((ob.family === 'regression' || ob.family === 'behavior' || ob.family === 'external_claim') && matches) {
       // behavior：「真实输出匹配断言」——目标关联的通过验证是运行时行为的
       // 实测证据（dead-end 义务也由此自然关闭：该文件验证终于转绿）。
+      // external_claim：一次通过的独立验证即「外部声明已被核验」的证据——
+      // 这是该家族唯一的探针外出口（探针侧 micro_probe/targeted_verification
+      // 只记尝试，见 applyProbeEvent）。
       next = satisfyObligation(next, ob.id, `verified:${meta.command}`)
     }
   }
@@ -405,8 +413,14 @@ export interface ProbeEventInput {
   evidenceRef?: string
 }
 
+/** 空 targets = 「不绑定具体目标」→ 任意探针都算相关，与 verificationMatchesTargets
+ *  同向。旧实现返回 false，使空 targets 的 existence/behavior/external_claim 义务
+ *  永不被探针满足——而 behavior 义务的创建点（turn-step-producer 的 review_audit /
+ *  performance_diagnosis 分支）在 mentionedFiles 为空时targets 正是空。悬挂的义务
+ *  每轮渲染进 prompt、并按 requiredAction 引导模型做无效动作（做了也不消解），
+ *  比「一条无目标义务被任意探针闭合」更贵。目标非空时的精确匹配语义不变。 */
 function probeMatchesTargets(target: string, targets: readonly string[]): boolean {
-  if (targets.length === 0) return false
+  if (targets.length === 0) return true
   const normalized = target.replaceAll('\\', '/')
   return targets.some(t => normalized.includes(t) || t.includes(normalized))
 }

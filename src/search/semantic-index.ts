@@ -11,6 +11,8 @@ import { VectorIndex, type VectorIndexSnapshot } from './vector-index.js'
 import { reciprocalRankFusion } from './hybrid-search.js'
 import { type EmbeddingProvider, NullEmbeddingProvider } from './embedding-provider.js'
 import { rankSearchCandidates } from './search-salience.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
+import { toPosixPath } from '../path-format.js'
 
 /** Cap on chunks embedded in one pass to bound first-search latency/cost. */
 const MAX_EMBED_CHUNKS = 4000
@@ -18,6 +20,8 @@ const MAX_EMBED_CHUNKS = 4000
 /** isStale() verdict cache window — in-process workers call semantic_search at
  *  high frequency on the same event loop; avoid a full-repo rescan per call. */
 export const STALE_CHECK_TTL_MS = 30_000
+
+const isMetadataPath = (file: string): boolean => toPosixPath(file).split('/').some(isFilesystemMetadata)
 
 const INDEX_VERSION = 1
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.rivet', 'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv'])
@@ -88,12 +92,12 @@ export class SemanticIndex {
       const snapshot = JSON.parse(raw) as SemanticIndexSnapshot
       if (snapshot.version === INDEX_VERSION && snapshot.fileHashes) {
         for (const [relPath, hash] of Object.entries(snapshot.fileHashes)) {
-          this.fileHashes.set(relPath, hash)
+          if (!isMetadataPath(relPath)) this.fileHashes.set(relPath, hash)
         }
         // Restore chunks so cold-start searches work without rebuild
         if (snapshot.chunks) {
           for (const c of snapshot.chunks) {
-            this.index.addChunk(c.file, c.startLine, c.endLine, c.text)
+            if (!isMetadataPath(c.file)) this.index.addChunk(c.file, c.startLine, c.endLine, c.text)
           }
         }
       }
@@ -122,7 +126,7 @@ export class SemanticIndex {
 
       for (const entry of entries) {
         if (indexed >= maxFiles) break
-        if (SKIP_DIRS.has(entry)) continue
+        if (isFilesystemMetadata(entry) || SKIP_DIRS.has(entry)) continue
         const abs = join(dir, entry)
         let st: ReturnType<typeof statSync>
         try {
@@ -189,7 +193,7 @@ export class SemanticIndex {
         let entries: string[]
         try { entries = readdirSync(dir) } catch { return }
         for (const entry of entries) {
-          if (SKIP_DIRS.has(entry)) continue
+          if (isFilesystemMetadata(entry) || SKIP_DIRS.has(entry)) continue
           const abs = join(dir, entry)
           let st: ReturnType<typeof statSync>
           try { st = statSync(abs) } catch { continue }
@@ -236,7 +240,7 @@ export class SemanticIndex {
         return
       }
       for (const entry of entries) {
-        if (SKIP_DIRS.has(entry)) continue
+        if (isFilesystemMetadata(entry) || SKIP_DIRS.has(entry)) continue
         const abs = join(dir, entry)
         let st: ReturnType<typeof statSync>
         try { st = statSync(abs) } catch { continue }
@@ -335,6 +339,8 @@ export class SemanticIndex {
       const snapshot = JSON.parse(readFileSync(path, 'utf-8')) as VectorIndexSnapshot
       // Only adopt vectors produced by the SAME provider/model.
       this.vectors.loadSnapshot(snapshot, this.provider.id)
+      const liveIds = new Set(this.index.getChunkRefs().map(c => `${c.file}:${c.startLine}-${c.endLine}`))
+      this.vectors.prune(id => liveIds.has(id))
     } catch { /* corrupt → re-embed lazily */ }
   }
 

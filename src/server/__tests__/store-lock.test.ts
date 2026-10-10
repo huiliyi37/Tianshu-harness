@@ -14,7 +14,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -51,7 +51,11 @@ function writeHolder(info: LockInfo): void {
 }
 
 function readHolder(): LockInfo {
-  return JSON.parse(readFileSync(LOCK_PATH, 'utf-8')) as LockInfo
+  const storage = lstatSync(LOCK_PATH)
+  assert.ok(storage.isFile() || storage.isDirectory(), 'lock storage must be a real file or directory')
+  const ownerPath = storage.isDirectory() ? join(LOCK_PATH, 'owner.json') : LOCK_PATH
+  assert.ok(lstatSync(ownerPath).isFile(), 'lock owner must be a real regular file')
+  return JSON.parse(readFileSync(ownerPath, 'utf-8')) as LockInfo
 }
 
 function holderInfo(overrides: Partial<LockInfo> = {}): LockInfo {

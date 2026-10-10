@@ -4,7 +4,7 @@ export function hasLiveDelegation(events: ReadonlyArray<{ type: string; data: Re
     if (event.type !== 'delegation' || event.data.status !== 'running') continue
     const id = String(event.data.workerId ?? '')
     if (!id || background?.has(id)) continue
-    try { if (isRunning(id)) return true } catch { return true }
+    try { if (isRunning(String(event.data.dispatchId ?? id))) return true } catch { return true }
   }
   return false
 }

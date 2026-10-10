@@ -674,7 +674,10 @@ export class DelegationCoordinator {
   private collaboration: CollaborationProtocol | null
   /** A4: per-worker silence clocks — the runtime primary gate. */
   private readonly liveness: WorkerLiveness
-  /** A4: per-order controllers so a stall sweep aborts only the wedged worker. */
+  /** Logical IDs are resumable aliases; all transient state below uses parentTurnId. */
+  private readonly dispatchOrders = new Map<string, WorkOrder>()
+  private readonly dispatchCheckpoints = new Map<string, WorkerCheckpoint>()
+  /** A4: per-dispatch controllers so a stall sweep aborts only the wedged worker. */
   private readonly orderControllers = new Map<string, AbortController>()
   /** 策略短路取消登记簿：delegateBatch 在 abort 前登记，wrapAbort 据此出
    *  'Delegation aborted: policy short-circuit' 消息（保证 isAbort=true 不进
@@ -691,14 +694,14 @@ export class DelegationCoordinator {
    *  the zod request→order conversion via this side table). */
   private readonly activityUpstream = new Map<string, (event: WorkerActivityEvent) => void>()
   /** Batch-scoped shared PrewarmCache — one instance per delegateBatch call,
-   *  keyed by order id (side-table pattern, same as activityUpstream) so
+   *  keyed by dispatch parentTurnId (stable order ids repeat across batches) so
    *  overlapping batches never share. Same-batch workers read files warmed by
    *  the pre-dispatch pass and by each other (e.g. DP replicas hitting the
    *  same evidence). Entries are removed as orders settle; the cache itself
    *  stays alive via workerConfig references until the batch drains. */
   private readonly batchPrewarmByOrder = new Map<string, PrewarmCache>()
   /** Batch-scoped shared StigmergyStore（星河收编 #3）— one memory-only instance
-   *  per delegateBatch call, keyed by order id (same side-table pattern as
+   *  per delegateBatch call, keyed by dispatch parentTurnId (same pattern as
    *  batchPrewarmByOrder). Same-batch workers deposit/read shared pheromones:
    *  a replica finding "X is suspicious" steers later workers to verify X first.
    *  Entries are removed as orders settle; never persisted (batch-scoped GC). */
@@ -766,8 +769,10 @@ export class DelegationCoordinator {
   /** W3: stash an aborted worker's checkpoint (bounded FIFO) and annotate the
    *  blocked result with an explicit re-dispatch entry, so the primary KNOWS
    *  the partial work is resumable instead of writing the worker off. */
-  private captureAbortCheckpoint(orderId: string, checkpoint: WorkerCheckpoint | undefined, result: WorkerResult): void {
+  private captureAbortCheckpoint(order: WorkOrder, checkpoint: WorkerCheckpoint | undefined, result: WorkerResult): void {
     if (!checkpoint?.partialResult) return
+    const orderId = order.id
+    this.dispatchCheckpoints.set(order.parentTurnId, checkpoint)
     if (this.abortCheckpoints.size >= DelegationCoordinator.MAX_ABORT_CHECKPOINTS && !this.abortCheckpoints.has(orderId)) {
       const oldest = this.abortCheckpoints.keys().next().value
       if (oldest !== undefined) this.abortCheckpoints.delete(oldest)
@@ -789,13 +794,13 @@ export class DelegationCoordinator {
   private readonly dispatchNonces = new Map<string, string>()
 
   /** Artifact session id used by a worker for its own ArtifactStore. */
-  private workerArtifactSessionId(orderId: string): string {
-    return deriveWorkerSessionId(orderId, this.dispatchNonces.get(orderId))
+  private workerArtifactSessionId(order: WorkOrder): string {
+    return deriveWorkerSessionId(order.id, this.dispatchNonces.get(order.parentTurnId))
   }
 
   /** Make worker-produced artifacts resolvable from the primary session store. */
-  private registerWorkerArtifacts(orderId: string): void {
-    this.config.artifactStore?.addFallbackSession(this.workerArtifactSessionId(orderId))
+  private registerWorkerArtifacts(order: WorkOrder): void {
+    this.config.artifactStore?.addFallbackSession(this.workerArtifactSessionId(order))
   }
 
   /** Lazily start the stall sweep; stop it when no workers are in flight. */
@@ -850,6 +855,11 @@ export class DelegationCoordinator {
   }
 
   private clearDispatchState(): void {
+    this.dispatchOrders.clear()
+    this.dispatchCheckpoints.clear()
+    this.resumeSources.clear()
+    this.batchPrewarmByOrder.clear()
+    this.batchStigmergyByOrder.clear()
     this.orderControllers.clear()
     this.policyCancelledIds.clear()
     this.liveMessages.clear()
@@ -907,6 +917,30 @@ export class DelegationCoordinator {
     this.clearDispatchState()
   }
 
+  /** Legacy logical IDs may address a worker only when the target is unique. */
+  private resolveLiveDispatch(id: string): string | undefined {
+    if (this.orderControllers.has(id)) return id
+    const matches = [...this.dispatchOrders.values()].filter(order => order.id === id && this.orderControllers.has(order.parentTurnId))
+    return matches.length === 1 ? matches[0]!.parentTurnId : undefined
+  }
+
+  private ownDispatch(order: WorkOrder): void {
+    if (this.dispatchOrders.has(order.parentTurnId)) throw new Error(`Duplicate active worker dispatch: ${order.parentTurnId}`)
+    this.dispatchOrders.set(order.parentTurnId, order)
+  }
+
+  private releaseDispatch(order: WorkOrder): void {
+    if (this.dispatchOrders.get(order.parentTurnId) !== order) return
+    for (const table of [this.orderControllers, this.liveMessages, this.nestedUpstream, this.activityUpstream,
+      this.resumeBaselines, this.resumeSources, this.resumeMessages, this.resumeCheckpoints, this.steerQueues,
+      this.inflightFiles, this.dispatchNonces, this.dispatchCheckpoints, this.batchPrewarmByOrder, this.batchStigmergyByOrder]) {
+      table.delete(order.parentTurnId)
+    }
+    this.policyCancelledIds.delete(order.parentTurnId)
+    this.liveness.unregister(order.parentTurnId)
+    this.dispatchOrders.delete(order.parentTurnId)
+  }
+
   // ── WC: TUI worker 视图直达通道（steer / kill） ──
 
   /**
@@ -915,10 +949,11 @@ export class DelegationCoordinator {
    * 返回 false 表示该 order 已不在跑（终态/未知），消息未入队。
    */
   steerWorker(workOrderId: string, text: string): boolean {
-    if (!this.orderControllers.has(workOrderId)) return false
-    const q = this.steerQueues.get(workOrderId) ?? []
+    const dispatchId = this.resolveLiveDispatch(workOrderId)
+    if (!dispatchId) return false
+    const q = this.steerQueues.get(dispatchId) ?? []
     q.push(text)
-    this.steerQueues.set(workOrderId, q)
+    this.steerQueues.set(dispatchId, q)
     return true
   }
 
@@ -929,7 +964,8 @@ export class DelegationCoordinator {
    * 返回 false 表示该 order 已不在跑。
    */
   killWorker(workOrderId: string): boolean {
-    const controller = this.orderControllers.get(workOrderId)
+    const dispatchId = this.resolveLiveDispatch(workOrderId)
+    const controller = dispatchId ? this.orderControllers.get(dispatchId) : undefined
     if (!controller) return false
     try { controller.abort() } catch { /* already aborted */ }
     return true
@@ -937,7 +973,7 @@ export class DelegationCoordinator {
 
   /** 指定 order 当前是否在跑（TUI 判断直达通道可用性）。 */
   isWorkerRunning(workOrderId: string): boolean {
-    return this.orderControllers.has(workOrderId)
+    return this.orderControllers.has(workOrderId) || [...this.dispatchOrders.values()].some(order => order.id === workOrderId && this.orderControllers.has(order.parentTurnId))
   }
 
   /**
@@ -946,7 +982,8 @@ export class DelegationCoordinator {
    * getter 抛错按无快照处理：转录可观测性绝不能反噬派发主路径。
    */
   getLiveWorkerMessages(workOrderId: string): readonly OaiMessage[] | undefined {
-    const getMessages = this.liveMessages.get(workOrderId)
+    const dispatchId = this.resolveLiveDispatch(workOrderId)
+    const getMessages = dispatchId ? this.liveMessages.get(dispatchId) : undefined
     if (!getMessages) return undefined
     try {
       return getMessages()
@@ -1426,6 +1463,7 @@ export class DelegationCoordinator {
     // P1-7: per-wave mailbox — each wave gets a fresh instance so concurrent
     // waves never interleave messages in a shared mailbox.
     const waveMailbox = new InMemoryMailbox()
+    let ownedOrder: WorkOrder | undefined
     try {
       // B3: hard depth cap — nesting allowed (planner workers think-then-
       // delegate) but bounded. Reject, don't throw: the requesting worker
@@ -1531,20 +1569,22 @@ export class DelegationCoordinator {
             budget: request.budget,
           })
 
-      // T9 P3: callbacks don't survive zod parsing — stash by order id.
-      if (request.onActivity) this.activityUpstream.set(order.id, request.onActivity)
+      this.ownDispatch(order)
+      ownedOrder = order
+      // Callbacks are owned by the unique dispatch.
+      if (request.onActivity) this.activityUpstream.set(order.parentTurnId, request.onActivity)
       // 建单完成即通知工具侧（异常补发终态用）：worker 开始跑之前回调，
       // 此后 delegate() 若抛错，工具侧可凭 orderId 为已派发 worker 补终态。
       onOrderCreated?.(order.id)
-      if (request.onNestedActivity) this.nestedUpstream.set(order.id, request.onNestedActivity)
+      if (request.onNestedActivity) this.nestedUpstream.set(order.parentTurnId, request.onNestedActivity)
       // Session resume: load prior messages from disk so the worker continues
       // from its previous context. Degrades to a fresh worker if no history.
       if (request.resumeWorkOrderId) {
         const record = loadWorkerSession(request.resumeWorkOrderId)
-        this.resumeSources.set(order.id, { id: request.resumeWorkOrderId, record })
+        this.resumeSources.set(order.parentTurnId, { id: request.resumeWorkOrderId, record })
         if (record) {
-          this.resumeMessages.set(order.id, record.messages)
-          this.resumeBaselines.set(order.id, record)
+          this.resumeMessages.set(order.parentTurnId, record.messages)
+          this.resumeBaselines.set(order.parentTurnId, record)
           debugLog(`[worker-resume] loaded ${record.messages.length} messages from ${request.resumeWorkOrderId} for ${order.id}`)
         } else {
           debugLog(`[worker-resume] no prior session for ${request.resumeWorkOrderId} — starting fresh`)
@@ -1555,7 +1595,7 @@ export class DelegationCoordinator {
         const memCheckpoint = this.abortCheckpoints.get(request.resumeWorkOrderId)
         const checkpoint = memCheckpoint ?? record?.checkpoint
         if (checkpoint) {
-          this.resumeCheckpoints.set(order.id, checkpoint)
+          this.resumeCheckpoints.set(order.parentTurnId, checkpoint)
           // Staged → the disk copy is spent. Consume it so a stale checkpoint
           // cannot replay into a later resume of the same id.
         }
@@ -1565,7 +1605,7 @@ export class DelegationCoordinator {
       const run = await this.runDelegationWithGlobalGate(order, parentSignal, waveMailbox)
       return this.drainMailboxIntoRun(run, waveMailbox)
     } finally {
-      // P1-7: config.abortSignal was never mutated — nothing to restore.
+      if (ownedOrder) this.releaseDispatch(ownedOrder)
     }
   }
 
@@ -1621,7 +1661,7 @@ export class DelegationCoordinator {
         ...order,
         objective: buildContinuationObjective(order.objective, decision.reason, attempt),
       }
-      const checkpoint = this.abortCheckpoints.get(order.id)
+      const checkpoint = this.dispatchCheckpoints.get(order.parentTurnId)
       const continuationConfig: WorkerSessionConfig = {
         ...workerConfig,
         order: continuationOrder,
@@ -1637,7 +1677,7 @@ export class DelegationCoordinator {
 
       // 续跑重新占用 liveness 槽位——首轮的 finally 已经把它清掉了，不重注册的话
       // stall sweep 看不到这一轮，静默卡死没人收。跑完必须再清，否则槽位泄漏。
-      this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
+      this.liveness.register(order.parentTurnId, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
       this.ensureStallSweep()
       debugLog(`[worker-continuation] ${order.id} 第 ${attempt} 次续跑（${decision.reason}）`)
       // 补偿轮对用户是不可见的额外时间：不发事件的话，面板上只看到一个 worker
@@ -1652,11 +1692,11 @@ export class DelegationCoordinator {
         debugLog(`[worker-continuation] ${order.id} 第 ${attempt} 次续跑抛错：${error instanceof Error ? error.message : String(error)}`)
         break
       } finally {
-        this.liveness.unregister(order.id)
+        this.liveness.unregister(order.parentTurnId)
         if (this.liveness.size() === 0) this.stopStallSweep()
       }
 
-      this.captureAbortCheckpoint(order.id, continued.checkpoint, continued.result)
+      this.captureAbortCheckpoint(order, continued.checkpoint, continued.result)
       const messages = typeof continued.session?.getMessages === 'function'
         ? continued.session.getMessages()
         : run.sessionMessages
@@ -1775,7 +1815,7 @@ export class DelegationCoordinator {
     const orderWrites = classifyProfile(order.profile) === 'hands'
     const orderFileSet = new Set(orderFiles)
     for (const [inflightId, entry] of this.inflightFiles) {
-      if (inflightId === order.id) continue
+      if (inflightId === order.parentTurnId) continue
       if (entry.files.length === 0) continue
       if (!orderWrites && !entry.writes) continue
       const hits = entry.files.filter(f => orderFileSet.has(f))
@@ -1820,7 +1860,7 @@ export class DelegationCoordinator {
     mailbox: WorkerMailbox,
   ): Promise<CoordinatorRun> {
     const nonce = randomUUID().slice(0, 5)
-    this.dispatchNonces.set(order.id, nonce)
+    this.dispatchNonces.set(order.parentTurnId, nonce)
     // P1-8: write workers must declare a file scope — without one, conflict
     // detection and change-reconciliation have no boundary to check against.
     // 豁免（审查 M1）：verifier 的合法形态就是「不声明 files 跑全量测试」，
@@ -1855,7 +1895,7 @@ export class DelegationCoordinator {
     // P1-6: wait for a global concurrency slot (covers batch + single + background).
     if (!nested) await this.acquireWorkerSlot(order, parentSignal)
     let resumeLease: ReturnType<typeof leaseWorkerResume> | undefined
-    const source = this.resumeSources.get(order.id)
+    const source = this.resumeSources.get(order.parentTurnId)
     const started = Date.now()
     try {
       if (source) {
@@ -1886,7 +1926,7 @@ export class DelegationCoordinator {
           packet: await buildPrimaryWorkerPacket(blocked, this.config.artifactStore),
         }
       }
-      this.inflightFiles.set(order.id, {
+      this.inflightFiles.set(order.parentTurnId, {
         files: order.scope.files ?? [],
         writes: classifyProfile(order.profile) === 'hands',
       })
@@ -1905,10 +1945,10 @@ export class DelegationCoordinator {
       return { status: 'completed', order, results, packet: await buildPrimaryWorkerPacket(results, this.config.artifactStore) }
     } finally {
       resumeLease?.release()
-      this.resumeSources.delete(order.id)
-      this.resumeMessages.delete(order.id)
-      this.resumeBaselines.delete(order.id)
-      this.inflightFiles.delete(order.id)
+      this.resumeSources.delete(order.parentTurnId)
+      this.resumeMessages.delete(order.parentTurnId)
+      this.resumeBaselines.delete(order.parentTurnId)
+      this.inflightFiles.delete(order.parentTurnId)
       if (!nested) this.releaseWorkerSlot(order)
     }
   }
@@ -2079,7 +2119,7 @@ export class DelegationCoordinator {
     workerConfig.reviewDepth = order.reviewDepth
     workerConfig.parentApprovalMode = this.config.parentApprovalMode
     const reuseFingerprint = workerResultFingerprint(order, workerConfig)
-    const reused = !isWrite && !this.resumeSources.has(order.id) && this.config.resumeEnabled === true
+    const reused = !isWrite && !this.resumeSources.has(order.parentTurnId) && this.config.resumeEnabled === true
       ? tryReuseWorkerResult(reuseFingerprint, Date.now()) : null
     if (reused) {
       const results = [identify({ ...reused, workOrderId: order.id })]
@@ -2096,11 +2136,11 @@ export class DelegationCoordinator {
     workerConfig.mailbox = mailbox
     // Batch-scoped shared prewarm (delegateBatch 派发前预热 + 同批 worker 互暖)。
     // 单发 delegate() 路径不入表，worker 用 AgentLoop 实例默认 cache（历史行为）。
-    const batchPrewarmCache = this.batchPrewarmByOrder.get(order.id)
+    const batchPrewarmCache = this.batchPrewarmByOrder.get(order.parentTurnId)
     if (batchPrewarmCache) workerConfig.prewarm = batchPrewarmCache
     // 批级共享信息素（星河收编 #3）：读工默认共享；写工显式 opt-in 才挂——
     // 信号可能引导实现偏向，守护写工实现独立性。
-    const batchStigmergy = this.batchStigmergyByOrder.get(order.id)
+    const batchStigmergy = this.batchStigmergyByOrder.get(order.parentTurnId)
     if (batchStigmergy && (classifyProfile(order.profile) !== 'hands' || order.batchStigmergy)) {
       workerConfig.stigmergy = batchStigmergy
     }
@@ -2110,15 +2150,15 @@ export class DelegationCoordinator {
     // this, every run appends to the same worker-batch-N.jsonl (cumulative
     // context + stale artifacts, session 2c1186f5). Same-order retries within
     // THIS dispatch reuse the nonce on purpose (same session, same artifacts).
-    const dispatchNonce = this.dispatchNonces.get(order.id) ?? randomUUID().slice(0, 5)
-    this.dispatchNonces.set(order.id, dispatchNonce)
+    const dispatchNonce = this.dispatchNonces.get(order.parentTurnId) ?? randomUUID().slice(0, 5)
+    this.dispatchNonces.set(order.parentTurnId, dispatchNonce)
     workerConfig.sessionNonce = dispatchNonce
     // Session resume: inject prior messages so the worker continues from its
     // previous context. Side-table pattern (same as activityUpstream).
-    const priorMessages = this.resumeMessages.get(order.id)
+    const priorMessages = this.resumeMessages.get(order.parentTurnId)
     if (priorMessages && priorMessages.length > 0) {
       workerConfig.priorMessages = priorMessages
-      const baseline = this.resumeBaselines.get(order.id)
+      const baseline = this.resumeBaselines.get(order.parentTurnId)
       workerConfig.priorFrozenSnapshot = baseline?.frozenSnapshot
       workerConfig.priorPrefixProof = baseline?.prefixProof
       workerConfig.continuationSource = 'explicit_resume'
@@ -2126,10 +2166,10 @@ export class DelegationCoordinator {
     // W3: inject the aborted run's checkpoint so the resumed worker starts from
     // its partial result instead of redoing all work (worker-session embeds it
     // into the prompt as a <checkpoint> block).
-    const resumeCheckpoint = this.resumeCheckpoints.get(order.id)
+    const resumeCheckpoint = this.resumeCheckpoints.get(order.parentTurnId)
     if (resumeCheckpoint) {
       workerConfig.checkpoint = resumeCheckpoint
-      this.resumeCheckpoints.delete(order.id)
+      this.resumeCheckpoints.delete(order.parentTurnId)
     }
 
     // A4: per-order AbortController merged with the parent signal — the stall
@@ -2147,12 +2187,13 @@ export class DelegationCoordinator {
     // T9 P3: …and fans out to the per-request real-time upstream, so the
     // calling tool can stream live worker progress into the UI.
     const upstreamActivity = workerConfig.onActivity
-    const requestUpstream = this.activityUpstream.get(order.id)
+    const requestUpstream = this.activityUpstream.get(order.parentTurnId)
     // 用户契约投影：每 order 构造一次（白名单纯函数），随事件引用携带；
     // mapper 只在首条事件转发（同 objective 先例），SSE 无重复负载。
     const contractProjection = requestUpstream ? buildContractProjection(order) : undefined
     const forwardActivity = (kind: WorkerActivityKind, detail?: string): void => {
-      this.liveness.tick(order.id)
+      if (this.orderControllers.get(order.parentTurnId) !== orderController) return
+      this.liveness.tick(order.parentTurnId)
       upstreamActivity?.(kind, detail)
       try {
         requestUpstream?.({
@@ -2172,12 +2213,12 @@ export class DelegationCoordinator {
     // 运行中转录快照：worker session 建好后注册活消息 getter（服务端
     // getWorkerLog 优先读它，终态前的转录才可见）。
     workerConfig.onSessionReady = (getMessages) => {
-      this.liveMessages.set(order.id, getMessages)
+      if (this.orderControllers.get(order.parentTurnId) === orderController) this.liveMessages.set(order.parentTurnId, getMessages)
     }
     // 嵌套委派上行：本 worker 再派的 sub-worker 活动盖上 parentWorkerId 戳
     // （更深层已盖过的保留——祖先只透传，父子关系以最近一层为准）后回传调用方。
     workerConfig.onNestedDelegation = (activity) => {
-      const upstream = this.nestedUpstream.get(order.id)
+      const upstream = this.nestedUpstream.get(order.parentTurnId)
       if (!upstream) return
       try {
         upstream({
@@ -2189,7 +2230,7 @@ export class DelegationCoordinator {
     }
     // WC: 输入直达 — worker 每个工具回合结算时 drain 本 order 的 steer 队列。
     workerConfig.onSteerDrain = () => {
-      const q = this.steerQueues.get(order.id)
+      const q = this.steerQueues.get(order.parentTurnId)
       if (!q || q.length === 0) return null
       const text = q.join('\n')
       q.length = 0
@@ -2230,10 +2271,10 @@ export class DelegationCoordinator {
           if (settled) return
           // Distinguish policy-cancel (must not go to stall/provider-fault path) from
           // stall-sweep abort (per-order controller fired, parent did not).
-          const policyCancel = this.policyCancelledIds.has(order.id)
+          const policyCancel = this.policyCancelledIds.has(order.parentTurnId)
           const stallAbort = !policyCancel && orderController.signal.aborted && !parentSignal?.aborted
           const stallSecs = (() => {
-            const ms = this.liveness.tolerance(order.id)
+            const ms = this.liveness.tolerance(order.parentTurnId)
             return ms ? Math.round(ms / 1000) : null
           })()
           const abortMsg = policyCancel
@@ -2309,8 +2350,8 @@ export class DelegationCoordinator {
 
     // A4: arm the stall clock only once dispatch is committed (all early
     // blocked returns above never register, so they can't leak entries).
-    this.orderControllers.set(order.id, orderController)
-    this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
+    this.orderControllers.set(order.parentTurnId, orderController)
+    this.liveness.register(order.parentTurnId, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
     this.ensureStallSweep()
 
     try {
@@ -2382,8 +2423,8 @@ export class DelegationCoordinator {
           // Register the worker's fallback session BEFORE runHands so any diff
           // persisted during the run is resolvable by the primary store, and hand
           // a worker-scoped store to runHands for persistence.
-          this.registerWorkerArtifacts(order.id)
-          const workerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order.id))
+          this.registerWorkerArtifacts(order)
+          const workerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order))
           const handsRun = await wrapAbort(this.runHands({
             order,
             wtCoordinator: new WorktreeCoordinator(cwd),
@@ -2425,7 +2466,7 @@ export class DelegationCoordinator {
               return JSON.stringify(sessionRun.result)
             },
           }))
-          this.captureAbortCheckpoint(order.id, handsCheckpoint, handsRun.result)
+          this.captureAbortCheckpoint(order, handsCheckpoint, handsRun.result)
           dispatchUsage = mergeUsage(dispatchUsage, handsRun.usage) ?? dispatchUsage
           run = { result: handsRun.result, sessionMessages: handsSessionMessages, checkpoint: handsCheckpoint, frozenSnapshot: handsFrozenSnapshot, prefixProof: handsPrefixProof, usage: dispatchUsage, providerName: workerConfig.providerName }
           this.recordWorkerEpisode(order, handsRun, selected.model, dispatchStartedAt)
@@ -2441,13 +2482,13 @@ export class DelegationCoordinator {
           ...workerConfig,
           ...(dispatchUsage ? { priorUsage: dispatchUsage } : {}),
         }))
-        this.captureAbortCheckpoint(order.id, workerRun.checkpoint, workerRun.result)
+        this.captureAbortCheckpoint(order, workerRun.checkpoint, workerRun.result)
         dispatchUsage = mergeUsage(dispatchUsage, workerRun.usage) ?? dispatchUsage
         const sessionMessages = typeof workerRun.session?.getMessages === 'function'
           ? workerRun.session.getMessages()
           : undefined
         run = { result: workerRun.result, transcript: workerRun.transcript, sessionMessages, frozenSnapshot: workerRun.frozenSnapshot, prefixProof: workerRun.prefixProof, usage: dispatchUsage, providerName: workerConfig.providerName }
-        this.registerWorkerArtifacts(order.id)
+        this.registerWorkerArtifacts(order)
       }
     } catch (error) {
       // Physarum health: worker run threw (API/runtime fault, not task outcome).
@@ -2474,8 +2515,8 @@ export class DelegationCoordinator {
             break
           }
           // Re-register liveness for the retry attempt
-          this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
-          this.orderControllers.set(order.id, orderController)
+          this.liveness.register(order.parentTurnId, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
+          this.orderControllers.set(order.parentTurnId, orderController)
           try {
             if (role === 'hands') {
               const retryClaimFiles: string[] = []
@@ -2502,7 +2543,7 @@ export class DelegationCoordinator {
                 // already registered by the primary branch above. Re-derive the
                 // worker-scoped store so retry diffs also persist (otherwise the
                 // delegation diff review would silently miss retry/escalation paths).
-                const retryWorkerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order.id))
+                const retryWorkerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order))
                 const retryHandsRun = await wrapAbort(this.runHands({
                   order,
                   wtCoordinator: new WorktreeCoordinator(retryCwd),
@@ -2553,7 +2594,7 @@ export class DelegationCoordinator {
                 ...workerConfig,
                 ...(dispatchUsage ? { priorUsage: dispatchUsage } : {}),
               }))
-              this.captureAbortCheckpoint(order.id, workerRun.checkpoint, workerRun.result)
+              this.captureAbortCheckpoint(order, workerRun.checkpoint, workerRun.result)
               dispatchUsage = mergeUsage(dispatchUsage, workerRun.usage) ?? dispatchUsage
               const sessionMessages = typeof workerRun.session?.getMessages === 'function'
                 ? workerRun.session.getMessages()
@@ -2574,7 +2615,7 @@ export class DelegationCoordinator {
               // All same-model retries exhausted — fall through to Flash→Pro
             }
           } finally {
-            this.liveness.unregister(order.id)
+            this.liveness.unregister(order.parentTurnId)
           }
         }
       }
@@ -2619,6 +2660,10 @@ export class DelegationCoordinator {
           upgradedConfig.abortSignal = mergedSignal
           upgradedConfig.onActivity = forwardActivity
           // 升级重试是全新 config——转录快照与嵌套上行不接就在 Pro 重试段丢失。
+          upgradedConfig.sessionNonce = workerConfig.sessionNonce
+          upgradedConfig.onSteerDrain = workerConfig.onSteerDrain
+          upgradedConfig.prewarm = workerConfig.prewarm
+          upgradedConfig.stigmergy = workerConfig.stigmergy
           upgradedConfig.onSessionReady = workerConfig.onSessionReady
           upgradedConfig.onNestedDelegation = workerConfig.onNestedDelegation
           upgradedConfig.mailbox = mailbox
@@ -2628,7 +2673,7 @@ export class DelegationCoordinator {
 
           // Re-register liveness for retry — leash derives from the UPGRADED
           // provider (escalation may land on a slow-thinking one).
-          this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: upgradedConfig.providerName, baseUrl: upgradedConfig.baseUrl, slowThinking: upgradedConfig.slowThinking, isWrite }))
+          this.liveness.register(order.parentTurnId, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: upgradedConfig.providerName, baseUrl: upgradedConfig.baseUrl, slowThinking: upgradedConfig.slowThinking, isWrite }))
 
           try {
             if (role === 'hands') {
@@ -2669,7 +2714,7 @@ export class DelegationCoordinator {
                 // Escalation retries with the same order.id → fallback session already
                 // registered. Re-derive worker store so the escalated run's diff persists
                 // (parity with primary + retry branches).
-                const escalateWorkerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order.id))
+                const escalateWorkerStore = this.config.artifactStore?.forSession(this.workerArtifactSessionId(order))
                 const handsRun = await wrapAbort(this.runHands({
                   order, wtCoordinator: new WorktreeCoordinator(cwd), cwd,
                   sharedWorkspace: resolveSharedWorkspace(this.config, order),
@@ -2763,7 +2808,7 @@ export class DelegationCoordinator {
         // an empty failure — the worker may have produced a valid (if unverified)
         // report that just didn't reach us through the Promise chain.
         if (isAbort) {
-          const checkpoint = this.abortCheckpoints.get(order.id)
+          const checkpoint = this.dispatchCheckpoints.get(order.parentTurnId)
           if (checkpoint?.partialResult) {
             const salvaged = salvageWorkerResult(checkpoint.partialResult, order.id)
             if (salvaged) {
@@ -2807,16 +2852,16 @@ export class DelegationCoordinator {
       config => wrapAbort(this.runWorker(config)))
     } finally {
       // All rounds share one cancellation, steering and activity lifecycle.
-      this.liveness.unregister(order.id)
-      this.orderControllers.delete(order.id)
-      this.liveMessages.delete(order.id)
-      this.nestedUpstream.delete(order.id)
-      this.activityUpstream.delete(order.id)
-      this.batchPrewarmByOrder.delete(order.id)
-      this.batchStigmergyByOrder.delete(order.id)
-      this.resumeMessages.delete(order.id)
-      this.resumeBaselines.delete(order.id)
-      this.steerQueues.delete(order.id)
+      this.liveness.unregister(order.parentTurnId)
+      this.orderControllers.delete(order.parentTurnId)
+      this.liveMessages.delete(order.parentTurnId)
+      this.nestedUpstream.delete(order.parentTurnId)
+      this.activityUpstream.delete(order.parentTurnId)
+      this.batchPrewarmByOrder.delete(order.parentTurnId)
+      this.batchStigmergyByOrder.delete(order.parentTurnId)
+      this.resumeMessages.delete(order.parentTurnId)
+      this.resumeBaselines.delete(order.parentTurnId)
+      this.steerQueues.delete(order.parentTurnId)
       if (this.liveness.size() === 0) this.stopStallSweep()
       if (semanticLockAcquired && this.collaboration && this.config.sessionId) {
         this.collaboration.releaseLocks(this.config.sessionId)
@@ -3010,17 +3055,18 @@ export class DelegationCoordinator {
             tierFloor: r.tierFloor,
           })
       if (queue.enqueue(order)) {
+        this.ownDispatch(order)
         orders.push(order)
         // T9 P3: callbacks don't survive zod parsing — stash by order id.
-        if (r.onActivity) this.activityUpstream.set(order.id, r.onActivity)
-        if (r.onNestedActivity) this.nestedUpstream.set(order.id, r.onNestedActivity)
+        if (r.onActivity) this.activityUpstream.set(order.parentTurnId, r.onActivity)
+        if (r.onNestedActivity) this.nestedUpstream.set(order.parentTurnId, r.onNestedActivity)
         // Session resume: load prior messages (same side-table pattern as delegate()).
         if (r.resumeWorkOrderId) {
           const record = loadWorkerSession(r.resumeWorkOrderId)
-          this.resumeSources.set(order.id, { id: r.resumeWorkOrderId, record })
+          this.resumeSources.set(order.parentTurnId, { id: r.resumeWorkOrderId, record })
           if (record) {
-            this.resumeMessages.set(order.id, record.messages)
-            this.resumeBaselines.set(order.id, record)
+            this.resumeMessages.set(order.parentTurnId, record.messages)
+            this.resumeBaselines.set(order.parentTurnId, record)
             debugLog(`[worker-resume] batch: loaded ${record.messages.length} messages from ${r.resumeWorkOrderId} for ${order.id}`)
           }
           // W3: abort checkpoint rides along (consumed once). Memory stash wins,
@@ -3028,7 +3074,7 @@ export class DelegationCoordinator {
           const memCheckpoint = this.abortCheckpoints.get(r.resumeWorkOrderId)
           const checkpoint = memCheckpoint ?? record?.checkpoint
           if (checkpoint) {
-            this.resumeCheckpoints.set(order.id, checkpoint)
+            this.resumeCheckpoints.set(order.parentTurnId, checkpoint)
             // Staged → disk copy is spent; consume to prevent stale replay.
           }
         }
@@ -3043,11 +3089,11 @@ export class DelegationCoordinator {
     if (orders.length > 0) {
       const batchCache = new PrewarmCache(60_000, 50)
       const files = [...new Set(orders.flatMap(o => o.scope.files ?? []))]
-      for (const order of orders) this.batchPrewarmByOrder.set(order.id, batchCache)
+      for (const order of orders) this.batchPrewarmByOrder.set(order.parentTurnId, batchCache)
       // 批级共享信息素（星河收编 #3）：内存 store 不落盘，生命周期 = 本次
       // delegateBatch。写工默认不注入（守护实现独立性），读工共享。
       const batchStigmergy = new StigmergyStore(undefined)
-      for (const order of orders) this.batchStigmergyByOrder.set(order.id, batchStigmergy)
+      for (const order of orders) this.batchStigmergyByOrder.set(order.parentTurnId, batchStigmergy)
       if (files.length > 0) {
         await batchPrewarm(this.config.cwd ?? process.cwd(), files, batchCache, 25).catch(() => {})
       }
@@ -3126,13 +3172,13 @@ export class DelegationCoordinator {
             }
             // in-flight：登记后 abort（结果经 catch 合成）
             for (const o of queue.inFlight().filter(x => x.id !== order.id && inScope(x))) {
-              this.policyCancelledIds.add(o.id)
-              this.orderControllers.get(o.id)?.abort()
+              this.policyCancelledIds.add(o.parentTurnId)
+              this.orderControllers.get(o.parentTurnId)?.abort()
             }
           }
         }
       } catch (error) {
-        const failure = this.policyCancelledIds.has(order.id)
+        const failure = this.policyCancelledIds.has(order.parentTurnId)
           ? buildPolicyCancelledResult(order, policyLabel)
           : workerFailureResult(order, error, { failureReason: classifyWorkerError(error) })
         allResults.push(failure)
@@ -3197,7 +3243,7 @@ export class DelegationCoordinator {
     // delegateOrder（那里有 nonce 归档）；这里按各自 nonce 再落一次终态，
     // 合成结果（深度封顶 / 依赖清扫）没有 nonce，只更新最新副本。
     for (const r of aggregated) {
-      persistWorkerResult(r, undefined, this.dispatchNonces.get(r.workOrderId))
+      persistWorkerResult(r, undefined, this.dispatchNonces.get(r.dispatchId ?? orders.find(o => o.id === r.workOrderId)?.parentTurnId ?? ''))
     }
 
     const baseRun: CoordinatorRun = {
@@ -3216,7 +3262,8 @@ export class DelegationCoordinator {
     // safe under true concurrent execution — no shared instance state is
     // mutated per call, hence nothing to restore here.
     } finally {
-      for (const o of orders) this.policyCancelledIds.delete(o.id)
+      // Also releases un-dispatched dependency-blocked and policy-canceled orders.
+      for (const o of orders) this.releaseDispatch(o)
     }
   }
 }

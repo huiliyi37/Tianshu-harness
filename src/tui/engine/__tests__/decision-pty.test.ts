@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import { execFileSync } from 'node:child_process'
+import { withPtyFixture } from './_pty-fixture.js'
 
 for (const renderer of ['classic', 'fullscreen']) test(`POSIX PTY ${renderer}: actual tools, choices, multi-answer, Unicode paste, resize and restoration`,
-  { skip: process.platform === 'win32', timeout: 25_000 }, () => {
+  { skip: process.platform === 'win32', timeout: 25_000 }, async () => {
     const fixture = `
       const { TuiApp } = await import(${JSON.stringify(new URL('../app.js', import.meta.url).href)});
       const { DEFAULT_FRONTEND_PREFERENCES } = await import(${JSON.stringify(new URL('../../frontend-preferences.js', import.meta.url).href)});
@@ -91,8 +92,8 @@ finally:
     if child.poll() is None: child.kill(); child.wait()
     os.close(master); os.close(slave)
 `
-    try {
-      execFileSync('python3', ['-c', python, JSON.stringify([process.execPath, '--import', 'tsx', '--input-type=module', '-e', fixture]), renderer],
-        { timeout: 22_000, stdio: 'pipe' })
-    } catch (error) { throw new Error((error as { stderr?: Buffer }).stderr?.toString() ?? String(error)) }
+    await withPtyFixture(fixture, (argv, options) => { try {
+      execFileSync('python3', ['-c', python, JSON.stringify(argv), renderer],
+        { ...options, timeout: 22_000, stdio: 'pipe' })
+    } catch (error) { throw new Error((error as { stderr?: Buffer }).stderr?.toString() ?? String(error)) } })
   })

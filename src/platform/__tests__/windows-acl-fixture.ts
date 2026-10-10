@@ -46,7 +46,7 @@ ${script}
 `
 
 export const privateAclAssertions = `
-  $first = Get-Acl -LiteralPath $env:ACL_TEST_ROOT
+  $first = (Get-Item -LiteralPath $env:ACL_TEST_ROOT).GetAccessControl()
   if (-not $first.AreAccessRulesProtected) { throw 'DACL inheritance was not disabled' }
   if ($before.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $first.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'Owner changed' }
   if ($before.GetGroup([Security.Principal.SecurityIdentifier]).Value -ne $first.GetGroup([Security.Principal.SecurityIdentifier]).Value) { throw 'Group changed' }
@@ -62,12 +62,12 @@ export const privateAclAssertions = `
 export const unsafeAclFixture = `
   $ErrorActionPreference = 'Stop'
   $item = Get-Item -LiteralPath $env:ACL_TEST_ROOT
-  $fixtureAcl = Get-Acl -LiteralPath $env:ACL_TEST_ROOT
+  $fixtureAcl = $item.GetAccessControl()
   $fixtureAcl.SetAccessRuleProtection($true, $true)
   $everyone = New-Object Security.Principal.SecurityIdentifier('S-1-1-0')
   $inherit = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   $fixtureAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($everyone, 'Modify', $inherit, 'None', 'Allow')))
   if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName, $fixtureAcl) }
   else { [IO.File]::SetAccessControl($item.FullName, $fixtureAcl) }
-  $before = Get-Acl -LiteralPath $env:ACL_TEST_ROOT
+  $before = $item.GetAccessControl()
 `

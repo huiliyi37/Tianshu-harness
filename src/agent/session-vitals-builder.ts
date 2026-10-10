@@ -11,7 +11,7 @@ export function buildSessionVitals(self: AgentLoop): import('../tools/session-vi
         delivered: s.delivered,
         adopted: s.adopted,
         ignored: s.ignored,
-        silenced: self.advisoryBus.isEfficacySilenced(key),
+        silenced: self.advisoryBus.isKeySilenced(key),
       }))
       .sort((a, b) => b.delivered - a.delivered)
       .slice(0, 5)

@@ -3,7 +3,7 @@ import { DEFAULT_FRONTEND_PREFERENCES } from '../../frontend-preferences.js'
  * T9 steer 队列语义：
  *
  * 契约（对齐 Claude Code：普通消息在 AI 输出期间只入队，本轮结束后自动作为下一轮发出）：
- *  1. 工具边界（onSteerDrain）不得注入普通排队消息（later 级）——不混进当前轮的
+ *  1. 工具边界（onHumanGuidanceDrain）不得注入普通排队消息（later 级）——不混进当前轮的
  *     [User guidance]，否则界面显示「已排队」实际已注入，是撒谎。
  *  2. 工具边界仍注入紧急意图（halt=now / redirect=next）。
  *  3. run 正常结束（onTurnComplete isFinal → notifyRunSettled）后，排队内容
@@ -87,7 +87,8 @@ test('工具边界不注入普通排队消息：later 级消息保持排队', as
   await tick()
   assert.ok(app.steerBuffer.hasPending(), '前置：消息应在 steer buffer 中排队')
 
-  const drained = app.callbacks.onSteerDrain?.() ?? null
+  // 0c8840f60：工具边界迁移至 onHumanGuidanceDrain（drainHuman）；旧键不再挂载。
+  const drained = await app.callbacks.onHumanGuidanceDrain?.() ?? null
 
   assert.equal(drained, null, '普通排队消息不应被格式化为 [User guidance] 注入')
   assert.equal(app.steerBuffer.hasPending(), true, '普通排队消息应留在队列')
@@ -106,9 +107,9 @@ test('工具边界仍注入紧急意图（halt/redirect 即时 steer 保留）',
   app.steerBuffer.pushNow('停')
   assert.ok(app.steerBuffer.hasPending())
 
-  const drained = app.callbacks.onSteerDrain?.() ?? null
+  const drained = await app.callbacks.onHumanGuidanceDrain?.() ?? null
   assert.ok(drained !== null, 'halt 应立即注入')
-  assert.ok(drained!.includes('停'), '注入文本包含 halt 消息')
+  assert.ok(drained!.text.includes('停'), '注入文本包含 halt 消息')
   assert.equal(app.steerBuffer.hasPending(), false, 'halt 注入后队列应清空')
 })
 

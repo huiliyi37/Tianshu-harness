@@ -3,9 +3,9 @@ import { writeFile, unlink, readFile, mkdir, cp, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { Tool, ToolCallParams } from './types.js'
+import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { checkSyntax } from './syntax-check.js'
-import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
+import { withFileChangeTracking, restoreFileChange, type FileChangeRecord } from '../agent/recovery-stack.js'
 import { validatePathSafe } from './path-validate.js'
 import { incrementEditFailCount, resetEditFailCount, recordSuccessfulEdit } from './read-file.js'
 import { APPLY_PATCH_POINTER_PREFIX } from './apply-patch-arg-processor.js'
@@ -26,6 +26,7 @@ interface PatchTarget {
   abs: string
   /** Whether the file existed before the patch (governs rollback strategy). */
   existedBefore: boolean
+  capture?: FileChangeRecord
 }
 
 /** Extract the set of files a unified diff writes to (its `+++ ` headers).
@@ -120,7 +121,7 @@ export const APPLY_PATCH_TOOL: Tool = {
     },
   },
 
-  async execute(params: ToolCallParams) {
+  execute: withFileChangeTracking(async (params: ToolCallParams, trackFileChange): Promise<ToolResult> => {
     const diff = params.input.diff
     if (typeof diff !== 'string' || diff.trim().length === 0) {
       return { content: 'apply_patch 需要非空的 "diff" 字符串。', isError: true }
@@ -181,7 +182,7 @@ export const APPLY_PATCH_TOOL: Tool = {
     }
     for (const t of targets) {
       if (t.existedBefore) {
-        await trackFileChange(params.cwd, { filePath: t.rel, action: 'edit', toolCallId: params.toolUseId ?? 'apply_patch' })
+        t.capture = await trackFileChange(params.cwd, { filePath: t.rel, action: 'edit', toolCallId: params.toolUseId ?? 'apply_patch' })
       }
     }
 
@@ -212,14 +213,15 @@ export const APPLY_PATCH_TOOL: Tool = {
       // 用」：和索引不匹配一类失败路径上本就什么都没留下。verify 关闭时 targets
       // 为空（无备份可恢复），保持 legacy 行为不变。
       const rolledBack = targets.length > 0
+      let rollbackFailures: string[] = []
       if (rolledBack) {
-        await rollbackTargets(params.cwd, targets, params.sessionId)
+        rollbackFailures = await rollbackTargets(params.cwd, targets, params.sessionId)
         await unstagePatchTargets(params.cwd, targets, params.abortSignal)
       }
       for (const t of targets) incrementEditFailCount(t.abs)
       return {
         content: rolledBack
-          ? `补丁应用失败（已回滚到补丁前状态）：${result.error}\n\n${patchFailureGuidance(result.error)}`
+          ? `补丁应用失败（${rollbackFailures.length > 0 ? `自动回滚失败：${rollbackFailures.join(', ')}` : '已回滚到补丁前状态'}）：${result.error}\n\n${patchFailureGuidance(result.error)}`
           : `补丁应用失败：${result.error}\n\n${patchFailureGuidance(result.error)}`,
         isError: true,
         errorKind: 'patch_rejected',
@@ -233,11 +235,12 @@ export const APPLY_PATCH_TOOL: Tool = {
     if (verify) {
       const fatal = await firstFatalSyntax(targets)
       if (fatal) {
-        await rollbackTargets(params.cwd, targets, params.sessionId)
+        const rollbackFailures = await rollbackTargets(params.cwd, targets, params.sessionId)
         for (const t of targets) incrementEditFailCount(t.abs)
         return {
           content: `补丁已应用，但在 ${fatal.rel} 中引入了致命错误：\n${fatal.message}\n\n`
-            + '补丁已自动回滚。请修复 diff（检查上下文漂移/冲突标记）后重试。',
+            + (rollbackFailures.length > 0 ? `补丁自动回滚失败：${rollbackFailures.join(', ')}。` : '补丁已自动回滚。')
+            + '请修复 diff（检查上下文漂移/冲突标记）后重试。',
           isError: true,
           errorKind: 'syntax_error',
         }
@@ -258,7 +261,7 @@ export const APPLY_PATCH_TOOL: Tool = {
         : '补丁应用成功。',
       uiContent: truncateDiffForUi(normalizedDiff.trim()),
     }
-  },
+  }),
 
   requiresApproval: () => true,
   isConcurrencySafe: () => false,
@@ -348,14 +351,18 @@ async function firstFatalSyntax(targets: PatchTarget[]): Promise<{ rel: string; 
 
 /** Undo an applied patch: restore pre-patch content for files that existed,
  *  delete files the patch newly created. Best-effort per file. */
-async function rollbackTargets(cwd: string, targets: PatchTarget[], sessionId?: string): Promise<void> {
+async function rollbackTargets(cwd: string, targets: PatchTarget[], sessionId?: string): Promise<string[]> {
+  const failures: string[] = []
   for (const t of targets) {
     if (t.existedBefore) {
-      await restoreLatestBackup(cwd, t.rel, sessionId)
+      if (!t.capture || !(await restoreFileChange(cwd, t.capture, sessionId))) failures.push(t.rel)
     } else {
-      try { await unlink(t.abs) } catch { /* already gone */ }
+      try { await unlink(t.abs) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failures.push(t.rel)
+      }
     }
   }
+  return failures
 }
 
 /** Best-effort index cleanup after a failed `git apply --3way`: the failed

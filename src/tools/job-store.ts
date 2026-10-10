@@ -12,6 +12,7 @@ import {
   rewritePowershellNullRedirect,
 } from '../platform.js'
 import { debugLog } from '../utils/debug.js'
+import { verificationWaitBudget } from './verification-wait.js'
 
 /** Cap for the in-memory ring buffer kept per job (bytes of decoded text). */
 const RING_CAP = 64_000
@@ -44,6 +45,19 @@ export interface JobSnapshot {
   /** Last non-empty line of output (dashboard preview). */
   lastLine: string
   pid?: number
+}
+
+/** 后台 job 的验证元数据（tools 层自持的**私有**上下文）。
+ *  刻意不进 JobSnapshot 的公开字段白名单：`SessionJobs.list()`/`snapshot()`
+ *  会被服务端直接返回给客户端，私有判据绝不能外泄到 snapshot。
+ *  由 spawn 侧在启动后台 job 时一次性写入（命令事实的唯一解析点，见
+ *  agent/verification-intent.ts），消费方按此判定「是否在等门禁钦定证据」，
+ *  取代每个检查点重新猜整条命令的旧实现。 */
+export interface JobVerificationMeta {
+  waitingEligible: boolean
+  purpose: string
+  lifetime: string
+  source: string
 }
 
 export interface JobEvent {
@@ -338,6 +352,9 @@ export interface JobRegistry {
   list(): JobSnapshot[]
   logs(id: string): string | null
   kill(id: string): boolean
+  /** 记录 spawn 时解析出的验证元数据（见 JobVerificationMeta）——由 spawn
+   *  调用方（bash 后台分支）写入，供收敛检测读取「是否在等门禁钦定证据」。 */
+  recordVerificationMeta(id: string, meta: JobVerificationMeta, input?: Record<string, unknown>): void
 }
 
 /** Per-session collection of background jobs; also an event source for the server. */
@@ -346,6 +363,14 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
    *  释放；磁盘日志保留，淘汰只影响内存态）。running 永不淘汰。 */
   static readonly MAX_TERMINAL_JOBS = 50
   private jobs = new Map<string, BackgroundJob>()
+  /** 各 job 的验证元数据（见 JobVerificationMeta）——与 jobs 同生命周期，
+   *  终态淘汰时一并清理（evictTerminals），避免无人回收的泄漏。 */
+  private verificationMeta = new Map<string, JobVerificationMeta & { ownerTaskEpoch: number; waitUntil: number; budgetSource: string }>()
+  private taskEpoch = 0
+  /** P0：任务边界号的权威 provider（WorkProgressFacts.taskEpoch）。注入后
+   *  ownerTaskEpoch 盖章与等待资格比对读同一边界；null = 退回内部计数器
+   *  （beginTask 推进，仅测试/无 agent 装配路径使用）。 */
+  private taskEpochProvider: (() => number) | null = null
 
   constructor(
     private readonly logDir: string,
@@ -424,7 +449,11 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
       .filter(j => j.status !== 'running')
       .sort((a, b) => a.startedAt - b.startedAt)
     const excess = terminals.length - SessionJobs.MAX_TERMINAL_JOBS
-    for (let i = 0; i < excess; i++) this.jobs.delete(terminals[i]!.id)
+    for (let i = 0; i < excess; i++) {
+      const id = terminals[i]!.id
+      this.jobs.delete(id)
+      this.verificationMeta.delete(id)
+    }
   }
 
   hasRunning(): boolean {
@@ -432,6 +461,44 @@ export class SessionJobs extends EventEmitter implements JobRegistry {
       if (job.status === 'running') return true
     }
     return false
+  }
+
+  /** 推进内部任务边界号（无 provider 路径）。agent 装配经 setTaskEpochProvider
+   *  读共享边界后，beginTask 不得再被调用（避免双递增源）。 */
+  beginTask(): void { this.taskEpoch++ }
+
+  /** P0：任务边界号提升为共享事实（WorkProgressFacts.taskEpoch）。注入后
+   *  盖章与等待资格比对读同一边界；null = 退回内部计数器。 */
+  setTaskEpochProvider(provider: (() => number) | null): void { this.taskEpochProvider = provider }
+  private currentTaskEpoch(): number { return this.taskEpochProvider ? this.taskEpochProvider() : this.taskEpoch }
+
+  /** 记录 spawn 时解析出的验证元数据（命令事实的唯一解析点）。
+   *  job 已不存在时丢弃——否则会留下无人淘汰的孤儿 meta。 */
+  recordVerificationMeta(id: string, meta: JobVerificationMeta, input: Record<string, unknown> = {}): void {
+    const job = this.jobs.get(id)
+    if (!job || this.verificationMeta.has(id)) return
+    const startedAt = job.snapshot().startedAt
+    const budget = verificationWaitBudget(input, startedAt)
+    this.verificationMeta.set(id, { ...meta, ownerTaskEpoch: this.currentTaskEpoch(), waitUntil: startedAt + budget.ms, budgetSource: budget.source })
+  }
+
+  /** 「正在等门禁钦定证据」的后台 job：running 且带等待资格的元数据。
+   *  判据取自 spawn 时存下的元数据（不再每条命令重新猜）；job 一进终态即
+   *  不再命中，服务型长驻 job（persistent/unknown）从不命中。 */
+  /** Internal observation projection: never part of list()/snapshot()/JobEvent. */
+  verificationWaitInfo(): { jobId: string; purpose: string; lifetime: string; ownerTaskEpoch: number; waitUntil: number; budgetSource: string } | null {
+    const waiting = this.waitingVerificationJob()
+    const meta = waiting && this.verificationMeta.get(waiting.id)
+    return waiting && meta ? { jobId: waiting.id, purpose: meta.purpose, lifetime: meta.lifetime, ownerTaskEpoch: meta.ownerTaskEpoch, waitUntil: meta.waitUntil, budgetSource: meta.budgetSource } : null
+  }
+
+  waitingVerificationJob(now = Date.now()): { id: string; meta: JobVerificationMeta } | null {
+    for (const job of this.jobs.values()) {
+      if (job.status !== 'running') continue
+      const meta = this.verificationMeta.get(job.id)
+      if (meta?.waitingEligible && meta.ownerTaskEpoch === this.currentTaskEpoch() && now < meta.waitUntil) return { id: job.id, meta }
+    }
+    return null
   }
 }
 

@@ -314,6 +314,12 @@ export async function runEssenceGate(
       topic: admission.topic,
       validFrom: Date.now(),
     })
+    // 写入前 scrub 判定整条为纯敏感 → 未落盘，按 reject 计（不进 admitted 台账）。
+    if (!entry) {
+      rejected++
+      rejectedRefs.push({ textHash: hashCandidateText(candidate.text), snippet: candidate.text.slice(0, 80) })
+      continue
+    }
     admitted.push(entry)
     admittedRefs.push({ id: entry.id, textHash: hashCandidateText(entry.text) })
 

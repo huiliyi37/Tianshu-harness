@@ -13,6 +13,7 @@ export interface HttpFetchDeps {
 
 export interface HttpFetchOptions {
   timeoutMs?: number
+  signal?: AbortSignal
   maxResponseBytes?: number
   maxRedirects?: number
   userAgent?: string
@@ -126,6 +127,7 @@ export async function httpFetchGuarded(
   deps: HttpFetchDeps = {},
   opts: HttpFetchOptions = {},
 ): Promise<HttpFetchResult> {
+  opts.signal?.throwIfAborted()
   const lookup = deps.lookup ?? dnsLookup
   // Use npm undici's fetch (not globalThis.fetch) so it shares the same version
   // as the Agent/ProxyAgent we construct below. Node's builtin undici may be an
@@ -162,6 +164,7 @@ export async function httpFetchGuarded(
 
   try {
     for (let hop = 0; hop <= maxRedirects; hop++) {
+      opts.signal?.throwIfAborted()
       let hopUrl: URL
       try {
         hopUrl = new URL(currentUrl)
@@ -175,6 +178,7 @@ export async function httpFetchGuarded(
       const resolved = await resolveAndAssertPublic(hopUrl.hostname, lookup, {
         allowProxyFakeIp: opts.trustProxyFakeIp === true && !!proxyUrl,
       })
+      opts.signal?.throwIfAborted()
       const dispatcher = useDispatcher
         ? buildDispatcher({ pin, address: resolved.address, family: resolved.family, proxyUrl })
         : undefined
@@ -182,7 +186,7 @@ export async function httpFetchGuarded(
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), timeoutMs)
       const init: UndiciRequestInit = {
-        signal: controller.signal,
+        signal: opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal,
         headers,
         redirect: 'manual',
       }
@@ -219,7 +223,7 @@ export async function httpFetchGuarded(
     }
 
     const contentType = response.headers.get('content-type') ?? ''
-    const bytes = await readBody(response, maxBytes, timeoutMs)
+    const bytes = await readBody(response, maxBytes, timeoutMs, opts.signal)
 
     return {
       status: response.status,
@@ -232,7 +236,8 @@ export async function httpFetchGuarded(
   }
 }
 
-async function readBody(response: UndiciResponse, maxBytes: number, timeoutMs: number): Promise<Uint8Array> {
+async function readBody(response: UndiciResponse, maxBytes: number, timeoutMs: number, signal?: AbortSignal): Promise<Uint8Array> {
+  signal?.throwIfAborted()
   if (!response.body) return new Uint8Array(0)
 
   const reader = response.body.getReader()
@@ -241,10 +246,12 @@ async function readBody(response: UndiciResponse, maxBytes: number, timeoutMs: n
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
+  let onAbort: () => void
   const timeoutPromise = new Promise<never>((_, reject) => {
-    const onAbort = () => reject(new Error('Body read timeout'))
-    controller.signal.addEventListener('abort', onAbort, { once: true })
-    if (controller.signal.aborted) onAbort()
+    onAbort = () => reject(signal?.aborted ? signal.reason : new Error('Body read timeout'))
+    combined.addEventListener('abort', onAbort, { once: true })
+    if (combined.aborted) onAbort()
   })
 
   try {
@@ -265,6 +272,7 @@ async function readBody(response: UndiciResponse, maxBytes: number, timeoutMs: n
     throw err
   } finally {
     clearTimeout(timeout)
+    combined.removeEventListener('abort', onAbort!)
   }
 
   const result = new Uint8Array(total)

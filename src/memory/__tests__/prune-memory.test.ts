@@ -18,11 +18,11 @@ describe('long-term memory prune（阶段6管理）', () => {
       id: 'old-closed', text: '旧的 supersede 掉的规则', kind: 'project_rule',
       confidence: 0.9, source: 'manual', status: 'observed', tags: [],
       validTo: Date.now() - 200 * 86_400_000, // 封口 200 天前
-    })
+    })!
     const _current = appendMemoryEntry(cwd, {
       id: 'current-rule', text: '当前仍有效的规则', kind: 'project_rule',
       confidence: 0.95, source: 'manual', status: 'observed', tags: [],
-    })
+    })!
     // old-closed 被视为自建封口 → 直接退役；current 永不删
     const pruned = pruneMemoryStore(cwd, { retentionDays: 90 })
     assert.equal(pruned, 1)
@@ -49,11 +49,11 @@ describe('long-term memory prune（阶段6管理）', () => {
     const oldEntry = appendMemoryEntry(cwd, {
       id: 'superseded', text: '被取代的旧值', kind: 'project_rule',
       confidence: 0.9, source: 'manual', status: 'observed', tags: [],
-    })
+    })!
     const newEntry = appendMemoryEntry(cwd, {
       id: 'replacement', text: '取代它的新值', kind: 'project_rule',
       confidence: 0.95, source: 'manual', status: 'observed', tags: [],
-    })
+    })!
     supersedeMemoryEntry(cwd, oldEntry.id, newEntry.id)
     // oldEntry 现在 validTo=now，未超 retention → 不退役
     assert.equal(pruneMemoryStore(cwd, { retentionDays: 90 }), 0)

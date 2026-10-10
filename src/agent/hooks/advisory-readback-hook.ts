@@ -1,4 +1,4 @@
-import { verificationAttempted } from '../verification-activity.js'
+import { verificationToolFacts } from '../verification-activity.js'
 /**
  * Advisory-Readback Hook — advisory 采纳核销的运行时接线（P1a）。
  *
@@ -59,7 +59,7 @@ export function createAdvisoryReadbackHooks(
       deps.readback.observeTool({
         turn: (ctx.snapshot.modelTurn ?? ctx.snapshot.turn),
         name: tool.name,
-        verificationAttempted: verificationAttempted(tool.name, tool.input),
+        ...verificationToolFacts(tool.name, tool.input ?? { command: extractObservedTarget(tool) }, ctx.snapshot.cwd),
         target: extractObservedTarget(tool),
         isError: tool.isError ?? !tool.success,
       })

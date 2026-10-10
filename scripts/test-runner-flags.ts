@@ -3,6 +3,15 @@
  * import 它就会真的去跑测试。
  */
 
+import { availableParallelism } from 'node:os'
+
+/** CPU count alone overcommits cold TypeScript imports and shared filesystem I/O. */
+export function resolveTestConcurrency(raw?: string, parallelism = availableParallelism()): number {
+  const fallback = Math.max(1, Math.min(4, parallelism))
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
 /**
  * 单个测试的墙钟上限，只用来兜挂死，不该误杀慢测试。
  *
@@ -42,6 +51,6 @@ export function resolveTestTimeoutMs(raw: string | undefined): number {
  * 职责，改由 `scripts/test-child-guard.ts` 的 idle / hard 看门狗 + 汇总完整性
  * fail-closed 闸接管——护栏不减，但不再以"静默少跑"为代价。
  */
-export function nodeTestFlags(timeoutMs: number): string[] {
-  return ['--import', 'tsx', `--test-timeout=${timeoutMs}`, '--test']
+export function nodeTestFlags(timeoutMs: number, concurrency = resolveTestConcurrency()): string[] {
+  return ['--import', 'tsx', `--test-timeout=${timeoutMs}`, `--test-concurrency=${concurrency}`, '--test']
 }

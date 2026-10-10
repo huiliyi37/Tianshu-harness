@@ -14,7 +14,7 @@ import { connect } from 'node:net'
 import { startServer } from '../index.js'
 import { buildRemoteInfoRoutes, sortLanUrls } from '../remote-info-routes.js'
 import { isLoopbackBind, isLoopbackHostHeader } from '../host-policy.js'
-import { parseHostsAllow } from '../host-policy.js'
+import { defaultLanHosts, filterLanDirectHosts, parseHostsAllow } from '../host-policy.js'
 
 const TOKEN = 'test-token-abc'
 
@@ -79,7 +79,7 @@ function rawRequest(
 
 const auth = (t = TOKEN) => ({ authorization: `Bearer ${t}` })
 
-async function startTestServer(opts: { host?: string; allowedHosts?: string[]; withRemoteInfo?: boolean } = {}) {
+async function startTestServer(opts: { host?: string; allowedHosts?: string[]; withRemoteInfo?: boolean; lanDirect?: boolean } = {}) {
   const routes: Record<string, never> = {}
   const srv = await startServer(
     0,
@@ -87,11 +87,11 @@ async function startTestServer(opts: { host?: string; allowedHosts?: string[]; w
       'GET /ping': () => ({ status: 200, body: { ok: true } }),
       'GET /health': () => ({ status: 200, body: { ok: true } }),
       ...(opts.withRemoteInfo
-        ? buildRemoteInfoRoutes(TOKEN, { host: opts.host ?? '127.0.0.1', allowedHosts: opts.allowedHosts })
+        ? buildRemoteInfoRoutes(TOKEN, { host: opts.host ?? '127.0.0.1', allowedHosts: opts.allowedHosts, lanDirect: opts.lanDirect })
         : {}),
     },
     TOKEN,
-    { host: opts.host ?? '127.0.0.1', allowedHosts: opts.allowedHosts },
+    { host: opts.host ?? '127.0.0.1', allowedHosts: opts.allowedHosts, lanDirect: opts.lanDirect },
   )
   return {
     port: srv.port,
@@ -374,5 +374,54 @@ describe('IPv6 通配绑定 (::) — 与 0.0.0.0 同等 LAN 语义', () => {
       const r = await rawRequest(port, { path: '/ping', hostHeader: `127.0.0.2:${port}`, extraHeaders: auth() })
       assert.equal(r.status, 200)
     })
+  })
+})
+
+// ── LAN Direct：Host allowlist 收紧到私网（设计 §5.3 Wave 1 第 3 条）──────
+// 语义：LAN Direct 模式下 defaultLanHosts 剔除公网地址——仅保留 RFC1918 私网、
+// link-local、回环与本机名。防线意义：即使机器处于公网 IP 直连场景，公网 Host
+// 也被拒（双保险）。普通模式（未 opt-in）行为完全不变。
+describe('LAN Direct host allowlist 收紧', () => {
+  test('filterLanDirectHosts：保留私网/link-local/回环/本机名，剔除公网与 CGNAT', () => {
+    const kept = [
+      '192.168.1.5', '10.0.0.7', '172.16.0.1', '172.31.255.254', // RFC1918
+      '169.254.10.20', '127.0.0.1', '[::1]', '[::ffff:192.168.1.5]', // link-local / 回环
+      'mymac.local', 'localhost', '[fe80::1]', '[fd00::1]', // 本机名 / IPv6 link-local / ULA
+    ]
+    const dropped = [
+      '172.32.0.1', '172.15.0.1', '192.169.1.5', '11.0.0.1', // 邻接 172.16-31 与 192.168 的越界/近邻
+      '8.8.8.8', '100.64.0.1', '[2001:db8::1]', '[::ffff:8.8.8.8]', // 公网 / CGNAT
+    ]
+    assert.deepEqual(filterLanDirectHosts([...kept, ...dropped]), kept)
+    assert.deepEqual(filterLanDirectHosts(dropped), [])
+  })
+
+  test('普通模式 defaultLanHosts 行为不变（不过滤）', () => {
+    assert.ok(defaultLanHosts('8.8.8.8').includes('8.8.8.8'), '未 opt-in 时 bindHost 原样保留')
+  })
+
+  test('LAN Direct 模式 defaultLanHosts 剔除公网 bindHost', () => {
+    const hosts = defaultLanHosts('8.8.8.8', { lanDirect: true })
+    assert.ok(!hosts.includes('8.8.8.8'), '公网 bindHost 不得进 allowlist')
+    assert.deepEqual(hosts, filterLanDirectHosts(hosts), '结果整体落在私网/本机集合内')
+  })
+
+  test('LAN Direct 模式下公网 Host 被 403，回环 Host 仍放行', async () => {
+    await withServer({ host: '0.0.0.0', lanDirect: true }, async ({ port }) => {
+      const r = await rawRequest(port, { path: '/ping', hostHeader: '8.8.8.8', extraHeaders: auth() })
+      assert.equal(r.status, 403)
+      const ok = await rawRequest(port, { path: '/ping', hostHeader: `127.0.0.1:${port}`, extraHeaders: auth() })
+      assert.equal(ok.status, 200)
+    })
+  })
+
+  test('/remote/info 暴露 lanDirect 字段（缺省 false）', async () => {
+    const off = buildRemoteInfoRoutes(TOKEN, { host: '0.0.0.0', allowedHosts: ['192.168.1.5'] })['GET /remote/info']!
+    const offBody = (await off({}, {}, auth())).body as { lanDirect: boolean; mode: string }
+    assert.equal(offBody.lanDirect, false)
+    assert.equal(offBody.mode, 'lan')
+
+    const on = buildRemoteInfoRoutes(TOKEN, { host: '0.0.0.0', lanDirect: true })['GET /remote/info']!
+    assert.equal(((await on({}, {}, auth())).body as { lanDirect: boolean }).lanDirect, true)
   })
 })

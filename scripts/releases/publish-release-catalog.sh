@@ -65,7 +65,7 @@ echo "发布版本：v$VER"
 PTOTAL=4
 if [ "$WITH_ATOMGIT" = 1 ]; then PTOTAL=5; fi
 
-step "前置检查 1/$PTOTAL：发布说明摘要"
+step "前置检查 1/${PTOTAL}：发布说明摘要"
 SUM="docs/releases/summaries/${VER}.json"
 [ -f "$SUM" ] || fail "缺少 $SUM —— generate-catalog 需要它生成 releaseNotesUrl（缺了会继承旧版本路径并校验失败）。先补该文件。"
 node --input-type=module -e "
@@ -75,13 +75,13 @@ validateReleaseNotes(JSON.parse(readFileSync(process.argv[1],'utf8')), process.a
 " "$SUM" "$VER" || fail "$SUM 未通过 validateReleaseNotes"
 echo "    $SUM ✓"
 
-step "前置检查 2/$PTOTAL：GitHub release 存在且已发布（非 draft）"
+step "前置检查 2/${PTOTAL}：GitHub release 存在且已发布（非 draft）"
 DRAFT="$(gh release view "v$VER" --repo "$REPO" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
 [ -n "$DRAFT" ] || fail "GitHub release v$VER 不存在或不可访问——generate-catalog 会报 metadata 404。先建 release 并传齐资产。"
-[ "$DRAFT" = "false" ] || fail "GitHub release v$VER 仍是 draft（isDraft=$DRAFT）——draft 不会被 releases/latest 解析，catalog 传上去客户端也读不到。先转正后重跑：gh release edit v$VER --repo $REPO --draft=false"
+[ "$DRAFT" = "false" ] || fail "GitHub release v$VER 仍是 draft（isDraft=${DRAFT}）——draft 不会被 releases/latest 解析，catalog 传上去客户端也读不到。先转正后重跑：gh release edit v$VER --repo $REPO --draft=false"
 echo "    v$VER ✓（已发布）"
 
-step "前置检查 3/$PTOTAL：manifest 引用的资产齐备"
+step "前置检查 3/${PTOTAL}：manifest 引用的资产齐备"
 ASSETS="$(gh release view "v$VER" --repo "$REPO" --json assets --jq '.assets[].name' 2>/dev/null || true)"
 [ -n "$ASSETS" ] || fail "拉不到 v$VER 的资产清单（gh 权限或网络）"
 MISSING="$(printf '%s\n' "$ASSETS" | node -e "
@@ -92,12 +92,12 @@ for (const p of Object.values(m.platforms)) { const f = p.url.split('/').pop(); 
 [ -z "$MISSING" ] || fail "release v$VER 缺少 manifest 引用的资产：$(echo "$MISSING" | tr '\n' ' ')"
 echo "    资产齐备（$(printf '%s\n' "$ASSETS" | grep -c '^Tianshu_' || true) 个 Tianshu_* 对象）✓"
 
-step "前置检查 4/$PTOTAL：website checkout"
-[ -d "$WEBSITE" ] || fail "website checkout 不存在：$WEBSITE（publish-routing --website 需要）。用 --website 指定。"
+step "前置检查 4/${PTOTAL}：website checkout"
+[ -d "$WEBSITE" ] || fail "website checkout 不存在：${WEBSITE}（publish-routing --website 需要）。用 --website 指定。"
 echo "    $WEBSITE ✓"
 
 if [ "$WITH_ATOMGIT" = 1 ]; then
-  step "前置检查 5/$PTOTAL：AtomGit 已镜像 v$VER tag"
+  step "前置检查 5/${PTOTAL}：AtomGit 已镜像 v$VER tag"
   HIT="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags "$ATOMGIT_GIT" "refs/tags/v$VER" 2>/dev/null || true)"
   [ -n "$HIT" ] || fail "AtomGit 仓库没有 v$VER tag——publish-atomgit 会拒绝（'Version tag must be mirrored to AtomGit before publishing attachments'）。先把 v$VER tag 镜像到 AtomGit 再重跑。"
   echo "    v$VER ✓"
@@ -152,9 +152,9 @@ if [ "$WITH_ATOMGIT" = 1 ]; then
     ARGS=(--publish --platform "$p" --purpose update --assets-only)
     if [ -n "$ACC_PLATFORM" ] && [ "$p" = "$ACC_PLATFORM" ]; then
       ARGS+=(--acceptance "$ATOMGIT_ACCEPTANCE")
-      echo "    → $p（含验收）"
+      echo "    → ${p}（含验收）"
     else
-      echo "    → $p（仅匿名校验）"
+      echo "    → ${p}（仅匿名校验）"
     fi
     node scripts/releases/publish-atomgit.mjs "${ARGS[@]}"
   done

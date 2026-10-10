@@ -222,7 +222,7 @@ export interface WorkerTranscript {
   repairAttempts: number
   reportDiagnostics?: ReportDiagnostic[]
   /** bash 工具的 command 参数留痕——worker-evidence 用它判定"验证形状"的命令
-   *  是否真实执行过（VERIFY_BASH_RE）。可选：旧序列化/测试固件可缺省。 */
+   *  是否真实执行过（isVerificationIntent）。可选：旧序列化/测试固件可缺省。 */
   bashCommands?: string[]
   /** 执行失败（isError）的 bash 命令——worker-evidence 用它区分"跑过验证"和
    *  "验证跑挂了"：npm test 失败不能当 verified 证据。可选：旧固件缺省时

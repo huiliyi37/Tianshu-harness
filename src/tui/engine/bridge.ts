@@ -104,6 +104,10 @@ export function wrapCallbacksWithTuiApp(
       app.callbacks.onIntentNote?.(intent)
       original.onIntentNote?.(intent)
     },
+    onHumanGuidanceDrain: () => {
+      if (!live()) return null
+      return app.callbacks.onHumanGuidanceDrain?.() ?? original.onHumanGuidanceDrain?.() ?? null
+    },
     onSteerDrain: () => {
       if (!live()) return null
       const drained = app.callbacks.onSteerDrain?.() ?? null

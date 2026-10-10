@@ -99,9 +99,12 @@ describe('never-initializing LSP is bounded, not a wedge', () => {
 
 describe('defaultLspSpawn', () => {
   it('rewrites npx against desktop bundled node-runtime layout (win-x64)', () => {
-    // Simulate fetch-node-runtime Windows layout — NOT the host Homebrew Node:
+    // Simulate a bundled node-runtime layout that holds a REAL node.exe —
+    // NOT the host Homebrew Node:
     //   resources/node-runtime/win-x64/node.exe
     //   resources/node-runtime/win-x64/node_modules/npm/bin/npx-cli.js
+    // （gen-3 Windows 布局里 node.exe 已被改名成 tianshu-runtime.exe、只剩转发器
+    //  node.cmd——那条路径由 renamed-node-mcp.test.ts 锁，此处锁「有真 node」分支。）
     const execPath = 'C:\\App\\resources\\node-runtime\\win-x64\\node.exe'
     const cli = winPath.join(
       'C:\\App\\resources\\node-runtime\\win-x64',
@@ -130,7 +133,8 @@ describe('defaultLspSpawn', () => {
     defaultLspSpawn(npxDef, 'C:\\proj', spawnFn, {
       execPath,
       platform: 'win32',
-      existsSync: (p) => p === cli,
+      // 模拟 bundled 目录内容：npx-cli.js + 真 node.exe 都在（issue #149 的 prepend 分支）。
+      existsSync: (p) => p === cli || p === execPath,
     })
 
     assert.equal(captured.length, 1, 'spawnFn should be called once')

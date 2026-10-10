@@ -62,10 +62,15 @@ const profileStringSchema = z.string().refine(
  *  Injects the domain's persona (volatileBlock，经冻结 <star-domain> 前缀) into the
  *  worker, and intersects the worker's tools with the domain whitelist.
  *  （systemPromptSuffix 是展示面字段，不参与注入——见 assembly-audit 白名单注记。） */
-const authorityStringSchema = z.string().refine(
-  (val) => val === '' || starDomainRegistry.get(val) !== undefined,
-  (val) => ({ message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}` }),
-)
+const authorityStringSchema = z.string().transform((val, ctx) => {
+  if (val === '') return val
+  const resolved = starDomainRegistry.resolve(val)
+  if (resolved === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `未知星域 "${val}"。可用：${starDomainRegistry.getDomainIds().join(', ')}（亦可传中文星名，如 天机）` })
+    return z.NEVER
+  }
+  return resolved
+})
 
 const delegateTaskInputSchema = z.object({
   objective: z.string().min(1),
@@ -140,7 +145,7 @@ export function createDelegateTaskTool(
           delivery: { type: 'string', enum: ['diagnosis', 'patch', 'verification'], description: '交付契约：diagnosis＝诊断、patch＝文件改动、verification＝实际执行测试；省略时沿用旧契约并保持 unknown。' },
           kind: { type: 'string', enum: ['code_search', 'doc_research', 'plan', 'review', 'verify', 'patch_proposal'], description: 'worker 任务类型。默认：code_search。' },
           profile: { type: 'string', enum: profileRegistry.getProfileNames(), description: 'worker profile。默认：code_scout。能力按实际工具集合检查：adversarial_verifier 可运行 run_tests，其他只读档不能改文件。写文件声明 delivery=patch，实测声明 delivery=verification。' },
-          authority: { type: 'string', description: '可选星域人格（如 tianquan、tianji、yuheng）。注入该专家的视角与方法论，并把工具限制在其白名单内。' },
+          authority: { type: 'string', description: '可选星域人格（如 tianquan、tianji、yaoguang）。可传中文星名（如 天权），会被归一化为规范 id。注入该专家的视角与方法论，并把工具限制在其白名单内。' },
           files: { type: 'array', items: { type: 'string' }, description: '可选，要聚焦的文件路径。' },
           symbols: { type: 'array', items: { type: 'string' }, description: '可选，要聚焦的符号。' },
           resume: { type: 'string', description: '要恢复的 worker ID。worker 从之前的会话上下文继续，而不是从零开始。使用之前 delegate_task 结果中的 workOrderId。' },

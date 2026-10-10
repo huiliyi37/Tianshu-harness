@@ -3,7 +3,7 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -56,7 +56,7 @@ describe('unified-memory', () => {
       source: 'auto',
       status: 'observed',
       tags: ['testing'],
-    })
+    })!
     assert.ok(entry.id.startsWith('mem_'))
     assert.equal(entry.repeatCount, 1)
     assert.equal(entry.kind, 'fact')
@@ -70,11 +70,11 @@ describe('unified-memory', () => {
     const text = 'Project uses TypeScript strict mode'
     const e1 = appendMemoryEntry(TEST_DIR, {
       text, kind: 'fact', confidence: 0.9, source: 'auto', status: 'observed', tags: [],
-    })
+    })!
     assert.equal(e1.repeatCount, 1)
     const e2 = appendMemoryEntry(TEST_DIR, {
       text, kind: 'fact', confidence: 0.9, source: 'auto', status: 'observed', tags: [],
-    })
+    })!
     assert.equal(e2.repeatCount, 2)
   })
 
@@ -101,7 +101,7 @@ describe('unified-memory', () => {
     const entry = appendMemoryEntry(TEST_DIR, {
       text: '灾情专题需要按图片、视频和文档分类展示',
       kind: 'project_rule', confidence: 0.95, source: 'manual', status: 'verified', tags: ['灾情'],
-    })
+    })!
 
     const results = recallMemoryEntries(TEST_DIR, '灾情专题', 5)
     assert.ok(results.some(result => result.id === entry.id))
@@ -170,11 +170,11 @@ describe('unified-memory', () => {
     const oldEntry = appendMemoryEntry(TEST_DIR, {
       text: 'Bundler rollup is used for builds here',
       kind: 'project_rule', confidence: 0.9, source: 'manual', status: 'verified', tags: [], topic: 'build',
-    })
+    })!
     const newEntry = appendMemoryEntry(TEST_DIR, {
       text: 'Bundler esbuild replaced rollup for builds',
       kind: 'project_rule', confidence: 0.95, source: 'essence-gate', status: 'verified', tags: [], topic: 'build',
-    })
+    })!
 
     assert.equal(supersedeMemoryEntry(TEST_DIR, oldEntry.id, newEntry.id), true)
 
@@ -302,7 +302,7 @@ describe('renderMemoryBlock sourceFilter — 虚空仓库 P0', () => {
     return appendMemoryEntry(DIR, {
       text, kind: 'verified_pattern', confidence: 0.95, source: 'agent-crafted',
       status: 'verified', tags: ['agent-learned'], ts, sessionId,
-    })
+    })!
   }
 
   it('只返回指定 source 的 current 条目', () => {
@@ -399,6 +399,67 @@ describe('renderMemoryBlock sourceFilter — 虚空仓库 P0', () => {
   it('无匹配条目 → null', () => {
     reset()
     assert.equal(renderMemoryBlock(DIR, '', 2000, 'agent-crafted'), null)
+  })
+
+  it('teardown', () => {
+    try { rmSync(DIR, { recursive: true }) } catch {}
+    try { rmSync(memoryDir(projectHash(DIR)), { recursive: true }) } catch {}
+  })
+})
+
+// ── 安全：写入前 scrub（appendMemoryEntry 内部收口）────────────────────────
+/**
+ * 审计缺口（分支 fix/memory-append-write-scrub）：多个生产调用者把原文喂进
+ * appendMemoryEntry，此前内部只 slice(0,500) 直落 memory.jsonl——含 key 的文本
+ * 若绕过上游 scrub（essence-gate / problem-attack-hook / deliver-task 均不 scrub）
+ * 便长期留在磁盘，随后经 project-memory-loader 回到 prompt。此块作 RED 回归锚。
+ */
+describe('appendMemoryEntry 写入前 scrub（安全收口）', () => {
+  const DIR = join(tmpdir(), 'rivet-um-scrub-test')
+  const jsonlPath = join(DIR, '.rivet', 'knowledge', 'memory.jsonl')
+  const SECRET = 'sk-abcdef0123456789abcdef'
+
+  function reset() {
+    if (existsSync(DIR)) rmSync(DIR, { recursive: true })
+    mkdirSync(DIR, { recursive: true })
+    try { rmSync(memoryDir(projectHash(DIR)), { recursive: true }) } catch {}
+  }
+  function diskText(): string {
+    return existsSync(jsonlPath) ? readFileSync(jsonlPath, 'utf-8') : ''
+  }
+
+  it('含密钥的文本落盘时被打码，磁盘不含明文', () => {
+    reset()
+    const entry = appendMemoryEntry(DIR, {
+      text: `调用第三方接口使用了 ${SECRET} 鉴权`,
+      kind: 'fact', confidence: 0.8, source: 'manual', status: 'verified', tags: [],
+    })
+    assert.ok(entry, '非纯敏感的条目应仍写入并返回 entry')
+    assert.equal(diskText().includes(SECRET), false, '磁盘不含密钥明文')
+    assert.ok(diskText().includes('***'), '命中片段被打码')
+    assert.equal(entry!.text.includes(SECRET), false, '返回条目文本也已打码')
+  })
+
+  it('整条几乎只有密钥 → 丢弃：返回 null 且不落盘', () => {
+    reset()
+    const entry = appendMemoryEntry(DIR, {
+      text: `${SECRET} ${SECRET}`,
+      kind: 'fact', confidence: 0.8, source: 'manual', status: 'verified', tags: [],
+    })
+    assert.equal(entry, null, '纯敏感条目按丢弃契约返回 null')
+    assert.equal(diskText().includes(SECRET), false, '磁盘不含密钥明文')
+    assert.equal(diskText().trim(), '', '不产生任何落盘行')
+  })
+
+  it('普通文本不受影响（不误伤）', () => {
+    reset()
+    const entry = appendMemoryEntry(DIR, {
+      text: '实现了意图门控 STM，走 appendixDelta',
+      kind: 'fact', confidence: 0.8, source: 'manual', status: 'verified', tags: [],
+    })!
+    assert.ok(entry)
+    assert.equal(entry!.text, '实现了意图门控 STM，走 appendixDelta')
+    assert.ok(diskText().includes('appendixDelta'))
   })
 
   it('teardown', () => {

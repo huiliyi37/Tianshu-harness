@@ -400,3 +400,121 @@ describe('stripPlanChrome', () => {
     assert.deepEqual(stripPlanChrome('# 只有正文\n\nline'), ['# 只有正文', '', 'line'])
   })
 })
+
+describe('plan slug 路径穿越防护 (isSafeFileName 门)', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-plan-test-'))
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('rejectPlan 拒绝穿越 slug：返回 null 且盘外文件不变', async () => {
+    const { dir, cleanup } = setup()
+    try {
+      const victim = join(dir, 'victim.md')
+      const { writeFileSync, readFileSync } = await import('node:fs')
+      writeFileSync(victim, 'precious')
+      const rejected = await rejectPlan(dir, '../../victim')
+      assert.equal(rejected, null)
+      assert.equal(readFileSync(victim, 'utf-8'), 'precious')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('readPlan / readPlanSync 对穿越 slug 返回 null', async () => {
+    const { dir, cleanup } = setup()
+    try {
+      assert.equal(await readPlan(dir, '../secret'), null)
+      assert.equal(readPlanSync(dir, '..\\secret'), null)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('writePlan 对穿越 slug fail-closed（抛错，不落盘）', async () => {
+    const { dir, cleanup } = setup()
+    try {
+      await assert.rejects(() => writePlan(dir, '../../evil', '# evil'))
+      assert.ok(!existsSync(join(dir, 'evil.md')))
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('deletePlan 对穿越 slug 返回 false，不删盘外文件', async () => {
+    const { dir, cleanup } = setup()
+    try {
+      const victim = join(dir, 'keep.md')
+      const { writeFileSync } = await import('node:fs')
+      writeFileSync(victim, 'keep me')
+      assert.equal(await deletePlan(dir, '../../keep'), false)
+      assert.ok(existsSync(victim))
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('正常 slug 不受影响', async () => {
+    const { dir, cleanup } = setup()
+    try {
+      await writePlan(dir, '正常计划-01', '# 标题\n\n正文')
+      const doc = await readPlan(dir, '正常计划-01')
+      assert.ok(doc)
+      assert.equal(doc!.title, '标题')
+      assert.equal(await deletePlan(dir, '正常计划-01'), true)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+
+describe('plan status commit boundary', () => {
+  for (const decide of [approvePlan, rejectPlan]) {
+    it(`${decide.name} rechecks cancellation immediately before writing`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rivet-plan-cancel-'))
+      try {
+        await writePlan(dir, 'pending', '# Pending\n\nReview a reversible change.')
+        let live = true
+        let checks = 0
+        const result = await decide(dir, 'pending', undefined, () => {
+          checks++
+          if (checks === 1) queueMicrotask(() => { live = false })
+          return live
+        })
+        assert.equal(result, null)
+        assert.equal((await readPlan(dir, 'pending'))?.status, 'submitted')
+        assert.ok(checks >= 2)
+      } finally { rmSync(dir, { recursive: true, force: true }) }
+    })
+  }
+  it('preserves edits made between the revision check and status write', async () => {
+    const { planRevision } = await import('../plan-revision.js')
+    const { writeFileSync, readFileSync } = await import('node:fs')
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-plan-concurrent-'))
+    try {
+      await writePlan(dir, 'pending', '# Pending\n\nOriginal change.')
+      const before = (await readPlan(dir, 'pending'))!
+      const changed = '# Pending\n\nNew content from another session.'
+      let checks = 0
+      const result = await approvePlan(dir, 'pending', planRevision(before.content), () => {
+        if (++checks === 1) queueMicrotask(() => writeFileSync(join(dir, '.rivet/plans/pending.md'), changed))
+        return true
+      })
+      assert.equal(result, null)
+      assert.equal(readFileSync(join(dir, '.rivet/plans/pending.md'), 'utf8'), changed)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+
+it('ignores AppleDouble sidecars in asynchronous and synchronous plan lists', async () => {
+  const { writeFileSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'rivet-plan-metadata-'))
+  try {
+    await writePlan(dir, 'real-plan', '# Real plan\n\nKeep this document.')
+    writeFileSync(join(dir, '.rivet/plans/._real-plan.md'), '# Metadata is not a plan')
+    assert.deepEqual((await listPlans(dir)).map(p => p.slug), ['real-plan'])
+    assert.deepEqual(listPlansSync(dir).map(p => p.slug), ['real-plan'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

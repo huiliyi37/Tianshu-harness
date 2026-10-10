@@ -6,9 +6,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentLoop, formatActivePlanPointer } from '../loop.js'
 import { SessionContext } from '../context.js'
+import type { ConvergenceScoreSample } from '../score-history.js'
 import { RuntimeHookPipeline } from '../runtime-hooks.js'
 import { PromptEngine } from '../../prompt/engine.js'
 import { ToolRegistry } from '../../tools/registry.js'
+import { SessionJobs } from '../../tools/job-store.js'
+import { WRITE_FILE_TOOL } from '../../tools/write-file.js'
 import { READ_FILE_TOOL } from '../../tools/read-file.js'
 import { createOwnershipLedger } from '../ownership-ledger.js'
 import { createTaskLedger } from '../task-ledger.js'
@@ -76,6 +79,14 @@ function makeCallbacks() {
     onAbort: () => {},
     onApprovalRequired: async () => false,
   }
+}
+
+async function checkConvergence(agent: AgentLoop, ...args: Parameters<AgentLoop['runConvergenceCheck']>) {
+  const out = await agent.runConvergenceCheck(...args)
+  agent.config.promptEngine.setHarnessAdvisoryBlock(agent.advisoryBus.render(undefined, args[0]))
+  const request = agent.config.promptEngine.buildOaiRequest([{ role: 'user', content: `test boundary ${args[0]}` }], agent.recentToolHistory, 200000)
+  agent.decisionShifts.confirm(agent.advisoryBus.drainDelivered(), request, args[4])
+  return out
 }
 
 function makeEngine() {
@@ -1617,12 +1628,213 @@ describe('AgentLoop — convergence emission cooldown', () => {
 
     // Same persistent stuck state across 6 turns (14..19), all level 2.
     for (let turn = 14; turn <= 19; turn++) {
-      await agent.runConvergenceCheck(turn, 'plan', true, false, cb)
+      await checkConvergence(agent, turn, 'plan', true, false, cb)
     }
 
     assert.ok(shifts >= 1, 'expected at least one 改道 emission')
     assert.ok(shifts < 6, `expected throttled emissions over 6 turns, got ${shifts}`)
     assert.ok(shifts <= 2, `cooldown=3 should cap emissions at 2 over turns 14..19, got ${shifts}`)
+  })
+
+  // ── 2026-10-10 狂轰事故（会话 20261009c40f5c2262ea）：持续 L2 + 每轮都有 bash
+  // 产出时，产出工具的无条件清账把 msgKey/墙钟凭证清成恒真，发射门退化为每轮
+  // 直通（实测 7 轮 6 卡）。修复后清账仅限「提醒未结」窗口且不动方向凭证：
+  // 节奏归位到 base 冷却（20/23/26 共 3 发），不再每轮直发。
+  it('持续产出下同变体不再每轮直发（产出清账仅限提醒未结窗口）', async () => {
+    const agent = stuckLoop()
+    agent.convergenceEmitMinIntervalMs = 0 // 同上：专测 turn 冷却，关掉墙钟
+    let shifts = 0
+    const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
+
+    const stagnation = () => [
+      { tool: 'read_file', status: 'success', target: 'a.ts' },
+      { tool: 'read_file', status: 'success', target: 'b.ts' },
+      { tool: 'read_file', status: 'success', target: 'c.ts' },
+      { tool: 'read_file', status: 'success', target: 'd.ts' },
+      { tool: 'read_file', status: 'success', target: 'e.ts' },
+      { tool: 'read_file', status: 'success', target: 'f.ts' },
+    ]
+    for (let turn = 20; turn <= 26; turn++) {
+      await checkConvergence(agent, turn, 'plan', true, false, cb)
+      agent.recordToolHistory('bash', { command: `echo ${turn}` }, false, 'ok')
+      // recordToolHistory 会把 bash 写进滑动窗口、稀释停滞形态——重置回去，维持 L2
+      agent.recentToolHistory = stagnation() as unknown as typeof agent.recentToolHistory
+    }
+
+    assert.equal(shifts, 3, `提醒未结窗口内的产出只把节奏归位到 base 冷却（20/23/26 三发），不得每轮直发，got ${shifts}`)
+  })
+
+  // ── 2026-10-10 狂轰事故方向 2（等待验证信标）：后台有 running 的验证型 job 时，
+  // 等门禁钦定证据的轮次不得发改道卡；job 退出后信标消失、恢复正常节流。
+  it('running 验证 job 期间不发改道卡；job 退出后恢复', async () => {
+    const agent = stuckLoop()
+    agent.convergenceEmitMinIntervalMs = 0 // 专测信标压制，关掉墙钟
+    let shifts = 0
+    const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
+
+    // 伪造后台 job 状态（stuckLoop 无 sessionId → _jobs 未创建；setJobs 注入 stub）。
+    let jobs: Array<{ status: string; command: string }> = [
+      { status: 'running', command: 'npm run test:unit' },
+    ]
+    // 新接线消费 spawn 时存下的验证元数据（SessionJobs.waitingVerificationJob），
+    // 不再由 convergence 侧重新猜整条命令；stub 复刻同一语义：
+    // running + waitingEligible → 命中，job 终态 → null。
+    agent.setJobs({
+      list: () => jobs,
+      waitingVerificationJob: () => jobs.some((j) => j.status === 'running')
+        ? { id: 'stub-verify', meta: { waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'runner-kind' } }
+        : null,
+      // P0：setJobs 会向真实实例注入 taskEpoch provider（共享任务边界）；
+      // stub 复刻接口面，提供 no-op。
+      setTaskEpochProvider: () => {},
+    } as unknown as Parameters<typeof agent.setJobs>[0])
+
+    // 等待段：与「throttles」用例相同的持续 L2 形态（14..19 轮 plan 相位）
+    // → 信标把 level 压在 1，0 张卡。
+    for (let turn = 14; turn <= 19; turn++) {
+      await checkConvergence(agent, turn, 'plan', true, false, cb)
+    }
+    assert.equal(shifts, 0, `等待验证期间不得发改道卡，got ${shifts}`)
+
+    // job 退出 → 信标消失 → 同条件下恢复发射。
+    jobs = [{ status: 'exited', command: 'npm run test:unit' }]
+    for (let turn = 20; turn <= 26; turn++) {
+      await checkConvergence(agent, turn, 'plan', true, false, cb)
+    }
+    assert.ok(shifts >= 1, `job 退出后应恢复节流发射，got ${shifts}`)
+  })
+
+  // ── 2026-10-10 方向 3 / 修复 C：静音源命中时改道卡不再弹。路径不是 loop 侧查
+  // isKeySilenced（该消费点已随「卡片由实际投递确认驱动」移除，见 DecisionShiftDelivery）
+  // ——而是静音让 advisory 被吞 → 候选没进投递 → 卡片与提示同源消失。真实 streak→
+  // 静音链路由 advisory-bus 测试覆盖；候选→投递确认链由本文件 §4 用例覆盖。
+  // ── 2026-10-10 §3 周期边界接线：策略核销周期必须由结构化边界推进，而不是
+  // 让「同一条失败验证反复重跑」跨任务一直算旧策略。真实链路：initializeRun
+  // 的 human+task / human+followUp 判定 → AdvisoryReadback.startCourseEpisode。
+  it('human 任务轮开启新策略周期；chat 轮不推进（§3 边界接线）', async () => {
+    const agent = stuckLoop()
+    const before = agent.advisoryReadback.courseEpisode
+    await agent.run('修复 src/agent/loop.ts 的内存泄漏', makeCallbacks())
+    assert.ok(
+      agent.advisoryReadback.courseEpisode > before,
+      `human+task 应开启新策略周期，episode ${before} → ${agent.advisoryReadback.courseEpisode}`,
+    )
+
+    const agent2 = stuckLoop()
+    const before2 = agent2.advisoryReadback.courseEpisode
+    await agent2.run('你好', makeCallbacks())
+    assert.equal(agent2.advisoryReadback.courseEpisode, before2, 'chat 轮不是任务边界，不推进周期')
+  })
+
+  it('real human task invalidates an old running verification job; guidance keeps ownership', async () => {
+    const agent = stuckLoop()
+    agent.setJobs(new SessionJobs(join(TEST_CWD, 'jobs-course')))
+    const job = agent.jobs!.spawn({ command: 'sleep 5', rawCommand: 'node --test', cwd: TEST_CWD, env: process.env })
+    agent.jobs!.recordVerificationMeta(job.id, { waitingEligible: true, purpose: 'test', lifetime: 'finite', source: 'node-test' })
+    assert.equal(agent.jobs!.waitingVerificationJob()?.id, job.id)
+    try {
+      await agent.run('修复 src/agent/loop.ts 的内存泄漏', makeCallbacks())
+      assert.equal(agent.jobs!.waitingVerificationJob(), null)
+    } finally { await agent.jobs!.killAllAsync() }
+  })
+
+  it('real tool execution advances progress for a changed file and ignores a noop write', async () => {
+    const path = join(TEST_CWD, 'course-progress.md')
+    writeFileSync(path, 'old')
+    let call = 0
+    const client = { stream: async (_req: unknown, cb: StreamCallbacks) => {
+      if (++call <= 3) {
+        cb.onContentBlock(call === 1 ? makeToolUseBlock('read-first', 'read_file', { file_path: path })
+          : makeToolUseBlock('write-' + call, 'write_file', { file_path: path, content: 'new' }))
+        cb.onStopReason('tool_use', { input_tokens: 100, output_tokens: 10 })
+      } else {
+        cb.onContentBlock(makeTextBlock('done'))
+        cb.onStopReason('end_turn', { input_tokens: 100, output_tokens: 10 })
+      }
+    } } as unknown as StreamClient
+    const registry = new ToolRegistry(); registry.register(WRITE_FILE_TOOL); registry.register(READ_FILE_TOOL)
+    const agent = new AgentLoop({ client, promptEngine: makeEngine(), toolRegistry: registry, maxTurns: 5, contextWindow: 200000,
+      compact: { enabled: false, autoThreshold: 800000, autoFloor: 500000, model: 'flash' } }, new SessionContext(), TEST_CWD)
+    const results: string[] = []
+    await agent.run('修改 course-progress.md 的说明文本', { ...makeCallbacks(), onApprovalRequired: async () => true, onToolResult: (_id: string, _name: string, content: string) => { results.push(content) } })
+    assert.equal(call, 4)
+    assert.equal(agent.advisoryReadback.courseEpisode, 2, 'task plus one changed write; second write cannot reset novelty: ' + JSON.stringify(results))
+  })
+
+  it('real tool boundary acknowledges human guidance only after committing its result', async () => {
+    const path = join(TEST_CWD, 'course-guidance.md'); writeFileSync(path, 'fixture')
+    let call = 0, pending = true
+    const client = { stream: async (_req: unknown, cb: StreamCallbacks) => {
+      cb.onContentBlock(++call === 1 ? makeToolUseBlock('read-guidance', 'read_file', { file_path: path }) : makeTextBlock('done'))
+      cb.onStopReason(call === 1 ? 'tool_use' : 'end_turn', { input_tokens: 100, output_tokens: 10 })
+    } } as unknown as StreamClient
+    const registry = new ToolRegistry(); registry.register(READ_FILE_TOOL)
+    const agent = new AgentLoop({ client, promptEngine: makeEngine(), toolRegistry: registry, maxTurns: 5, contextWindow: 200000,
+      compact: { enabled: false, autoThreshold: 800000, autoFloor: 500000, model: 'flash' } }, new SessionContext(), TEST_CWD)
+    await agent.run('审查 course-guidance.md', { ...makeCallbacks(), onHumanGuidanceDrain: () => {
+      if (!pending) return null; pending = false
+      return { origin: 'human', inputSequence: 1, text: '先核对测试来源' }
+    } })
+    assert.equal(agent.advisoryReadback.courseEpisode, 2)
+    assert.ok(agent.session.getMessages().some(m => m.role === 'tool' && m.content.includes('先核对测试来源')))
+  })
+
+  it('静音命中时不弹改道卡（经投递确认链，非 isKeySilenced）', async () => {
+    const agent = stuckLoop()
+    agent.convergenceEmitMinIntervalMs = 0
+    let shifts = 0
+    const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
+    // 注入静音状态——本例验证的是下游链路：静音让 advisory 被吞 → 候选没进
+    // 投递 → 卡片不弹（**不是** loop 侧查 isKeySilenced：该消费点已随修复 C 移除）。
+    const busInternals = agent.advisoryBus as unknown as { silenceRemaining: Map<string, number> }
+    busInternals.silenceRemaining.set('convergence', 99) // 覆盖全部 6 轮 render 递减——本用例断言的是"静音命中期间"，期满恢复弹卡是另一个用例
+    for (let turn = 14; turn <= 19; turn++) {
+      await checkConvergence(agent, turn, 'plan', true, false, cb)
+    }
+    assert.equal(shifts, 0, `静音命中期间不得弹改道卡，got ${shifts}`)
+  })
+
+  // §4（2026-10-10 修复 C）：卡片必须由**实际投递结果**驱动——建议没进本轮
+  // request（预算淘汰/静音/去重/holdout）时，卡片要一起消失；旧实现会在 render
+  // 前弹卡，于是用户看到卡、模型没收到建议（两条路径脱钩）。
+  it('建议未进 request 时不弹卡；正常投递时恰好 1 卡', async () => {
+    const agent = stuckLoop()
+    agent.convergenceEmitMinIntervalMs = 0
+    let shifts = 0
+    const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
+    const runExplicit = async (turn: number) => {
+      await agent.runConvergenceCheck(turn, 'plan', true, false, cb as never)
+    }
+
+    // 第 14 轮：塞满 CVM 预算（3 条不同类别的高优先级条目）→ convergence 拿不到渲染位
+    await runExplicit(14)
+    for (const [k, c, p] of [['p1', 'repair', 0.95], ['p2', 'mistake', 0.9], ['p3', 'dedup', 0.85]] as const) {
+      agent.advisoryBus.submit({ key: k, priority: p, category: c, content: k })
+    }
+    agent.config.promptEngine.setHarnessAdvisoryBlock(agent.advisoryBus.render(undefined, 14))
+    agent.decisionShifts.confirm(agent.advisoryBus.drainDelivered(), agent.config.promptEngine.buildOaiRequest([{ role: 'user', content: 'test boundary 1' }], agent.recentToolHistory, 200000), cb as never)
+    assert.equal(shifts, 0, '建议没进 request 就不该弹卡（弹卡与投递脱钩的回归）')
+
+    // 第 18 轮：无预算竞争（冷却也已过）→ 正常投递 → 恰好 1 卡
+    await runExplicit(18)
+    agent.config.promptEngine.setHarnessAdvisoryBlock(agent.advisoryBus.render(undefined, 18))
+    agent.decisionShifts.confirm(agent.advisoryBus.drainDelivered(), agent.config.promptEngine.buildOaiRequest([{ role: 'user', content: 'test boundary 2' }], agent.recentToolHistory, 200000), cb as never)
+    assert.equal(shifts, 1, '正常投递时恰好 1 卡')
+  })
+
+  it('request aborts after render without confirming a card', async () => {
+    const agent = stuckLoop()
+    agent.session.addUserMessage('修复内存泄漏')
+    agent.abortController = new AbortController()
+    agent.intent.evaluate = () => {}
+    agent.compaction.enforceContextCeiling = async () => { agent.abortController!.abort('test abort') }
+    let cards = 0
+    const callbacks = { ...makeCallbacks(), onDecisionShift: () => cards++ }
+    await agent.runConvergenceCheck(14, 'plan', true, false, callbacks)
+    const result = await agent.turnStepProducer.buildTurnRequest(14, {} as never, {} as never,
+      { ratio: 0, cvmOverheadRatio: 0, thrashing: false, shouldThrottleCvm: false } as never, true, false, callbacks)
+    assert.equal(result.action, 'abort')
+    assert.equal(cards, 0, 'render does not imply a successfully built request')
   })
 
   // ── B1b/M4（2026-07-23 信号互扰治理）：convergence advisory 的 expect 三分支 ──
@@ -1640,6 +1852,10 @@ describe('AgentLoop — convergence emission cooldown', () => {
 
   it('build 变体（filesModified>0）携带 course_changed 核销谓词 (B1b/M4)', async () => {
     const agent = stuckLoop()
+    // P1：无编辑驱动 L2 的前提是 editExpectation=required——补实现类任务语义
+    // （否则未分类 → unknown → "不以缺编辑单独认定偏航"，本场景不再发射；
+    // 这正是 P1 的修复目标，正例需显式携带任务语义）。
+    agent._lastRetrievalRoute = { taskKinds: ['bug_fix'] } as unknown as typeof agent._lastRetrievalRoute
     // build 态的真实构造（窗口分类语义）：窗口内非只读占比低于 0.8——
     // 8 条里 2 条 bash（productive）把只读率压到 0.75。filesModified 只影响
     // producingReport 豁免，不再单独决定 activityMode（窗口分类，W3）。
@@ -1658,11 +1874,48 @@ describe('AgentLoop — convergence emission cooldown', () => {
     // 无编辑 execute 阶段在窗口内持续 → L2 shouldKick 发射（跨轮扫描以对
     // 未来的 tier/threshold 调整保持韧性，通常第一轮即发射）。
     for (let turn = 14; turn <= 20 && submits.length === 0; turn++) {
-      await agent.runConvergenceCheck(turn, 'execute', true, false, makeCallbacks())
+      await checkConvergence(agent, turn, 'execute', true, false, makeCallbacks())
     }
     const conv = submits.find(e => e.key === 'convergence')
     assert.ok(conv, 'expected a convergence advisory emission')
     assert.equal(conv.expect?.kind, 'course_changed', 'build 变体必须携带 course_changed 谓词')
+  })
+
+  // ── P1（编辑期待）：真实接线——工作事实的验证步骤投影改变收敛决策 ──
+  it('P1 接线：验证步骤事实让无编辑不再压分（同形态对照，差异只在验证事实）', async () => {
+    const stuckHistory = () => [
+      { tool: 'read_file', status: 'success' as const, target: 'a.ts' },
+      { tool: 'grep', status: 'success' as const, target: 'x' },
+      { tool: 'read_file', status: 'success' as const, target: 'b.ts' },
+      { tool: 'grep', status: 'success' as const, target: 'y' },
+      { tool: 'read_file', status: 'success' as const, target: 'c.ts' },
+      { tool: 'grep', status: 'success' as const, target: 'z' },
+    ]
+
+    // 实验组：验证执行晚于最后一次写入 → editExpectation=verifying-step（not-required）
+    const agent = stuckLoop()
+    agent._lastRetrievalRoute = { taskKinds: ['bug_fix'] } as unknown as typeof agent._lastRetrievalRoute
+    agent.workFacts.recordVerificationExecutionStart({
+      purpose: 'test', lifetime: 'finite', waitingEligible: true, allowsCompletionEvidence: true,
+      entry: 'node', cwd: '/tmp', argv: null, scope: { scope: 'full', kind: 'test' }, source: 'node-test',
+    } as Parameters<typeof agent.workFacts.recordVerificationExecutionStart>[0])
+    agent.recentToolHistory = stuckHistory() as typeof agent.recentToolHistory
+    await checkConvergence(agent, 14, 'execute', true, false, makeCallbacks())
+    const expScore = agent.latestConvergenceResult!.score
+    const expLevel = agent.latestConvergenceResult!.level
+
+    // 对照组：同形态但无验证事实 → required
+    const control = stuckLoop()
+    control._lastRetrievalRoute = { taskKinds: ['bug_fix'] } as unknown as typeof control._lastRetrievalRoute
+    control.recentToolHistory = stuckHistory() as typeof control.recentToolHistory
+    await checkConvergence(control, 14, 'execute', true, false, makeCallbacks())
+    const ctrlScore = control.latestConvergenceResult!.score
+    const ctrlLevel = control.latestConvergenceResult!.level
+
+    assert.ok(expScore > ctrlScore + 0.1,
+      `验证步骤分数应显著高于 required（exp=${expScore} ctrl=${ctrlScore}）`)
+    assert.equal(expLevel, 1, 'not-required：无编辑不驱动 L2')
+    assert.equal(ctrlLevel, 2, 'required：无编辑仍驱动 L2——正例保留')
   })
 
   // 轮次 20：诊断态阶梯给了 4 轮额外余量，turn 14 的只读在 W3 分流下不算停滞。
@@ -1671,7 +1924,7 @@ describe('AgentLoop — convergence emission cooldown', () => {
   it('对照:diagnostic 变体仍是认知工具 tool_appears（不受 B1b 影响）', async () => {
     const agent = stuckLoop() // 全只读历史 + filesModified=0 → diagnostic
     const submits = captureSubmits(agent)
-    await agent.runConvergenceCheck(20, 'plan', true, false, makeCallbacks())
+    await checkConvergence(agent, 20, 'plan', true, false, makeCallbacks())
     const conv = submits.find(e => e.key === 'convergence')
     assert.ok(conv, 'expected a convergence advisory emission')
     assert.equal(conv.expect?.kind, 'tool_appears')
@@ -1687,9 +1940,9 @@ describe('AgentLoop — convergence emission cooldown', () => {
     agent.convergenceEmitMinIntervalMs = 45_000
     let shifts = 0
     const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
-    await agent.runConvergenceCheck(14, 'plan', true, false, cb) // 首次：无历史 → 放行
+    await checkConvergence(agent, 14, 'plan', true, false, cb) // 首次：无历史 → 放行
     // 冷却（3 turn）已过，但墙钟未过（同步调用，间隔 ≈0ms）
-    await agent.runConvergenceCheck(18, 'plan', true, false, cb)
+    await checkConvergence(agent, 18, 'plan', true, false, cb)
     assert.equal(shifts, 1, '墙钟下限必须拦住区间内的同变体重复发射')
   })
 
@@ -1698,8 +1951,8 @@ describe('AgentLoop — convergence emission cooldown', () => {
     agent.convergenceEmitMinIntervalMs = 45_000
     let shifts = 0
     const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
-    await agent.runConvergenceCheck(14, 'plan', true, false, cb) // L2
-    await agent.runConvergenceCheck(20, 'plan', true, false, cb) // L3 升级 → 必须放行
+    await checkConvergence(agent, 14, 'plan', true, false, cb) // L2
+    await checkConvergence(agent, 20, 'plan', true, false, cb) // L3 升级 → 必须放行
     assert.ok(shifts >= 2, `升级必须穿透墙钟下限，got ${shifts}`)
   })
 
@@ -1716,8 +1969,8 @@ describe('AgentLoop — convergence emission cooldown', () => {
       flush: async () => {},
     } as typeof agent.frameRecorder
 
-    await agent.runConvergenceCheck(14, 'plan', true, false, makeCallbacks()) // 首次 → 发射
-    await agent.runConvergenceCheck(18, 'plan', true, false, makeCallbacks()) // 冷却已过、墙钟未过 → 被拦
+    await checkConvergence(agent, 14, 'plan', true, false, makeCallbacks()) // 首次 → 发射
+    await checkConvergence(agent, 18, 'plan', true, false, makeCallbacks()) // 冷却已过、墙钟未过 → 被拦
 
     type Conv = { variant?: string | null; gate?: { emitted: boolean; suppressedBy: string | null } | null } | null
     const first = (captured[0]?.convergence ?? null) as Conv
@@ -1734,7 +1987,7 @@ describe('AgentLoop — convergence emission cooldown', () => {
     const agent = stuckLoop()
     agent.consecutiveNoToolTurns = 2
     const submits = captureSubmits(agent)
-    await agent.runConvergenceCheck(14, 'plan', true, false, makeCallbacks())
+    await checkConvergence(agent, 14, 'plan', true, false, makeCallbacks())
     const conv = submits.find(e => e.key === 'convergence')
     assert.ok(conv, 'expected a convergence advisory emission')
     assert.equal(conv.expect?.kind, 'tool_appears')
@@ -1753,7 +2006,7 @@ describe('AgentLoop — convergence emission cooldown', () => {
 
     // First check lands at global turn 90 — the phase baseline is set here, so
     // the message must talk about ~1 phase turn, never "90 轮".
-    await agent.runConvergenceCheck(90, 'plan', true, false, cb)
+    await checkConvergence(agent, 90, 'plan', true, false, cb)
     assert.ok(reason, 'expected a convergence warning emission')
     assert.ok(!reason.includes('90'), `wording must not leak the global turn count: ${reason}`)
     assert.ok(reason.includes('近 1 轮'), `expected phase-relative count in wording: ${reason}`)
@@ -1768,16 +2021,16 @@ describe('AgentLoop — convergence emission cooldown', () => {
     let shifts = 0
     const cb = { ...makeCallbacks(), onDecisionShift: () => { shifts++ } }
 
-    await agent.runConvergenceCheck(20, 'plan', true, false, cb) // emit (cooldown start)
+    await checkConvergence(agent, 20, 'plan', true, false, cb) // emit (cooldown start)
     assert.equal(shifts, 1, 'first turn should emit')
 
-    await agent.runConvergenceCheck(21, 'plan', true, false, cb) // within cooldown → skip
+    await checkConvergence(agent, 21, 'plan', true, false, cb) // within cooldown → skip
     assert.equal(shifts, 1, 'within cooldown should not emit')
 
-    await agent.runConvergenceCheck(21, 'plan', true, true, cb) // user intervened → skip + reset
+    await checkConvergence(agent, 21, 'plan', true, true, cb) // user intervened → skip + reset
     assert.equal(shifts, 1, 'user-intervention turn must not emit a nudge')
 
-    await agent.runConvergenceCheck(22, 'plan', true, false, cb) // reset → emit despite <3 turns since last
+    await checkConvergence(agent, 22, 'plan', true, false, cb) // reset → emit despite <3 turns since last
     assert.equal(shifts, 2, 'cooldown should have been reset by user intervention, allowing an immediate re-emit')
   })
 })
@@ -1814,22 +2067,22 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
 
   it('健康 sensorium 经真实路径延后 score-based L1（turn 8 L0，turn 10 仍到达）', async () => {
     const baseline = flowAgent(null)
-    await baseline.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(baseline, 8, 'explore', true, false, makeCallbacks())
     assert.equal(baseline.latestConvergenceResult?.level, 1, 'sensorium 缺失 → 旧行为基线 L1')
 
     const flowed = flowAgent(healthySensorium)
-    await flowed.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(flowed, 8, 'explore', true, false, makeCallbacks())
     assert.equal(flowed.latestConvergenceResult?.level, 0, '高 flow → turn 8 延后为 L0')
 
     const delayed = flowAgent(healthySensorium)
-    await delayed.runConvergenceCheck(10, 'explore', true, false, makeCallbacks())
+    await checkConvergence(delayed, 10, 'explore', true, false, makeCallbacks())
     assert.equal(delayed.latestConvergenceResult?.level, 1, '延后有界：turn 10 仍到达 L1')
   })
 
   it('反例：高 flow + 连续 no-tool 仍保持 no-tool 硬熔断语义', async () => {
     const agent = flowAgent(healthySensorium)
     agent.consecutiveNoToolTurns = 5
-    await agent.runConvergenceCheck(12, 'execute', true, false, makeCallbacks())
+    await checkConvergence(agent, 12, 'execute', true, false, makeCallbacks())
     assert.equal(agent.latestConvergenceResult?.shouldAbort, true, '高 flow 不能救 no-tool 熔断')
     assert.equal(agent.latestConvergenceResult?.abortCause, 'no-tool')
   })
@@ -1840,7 +2093,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
       quality: { confidence: 'measured', momentum: 'no-data', stability: 'measured' },
     } as import('../sensorium.js').Sensorium
     const agent = flowAgent(noData)
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.equal(agent.latestConvergenceResult?.level, 1, 'no-data → 基线 L1 不变')
   })
 
@@ -1851,7 +2104,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
   it('P2：EFE 缺失 → latestStructureFlow=null，P1 路径字节级不变', async () => {
     const agent = flowAgent(healthySensorium)
     assert.equal(agent.latestPolicySignals, undefined, '前置：EFE 未写入')
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.equal(agent.latestStructureFlow, null, 'EFE 缺失 → 快照为 null')
     assert.equal(agent.latestConvergenceResult?.level, 0, 'P1 flow 路径继续生效（turn 8 延后 L0）')
   })
@@ -1859,14 +2112,14 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
   it('P2：EFE 就绪 + 健康执行 → 快照 mode=flow，relaxation 经真实路径延后 L1', async () => {
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.equal(agent.latestStructureFlow?.mode, 'flow')
     assert.ok(Math.abs((agent.latestStructureFlow?.relaxation ?? 0) - 0.25) < 1e-9)
     assert.equal(agent.latestConvergenceResult?.level, 0, 'P2 relaxation=0.25 → nLow 8→10 → L0')
 
     const delayed = flowAgent(healthySensorium)
     delayed.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await delayed.runConvergenceCheck(10, 'explore', true, false, makeCallbacks())
+    await checkConvergence(delayed, 10, 'explore', true, false, makeCallbacks())
     assert.equal(delayed.latestConvergenceResult?.level, 1, '延后有界：turn 10 仍到达 L1')
   })
 
@@ -1879,14 +2132,14 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     // 对照组：EFE 缺失 → P1 flow（成功率 4/6 → score≈0.77 → 1.23× → nLow 10）→ L0
     const p1 = flowAgent(healthySensorium)
     p1.recentToolHistory = failTailHistory as unknown as typeof p1.recentToolHistory
-    await p1.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(p1, 8, 'explore', true, false, makeCallbacks())
     assert.equal(p1.latestConvergenceResult?.level, 0, '前置：P1 路径下该形状放行 L0')
 
     // 实验组：EFE 就绪 → 尾部连续 2 failed → hardTighten → relaxation=0 且屏蔽 P1 → L1
     const p2 = flowAgent(healthySensorium)
     p2.recentToolHistory = failTailHistory as unknown as typeof p2.recentToolHistory
     p2.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await p2.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(p2, 8, 'explore', true, false, makeCallbacks())
     assert.equal(p2.latestStructureFlow?.mode, 'tighten')
     assert.equal(p2.latestStructureFlow?.relaxation, 0)
     assert.equal(p2.latestConvergenceResult?.level, 1, 'hardTighten → 放松归零 → 基线 L1')
@@ -1896,7 +2149,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
     agent.consecutiveNoToolTurns = 5
-    await agent.runConvergenceCheck(12, 'execute', true, false, makeCallbacks())
+    await checkConvergence(agent, 12, 'execute', true, false, makeCallbacks())
     assert.equal(agent.latestConvergenceResult?.shouldAbort, true)
     assert.equal(agent.latestConvergenceResult?.abortCause, 'no-tool')
   })
@@ -1904,7 +2157,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
   it('P2：用户干预（userMessageConsumed）→ 快照 hardTighten 且 reason=user-intervened', async () => {
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await agent.runConvergenceCheck(8, 'explore', true, true, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, true, makeCallbacks())
     assert.equal(agent.latestStructureFlow?.mode, 'tighten')
     assert.ok(agent.latestStructureFlow?.reasons.includes('user-intervened'))
   })
@@ -1914,7 +2167,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     agent.structureFlowPlanAdvisoryKeys.add('structure-flow-plan:enter:unknown-domain')
 
     // 用户干预 → 清空
-    await agent.runConvergenceCheck(8, 'explore', true, true, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, true, makeCallbacks())
     assert.equal(agent.structureFlowPlanAdvisoryKeys.size, 0, '用户干预清空去重键')
 
     // enterPlanMode → 清空
@@ -1933,7 +2186,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
   it('P3：frame 恒产出且与 latestStructureFlow 同 turn 对应', async () => {
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.ok(agent.latestCognitiveFrame, 'frame 恒产出')
     assert.equal(agent.latestCognitiveFrame.turn, 8)
     assert.equal(agent.latestCognitiveFrame.phaseClass, 'explore')
@@ -1943,7 +2196,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
 
   it('P3：EFE 缺失 → frame 仍产出（quality=missing）但 latestStructureFlow=null', async () => {
     const agent = flowAgent(healthySensorium)
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.ok(agent.latestCognitiveFrame, 'EFE 缺失时 frame 也要产出（可观测性）')
     assert.equal(agent.latestCognitiveFrame.quality.efe, 'missing')
     assert.equal(agent.latestStructureFlow, null, '投影 fail-closed → P2 旧行为路径')
@@ -1957,7 +2210,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     } as import('../sensorium.js').Sensorium
     const agent = flowAgent(noData)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: noData }
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.equal(agent.latestCognitiveFrame?.quality.sensorium, 'partial')
     assert.equal(agent.latestCognitiveFrame?.quality.flow, 'missing', 'no-data → beacon 不算 → flow missing')
   })
@@ -1966,7 +2219,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     const { buildCognitiveFrameRecord, replayCognitiveFrames } = await import('../cognitive-frame-replay.js')
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     const record = JSON.parse(JSON.stringify(buildCognitiveFrameRecord(
       agent.latestCognitiveFrame!,
       agent.latestStructureFlow,
@@ -1981,7 +2234,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
   it('P3：frame 不含控制结果（防 replay 把输出当输入）', async () => {
     const agent = flowAgent(healthySensorium)
     agent.latestPolicySignals = { efe: healthyEfe, sensorium: healthySensorium }
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     const serialized = JSON.stringify(agent.latestCognitiveFrame)
     for (const banned of ['relaxation', 'planRecommendation', '"mode"']) {
       assert.ok(!serialized.includes(banned), `frame 不得含控制结果: ${banned}`)
@@ -1995,7 +2248,7 @@ describe('AgentLoop — P1 flow beacon wiring (Wave 3)', () => {
     // 需要 progress>0 才可能 exit：todo 推进由 getTodos 提供，这里直接用
     // todoCompletedDelta 路径不可注入，改为验证 activePlan 传入生效 ——
     // planning 态 + flow 模式下 planRecommendation 不为 'enter'。
-    await agent.runConvergenceCheck(8, 'explore', true, false, makeCallbacks())
+    await checkConvergence(agent, 8, 'explore', true, false, makeCallbacks())
     assert.ok(agent.latestStructureFlow, 'EFE 就绪 → 快照存在')
     assert.notEqual(agent.latestStructureFlow?.planRecommendation, 'enter',
       'planning 态被视为活跃计划上下文，绝不推荐 enter')
@@ -2026,8 +2279,114 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     // Pre-seed a sustained declining score history so the L3 scoreAbort guard
     // (scoreDeclining over the signal window) is satisfied within two turns.
     agent.convergenceScoreHistory = [0.50, 0.40, 0.30, 0.20, 0.10, 0.04]
+    // P1：无编辑驱动的压分以 editExpectation=required 为前提——未分类 → unknown
+    // 时不因缺编辑罚分（这是 P1 的修复目标）。本工厂的退化形态需要显式实现语义。
+    agent._lastRetrievalRoute = { taskKinds: ['bug_fix'] } as unknown as typeof agent._lastRetrievalRoute
     return agent
   }
+
+  // P3：记录侧首条 push 使历史切到具名口径（task:stage:editExpectation）。
+  // 把 seed 段重建为与记录侧同口径的样本，模拟「同一口径持续下降」的真实
+  // 形态——混合口径不足不燃是独立语义（见 convergence-detector 的 P3 用例）。
+  function rebuildScoreHistorySameRegime(agent: ReturnType<typeof degenerateAgent>) {
+    const last = agent.convergenceScoreHistory.at(-1)
+    const sample: ConvergenceScoreSample = typeof last === 'object' && last !== null
+      ? last
+      : { score: 0.04, regimeKey: null, quality: 'ok' }
+    const seed: ConvergenceScoreSample[] = [0.50, 0.40, 0.30, 0.20, 0.10]
+      .map(score => ({ score, regimeKey: sample.regimeKey, quality: 'ok' }))
+    agent.convergenceScoreHistory = seed.concat([sample])
+  }
+
+  it('新阶段第一轮不能消费上一阶段的完整下降窗口', async () => {
+    const agent = degenerateAgent()
+    agent.modelObservationTurn = 50
+    agent.workFacts.recordHumanTaskBoundary()
+    agent.workFacts.beginModelTurn(50)
+    const confirm = (deliveryReady: boolean) => agent.workStage.confirm({
+      modelObservationTurn: agent.modelObservationTurn,
+      snapshot: agent.workFacts.currentSnapshot(), verificationExecutions: [],
+      rawCandidate: 'execute', candidateSource: 'sensorium', deliveryReady,
+    })
+    confirm(false)
+    await checkConvergence(agent, 24, 'execute', true, false, makeCallbacks())
+    rebuildScoreHistorySameRegime(agent)
+    agent.modelObservationTurn++
+    agent.workFacts.beginModelTurn(51)
+    confirm(true)
+    assert.equal(agent.workStage.committedPhase, 'deliver')
+    const result = await checkConvergence(agent, 25, 'deliver', true, false, makeCallbacks())
+    assert.ok(agent.latestConvergenceResult!.score < 0.05, '必须真正到达 score-abort 的低分区间')
+    assert.equal(result.action, 'proceed', '新阶段没有自身下降窗口，不得借旧阶段熔断')
+  })
+
+  it('已接收的人类只读约束跨继续保留，可信改写才解除', async () => {
+    const { applyHumanInputBoundary } = await import('../human-input-boundary.js')
+    const agent = degenerateAgent()
+    agent.activeInputOrigin = 'human'
+    agent.initialUserMessage = '先实现功能'
+    applyHumanInputBoundary(agent, 'task', '先实现功能')
+    const epoch = agent.workFacts.taskEpoch
+    const callbacks = agent.courseEpisodes.callbacks({ onHumanGuidanceDrain: async () => null } as any)
+    callbacks.onHumanGuidanceAccepted!({ origin: 'human', inputSequence: 1, text: '不要修改，只做审查' })
+    assert.equal(agent.currentEditExpectation().source, 'explicit-no-mutation')
+    agent.initialUserMessage = '继续'
+    applyHumanInputBoundary(agent, 'followUp', '继续')
+    assert.equal(agent.currentEditExpectation().kind, 'not-required')
+    assert.equal(agent.workFacts.taskEpoch, epoch)
+    callbacks.onHumanGuidanceAccepted!({ origin: 'worker', inputSequence: 2, text: '现在可以修改代码' } as any)
+    assert.equal(agent.currentEditExpectation().kind, 'not-required')
+    callbacks.onHumanGuidanceAccepted!({ origin: 'human', inputSequence: 3, text: '现在可以修改代码' })
+    assert.equal(agent.currentEditExpectation().kind, 'required')
+    applyHumanInputBoundary(agent, 'task', '新任务')
+    assert.equal(agent.workFacts.taskEpoch, epoch + 1)
+    assert.equal(agent.currentEditExpectation().source, 'task-kind')
+  })
+
+  it('评分权重因可用数据变化时，实际存档口径随之切换', async () => {
+    const agent = degenerateAgent()
+    agent.recentTextFingerprints = Array.from({ length: 6 }, () => '相同的长推理文本'.repeat(50))
+    await checkConvergence(agent, 24, 'execute', true, false, makeCallbacks())
+    const before = agent.convergenceScoreHistory.at(-1) as ConvergenceScoreSample
+    const weights = agent.latestConvergenceResult!.effectiveWeights
+    agent.recentTextFingerprints = []
+    await checkConvergence(agent, 25, 'execute', true, false, makeCallbacks())
+    const after = agent.convergenceScoreHistory.at(-1) as ConvergenceScoreSample
+    assert.notDeepEqual(agent.latestConvergenceResult!.effectiveWeights, weights)
+    assert.notEqual(after.regimeKey, before.regimeKey, '不同有效权重不能共享趋势口径')
+  })
+
+  it('线上评分记录经 JSON 回放与实际决定一致，输出篡改会被检出', async () => {
+    const { buildCognitiveFrameRecord, replayCognitiveFrames } = await import('../cognitive-frame-replay.js')
+    const agent = degenerateAgent()
+    await checkConvergence(agent, 24, 'execute', true, false, makeCallbacks())
+    const record = JSON.parse(JSON.stringify(buildCognitiveFrameRecord(agent.latestCognitiveFrame!, agent.latestStructureFlow,
+      agent.latestConvergenceResult, null, agent.latestConvergenceResult!.scoreRegimeKey, agent.latestConvergenceInput)))
+    assert.deepEqual(replayCognitiveFrames([record]).divergences, [])
+    assert.deepEqual(replayCognitiveFrames([record]).legacyScoreTurns, [])
+    record.convergence.shouldAbort = !record.convergence.shouldAbort
+    assert.ok(replayCognitiveFrames([record]).divergences.some(d => d.field === 'convergence.shouldAbort'))
+    delete record.convergenceInput
+    assert.deepEqual(replayCognitiveFrames([record]).legacyScoreTurns, [24], '旧帧不冒充已回放评分')
+  })
+
+  it('未进入最终请求的警告不能核销熔断宽限', async () => {
+    for (const mode of ['missing', 'holdout', 'budget-cut', 'aborted'] as const) {
+      const agent = degenerateAgent()
+      const cb = makeCallbacks()
+      await agent.runConvergenceCheck(24, 'execute', true, false, cb)
+      if (mode === 'aborted') {
+        agent.decisionShifts.discard('request-aborted-or-failed')
+      } else {
+        agent.advisoryBus.render(undefined, 24)
+        const delivered = agent.advisoryBus.drainDelivered().map(d => mode === 'holdout' ? { ...d, shadow: true } : d)
+        assert.equal(agent.decisionShifts.confirm(mode === 'missing' ? [] : delivered, { messages: [] } as any, cb), false)
+      }
+      rebuildScoreHistorySameRegime(agent)
+      const next = await agent.runConvergenceCheck(25, 'execute', true, false, cb)
+      assert.equal(next.action, 'proceed', `${mode}: 模型未见警告，仍须获得宽限`)
+    }
+  })
 
   // 轮次 24+：`degenerateAgent` 是全只读窗口 → activityMode='diagnostic'，W3 分流的
   // 诊断阶梯把最重档推到 turn≥24。这两条考的是 grace-turn 与用户介入重置，轮号只是
@@ -2038,12 +2397,13 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     let shifts = 0
     const cb = { ...makeCallbacks(), onAbort: () => { aborts++ }, onDecisionShift: () => { shifts++ } }
 
-    const first = await agent.runConvergenceCheck(24, 'execute', true, false, cb)
+    const first = await checkConvergence(agent, 24, 'execute', true, false, cb)
     assert.equal(first.action, 'proceed', 'first L3 hit must be demoted — no prior-turn warning was delivered')
     assert.equal(aborts, 0)
     assert.equal(shifts, 1, 'the demoted turn must still emit the warning/改道 so the model and user see it')
 
-    const second = await agent.runConvergenceCheck(25, 'execute', true, false, cb)
+    rebuildScoreHistorySameRegime(agent)
+    const second = await checkConvergence(agent, 25, 'execute', true, false, cb)
     assert.equal(second.action, 'abort', 'still stuck one turn after the warning → abort proceeds')
     assert.equal(aborts, 1)
   })
@@ -2052,9 +2412,11 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     const agent = degenerateAgent()
     const cb = makeCallbacks()
 
-    await agent.runConvergenceCheck(24, 'execute', true, false, cb) // demoted + warning
-    await agent.runConvergenceCheck(25, 'execute', true, true, cb)  // user spoke → reset
-    const after = await agent.runConvergenceCheck(26, 'execute', true, false, cb)
+    await checkConvergence(agent, 24, 'execute', true, false, cb) // demoted + warning
+    rebuildScoreHistorySameRegime(agent)
+    await checkConvergence(agent, 25, 'execute', true, true, cb)  // user spoke → reset
+    rebuildScoreHistorySameRegime(agent)
+    const after = await checkConvergence(agent, 26, 'execute', true, false, cb)
     assert.equal(after.action, 'proceed', 'post-intervention L3 hit must get a fresh grace turn, not an instant abort')
   })
 
@@ -2070,7 +2432,9 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
       { tool: 'read_file', status: 'success', target: 'same.ts' }
     )) as unknown as typeof agent.recentToolHistory
     agent.recentTextFingerprints = ['分析中', '分析中', '分析中']
+    const last = agent.convergenceScoreHistory.at(-1) as ConvergenceScoreSample
     agent.convergenceScoreHistory = [0.50, 0.40, 0.30, 0.20, 0.10, 0.04]
+      .map(score => ({ score, regimeKey: last.regimeKey, quality: 'ok' }))
   }
 
   it('连续 5 轮产出清警告旧账 → 之后的 L3 重新获得 grace turn (B1c/M4, 原缺陷复现)', async () => {
@@ -2078,19 +2442,19 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     let aborts = 0
     const cb = { ...makeCallbacks(), onAbort: () => { aborts++ } }
 
-    const first = await agent.runConvergenceCheck(22, 'execute', true, false, cb) // L2 警告 + demote
+    const first = await checkConvergence(agent, 22, 'execute', true, false, cb) // L2 警告 + demote
     assert.equal(first.action, 'proceed')
 
     // 5 轮真实产出（PRODUCTIVE_TOOLS）——改道已被行为证实
     for (let t = 23; t <= 27; t++) {
       agent.recordToolHistory('edit_file', { file_path: `src/f${t}.ts` }, false, 'ok')
       agent.recentToolHistory = healthyHistory() as unknown as typeof agent.recentToolHistory
-      await agent.runConvergenceCheck(t, 'execute', true, false, cb)
+      await checkConvergence(agent, t, 'execute', true, false, cb)
     }
 
     // 再次跌分触发 L3——旧账已清,必须先警告一轮而不是拿 6 轮前的警告直接熔断
     degenerateState(agent)
-    const later = await agent.runConvergenceCheck(28, 'execute', true, false, cb)
+    const later = await checkConvergence(agent, 28, 'execute', true, false, cb)
     assert.equal(later.action, 'proceed', '旧账已清 → L3 demote 为 kick,重新给一次 grace turn')
     assert.equal(aborts, 0)
   })
@@ -2100,14 +2464,14 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     let aborts = 0
     const cb = { ...makeCallbacks(), onAbort: () => { aborts++ } }
 
-    await agent.runConvergenceCheck(22, 'execute', true, false, cb) // L2 警告 + demote
+    await checkConvergence(agent, 22, 'execute', true, false, cb) // L2 警告 + demote
     for (let t = 23; t <= 27; t++) {
       agent.recordToolHistory('grep', { pattern: 'x' }, false, 'ok') // 非 PRODUCTIVE
       agent.recentToolHistory = healthyHistory() as unknown as typeof agent.recentToolHistory
-      await agent.runConvergenceCheck(t, 'execute', true, false, cb)
+      await checkConvergence(agent, t, 'execute', true, false, cb)
     }
     degenerateState(agent)
-    const later = await agent.runConvergenceCheck(28, 'execute', true, false, cb)
+    const later = await checkConvergence(agent, 28, 'execute', true, false, cb)
     assert.equal(later.action, 'abort', '无产出 → 陈旧警告仍有效 → 熔断保底')
     assert.equal(aborts, 1)
   })
@@ -2116,20 +2480,20 @@ describe('AgentLoop — convergence score-abort grace turn', () => {
     const agent = degenerateAgent()
     const cb = makeCallbacks()
 
-    await agent.runConvergenceCheck(22, 'execute', true, false, cb) // L2 警告 + demote
+    await checkConvergence(agent, 22, 'execute', true, false, cb) // L2 警告 + demote
     for (let t = 23; t <= 26; t++) { // 只有 4 轮产出
       agent.recordToolHistory('edit_file', { file_path: `src/f${t}.ts` }, false, 'ok')
       agent.recentToolHistory = healthyHistory() as unknown as typeof agent.recentToolHistory
-      await agent.runConvergenceCheck(t, 'execute', true, false, cb)
+      await checkConvergence(agent, t, 'execute', true, false, cb)
     }
     // 第 5 轮空转 → 计数断裂归零
-    await agent.runConvergenceCheck(27, 'execute', true, false, cb)
+    await checkConvergence(agent, 27, 'execute', true, false, cb)
     // 再产出 1 轮（streak=1,不足 5）
     agent.recordToolHistory('edit_file', { file_path: 'src/g.ts' }, false, 'ok')
-    await agent.runConvergenceCheck(28, 'execute', true, false, cb)
+    await checkConvergence(agent, 28, 'execute', true, false, cb)
 
     degenerateState(agent)
-    const later = await agent.runConvergenceCheck(29, 'execute', true, false, cb)
+    const later = await checkConvergence(agent, 29, 'execute', true, false, cb)
     assert.equal(later.action, 'abort', '断裂重计后不足 5 轮 → 台账保留 → 熔断')
   })
 })

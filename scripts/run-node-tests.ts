@@ -3,7 +3,7 @@ import { glob, mkdir } from 'node:fs/promises'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { constants, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { nodeTestFlags, resolveTestTimeoutMs } from './test-runner-flags.js'
+import { nodeTestFlags, resolveTestTimeoutMs, resolveTestConcurrency } from './test-runner-flags.js'
 import { runGuardedChild, DEFAULT_IDLE_MS } from './test-child-guard.js'
 
 const args = process.argv.slice(2)
@@ -115,7 +115,9 @@ delete testEnv.RIVET_SESSION_DIR
 // 超时上限是防「电脑卡死」的关键：Node 不设 --test-timeout 就是 Infinity，任一测试
 // 卡住整个批次进程就永久挂着，被遗弃的整跑会一直占 CPU 直到手动清理。曾攒下 4 个
 // 跑满一天多的僵留进程，机器 15 分钟负载均值 76。详见 test-runner-flags.ts。
-const NODE_FLAGS = nodeTestFlags(resolveTestTimeoutMs(process.env.RIVET_TEST_TIMEOUT))
+const TEST_CONCURRENCY = resolveTestConcurrency(process.env.RIVET_TEST_CONCURRENCY)
+const NODE_FLAGS = nodeTestFlags(resolveTestTimeoutMs(process.env.RIVET_TEST_TIMEOUT), TEST_CONCURRENCY)
+console.error(`Test workers: ${TEST_CONCURRENCY} (RIVET_TEST_CONCURRENCY overrides the bounded default)`)
 
 // Windows caps a process command line at ~32767 chars; passing all ~900 test
 // files at once overflows it (ENAMETOOLONG). Chunk the file list by cumulative
@@ -164,9 +166,10 @@ interface BatchOutcome {
   tests: number
   pass: number
   fail: number
+  cancelled: number
   /** 是否见到 node 的汇总段。false = 跑了但什么都没验证。 */
   complete: boolean
-  /** 失败批末帧（含 `failing tests:` 明细）——0 fail 时为空，汇总后重放。 */
+  /** 非零批末帧（含失败、取消或提前退出明细），汇总后重放。 */
   failureExcerpt: string
 }
 
@@ -182,7 +185,7 @@ async function runBatch(batch: string[]): Promise<BatchOutcome> {
     console.error('⚠️  本批超出总时长上限，看门狗已强制收场。')
   }
   if (!res.summarySeen) {
-    console.error('⚠️  本批未打印汇总段（ℹ tests）——按 fail-closed 判失败：没有汇总等于没有验证。')
+    console.error('⚠️  本批未打印完整汇总（tests / pass / fail / cancelled）——按 fail-closed 判失败：验证不完整。')
     console.error(
       `    本批 ${batch.length} 个测试文件；已见进度（下界，未计入合计）：✔ ${res.seenChecks.pass} / ✖ ${res.seenChecks.fail}`,
     )
@@ -191,14 +194,15 @@ async function runBatch(batch: string[]): Promise<BatchOutcome> {
       for (const line of res.tailExcerpt.split('\n')) console.error(`      ${line}`)
     }
     if (res.killed === 'idle') {
-      console.error(`    收场方式：闲置 ${DEFAULT_IDLE_MS / 1000}s 无输出被看门狗杀掉（真挂死，非「跑完不退」）。`)
+      console.error(`    收场方式：${DEFAULT_IDLE_MS / 1000}s 无输出被看门狗杀掉（可能挂起或尚未产生进度）。`)
     }
   }
   return {
     code: res.code,
-    tests: res.tests ?? 0,
-    pass: res.pass ?? 0,
-    fail: res.fail ?? 0,
+    tests: res.summarySeen ? res.tests ?? 0 : 0,
+    pass: res.summarySeen ? res.pass ?? 0 : 0,
+    fail: res.summarySeen ? res.fail ?? 0 : 0,
+    cancelled: res.summarySeen ? res.cancelled ?? 0 : 0,
     complete: res.summarySeen,
     failureExcerpt: res.failureExcerpt,
   }
@@ -213,6 +217,7 @@ let worstExit = 0
 let totalTests = 0
 let totalPass = 0
 let totalFail = 0
+let totalCancelled = 0
 let incompleteBatches = 0
 const failureExcerpts: Array<{ batchNo: number; fileCount: number; excerpt: string }> = []
 for (const [batchIdx, batch] of batches.entries()) {
@@ -221,6 +226,7 @@ for (const [batchIdx, batch] of batches.entries()) {
   totalTests += out.tests
   totalPass += out.pass
   totalFail += out.fail
+  totalCancelled += out.cancelled
   if (!out.complete) incompleteBatches++
   if (out.code !== 0) {
     worstExit = out.code
@@ -231,6 +237,7 @@ for (const [batchIdx, batch] of batches.entries()) {
     console.log(
       `⚠️  批 ${batchIdx + 1}/${batches.length} 退出码 ${out.code}`
       + `（该批 tests ${out.tests} / pass ${out.pass} / fail ${out.fail}`
+      + ` / cancelled ${out.cancelled}`
       + `${out.complete ? '' : ' · 未出汇总'}，${batch.length} 个测试文件）`
       + `——非零退出即整体判失败；fail 0 而码非零查该批的未收尾异步/退出码来源。`,
     )
@@ -245,11 +252,11 @@ if (batches.length > 1) {
   // 必须标注出来，否则「合计 N 条」会被误读成全量数字。
   const caveat =
     incompleteBatches > 0
-      ? ` · ⚠️ ${incompleteBatches}/${batches.length} 批未出汇总（真挂死被看门狗收场），合计仅覆盖已完成批、实际跑了更多`
+      ? ` · ⚠️ ${incompleteBatches}/${batches.length} 批未出汇总（被看门狗收场或提前退出），合计仅覆盖已完成批、实际跑了更多`
       : ''
   // 与转发的批次输出同流（stdout）：stderr 会先于 stdout 的缓冲落盘，导致「合计/
   // 明细逻辑上在最后、tail 却看不到」（台账 F5 的物理成因）；退出前的排空保证不丢。
-  console.log(`合计：${totalTests} 条（pass ${totalPass} / fail ${totalFail}）· ${batches.length} 批${caveat}`)
+  console.log(`合计：${totalTests} 条（pass ${totalPass} / fail ${totalFail} / cancelled ${totalCancelled}）· ${batches.length} 批${caveat}`)
 }
 if (failureExcerpts.length > 0) {
   // 失败明细重放（台账 F5）：在输出尾部给出失败批末帧（含 `failing tests:` 段），

@@ -7,7 +7,7 @@
  * 挂在退出钩子上，唯独 `sinks.push(eventStream.sink)` 落在交互式 TUI 的装配路径里，
  * 无头分支在到达那行之前就 `process.exit` 了。`runHeadless` 自身的单元测试不可能
  * 发现它（它那时根本没有 sink 参数也完全正常），类型检查也不会（`eventStream`
- * 确实被用到）——只有真跑一次 `src/main.ts -p ... --stream-events <path>` 才能覆盖。
+ * 确实被用到）——只有真跑 CLI 入口（已构建的 dist/main.js，否则 src/main.ts）才能覆盖。
  *
  * 断言的核心是**文件非空**：回归态下该文件是 0 字节（调用方预建时）或压根不出现，
  * 而退出码 0、stderr 干净——与"本次运行没有事件"不可区分，正是这条 issue 的痛点。
@@ -25,6 +25,7 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import type { SessionEvent } from '../server/protocol.js'
+import { cliFixtureEnv, cliProcessArgs } from './cli-process-fixture.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -88,10 +89,10 @@ async function makeFixture(): Promise<Fixture> {
 async function runCli(home: string, extraArgs: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', join(repoRoot, 'src', 'main.ts'), '-p', 'say hi', ...extraArgs],
+    cliProcessArgs(repoRoot, ['-p', 'say hi', ...extraArgs]),
     {
-      cwd: repoRoot,
-      env: { ...process.env, RIVET_CONFIG_PATH: join(home, 'config.json'), RIVET_HOME: home },
+      cwd: home,
+      env: cliFixtureEnv(home),
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )

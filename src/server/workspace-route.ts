@@ -33,9 +33,12 @@ function workspaceSnapshot(): { defaultDir: string | null; scratchDir: string | 
   return { ...ws, scratchRoot: ws.scratchDir ?? sessionScratchRoot(rivetHome()) }
 }
 
-export function buildWorkspaceRoutes(apiToken?: string): Record<string, RouteHandler> {
+export function buildWorkspaceRoutes(
+  apiToken?: string,
+  knownWorkspaces: () => string[] = () => [],
+): Record<string, RouteHandler> {
   return {
-    ...buildFileContextRoutes(apiToken),
+    ...buildFileContextRoutes(apiToken, knownWorkspaces),
     ...buildWorkspaceSkillsRoutes(apiToken),
     ...buildSkillManagementRoutes(apiToken),
     'POST /workspace/validate-roots': withAuth(body => {

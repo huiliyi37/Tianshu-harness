@@ -8,6 +8,8 @@
  */
 
 import { planRevision } from './plan-revision.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
+import { isSafeFileName } from '../utils/safe-path.js'
 import { mkdir, readdir, readFile, stat, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -109,7 +111,10 @@ function plansRoot(cwd: string): string {
   return join(cwd, PLANS_DIR)
 }
 
-function planFilePath(cwd: string, slug: string): string {
+function planFilePath(cwd: string, slug: string): string | null {
+  // slug 未校验会造成路径穿越（join 会归一化 ..）：fail-closed，
+  // 调用方按"计划不存在"处理（与既有 not-found 分支同形）。
+  if (!isSafeFileName(slug)) return null
   return join(plansRoot(cwd), `${slug}.md`)
 }
 
@@ -229,10 +234,13 @@ export async function writePlan(
   content: string,
   options?: readonly PlanOption[],
   expectedContent?: string,
+  canCommit?: () => boolean,
 ): Promise<string> {
   await ensurePlansDir(cwd)
   const filePath = planFilePath(cwd, slug)
+  if (!filePath) throw new PlanConflictError(`invalid plan slug: ${slug}`)
   const body = buildPlanFrontmatter(options) + content.replace(PLAN_OPTIONS_FRONTMATTER_RE, '')
+  if (canCommit && !canCommit()) throw new PlanConflictError('Plan request interrupted before saving')
   if (expectedContent !== undefined && readFileSync(filePath, 'utf-8') !== expectedContent) {
     throw new PlanConflictError('Plan changed; reload before saving')
   }
@@ -247,6 +255,7 @@ export async function readPlan(
   slug: string,
 ): Promise<PlanDocument | null> {
   const filePath = planFilePath(cwd, slug)
+  if (!filePath) return null
   try {
     const content = await readFile(filePath, 'utf-8')
     const s = await stat(filePath)
@@ -273,6 +282,7 @@ export async function readPlan(
  */
 export function readPlanSync(cwd: string, slug: string): PlanDocument | null {
   const filePath = planFilePath(cwd, slug)
+  if (!filePath) return null
   try {
     const content = readFileSync(filePath, 'utf-8')
     const s = statSync(filePath)
@@ -322,7 +332,7 @@ export async function listPlans(cwd: string): Promise<PlanDocument[]> {
   const plans: PlanDocument[] = []
 
   for (const entry of entries) {
-    if (!entry.endsWith('.md')) continue
+    if (!entry.endsWith('.md') || isFilesystemMetadata(entry)) continue
     const slug = entry.replace(/\.md$/, '')
     if (isDraftSlug(slug)) continue
     const plan = await readPlan(cwd, slug)
@@ -342,11 +352,12 @@ export function listPlansSync(cwd: string): PlanDocument[] {
 
   const plans: PlanDocument[] = []
   for (const entry of readdirSync(dir)) {
-    if (!entry.endsWith('.md')) continue
+    if (!entry.endsWith('.md') || isFilesystemMetadata(entry)) continue
     const slug = entry.replace(/\.md$/, '')
     if (isDraftSlug(slug)) continue
+    const filePath = planFilePath(cwd, slug)
+    if (!filePath) continue // readdir 捡到的非常规文件名：fail-closed 跳过
     try {
-      const filePath = planFilePath(cwd, slug)
       const content = readFileSync(filePath, 'utf-8')
       const s = statSync(filePath)
       const provenance = parsePlanModel(content)
@@ -414,13 +425,19 @@ async function markPlanStatus(
 
   // 透传 options — writePlan 会剥离旧 frontmatter，不传会把多方案记录抹掉，
   // 导致 approve 后 selectedApproach 校验永远跳过（见 2026-07-03 缺陷复盘）。
-  await writePlan(cwd, slug, newContent, plan.options)
+  try {
+    await writePlan(cwd, slug, newContent, plan.options, plan.content, canCommit)
+  } catch (error) {
+    if (error instanceof PlanConflictError) return null
+    throw error
+  }
   return readPlan(cwd, slug)
 }
 
 /** 删除计划 */
 export async function deletePlan(cwd: string, slug: string): Promise<boolean> {
   const filePath = planFilePath(cwd, slug)
+  if (!filePath) return false
   try {
     await rm(filePath)
     return true

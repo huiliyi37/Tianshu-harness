@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rankFiles, listProjectFiles } from '../file-list.js'
+import { rankFiles, listProjectFiles, listDirEntries } from '../file-list.js'
 
 test('rankFiles: empty query returns shallowest paths first', () => {
   const out = rankFiles(['z/deep/x.ts', 'a.ts', 'm/n.ts'], '')
@@ -45,4 +45,24 @@ test('listProjectFiles: enumerates files, excludes node_modules and .git', async
   assert.ok(files.includes('sub/b.ts'), 'includes nested file (posix-relative)')
   assert.ok(!files.some((f) => f.includes('node_modules')), 'excludes node_modules')
   assert.ok(!files.some((f) => f.includes('.git/')), 'excludes .git')
+})
+
+test('file enumeration omits filesystem metadata while preserving normal dotfiles', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'filelist-metadata-'))
+  try {
+    await writeFile(join(dir, 'doc.txt'), 'document')
+    await writeFile(join(dir, '.notes.md'), 'normal dotfile')
+    await writeFile(join(dir, '._doc.txt'), 'synthetic sidecar')
+    await writeFile(join(dir, '.DS_Store'), 'synthetic Finder metadata')
+    await mkdir(join(dir, 'nested'))
+    await writeFile(join(dir, 'nested', 'child.ts'), 'nested source')
+    await writeFile(join(dir, 'nested', '._child.ts'), 'synthetic nested sidecar')
+    await mkdir(join(dir, '._metadata'))
+    await writeFile(join(dir, '._metadata', 'hidden.ts'), 'metadata directory content')
+
+    assert.deepEqual((await listProjectFiles(dir)).sort(), ['.notes.md', 'doc.txt', 'nested/child.ts'])
+    assert.deepEqual((await listDirEntries(dir)).map(entry => entry.name).sort(), ['.notes.md', 'doc.txt', 'nested'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

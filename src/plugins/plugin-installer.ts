@@ -13,6 +13,7 @@ import { join, basename, dirname } from 'node:path'
 import { cpSync } from 'node:fs'
 import { execSync, execFileSync } from 'node:child_process'
 import { rivetHome } from '../config/paths.js'
+import { hasRealNode } from '../platform/resolve-node-cli.js'
 import { parseManifest, PLUGIN_NAME_PATTERN, type PluginManifest, type PluginPackageJson } from './manifest.js'
 import { cloneGitSource, GitCloneError } from './git-source.js'
 
@@ -58,11 +59,32 @@ export function resolveNpmCommand(): string {
   return isWindows ? 'npm.cmd' : 'npm'
 }
 
-/** 宿主 node 目录前置到 PATH——npm 垫片靠 PATH 解析 node（见 npmInstallArgs 注释）。 */
-function withNodeOnPath(nodeDir: string): string {
-  const pathSep = process.platform === 'win32' ? ';' : ':'
-  const currentPath = process.env.PATH || ''
-  return currentPath ? `${nodeDir}${pathSep}${currentPath}` : nodeDir
+/** 宿主 node 目录放到 PATH——npm 垫片靠 PATH 解析 node（见 npmInstallArgs 注释）。
+ *
+ * issue #408：打包桌面端的 node-runtime 目录在 Windows 上只有 `node.cmd` 转发器、
+ * 没有真 `node.exe`。把这种目录 prepend 到 PATH 前部会劫持系统真 node——`npm exec` /
+ * `npm run` 里经 cmd 层启动 node 的脚本随之失败（报错指向一个不存在的相对路径）。
+ * 有真 node → prepend（issue #149：确保子进程能找到 node）；只有转发器 → append 到
+ * 末尾，系统真 node 优先命中，bundled 目录仍在 PATH 中可找到。
+ *
+ * deps 仅供测试注入（平台 / 基座 PATH / 文件系统），生产调用一律走进程真实环境。
+ * 导出供 `__tests__/plugin-installer-node-path.test.ts` 断言两种排位。
+ */
+export function withNodeOnPath(
+  nodeDir: string,
+  deps: {
+    platform?: NodeJS.Platform
+    path?: string
+    existsSync?: (path: string) => boolean
+  } = {},
+): string {
+  const platform = deps.platform ?? process.platform
+  const pathSep = platform === 'win32' ? ';' : ':'
+  const currentPath = deps.path ?? process.env.PATH ?? ''
+  if (!currentPath) return nodeDir
+  return hasRealNode(nodeDir, platform, deps.existsSync ?? existsSync)
+    ? `${nodeDir}${pathSep}${currentPath}`
+    : `${currentPath}${pathSep}${nodeDir}`
 }
 
 /**
@@ -272,8 +294,9 @@ async function installFromLocal(sourcePath: string, origin?: PluginOrigin): Prom
   const nodeDir = dirname(process.execPath)
   const cliJs = join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
   const installArgs = ['install', '--ignore-scripts', '--omit=dev']
-  const pathSep = process.platform === 'win32' ? ';' : ':'
-  const pathWithNode = process.env.PATH ? `${nodeDir}${pathSep}${process.env.PATH}` : nodeDir
+  // 与 npmInstallArgs / npmUsable 同一处判定（issue #408）：nodeDir 里只有转发器时
+  // 不抢占 PATH 首位，避免 npm 子进程解析 `node` 命中转发器。
+  const pathWithNode = withNodeOnPath(nodeDir)
   try {
     if (existsSync(cliJs)) {
       // Direct: node <npm-cli.js> install --ignore-scripts --omit=dev

@@ -37,7 +37,9 @@ import { randomUUID } from 'node:crypto'
 export const VISION_PROBE_IMAGE_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg=='
 export const VISION_PROBE_GROUND_TRUTH = '一张 16×16 像素的纯红色正方形图片'
 const VISION_PROBE_PROMPT = '请用一句简短的话描述这张图片的内容。'
-const VISION_PROBE_MAX_TOKENS = 100
+// 思考与回答共享输出预算，100 token 可能在最终回答前耗尽。
+const VISION_PROBE_MAX_TOKENS = 2048
+const VISION_PROBE_EMPTY_ANSWER = 'Vision probe returned an SSE stream but no answer text. The output may have been consumed by reasoning or truncated; image understanding could not be verified. This does not establish that the model lacks vision support.'
 
 /**
  * 别名表**认定**为识图/多模态的型号才走视觉真测（metadata.supportsVision）。
@@ -72,7 +74,7 @@ export interface ProbeOptions {
    *  providerName + baseUrl 经 hasModelsListEndpoint 判定；显式传值只用于测试。 */
   modelsListUnavailable?: boolean
   /** 视觉探测三态（2026-09-09「测试没用」反馈）：undefined=按模型名启发（现状，
-   *  ProviderRow 无视觉声明场景）；true=强制图片真测；false=压制启发按纯文本测
+   *  尚未保存模型的场景）；true=强制图片真测；false=压制启发按纯文本测
    *  （自定义 provider 未勾「支持视觉」时与用户声明一致——模型名带 vision 词
    *  但网关不支持图片时，旧启发会误报失败而实际纯文本对话可用）。 */
   vision?: boolean
@@ -502,7 +504,7 @@ async function probeOpenAICompletion(options: ProbeOptions, model: string, visio
         ok: false,
         hints,
         latencyMs,
-        error: 'Vision probe returned an SSE stream but no answer text — image understanding was not demonstrated.',
+        error: VISION_PROBE_EMPTY_ANSWER,
       }
     }
     return { ok: true, hints, latencyMs, answer }
@@ -608,7 +610,7 @@ async function probeResponsesCompletion(
         ok: false,
         hints: {},
         latencyMs,
-        error: 'Vision probe returned an SSE stream but no answer text — image understanding was not demonstrated.',
+        error: VISION_PROBE_EMPTY_ANSWER,
       }
     }
     return { ok: true, hints: {}, latencyMs, answer }
@@ -780,7 +782,7 @@ export async function probeProvider(options: ProbeOptions): Promise<ProbeReport>
 
   // 视觉真测对 OpenAI 兼容与 Responses 协议生效（anthropic/gemini 探测保持纯文本最小请求——
   // gemini 原生视觉走 inlineData 形态，预设已静态声明 supportsVision，探测不做真测）。
-  const vision = wantVision && options.protocol !== 'anthropic' && options.protocol !== 'gemini' && isVisionCapableId(model)
+  const vision = wantVision && options.protocol !== 'anthropic' && options.protocol !== 'gemini'
   const outcome = options.protocol === 'anthropic'
     ? await probeAnthropicCompletion(options, model)
     : options.protocol === 'openai-responses'

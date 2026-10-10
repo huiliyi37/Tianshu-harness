@@ -40,6 +40,15 @@ describe('deepseekPricingPhase（北京时间工作日 9-12 / 14-18 为峰时）
     assert.strictEqual(deepseekPricingPhase(utc('2026-09-06T16:30:00')), 'offpeak')
   })
 
+  it('法定节假日峰窗时段也闲时；调休补班日（周六）天然闲时；收假即恢复', () => {
+    // 2026 国务院安排：国庆 10-01~10-07，春节 02-15~02-23（调休补班 02-14/02-28 均为周六）
+    assert.strictEqual(deepseekPricingPhase(utc('2026-10-01T02:00:00')), 'offpeak') // 国庆周四 10:00——节假日覆盖工作日峰窗
+    assert.strictEqual(deepseekPricingPhase(utc('2026-10-07T06:00:00')), 'offpeak') // 假期末日周三 14:00
+    assert.strictEqual(deepseekPricingPhase(utc('2026-02-17T02:00:00')), 'offpeak') // 春节初一周二 10:00
+    assert.strictEqual(deepseekPricingPhase(utc('2026-02-14T02:00:00')), 'offpeak') // 调休补班周六 10:00——周末规则已覆盖
+    assert.strictEqual(deepseekPricingPhase(utc('2026-10-08T01:00:00')), 'peak')    // 10-08 周四 09:00 收假恢复峰时
+  })
+
   it('宿主时区无关：TZ=America/New_York 下结果一致', () => {
     process.env.TZ = 'America/New_York'
     // 确认 TZ 真的生效（本地小时偏移），否则本测试没有证明力
@@ -86,5 +95,16 @@ describe('nextPricingTransition（倒计时）', () => {
     const t = nextPricingTransition(utc('2026-09-07T10:00:00')) // 北京周一 18:00 整
     assert.strictEqual(t.to, 'peak')
     assert.strictEqual(t.inMs, 15 * HOUR) // 周一 18:00 → 周二 9:00
+  })
+
+  it('跨长假：假前峰尾 → 收假首个工作日 9:00', () => {
+    // 北京 2026-09-30 周三 18:00 → 2026-10-08 周四 09:00（183h）
+    const national = nextPricingTransition(utc('2026-09-30T10:00:00'))
+    assert.strictEqual(national.to, 'peak')
+    assert.strictEqual(national.inMs, 183 * HOUR)
+    // 北京 2026-02-13 周五 18:00 → 2026-02-24 周二 09:00（255h，跨 9 天春节假 + 调休周末）
+    const cny = nextPricingTransition(utc('2026-02-13T10:00:00'))
+    assert.strictEqual(cny.to, 'peak')
+    assert.strictEqual(cny.inMs, 255 * HOUR)
   })
 })

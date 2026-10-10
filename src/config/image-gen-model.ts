@@ -118,10 +118,11 @@ export function registerImageGenModelConfig(
   // 槽写入是合并而非整体替换（D2a）：兼容重注册不抹掉用户配好的通用生成参数。
   // sizeField 是线上 wire name，跟 provider 绑定——跨 provider 继承旧值会把
   // 『image_size』发给只认『size』的端点，故仅当 previous.provider === providerName
-  // 时继承；prompt/size/timeoutMs 与 provider 无关，存在即保留（存在才带，不留
+  // 时继承；尺寸仅原模型保留，prompt/timeoutMs 存在即保留（存在才带，不留
   // 显式 undefined 键）。
   const previous = cfg.agent.imageGenModel
-  const model = modelConfigSchema.parse({ id: modelId, supportsImageGen: true })
+  const compatibility = cfg.provider.providers[providerName]?.models.find(m => m.id === modelId)?.imageGen
+  const model = modelConfigSchema.parse({ id: modelId, supportsImageGen: true, imageGen: { ...compatibility, sizeField: options.sizeField ?? compatibility?.sizeField ?? (previous?.provider === providerName ? previous.sizeField : undefined) ?? 'size' } })
   const imageGen = imageGenModelSchema.parse({
     provider: providerName,
     model: modelId,
@@ -131,7 +132,7 @@ export function registerImageGenModelConfig(
         ? { sizeField: previous.sizeField }
         : {}),
     ...(previous?.prompt ? { prompt: previous.prompt } : {}),
-    ...(previous?.size ? { size: previous.size } : {}),
+    ...(previous?.provider === providerName && previous.model === modelId && previous.size ? { size: previous.size } : {}),
     ...(previous?.timeoutMs ? { timeoutMs: previous.timeoutMs } : {}),
   })
   const provider: ProviderConfig = {

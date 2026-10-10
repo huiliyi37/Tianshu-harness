@@ -131,3 +131,41 @@ test('formatTemplateList: lists templates with source badge', () => {
   assert.ok(text.includes('[user]'))
   assert.ok(text.includes('Standard flow'))
 })
+
+
+test('loadPlanTemplates: excludes metadata in both roots and preserves dotfiles and project overrides', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'plan-metadata-project-'))
+  const home = mkdtempSync(join(tmpdir(), 'plan-metadata-home-'))
+  const previousHome = process.env.RIVET_HOME
+  process.env.RIVET_HOME = home
+  try {
+    const userDir = join(home, 'plan-templates')
+    const projectDir = join(cwd, '.rivet', 'plan-templates')
+    mkdirSync(userDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(userDir, 'shared.md'), '---\ndescription: user copy\n---\n# User shared')
+    writeFileSync(join(userDir, 'user-only.md'), '# User only')
+    writeFileSync(join(userDir, '._user-only.md'), '# Metadata user template')
+    writeFileSync(join(projectDir, 'shared.md'), '---\ndescription: project copy\nwaves: 2\nprofiles: patcher, code_scout\n---\n# Project shared')
+    writeFileSync(join(projectDir, '.notes.md'), '# Ordinary dotfile template')
+    writeFileSync(join(projectDir, '._shared.md'), '# Metadata project template')
+    writeFileSync(join(projectDir, '.DS_Store'), 'filesystem metadata')
+    const templates = loadPlanTemplates(cwd)
+    assert.deepEqual(templates.map(t => t.name), ['.notes', 'shared', 'user-only'])
+    const shared = getPlanTemplate(cwd, 'shared')!
+    assert.equal(shared.source, 'project')
+    assert.equal(shared.description, 'project copy')
+    assert.equal(shared.content, '# Project shared')
+    assert.equal(shared.estimatedWaves, 2)
+    assert.deepEqual(shared.recommendedProfiles, ['patcher', 'code_scout'])
+    assert.equal(getPlanTemplate(cwd, 'user-only')?.source, 'user')
+    assert.equal(getPlanTemplate(cwd, '.notes')?.content, '# Ordinary dotfile template')
+    assert.equal(getPlanTemplate(cwd, '._shared'), null)
+    assert.equal(getPlanTemplate(cwd, '._user-only'), null)
+  } finally {
+    if (previousHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = previousHome
+    rmSync(cwd, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})

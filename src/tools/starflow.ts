@@ -131,7 +131,7 @@ function formatProposal(
   // 发现磁盘只剩 1.3GiB，被迫降级重提。探测失败块缺席，绝不阻断提案。
   if (envBlock) lines.push(envBlock, '')
   lines.push(
-    `状态持久化：${statePath}（blocked/中断后可用 resume: true 续跑，已过阶段不重跑）`,
+    `点火后将持久化到：${statePath}（blocked/中断后可用 resume: true 续跑，已过阶段不重跑）`,
     '',
     '调用 starflow({..., confirm: true}) 点火执行。',
   )

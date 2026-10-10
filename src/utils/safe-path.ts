@@ -25,16 +25,22 @@ export function stripTerminalEscapes(text: string): string {
 
 /**
  * 语义与 scratch-cleanup 的 isSafeScratchName 同族（单段、非隐藏、非穿越），
- * 另加长度上限；允许 Unicode 与点号（既有技能名/计划 slug 的向后兼容面），
- * 拒绝分隔符、空字节、前导点与任何 `..` 序列。
+ * 另加长度上限；允许 Unicode 与非尾随点号（既有技能名/计划 slug 的向后兼容面），
+ * 拒绝分隔符、控制字符、Windows 非法字符 `<>:"|?*`（冒号即 NTFS ADS 暗道，
+ * 跨平台统一收紧）、尾随点/空格（Windows 落盘自动剥离，同名校验会失效）、
+ * 前导点与任何 `..` 序列。
  */
 const MAX_NAME_LENGTH = 200
 
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_FILE_NAME_CHARS = /[<>:"/\\|?*\x00-\x1F]/
+
 export function isSafeFileName(name: string): boolean {
   if (!name || name.length > MAX_NAME_LENGTH) return false
-  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false
+  if (FORBIDDEN_FILE_NAME_CHARS.test(name)) return false
   if (name.startsWith('.')) return false
   if (name.includes('..')) return false
+  if (/[. ]$/u.test(name)) return false
   // Windows 保留设备名（收编 PR #396）：CON.txt 等形态在 Win32 打开设备而非建
   // 文件，同名写入无声挂起或"成功"却无落盘——与 orderFileKey 拦冒号（ADS）同族。
   if (isWindowsDeviceName(name)) return false

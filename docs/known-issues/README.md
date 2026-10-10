@@ -22,6 +22,10 @@
 - `tui-duplicate-render-and-scroll`：Ink 栈已删，已失效
 - `2026-07-26-domain-pinning-only-in-tui-main`：钉定已下沉 loop.ts，已修复
 
+## 近期关闭（2026-10-10）
+
+- 2026-10-10-convergence-emit-reset-bombardment.md：收敛改道卡狂轰——方向 1（产出清账收窄，`16bd50457`）+ 方向 2（等待验证信标，`aed208de2`）+ 方向 3（course_changed 族级签名 + 静音贯通，本笔）全部落地，三层根因各有回归用例钉住（三层叠加，缺一都会残留缺口）。
+
 ## 近期关闭（2026-09-20）
 
 - [2026-09-20-request-body-truncation-hex-escape.md](2026-09-20-request-body-truncation-hex-escape.md)：用户实报 400 `unexpected end of hex escape`——请求体超限被上游按字节截断（4MB 常量声明未接线）。已修：体积护栏 + 全量清洗 + assistant 侧清洗 + 中文指引 + TUI/桌面 UI 提示 + 逼近上限预警；**用户侧原会话未回访确认**，复现手册见该篇「三步定位」。

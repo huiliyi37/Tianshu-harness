@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { buildWorkerDetailContent } from '../worker-detail.js'
 import { SessionPersist, getSessionDir } from '../../agent/session-persist.js'
 import { subagentsDir } from '../../config/paths.js'
+import { orderFileKey } from '../../utils/safe-path.js'
 import type { FleetWorkerView } from '../fleet-registry.js'
 
 function tmpCwd(): string {
@@ -48,7 +49,10 @@ function seedWorkerResult(workerId: string): void {
     provider: 'deepseek',
     usage: { input_tokens: 100, output_tokens: 50 },
   }
-  writeFileSync(join(dir, `${workerId}.json`), JSON.stringify(result, null, 2))
+  // 文件名与生产写路径同口径（orderFileKey 单射编码：`:`→`%3A`）。裸冒号
+  // 文件名是 Windows ADS 暗道，读路径已 fail-closed 不回退（安全决定）——
+  // seed 写裸名会让读取整段落空（与生产行为不符的假红）。
+  writeFileSync(join(dir, `${orderFileKey(workerId)}.json`), JSON.stringify(result, null, 2))
 }
 
 function liveView(over: Partial<FleetWorkerView> = {}): FleetWorkerView {
@@ -149,6 +153,6 @@ test('buildWorkerDetailContent degrades when result/session missing', () => {
 // Cleanup test result files to avoid leaking into real subagent cache.
 test('cleanup worker-detail test artifacts', () => {
   try {
-    rmSync(join(subagentsDir(), 'wo_team:T1.json'))
+    rmSync(join(subagentsDir(), `${orderFileKey('wo_team:T1')}.json`))
   } catch { /* ignore */ }
 })

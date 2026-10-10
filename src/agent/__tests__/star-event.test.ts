@@ -404,3 +404,33 @@ describe('ThetaState', () => {
     assert.equal(tickTheta(state, 0), true)
   })
 })
+
+describe('plan 相位进入门禁 + 后台活动证据（2026-10-09 用户报告：写码中被误报「plan 阶段进度信号弱」）', () => {
+  function makeSensorium(overrides: Partial<Sensorium> = {}): Sensorium {
+    return { momentum: 0.5, pressure: 0.3, confidence: 0.7, complexity: 0.3, freshness: 0.5, stability: 0.8, ...overrides }
+  }
+  function makeCtx(overrides: Partial<StarPhaseContext> = {}): StarPhaseContext {
+    return { turn: 3, isWriting: false, isRunningTests: false, isFinalTurn: false, hasEnteredHighComplexity: false, ...overrides }
+  }
+
+  it('执行/验证/交付相位不得无信号退回 plan 类相位', () => {
+    for (const prev of ['yuheng-implementing', 'kaiyang-testing', 'yaoguang-delivering'] as const) {
+      const s = makeSensorium({ complexity: 0.6 })
+      assert.equal(mapSensoriumToPhase(s, makeCtx({ previousPhase: prev })), prev, `${prev} → plan 类退回必须被门禁挡住`)
+    }
+  })
+
+  it('无上一相位（新 run 首评）时 plan 类相位正常可达', () => {
+    assert.equal(mapSensoriumToPhase(makeSensorium({ complexity: 0.6 }), makeCtx()), 'tianji-decomposing')
+  })
+
+  it('探索相位向 plan 演进不受门禁影响（早期自然流）', () => {
+    assert.equal(mapSensoriumToPhase(makeSensorium({ complexity: 0.6 }), makeCtx({ previousPhase: 'tianxuan-locating' })), 'tianji-decomposing')
+  })
+
+  it('后台 job 在推进时不落「规划」兜底相位', () => {
+    const s = makeSensorium({ freshness: 0.3 })
+    assert.equal(mapSensoriumToPhase(s, makeCtx({ backgroundWorkActive: true })), 'tianxuan-locating')
+    assert.equal(mapSensoriumToPhase(s, makeCtx()), 'tianshu-planning')
+  })
+})

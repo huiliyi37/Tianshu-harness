@@ -56,6 +56,11 @@ export function workerSessionPath(workOrderId: string, homeDir?: string): string
   return join(workerSubagentsDir(homeDir), `${orderFileKey(workOrderId)}.session.jsonl`)
 }
 
+function workerSessionRoundPath(id: string, nonce: string, homeDir?: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(nonce)) throw new Error('Invalid worker dispatch nonce')
+  return join(workerSubagentsDir(homeDir), `${orderFileKey(id)}.${nonce}.session.jsonl`)
+}
+
 /** 旧格式（未编码原名）候选路径——仅当编码改变名字时存在；读路径回退用。 */
 function legacySessionPath(workOrderId: string, homeDir?: string): string | null {
   if (orderFileKey(workOrderId) === workOrderId) return null
@@ -129,6 +134,7 @@ export function saveWorkerSession(
   homeDir?: string,
   checkpoint?: WorkerCheckpoint,
   continuation?: { frozenSnapshot?: FrozenSnapshotData; prefixProof?: ContinuationPrefixProof },
+  dispatchNonce?: string,
 ): WorkerPersistenceOutcome {
   try {
     const dir = workerSubagentsDir(homeDir)
@@ -154,6 +160,7 @@ export function saveWorkerSession(
       serialized = JSON.stringify(trimmed)
     }
     if (!writeAtomic(workerSessionPath(workOrderId, homeDir), serialized + '\n')) throw new Error('worker session manifest write failed')
+    if (dispatchNonce && !writeAtomic(workerSessionRoundPath(workOrderId, dispatchNonce, homeDir), serialized + '\n')) throw new Error('worker session archive write failed')
     return { ok: true }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -164,10 +171,10 @@ export function saveWorkerSession(
  *  Returns null on cold miss, empty file, corrupt content, or structurally
  *  invalid records. Explicit resume refuses execution on a missing record;
  *  display reads may report unavailable. v1 records remain readable. */
-export function loadWorkerSession(workOrderId: string, homeDir?: string): WorkerSessionRecord | null {
-  const candidates = [workerSessionPath(workOrderId, homeDir)]
+export function loadWorkerSession(workOrderId: string, homeDir?: string, dispatchNonce?: string): WorkerSessionRecord | null {
+  const candidates = [dispatchNonce ? workerSessionRoundPath(workOrderId, dispatchNonce, homeDir) : workerSessionPath(workOrderId, homeDir)]
   const legacy = legacySessionPath(workOrderId, homeDir)
-  if (legacy) candidates.push(legacy)
+  if (legacy && !dispatchNonce) candidates.push(legacy)
   for (const path of candidates) {
     if (!existsSync(path)) continue
     try {

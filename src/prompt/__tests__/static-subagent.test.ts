@@ -105,7 +105,7 @@ import type { ToolDefinition } from '../../api/types.js'
  */
 // 辅胶囊可读性调校：固定四栏目替换为五条按信息关系组织的规则，保留交付披露。
 // 静态前缀有意变更；新提示词可能冷启动缓存，运行中的冻结快照不在此迁移。
-const MAIN_PROMPT_SHA256 = 'ef3329996c264310e214dfafe24b7d4b817ae6a49f585a694387024c4e3a73e7'
+const MAIN_PROMPT_SHA256 = '8bcc4aa84fc00df2b9c8bd3335d16b54e8a53ce9e9ea92970929c81d56a50dfc'
 
 function tool(name: string): ToolDefinition {
   return { name, description: '', input_schema: { type: 'object', properties: {} } } as ToolDefinition

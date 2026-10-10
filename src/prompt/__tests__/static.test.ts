@@ -30,6 +30,25 @@ describe('buildSystemPrompt', () => {
     assert.ok(prompt.includes('</tool-usage>'))
   })
 
+  it('gated tools named in the prompt carry explicit gate/degradation notes (issue #413)', () => {
+    // 回归：提示词不得无条件指引调用默认运行时不存在的工具。
+    // apply_patch / read_section / inspect_project / repo_graph 属 EXTENDED
+    //（gateToolDefinitions 默认摘除，需 /tools enable 或 extraCore 挂回）；
+    // semantic_search / inspect_project / repo_graph 在 MINIMAL_EXCLUDES
+    //（仅 full 档注册：RIVET_TOOL_PRESET=full）。
+    // 若提示词提及其中之一，同一行必须写清启用条件与降级路径。
+    const prompt = buildSystemPrompt({ tools: [] })
+    const gated = ['apply_patch', 'semantic_search', 'inspect_project', 'repo_graph', 'read_section']
+    const gateMarker = /EXTENDED|full 档|RIVET_TOOL_PRESET|\/tools enable/
+    for (const name of gated) {
+      for (const line of prompt.split('\n')) {
+        if (line.includes(name)) {
+          assert.ok(gateMarker.test(line), `提及门控工具 ${name} 却未写清门控/降级：${line.trim()}`)
+        }
+      }
+    }
+  })
+
   it('selects reader-facing structure without imposing completion headings', () => {
     const prompt = buildSystemPrompt({ tools: [] })
     const delivery = prompt.match(/<delivery-contract>([\s\S]*?)<\/delivery-contract>/)![1]!

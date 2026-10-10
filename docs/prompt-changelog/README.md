@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-10-09 — tool-usage 门控工具标注启用条件与降级路径（issue #413）
+
+### 改了什么
+
+**`src/prompt/static.ts`** — `<tool-usage>` 章节 4 处 + `<rules>` 1 处，均为行内追加、行数不变：
+
+| 行 | 变更 |
+|---|---|
+| `- edit_file：` | "改用 apply_patch" 后追加门控注记（EXTENDED：默认不在工具列表，`/tools enable apply_patch` 挂回；无此工具时继续用 edit_file 分段改） |
+| `- hash_edit：` | "改用 edit_file 或 apply_patch" 改为"改用 edit_file；apply_patch 为 EXTENDED（/tools enable 挂回），不在列表时勿用" |
+| `- apply_patch：` | 整条追加 EXTENDED 注记（默认不在主控工具列表，需 `/tools enable apply_patch` 或配 extraCore；不可用时用 edit_file / hash_edit / write_file 替代） |
+| 探索行 | "为 full 档工具" 细化为"仅 full 档注册：RIVET_TOOL_PRESET=full；其中 inspect_project 另属 EXTENDED，需 /tools enable 挂回"；补降级"不在列表时用 repo_map / grep 替代" |
+| 大结果回报行 | "使用 read_section 拉取 artifact" 后追加（EXTENDED：`/tools enable read_section` 挂回；无此工具时用 read_file 的 offset/limit 分段读） |
+| `<rules>` 例外行 | "先 repo_map/inspect_project 建地图" 改为"先 repo_map 建地图（inspect_project 仅 full 档 + EXTENDED，在列表时优先）" |
+
+配套新增回归测试（`src/prompt/__tests__/static.test.ts`）：从 `<tool-usage>` 抽出门控工具名，断言每个提及处同行带有明确门控说明（EXTENDED / full 档 / RIVET_TOOL_PRESET / /tools enable），防止将来再次出现"提示词要求优先用、运行时不存在"的失配。
+
+### 为什么
+
+- issue #413：系统提示 `<tool-usage>` 无条件要求优先使用 apply_patch / semantic_search / inspect_project / repo_graph / read_section，但默认运行时（minimal 档 + 主控 EXTENDED deny-list）这 5 个工具均不在工具列表中，按提示词指引调用会直接失败。
+- 门控实测：`semantic_search` / `inspect_project` / `repo_graph` 在 `MINIMAL_EXCLUDES`（仅 full 档注册）；`apply_patch` / `read_section` / `inspect_project` / `repo_graph` 在 `EXTENDED_TOOLS`（`gateToolDefinitions` 默认摘除，需 `/tools enable` 或 `extraCore` 挂回）。源码文件存在≠运行时可见，提示词必须写清门控与降级——沿用 2026-07-19 browser_debug 降级为 EXTENDED 条件语义的同类处理。
+- 行内追加、不新增行：`kernel-budget.test.ts` 断言 BASE_PROMPT ≤253 行（现 248 行）且 identity+beliefs 占比 ≥5%（现约 5.24%），加行会破其一。
+
+### 备份
+
+- `docs/prompt-changelog/static.ts.pre-413-tool-usage-gating.bak` — 变更前完整文件
+
+### 回退方式
+
+```bash
+cp docs/prompt-changelog/static.ts.pre-413-tool-usage-gating.bak src/prompt/static.ts
+```
+
+---
+
 ## 2026-05-21 — 信念宪法精简 + 行动信条回归
 
 ### 改了什么

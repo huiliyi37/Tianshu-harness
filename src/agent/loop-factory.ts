@@ -1321,6 +1321,8 @@ export function createTurnOrchestrator(self: AgentLoop): TurnOrchestrator {
 
     // === Abort reason (watchdog vs user) ===
     getAbortReason: () => self.abortReason(),
+    isPendingAbort: () => self.isPendingAbort(),
+    clearWatchdogAbort: () => self.clearWatchdogAbort(),
     // 打断留痕开关（config `agent.interruptMarker` / env `RIVET_INTERRUPT_MARKER` 双通道；默认开）
     getInterruptMarkerEnabled: () => isInterruptMarkerEnabled(self.config.interruptMarker),
 

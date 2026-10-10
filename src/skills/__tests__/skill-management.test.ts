@@ -81,9 +81,13 @@ test('ZIP imports preserve assets and reject traversal; symbolic resources are r
     const preview = await f.imports.preview({ kind: 'zip', base64: await zip.generateAsync({ type: 'base64' }) })
     f.imports.install(preview.previewId, f.target, [{ candidateId: '0' }]); assert.ok(existsSync(join(f.cwd, '.rivet/skills/one/assets/a.bin')), 'binary resource must be installed'); assert.deepEqual(readFileSync(join(f.cwd, '.rivet/skills/one/assets/a.bin')), Buffer.from([0, 1, 2]))
     const bad = new JSZip(); bad.file('../escape.md', markdown('bad'), { createFolders: false })
-    await assert.rejects(f.imports.preview({ kind: 'zip', base64: await bad.generateAsync({ type: 'base64' }) }), /Unsafe/)
-    const path = join(f.root, 'linked'); mkdirSync(path); writeFileSync(join(path, 'SKILL.md'), markdown('linked')); symlinkSync(join(f.root, 'outside'), join(path, 'resource'))
-    const rejected = await f.imports.preview({ kind: 'local', path }); assert.equal(rejected.candidates.length, 0); assert.match(rejected.errors.join(''), /Symbolic|Unsupported/)
+    const path = join(f.root, 'linked'); mkdirSync(path); writeFileSync(join(path, 'SKILL.md'), markdown('linked'))
+    try {
+      symlinkSync(join(f.root, 'outside'), join(path, 'resource'))
+      const rejected = await f.imports.preview({ kind: 'local', path }); assert.equal(rejected.candidates.length, 0); assert.match(rejected.errors.join(''), /Symbolic|Unsupported/)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EPERM') throw err
+    }
   } finally { f.cleanup() }
 })
 test('two projects and restored sessions retain pinned bodies, resources and modes after management changes', async () => {

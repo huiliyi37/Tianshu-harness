@@ -338,8 +338,10 @@ export class McpManager {
       // onclose 是异步（子进程 'close' 事件）触发的，此处清掉它就等于没抑制。
       // 下一次 _connectServer 成功时会清。
       this.suppressReconnect.add(serverId)
-      try { await conn.transport.close() } catch { /* best-effort */ }
-      this.connections.delete(serverId)
+      try {
+        await conn.transport.close()
+        this.connections.delete(serverId)
+      } catch { /* best-effort: keep connection in map for killChildrenSync */ }
     }
     this.reconnectAttempts.delete(serverId)
     this.pendingApprovals.delete(serverId)
@@ -413,8 +415,10 @@ export class McpManager {
         const mcpTools = await this._discoverTools(serverId, server)
         if (!isCurrent()) {
           this.suppressReconnect.add(serverId)
-          try { await server.transport.close() } catch { /* best-effort */ }
-          this.connections.delete(serverId)
+          try {
+            await server.transport.close()
+            this.connections.delete(serverId)
+          } catch { /* best-effort: keep connection in map for killChildrenSync */ }
           return []
         }
 
@@ -428,8 +432,10 @@ export class McpManager {
         })
         if (inventory.action === 'block') {
           this.suppressReconnect.add(serverId) // 防 close→onclose→自动重连→再拦 循环
-          this.connections.delete(serverId)
-          try { await server.transport.close() } catch { /* best-effort */ }
+          try {
+            await server.transport.close()
+            this.connections.delete(serverId)
+          } catch { /* best-effort: keep connection in map for killChildrenSync */ }
           this._recordApprovalHold(serverId, serverConfig, 'awaiting', inventory.pending)
           return []
         }
@@ -521,8 +527,11 @@ export class McpManager {
         return rivetTools
       } catch (err) {
         // Tool discovery failed — close the transport that was just opened
-        try { await server.transport.close() } catch { /* best-effort */ }
-        this.connections.delete(serverId)
+        this.suppressReconnect.add(serverId)
+        try {
+          await server.transport.close()
+          this.connections.delete(serverId)
+        } catch { /* best-effort: keep connection in map for killChildrenSync */ }
         throw err
       }
     } catch (err) {

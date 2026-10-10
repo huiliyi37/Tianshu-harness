@@ -303,6 +303,8 @@ export interface TurnOrchestratorDeps {
 
   // === Abort reason (watchdog vs user) ===
   getAbortReason: () => string | undefined
+  isPendingAbort?: () => boolean
+  clearWatchdogAbort?: () => void
 
   // === 打断留痕（任务 4）===
   /** 用户 Stop 时保留 partial + 追加 [interrupted] 标记的开关（config `agent.interruptMarker` / env 双通道，默认开）。 */
@@ -1328,20 +1330,26 @@ export class TurnOrchestrator {
             // (false positives — batch finished, watchdog misfired), rescue
             // the result and continue the turn normally. For user Esc, drain
             // and abort as before — the user wants to stop.
+            let drainTimer: ReturnType<typeof setTimeout> | undefined
             const abandonedResult = await Promise.race([
               batchPromise.then(
                 (v): { resolved: true; value: ExecuteBatchResult } => ({ resolved: true, value: v }),
                 (e): { resolved: false; error: unknown } => ({ resolved: false, error: e }),
               ),
-              new Promise<{ resolved: false; error: unknown }>((resolve) =>
-                setTimeout(() => resolve({ resolved: false, error: err }), TOOL_ABORT_DRAIN_MS),
-              ),
-            ])
+              new Promise<{ resolved: false; error: unknown }>((resolve) => {
+                drainTimer = setTimeout(() => resolve({ resolved: false, error: err }), TOOL_ABORT_DRAIN_MS)
+                drainTimer.unref?.()
+              }),
+            ]).finally(() => {
+              if (drainTimer) clearTimeout(drainTimer)
+            })
 
             if (abandonedResult.resolved) {
               const abortTag = this.deps.getAbortReason()
-              if (abortTag?.includes('watchdog')) {
+              const isUserAborted = this.deps.isPendingAbort?.() ?? false
+              if (abortTag?.includes('watchdog') && !isUserAborted) {
                 // Watchdog false positive: batch completed, rescue it.
+                this.deps.clearWatchdogAbort?.()
                 r = abandonedResult.value
                 debugLog(`[turn-orch] rescued abandoned batch after watchdog abort (${r.toolCount} tools)`)
                 this.applyBatchState(r)

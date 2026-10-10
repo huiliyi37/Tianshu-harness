@@ -1410,6 +1410,17 @@ export class AgentLoop {
     this.abortController?.abort()
   }
 
+  isPendingAbort(): boolean {
+    return this._pendingAbort
+  }
+
+  clearWatchdogAbort(): void {
+    this._watchdogAborted = false
+    if (!this._pendingAbort) {
+      this.abortController = new AbortController()
+    }
+  }
+
   setApprovalMode(mode: ApprovalMode): void {
     this.config.approvalMode = mode
     // Mirror into the prompt engine so the permission note tracks the live mode.

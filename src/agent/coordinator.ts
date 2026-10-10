@@ -190,6 +190,11 @@ export function deriveWorkOrderId(parentTurnId: string, delegationDepth?: number
   return ns ? `${ns}:${stableId}` : stableId
 }
 
+/** 派发实例键：parentTurnId 唯一标识本批本轮次任务，防并发批 side-table 串批/互删。 */
+export function orderDispatchKey(order: WorkOrder): string {
+  return order.parentTurnId || order.id
+}
+
 const TIER_FLOOR_RANK: Record<ModelTier, number> = { cheap: 0, balanced: 1, strong: 2 }
 
 /** 瑶光门语义：floor 是「不得低于」的硬地板，只抬升不降级。 */
@@ -2096,11 +2101,11 @@ export class DelegationCoordinator {
     workerConfig.mailbox = mailbox
     // Batch-scoped shared prewarm (delegateBatch 派发前预热 + 同批 worker 互暖)。
     // 单发 delegate() 路径不入表，worker 用 AgentLoop 实例默认 cache（历史行为）。
-    const batchPrewarmCache = this.batchPrewarmByOrder.get(order.id)
+    const batchPrewarmCache = this.batchPrewarmByOrder.get(orderDispatchKey(order)) ?? this.batchPrewarmByOrder.get(order.id)
     if (batchPrewarmCache) workerConfig.prewarm = batchPrewarmCache
     // 批级共享信息素（星河收编 #3）：读工默认共享；写工显式 opt-in 才挂——
     // 信号可能引导实现偏向，守护写工实现独立性。
-    const batchStigmergy = this.batchStigmergyByOrder.get(order.id)
+    const batchStigmergy = this.batchStigmergyByOrder.get(orderDispatchKey(order)) ?? this.batchStigmergyByOrder.get(order.id)
     if (batchStigmergy && (classifyProfile(order.profile) !== 'hands' || order.batchStigmergy)) {
       workerConfig.stigmergy = batchStigmergy
     }
@@ -2230,7 +2235,7 @@ export class DelegationCoordinator {
           if (settled) return
           // Distinguish policy-cancel (must not go to stall/provider-fault path) from
           // stall-sweep abort (per-order controller fired, parent did not).
-          const policyCancel = this.policyCancelledIds.has(order.id)
+          const policyCancel = this.policyCancelledIds.has(orderDispatchKey(order)) || this.policyCancelledIds.has(order.id)
           const stallAbort = !policyCancel && orderController.signal.aborted && !parentSignal?.aborted
           const stallSecs = (() => {
             const ms = this.liveness.tolerance(order.id)
@@ -2309,8 +2314,9 @@ export class DelegationCoordinator {
 
     // A4: arm the stall clock only once dispatch is committed (all early
     // blocked returns above never register, so they can't leak entries).
+    this.orderControllers.set(orderDispatchKey(order), orderController)
     this.orderControllers.set(order.id, orderController)
-    this.liveness.register(order.id, this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
+    this.liveness.register(orderDispatchKey(order), this.config.workerStallMs ?? deriveWorkerStallMs({ providerName: workerConfig.providerName, baseUrl: workerConfig.baseUrl, slowThinking: workerConfig.slowThinking, isWrite }))
     this.ensureStallSweep()
 
     try {
@@ -2807,12 +2813,18 @@ export class DelegationCoordinator {
       config => wrapAbort(this.runWorker(config)))
     } finally {
       // All rounds share one cancellation, steering and activity lifecycle.
+      this.liveness.unregister(orderDispatchKey(order))
       this.liveness.unregister(order.id)
-      this.orderControllers.delete(order.id)
+      this.orderControllers.delete(orderDispatchKey(order))
+      if (this.orderControllers.get(order.id) === orderController) {
+        this.orderControllers.delete(order.id)
+      }
       this.liveMessages.delete(order.id)
       this.nestedUpstream.delete(order.id)
       this.activityUpstream.delete(order.id)
+      this.batchPrewarmByOrder.delete(orderDispatchKey(order))
       this.batchPrewarmByOrder.delete(order.id)
+      this.batchStigmergyByOrder.delete(orderDispatchKey(order))
       this.batchStigmergyByOrder.delete(order.id)
       this.resumeMessages.delete(order.id)
       this.resumeBaselines.delete(order.id)
@@ -3043,11 +3055,11 @@ export class DelegationCoordinator {
     if (orders.length > 0) {
       const batchCache = new PrewarmCache(60_000, 50)
       const files = [...new Set(orders.flatMap(o => o.scope.files ?? []))]
-      for (const order of orders) this.batchPrewarmByOrder.set(order.id, batchCache)
+      for (const order of orders) this.batchPrewarmByOrder.set(orderDispatchKey(order), batchCache)
       // 批级共享信息素（星河收编 #3）：内存 store 不落盘，生命周期 = 本次
       // delegateBatch。写工默认不注入（守护实现独立性），读工共享。
       const batchStigmergy = new StigmergyStore(undefined)
-      for (const order of orders) this.batchStigmergyByOrder.set(order.id, batchStigmergy)
+      for (const order of orders) this.batchStigmergyByOrder.set(orderDispatchKey(order), batchStigmergy)
       if (files.length > 0) {
         await batchPrewarm(this.config.cwd ?? process.cwd(), files, batchCache, 25).catch(() => {})
       }
@@ -3126,13 +3138,15 @@ export class DelegationCoordinator {
             }
             // in-flight：登记后 abort（结果经 catch 合成）
             for (const o of queue.inFlight().filter(x => x.id !== order.id && inScope(x))) {
+              this.policyCancelledIds.add(orderDispatchKey(o))
               this.policyCancelledIds.add(o.id)
-              this.orderControllers.get(o.id)?.abort()
+              const ctrl = this.orderControllers.get(orderDispatchKey(o)) ?? this.orderControllers.get(o.id)
+              ctrl?.abort()
             }
           }
         }
       } catch (error) {
-        const failure = this.policyCancelledIds.has(order.id)
+        const failure = (this.policyCancelledIds.has(orderDispatchKey(order)) || this.policyCancelledIds.has(order.id))
           ? buildPolicyCancelledResult(order, policyLabel)
           : workerFailureResult(order, error, { failureReason: classifyWorkerError(error) })
         allResults.push(failure)
@@ -3216,7 +3230,12 @@ export class DelegationCoordinator {
     // safe under true concurrent execution — no shared instance state is
     // mutated per call, hence nothing to restore here.
     } finally {
-      for (const o of orders) this.policyCancelledIds.delete(o.id)
+      for (const o of orders) {
+        this.policyCancelledIds.delete(orderDispatchKey(o))
+        this.policyCancelledIds.delete(o.id)
+        this.batchPrewarmByOrder.delete(orderDispatchKey(o))
+        this.batchStigmergyByOrder.delete(orderDispatchKey(o))
+      }
     }
   }
 }

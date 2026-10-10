@@ -627,7 +627,23 @@ export class McpManager {
             const oauthHeaders = resolveOAuthHeaders(provider.id, token)
             transportOpts.getHeaders = async () => ({ ...staticHeaders, ...oauthHeaders })
           }
+        } else {
+          // fail-closed：`auth.oauth` 声明了 token 来源，token 缺失/过期时必须在发起
+          // 请求**之前**失败。此前这里静默跳过鉴权注入、把裸请求发出去——用户看到的
+          // 是服务端的 "missing required Authorization header"，排查方向被带偏到命令
+          // /网络，而真正该做的是重新授权。
+          throw new Error(
+            `OAuth token for MCP server "${serverId}" is missing or expired — `
+            + `re-authorize this server (run \`/mcp auth ${serverId}\`, or reconnect from settings)`,
+          )
         }
+      } else {
+        // 同一不变量：声明了 auth.oauth 就必须能解析出凭据来源。provider 未注册时
+        // 同样不发裸请求（否则与 token 缺失一样静默裸连）。
+        throw new Error(
+          `MCP server "${serverId}" declares OAuth provider "${cfg.auth.provider}" `
+          + `but no such provider is registered — fix the server's auth.provider config`,
+        )
       }
     }
 

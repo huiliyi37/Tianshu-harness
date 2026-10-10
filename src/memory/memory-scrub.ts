@@ -37,8 +37,12 @@ const SENSITIVE_PATTERN = new RegExp(
     String.raw`eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}`,
     // 显式赋值的凭据
     String.raw`(api[_-]?key|secret|password|passwd|token|access[_-]?token|auth)\s*[:=]\s*[^\s,;'"<>]{4,}`,
-    // 私钥块
-    String.raw`-{5}BEGIN (RSA|EC|OPENSSH|PGP|DSA|PRIVATE) KEY-{5}`,
+    // 私钥块：真实 PEM 头的类型词与 KEY 之间是 PRIVATE（RSA PRIVATE KEY /
+    // OPENSSH PRIVATE KEY / EC PRIVATE KEY / DSA PRIVATE KEY），另有裸
+    // PRIVATE KEY（PKCS#8）与 PGP PRIVATE KEY BLOCK。必须**整块**替换——
+    // 从头行起、吞掉主体 base64 行，直到同型 END 尾；只替头行会让 base64
+    // 主体漏存进长期记忆。无 END 尾（只有头行）时退化为只替头行。
+    String.raw`-{5}BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-{5}(?:[\s\S]*?-{5}END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-{5})?`,
     // 常见环境变量式
     String.raw`(DEEPSEEK|OPENAI|ANTHROPIC|GITHUB|AWS|GITLAB|HUGGINGFACE|HF|AZURE|GOOGLE)[_ ]?(API)?[_ ]?(KEY|SECRET|TOKEN)\s*=\s*\S+`,
   ].join('|'),

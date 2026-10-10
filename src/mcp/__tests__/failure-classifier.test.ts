@@ -171,3 +171,27 @@ describe('classifyMcpError · stdio 连接超时（握手未完成 ≠ 网络抖
     assert.equal(result.class, 'network')
   })
 })
+
+// 鉴权特征覆盖——两条错误文本取自 MCP remote 服务端的真实 401 响应（实测复现）：
+//   - api.githubcopilot.com/mcp/ 无 Authorization 头 → "bad request: missing required Authorization header"
+//   - mcp.liblib.tv/mcp 带失效 Bearer → {"error":"invalid_token","error_description":"Authentication required"}
+// 两者此前都掉进默认 tool_error，UI 只能给出通用提示，把用户引向「检查命令/网络」的错误方向。
+describe('classifyMcpError 鉴权特征（remote 实测形态）', () => {
+  it('missing required Authorization header 归 auth 类', () => {
+    const result = classifyMcpError(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: bad request: missing required Authorization header — Read the error output for details.',
+    ))
+    assert.equal(result.class, 'auth')
+    assert.equal(result.retryable, false)
+    assert.match(result.suggestion, /re-authorize/i)
+  })
+
+  it('invalid_token / Authentication required 归 auth 类', () => {
+    const result = classifyMcpError(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error": "invalid_token", "error_description": "Authentication required"} — Read the error output for details.',
+    ))
+    assert.equal(result.class, 'auth')
+    assert.equal(result.retryable, false)
+    assert.match(result.suggestion, /re-authorize/i)
+  })
+})

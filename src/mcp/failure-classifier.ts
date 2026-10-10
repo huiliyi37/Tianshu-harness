@@ -102,8 +102,15 @@ export function classifyMcpError(error: unknown, context?: McpErrorContext): Cla
   }
 
   // Auth errors
-  if (/401|403|permission denied|unauthorized|forbidden|scope|oauth|api key/i.test(msg)) {
-    return { class: 'auth', retryable: false, suggestion: 'Check API key or OAuth configuration for this MCP server.' }
+  // authorization / invalid_token / authentication required 三条特征来自 remote 服务端
+  // 401 实测形态（GitHub MCP 缺 Authorization 头、liblib 失效 Bearer）——它们此前都不
+  // 命中本分支，掉进默认 tool_error，UI 于是给出「读错误输出」的通用提示。
+  if (/401|403|permission denied|unauthorized|forbidden|scope|oauth|api key|authorization|invalid[_ -]?token|authentication required|bearer/i.test(msg)) {
+    return {
+      class: 'auth',
+      retryable: false,
+      suggestion: 'Check API key or OAuth configuration for this MCP server. If the token is expired or revoked, re-authorize the server.',
+    }
   }
 
   // stdio 连接超时：本地管道不存在"网络"。子进程被拉起但始终没有完成 MCP 握手

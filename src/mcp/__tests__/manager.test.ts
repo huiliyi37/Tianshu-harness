@@ -603,3 +603,61 @@ describe('McpManager 清单快照门（rug pull 防线 ①③）', () => {
     })
   })
 })
+
+// OAuth fail-closed：server 声明了 auth.oauth，但 token 缺失/过期时，连接必须在发起
+// 请求**之前**失败——现状是静默跳过鉴权注入、把裸请求发出去，用户看到的报错来自
+// 服务端（"missing required Authorization header"），排查方向被带偏到命令/网络。
+describe('McpManager OAuth fail-closed', () => {
+  it('token 缺失时不发裸请求，直接给出 auth 类错误与重新授权指引', async () => {
+    const prevHome = process.env.RIVET_HOME
+    const prevClient = process.env.RIVET_MCP_OAUTH_CLIENT_ID
+    // 空 home：mcp-oauth/ 不存在 → loadMcpOAuthToken() 必为 null
+    process.env.RIVET_HOME = mkdtempSync(join(tmpdir(), 'mcp-oauth-fc-'))
+    delete process.env.RIVET_MCP_OAUTH_CLIENT_ID
+    try {
+      const mgr = new McpManager({
+        enabled: true,
+        servers: {
+          gh: {
+            // discard 端口：若仍裸连，会得到 connection refused（network 类）而非 auth 类
+            url: 'http://127.0.0.1:9/mcp',
+            auth: { type: 'oauth', provider: 'github' },
+          },
+        },
+        timeoutMs: 3000,
+      })
+      await mgr.initialize()
+      const st = mgr.getStates().find((s) => s.serverId === 'gh')
+      assert.ok(st, 'gh state exists')
+      assert.equal(st.status, 'error')
+      assert.equal(st.lastErrorClass, 'auth')
+      assert.match(st.error ?? '', /re-authorize/i)
+      assert.equal(st.toolCount, 0)
+    } finally {
+      if (prevHome === undefined) delete process.env.RIVET_HOME
+      else process.env.RIVET_HOME = prevHome
+      if (prevClient === undefined) delete process.env.RIVET_MCP_OAUTH_CLIENT_ID
+      else process.env.RIVET_MCP_OAUTH_CLIENT_ID = prevClient
+    }
+  })
+
+  it('OAuth provider 未注册时同样 fail-closed，不发裸请求', async () => {
+    const mgr = new McpManager({
+      enabled: true,
+      servers: {
+        x: {
+          url: 'http://127.0.0.1:9/mcp',
+          auth: { type: 'oauth', provider: 'no-such-provider' },
+        },
+      },
+      timeoutMs: 3000,
+    })
+    await mgr.initialize()
+    const st = mgr.getStates().find((s) => s.serverId === 'x')
+    assert.ok(st, 'x state exists')
+    assert.equal(st.status, 'error')
+    assert.equal(st.lastErrorClass, 'auth')
+    assert.match(st.error ?? '', /no such provider/i)
+    assert.equal(st.toolCount, 0)
+  })
+})

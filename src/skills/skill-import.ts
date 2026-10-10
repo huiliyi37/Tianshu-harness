@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { cloneGitSource } from '../plugins/git-source.js'
 import { execFileGit } from '../tools/spawn-git.js'
-import { inside, readPackage, scanPackages, validateResourcePath, type SkillPackage } from './skill-package.js'
+import { inside, readPackage, scanPackages, skillPackagePath, validateResourcePath, type SkillPackage } from './skill-package.js'
 import { SkillManagement, type SkillContext, type SkillOrigin } from './skill-management.js'
 
 export type ImportSource = { kind: 'local'; path: string } | { kind: 'git'; url: string; ref?: string; subpath?: string }
@@ -92,7 +92,7 @@ export class SkillImports {
     if (!pkg) throw new Error('Candidate not found')
     const current = this.management.inspect(skillId, cwd)
     if (!current.path) throw new Error('This source cannot be overwritten')
-    const previous = readPackage(current.path.endsWith('/SKILL.md') ? dirname(current.path) : current.path)
+    const previous = readPackage(skillPackagePath(current.path))
     const old = new Map(previous.files.map(f => [f.path, f])), next = new Map(pkg.files.map(f => [f.path, f]))
     const changes = [...new Set([...old.keys(), ...next.keys()])].sort().flatMap(path => {
       const before = old.get(path), after = next.get(path)
@@ -113,7 +113,7 @@ export class SkillImports {
   copy(skillId: string, context: SkillContext, cwd?: string) {
     const skill = this.management.inspect(skillId, cwd)
     if (!skill.path) throw new Error('This skill has no installable package')
-    return this.management.install(readPackage(skill.files.includes('SKILL.md') && skill.path.endsWith('/SKILL.md') ? dirname(skill.path) : skill.path), context)
+    return this.management.install(readPackage(skill.files.includes('SKILL.md') ? skillPackagePath(skill.path) : skill.path), context)
   }
 }
 function git(args: string[], cwd: string): Promise<string> {

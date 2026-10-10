@@ -1317,15 +1317,21 @@ export class TurnOrchestrator {
             // (false positives — batch finished, watchdog misfired), rescue
             // the result and continue the turn normally. For user Esc, drain
             // and abort as before — the user wants to stop.
+            let drainTimer: ReturnType<typeof setTimeout> | undefined
             const abandonedResult = await Promise.race([
               batchPromise.then(
                 (v): { resolved: true; value: ExecuteBatchResult } => ({ resolved: true, value: v }),
                 (e): { resolved: false; error: unknown } => ({ resolved: false, error: e }),
               ),
-              new Promise<{ resolved: false; error: unknown }>((resolve) =>
-                setTimeout(() => resolve({ resolved: false, error: err }), TOOL_ABORT_DRAIN_MS),
-              ),
+              new Promise<{ resolved: false; error: unknown }>((resolve) => {
+                drainTimer = setTimeout(() => resolve({ resolved: false, error: err }), TOOL_ABORT_DRAIN_MS)
+                // 不 unref 会让一次 abort 顶住进程退出整整 6s；不 clear 则每次
+                // abort 都在长会话里堆积一个活定时器。与同文件 heartbeat 路径
+                // 的成对 disarm/rearm 保持一致。
+                drainTimer.unref?.()
+              }),
             ])
+            if (drainTimer) clearTimeout(drainTimer)
 
             if (abandonedResult.resolved) {
               const abortTag = this.deps.getAbortReason()

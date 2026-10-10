@@ -316,6 +316,25 @@ export class McpManager {
     this.connections.clear()
   }
 
+  /**
+   * Close a transport and deregister it — but only drop the registration once
+   * the close actually succeeded. killChildrenSync() (the process-exit path)
+   * discovers child pids by iterating `connections`; deleting the entry before
+   * (or despite) a failed close leaves the still-running child unreachable and
+   * orphaned. On close failure we keep the entry so the exit path can still
+   * SIGKILL it, and suppress reconnect.
+   */
+  private async _closeAndDeregister(serverId: string, server: ConnectedServer): Promise<void> {
+    try {
+      await server.transport.close()
+      this.connections.delete(serverId)
+    } catch {
+      // close threw — the child may still be alive; keep it registered so
+      // killChildrenSync() can reap it, and don't let onclose reconnect it.
+      this.suppressReconnect.add(serverId)
+    }
+  }
+
   /** Shut down a single server by id — for the REST API restart/remove flow. */
   async shutdownServer(serverId: string): Promise<void> {
     this.connectionGenerations.set(serverId, (this.connectionGenerations.get(serverId) ?? 0) + 1)
@@ -336,8 +355,7 @@ export class McpManager {
       // onclose 是异步（子进程 'close' 事件）触发的，此处清掉它就等于没抑制。
       // 下一次 _connectServer 成功时会清。
       this.suppressReconnect.add(serverId)
-      try { await conn.transport.close() } catch { /* best-effort */ }
-      this.connections.delete(serverId)
+      await this._closeAndDeregister(serverId, conn)
     }
     this.reconnectAttempts.delete(serverId)
     this.pendingApprovals.delete(serverId)
@@ -397,7 +415,13 @@ export class McpManager {
       const server = await this._connectServer(serverId, serverConfig)
       if (!isCurrent()) {
         this.suppressReconnect.add(serverId)
-        try { await server.transport.close() } catch { /* best-effort */ }
+        // 子进程已 spawn 但 generation 过期——close 失败时把它登记进 connections
+        // （而非放任孤儿），让退出路径的 killChildrenSync 仍能回收。
+        try {
+          await server.transport.close()
+        } catch {
+          this.connections.set(serverId, server)
+        }
         return []
       }
       stderrTail = server.stderrTail?.() ?? ''
@@ -411,8 +435,7 @@ export class McpManager {
         const mcpTools = await this._discoverTools(serverId, server)
         if (!isCurrent()) {
           this.suppressReconnect.add(serverId)
-          try { await server.transport.close() } catch { /* best-effort */ }
-          this.connections.delete(serverId)
+          await this._closeAndDeregister(serverId, server)
           return []
         }
 
@@ -426,8 +449,7 @@ export class McpManager {
         })
         if (inventory.action === 'block') {
           this.suppressReconnect.add(serverId) // 防 close→onclose→自动重连→再拦 循环
-          this.connections.delete(serverId)
-          try { await server.transport.close() } catch { /* best-effort */ }
+          await this._closeAndDeregister(serverId, server)
           this._recordApprovalHold(serverId, serverConfig, 'awaiting', inventory.pending)
           return []
         }
@@ -519,8 +541,7 @@ export class McpManager {
         return rivetTools
       } catch (err) {
         // Tool discovery failed — close the transport that was just opened
-        try { await server.transport.close() } catch { /* best-effort */ }
-        this.connections.delete(serverId)
+        await this._closeAndDeregister(serverId, server)
         throw err
       }
     } catch (err) {

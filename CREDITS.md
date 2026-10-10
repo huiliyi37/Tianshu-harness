@@ -426,3 +426,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #406 fix(tui): 优化消息排队与插队引导机制（对齐 Codex CLI 排队契约）（CLOSED）
 - #437 fix(cli): 适配远控终端并修复跨平台运行与持久化问题（OPEN）
 - #440 fix(mcp): OAuth token 缺失 fail-closed，鉴权 401 归 auth 类——不再静默裸连（OPEN）
+- #436 fix(mcp): close 成功才摘除连接登记，杜绝孤儿子进程（OPEN）

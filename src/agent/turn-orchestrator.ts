@@ -303,6 +303,11 @@ export interface TurnOrchestratorDeps {
 
   // === Abort reason (watchdog vs user) ===
   getAbortReason: () => string | undefined
+  /** P7 rescue：成功认领 watchdog 假阳性后，清除 abort 状态（换新 controller、
+     清 _watchdogAborted/_pendingAbort），让本轮真正继续。若期间有真实用户 Esc
+     待处理（_pendingAbort 已置位），返回 false 且不清除——用户的 Esc 必须被兑现，
+     不能被 rescue 静默吞掉。 */
+  resetAbortAfterRescue: () => boolean
 
   // === 打断留痕（任务 4）===
   /** 用户 Stop 时保留 partial + 追加 [interrupted] 标记的开关（config `agent.interruptMarker` / env 双通道，默认开）。 */
@@ -1381,6 +1386,13 @@ export class TurnOrchestrator {
                 // the signal is still aborted from the watchdog; the loop-header
                 // abort check will see _rescuedFromWatchdog and skip it.
                 await this.deps.completeTurn({ turn, isFinal: false, callbacks })
+                // 必须真正清除 abort 状态（换新 controller），否则循环头跳过后，
+                // 紧接着的 rejectOnAbort(compaction) 会因 signal 仍 aborted 立即
+                // 再次中止——rescue 形同虚设。若期间有真实用户 Esc 待处理，
+                // resetAbortAfterRescue 返回 false → 兑现 Esc，不 rescue。
+                if (!this.deps.resetAbortAfterRescue()) {
+                  throw err
+                }
                 this._rescuedFromWatchdog = true
                 continue
               }

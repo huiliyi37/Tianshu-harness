@@ -1410,6 +1410,34 @@ export class AgentLoop {
     this.abortController?.abort()
   }
 
+  /**
+   * P7 rescue: the hard-stall watchdog fired a false positive and the tool batch
+   * actually completed successfully. Clear the abort state so the turn can
+   * continue instead of being re-aborted by the next turn-boundary step.
+   *
+   * Why a fresh controller is required: the rescue branch `continue`s back to the
+   * loop header, but every turn-boundary step races its work against the *same*
+   * still-aborted signal (`rejectOnAbort` returns an immediate rejection when
+   * `signal.aborted` is already true). Merely clearing the `_rescuedFromWatchdog`
+   * flag lets the header check pass, yet the very next `rejectOnAbort` re-aborts —
+   * the rescue silently does nothing. Swapping in a fresh controller un-aborts the
+   * signal the next iteration reads.
+   *
+   * Fail-closed on a real user Esc: `abort()` sets `_pendingAbort`, which is the
+   * one signal that distinguishes "user wants to stop" from "watchdog misfired".
+   * If a user abort is pending we refuse to rescue and leave the aborted state
+   * intact, so the Esc is honored (not swallowed by the rescue).
+   *
+   * @returns true if the abort state was cleared (turn may continue), false if a
+   *          pending user abort must be honored instead.
+   */
+  resetAbortAfterRescue(): boolean {
+    if (this._pendingAbort) return false
+    this._watchdogAborted = false
+    this.abortController = new AbortController()
+    return true
+  }
+
   setApprovalMode(mode: ApprovalMode): void {
     this.config.approvalMode = mode
     // Mirror into the prompt engine so the permission note tracks the live mode.

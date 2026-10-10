@@ -432,3 +432,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #433 fix(coordinator): 批级共享表以派发唯一的 parentTurnId 为键，消除顶层批 order-id 碰撞（OPEN）
 - #438 fix(mcp): close 成功才摘除连接登记，杜绝孤儿子进程（OPEN）
 - #422 fix(security): 修复 memory-scrub 私钥检测正则漏检与主体残留（OPEN）
+- #415 fix(prompt): 标注 tool-usage 门控工具的启用条件与降级路径（OPEN）

@@ -424,3 +424,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #403 fix(server): 续跑不再把模型 id 的区域前缀误判为 provider 名（CLOSED）
 - #410 fix: git 全局参数绕过危险命令审批门；修复 semver prerelease 解析与 Bearer 大小写（CLOSED）
 - #406 fix(tui): 优化消息排队与插队引导机制（对齐 Codex CLI 排队契约）（CLOSED）
+- #437 fix(cli): 适配远控终端并修复跨平台运行与持久化问题（OPEN）

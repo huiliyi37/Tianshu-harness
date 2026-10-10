@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   buildEngineChain,
@@ -200,6 +200,18 @@ trailer<</Root 1 0 R>>
       const runner: CommandRunner = async () => { throw enoent() }
       const pages = await renderPdfPageImages('/tmp/whatever.pdf', { runner })
       assert.deepEqual(pages, [])
+    })
+
+    it('pdftoppm excludes AppleDouble sidecars while preserving numeric page order and bytes', async () => {
+      const runner: CommandRunner = async (_binary, args) => {
+        const outPrefix = args[args.length - 1]!
+        for (const page of [10, 2, 1]) writeFileSync(`${outPrefix}-${page}.png`, `page-${page}`)
+        writeFileSync(join(dirname(outPrefix), '._page-1.png'), Buffer.from([0, 5, 22, 7]))
+        writeFileSync(join(dirname(outPrefix), '._page-2.png'), 'filesystem-metadata')
+        return { stdout: '' }
+      }
+      const pages = await renderPdfPageImages('/tmp/whatever.pdf', { runner, maxPages: 10 })
+      assert.deepEqual(pages.map(page => Buffer.from(page.split(',')[1]!, 'base64').toString()), ['page-1', 'page-2', 'page-10'])
     })
 
     it('渲染产出为空目录 → 空数组（扫描件/异常 PDF 不炸调用方）', async () => {

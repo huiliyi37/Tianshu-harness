@@ -377,6 +377,30 @@ test('computer_use approve + remember records a per-app grant (always allow)', a
   assert.equal(isAppGranted('Notes'), false, 'reject+remember must not grant')
 })
 
+test('computer_use remembers the edited app instead of the original approval target', async (t) => {
+  const { isAppGranted } = await import('../../tools/computer-use/app-grants.js')
+  const home = mkdtempSync(join(tmpdir(), 'rivet-cu-edited-'))
+  writeFileSync(join(home, 'config.json'), '{}')
+  const prevHome = process.env.RIVET_HOME
+  process.env.RIVET_HOME = home
+  t.after(() => {
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  })
+  const { manager, agents } = makeManager()
+  const session = manager.createSession({ prompt: 'go' })
+  t.after(() => manager.abort(session.id))
+  const pending = agents[0]!.callbacks!.onApprovalRequired('edited-app', 'computer_use', { action: 'snapshot', app: 'Original Fixture App' })
+  const editedInput = { action: 'snapshot', app: 'Approved Fixture App' }
+  manager.answerIntervention(session.id, 'edited-app', 'approve', editedInput, true)
+  assert.deepEqual(await pending, { approved: true, editedInput, remember: true })
+  assert.equal(isAppGranted('Original Fixture App'), false)
+  assert.equal(isAppGranted('Approved Fixture App'), true)
+  const resolved = manager.getEvents(session.id, 0)!.events.find(e => e.type === 'approval_resolved' && e.data.requestId === 'edited-app')
+  assert.equal(resolved!.data.rememberedApp, 'Approved Fixture App')
+})
+
 test('rejecting approval resolves with approved:false', async () => {
   const { manager, agents } = makeManager()
   const s = manager.createSession({ prompt: 'go' })

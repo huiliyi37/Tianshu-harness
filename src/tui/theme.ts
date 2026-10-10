@@ -14,6 +14,7 @@
  */
 
 import chalk from 'chalk'
+import { isCapturedPty } from './terminal-profile.js'
 import {
   THEME_PALETTES,
   type ColorSet,
@@ -201,7 +202,7 @@ export function getActiveThemeBackground(): 'dark' | 'light' {
 }
 
 export function getTheme(colorLevel?: number): RivetTheme {
-  const level = colorLevel ?? chalk.level
+  const level = isCapturedPty() ? Math.min(1, colorLevel ?? chalk.level) : colorLevel ?? chalk.level
   const entry = resolveThemeEntry(activeTheme) ?? THEMES.cobalt
   // level 2（256 色）走 truecolor 轨：ansi.ts fg() 会现场量化为 38;5。
   return level >= 2 && !activeTheme.endsWith('-ansi') ? entry.truecolor : entry.fallback

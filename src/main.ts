@@ -59,6 +59,8 @@ const EFFORT_DESCRIPTIONS = {
 import { maybePrintStaticPromptCacheWarning } from './cli/prompt-version-warning.js'
 import { HELP_TEXT } from './cli/help-text.js'
 import { formatVersionLine } from './cli/version.js'
+import { detectTerminalProfile, setActiveTerminalProfile } from './tui/terminal-profile.js'
+import { plainText } from './utils/terminal-text.js'
 import { applyEarlyCliEnv, routeEarlyCli } from './cli/early-routing.js'
 import { getOnboardingState, markWelcomeGuideShown, shouldShowWelcomeGuide } from './onboarding.js'
 import { loadConfig as loadRivetConfig, removeProvider, setDefaultProvider, setUiConfig, setApprovalMode as persistApprovalDefault, setDefaultDomainConfig, setDefaultModelConfig } from './config/manager.js'
@@ -194,6 +196,7 @@ const skipWelcome = args.includes('--skip-welcome')
 // create the sink and never attach it, so `-p` mirrored nothing at all.)
 const wantScreenReader = args.includes('--screen-reader')
 let screenReaderMode = false
+let recoveryActive = false
 
 const streamEventsIdx = args.indexOf('--stream-events')
 const streamEventsArg = streamEventsIdx >= 0 ? args[streamEventsIdx + 1] : undefined
@@ -275,7 +278,11 @@ const exitFuse = createExitFuse({
   forceExit: code => process.exit(code),
   log: message => console.error(`[tui] ${message}`),
 })
-process.on('SIGINT', () => exitFuse.signal('SIGINT'))
+process.on('SIGINT', () => {
+  // The line frontend owns interruption while its input/approval loop is live.
+  if (recoveryActive) return
+  exitFuse.signal('SIGINT')
+})
 process.on('SIGTERM', () => exitFuse.signal('SIGTERM'))
 
 // 进程退出兜底清场（终端态恢复 + MCP 子进程 + tracked 进程树）——独立模块，
@@ -711,7 +718,13 @@ async function main() {
 
   // ── Interactive TUI (requires TTY) ──────────────────────────
 
-  const forceRecoveryCli = process.env.RIVET_FORCE_RECOVERY_CLI === '1'
+  const terminalProfile = await detectTerminalProfile({ args })
+  setActiveTerminalProfile(terminalProfile)
+  const forceRecoveryCli = process.env.RIVET_FORCE_RECOVERY_CLI === '1' || terminalProfile.kind === 'captured-pty'
+  if (terminalProfile.kind === 'captured-pty') {
+    process.stderr.write('[terminal] Captured PTY detected; using the plain-text interface. Use --terminal-mode native to override.\n')
+    setReducedMotion(true)
+  }
 
   if (!forceRecoveryCli && (!stdout.isTTY || !stdin.isTTY)) {
     process.stderr.write('[T9] stdout and stdin must be TTY (use -p for headless mode or RIVET_FORCE_RECOVERY_CLI=1).\n')
@@ -769,7 +782,9 @@ async function main() {
       // 无 key：降级启动，由 TUI 首启钩子自动打开 /connect 向导。
       // 此处必为 TTY 交互分支（上方已拦截非 TTY），不再走 readline 向导——
       // readline 版仅保留给 `rivet config setup` CLI（manager.ts）。
-      process.stderr.write(`\n[T9] ${msg}\nStarting in degraded mode — /connect 向导将自动打开...\n\n`)
+      process.stderr.write(forceRecoveryCli
+        ? `\n[T9] ${msg}\nUse rivet config setup to configure a provider, then restart.\n\n`
+        : `\n[T9] ${msg}\nStarting in degraded mode — /connect 向导将自动打开...\n\n`)
       ctx = await bootstrapInteractiveSession({
         cwd: process.cwd(),
         args,
@@ -800,7 +815,7 @@ async function main() {
   }
   const configuredTheme = appearanceChoice ?? ctx.config.ui?.theme ?? 'cobalt'
   let themeName: string = configuredTheme
-  if (configuredTheme === 'auto') {
+  if (configuredTheme === 'auto' && !forceRecoveryCli) {
     // 必须在 TUI 接管 stdin 前查询——此处 raw-mode 探测后即恢复。
     const detected = await detectTerminalBackground()
     themeName = autoThemeFor(detected)
@@ -848,7 +863,12 @@ async function main() {
   // ── Recovery CLI fallback ────────────────────────────────────
   if (forceRecoveryCli) {
     const { runRecoveryCli } = await import('./recovery-cli.js')
-    await runRecoveryCli(ctx)
+    recoveryActive = true
+    try {
+      await runRecoveryCli(ctx, { terminalProfile: terminalProfile.kind })
+    } finally {
+      recoveryActive = false
+    }
     await shutdown(0)
     return
   }
@@ -2257,9 +2277,9 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[T9] Fatal: ${(err as Error)?.message}\n`)
+  process.stderr.write(plainText(`[T9] Fatal: ${(err as Error)?.message}`) + '\n')
   if ((err as Error).stack) {
-    process.stderr.write((err as Error).stack! + '\n')
+    process.stderr.write(plainText((err as Error).stack!) + '\n')
   }
   void shutdown(1)
 })

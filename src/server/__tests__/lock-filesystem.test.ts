@@ -109,6 +109,46 @@ function fakeWindowsShell(root: string): string {
   return executable
 }
 
+function delayedWindowsPublisher(root: string, phase: 'startup' | 'exit'): string {
+  const source = join(root, 'publisher.cs'), executable = join(root, 'publisher.exe')
+  fs.writeFileSync(source, `using System; using System.IO; using System.Threading;
+    class Program { static int Main() {
+      ${phase === 'startup' ? 'Thread.Sleep(1400);' : ''}
+      Directory.Move(Environment.GetEnvironmentVariable("TIANSHU_LOCK_STAGED_DIR"),
+        Environment.GetEnvironmentVariable("TIANSHU_LOCK_TARGET_DIR"));
+      ${phase === 'exit' ? 'Thread.Sleep(6000);' : ''}
+      return 0;
+    } }`)
+  const windows = process.env.SystemRoot ?? 'C:/Windows'
+  const compiler = ['Framework64', 'Framework'].map(arch => join(windows, 'Microsoft.NET', arch, 'v4.0.30319', 'csc.exe')).find(fs.existsSync)
+  assert.ok(compiler, 'Windows publication fixture requires the .NET Framework compiler')
+  childProcess.execFileSync(compiler, ['/nologo', `/out:${executable}`, source], { windowsHide: true, timeout: 10_000 })
+  return executable
+}
+
+for (const phase of ['startup', 'exit'] as const) {
+  test(`directory publication retains the complete owner across delayed ${phase}`, { skip: process.platform !== 'win32' }, () => {
+    const root = fs.mkdtempSync(join(tmpdir(), 'lock-fs-delayed-')), path = join(root, 'sidecar.lock')
+    const original = childProcess.execFileSync, publisher = delayedWindowsPublisher(root, phase)
+    childProcess.execFileSync = ((...args: Parameters<typeof original>) => {
+      if (args[2]?.env?.TIANSHU_LOCK_TARGET_DIR !== path) return original(...args)
+      return original(publisher, [], args[2])
+    }) as typeof original
+    syncBuiltinESMExports()
+    try {
+      const started = Date.now()
+      noLinks('EPERM', () => assert.deepEqual(createLockFileExclusive(path, info), { ok: true }))
+      assert.ok(Date.now() - started < 5_000, 'publication stays within the acquisition window')
+      assert.deepEqual(readLockFile(path), info)
+      assert.deepEqual(fs.readdirSync(root).filter(name => !isFilesystemMetadata(name) && name.includes('.tmp')), [])
+      removeLockFile(path)
+    } finally {
+      childProcess.execFileSync = original; syncBuiltinESMExports()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
 test('directory publication ignores same-name executables in cwd and PATH', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'lock-fs-shell-')), path = join(root, 'sidecar.lock')
   const marker = join(root, 'invoked'), oldCwd = process.cwd(), oldPath = process.env.PATH
@@ -128,15 +168,19 @@ test('directory publication ignores same-name executables in cwd and PATH', { sk
   }
 })
 
-for (const fault of ['no-move', 'source-remains', 'wrong-owner', 'regular-file', 'symlink']) {
-  test(`directory publication rejects exit zero with ${fault}`, { skip: process.platform !== 'win32' }, () => {
+for (const outcome of ['exit zero', 'timeout']) for (const fault of ['no-move', 'source-remains', 'wrong-owner', 'regular-file', 'symlink']) {
+  test(`directory publication rejects ${outcome} with ${fault}`, { skip: process.platform !== 'win32' }, () => {
     const root = fs.mkdtempSync(join(tmpdir(), 'lock-fs-postcondition-')), path = join(root, 'sidecar.lock')
     const original = childProcess.execFileSync
     childProcess.execFileSync = ((...args: Parameters<typeof original>) => {
       const env = args[2]?.env
       if (env?.TIANSHU_LOCK_TARGET_DIR !== path) return original(...args)
       const source = String(env.TIANSHU_LOCK_STAGED_DIR)
-      if (fault === 'no-move') return Buffer.alloc(0)
+      const finish = () => {
+        if (outcome === 'timeout') throw Object.assign(new Error('publisher timed out'), { code: 'ETIMEDOUT' })
+        return Buffer.alloc(0)
+      }
+      if (fault === 'no-move') return finish()
       if (fault === 'regular-file') fs.writeFileSync(path, 'competing legacy owner')
       else if (fault === 'symlink') fs.symlinkSync(source, path, 'junction')
       else {
@@ -145,11 +189,11 @@ for (const fault of ['no-move', 'source-remains', 'wrong-owner', 'regular-file',
         if (fault === 'wrong-owner') fs.writeFileSync(join(path, 'owner.json'), 'competing directory owner')
       }
       if (fault !== 'source-remains' && fault !== 'symlink') fs.rmSync(source, { recursive: true })
-      return Buffer.alloc(0)
+      return finish()
     }) as typeof original
     syncBuiltinESMExports()
     try {
-      noLinks('EPERM', () => assert.equal(createLockFileExclusive(path, info).ok, false, 'exit zero must not fabricate ownership'))
+      noLinks('EPERM', () => assert.equal(createLockFileExclusive(path, info).ok, false, 'publisher status must not fabricate ownership'))
       if (fault === 'wrong-owner') assert.equal(fs.readFileSync(join(path, 'owner.json'), 'utf8'), 'competing directory owner')
       if (fault === 'regular-file') assert.equal(fs.readFileSync(path, 'utf8'), 'competing legacy owner')
       assert.ok(fs.readdirSync(root).filter(name => !isFilesystemMetadata(name)).every(name => !name.includes('.tmp')), 'only our staging files may be cleaned')

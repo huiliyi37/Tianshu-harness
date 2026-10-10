@@ -13,6 +13,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { withPtyFixture } from './_pty-fixture.js'
 import type { ReadStream, WriteStream } from 'node:tty'
 import { TuiApp } from '../app.js'
 import { MockOut, MockIn } from './_harness.js'
@@ -28,7 +29,7 @@ test('restoration returns the TTY to cooked mode before dispose', () => {
   finally { app.dispose() }
 })
 
-test('POSIX PTY: bracketed Unicode paste, resize and alternate-screen cleanup', { skip: process.platform === 'win32', timeout: 20_000 }, () => {
+test('POSIX PTY: bracketed Unicode paste, resize and alternate-screen cleanup', { skip: process.platform === 'win32', timeout: 20_000 }, async () => {
   const fixture = `
     process.stderr.write('PTY_BOOT\\n');
     const { TuiApp } = await import(${JSON.stringify(new URL('../app.js', import.meta.url).href)});
@@ -82,7 +83,7 @@ finally:
     if child.poll() is None: child.kill(); child.wait()
     os.close(master); os.close(slave)
 `
-  execFileSync('python3', ['-c', python, JSON.stringify([process.execPath, '--import', 'tsx', '--input-type=module', '-e', fixture])], { timeout: 18_000, stdio: 'pipe' })
+  await withPtyFixture(fixture, (argv, options) => execFileSync('python3', ['-c', python, JSON.stringify(argv)], { ...options, timeout: 18_000, stdio: 'pipe' }))
 })
 
 function makeApp() {

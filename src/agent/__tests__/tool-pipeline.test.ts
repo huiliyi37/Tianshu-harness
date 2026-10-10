@@ -1073,6 +1073,47 @@ describe('executeToolUse', () => {
     assert.ok((result.toolResult as any).content.includes('denied'))
   })
 
+  it('rechecks deny rules after an approval edit without learning the rejected command', async () => {
+    const deps = makeDeps()
+    let executed = false
+    deps.config.permissions = { allow: [], deny: [{ tool: 'bash', params: { command: 'echo forbidden' } }], bash: { allowlist: [], denylist: [] } }
+    deps.config.permissionsOverlay = createPermissionOverlay()
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async () => { executed = true; return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-deny', name: 'bash', input: { command: 'echo allowed' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => ({ approved: true, editedInput: { command: 'echo forbidden' } }) } as any, 1, true)
+    assert.equal(executed, false)
+    assert.equal((result.toolResult as any).is_error, true)
+    assert.deepEqual(deps.config.permissions.bash!.allowlist, [])
+    assert.deepEqual(deps.config.permissionsOverlay.bashAllow, [])
+  })
+
+  it('rechecks the planning write boundary after editing approved draft parameters', async () => {
+    const deps = makeDeps()
+    let executed = false
+    deps.config.planModeState = 'planning'
+    deps.config.activePlanFilePath = '/tmp/test/draft.md'
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async () => { executed = true; return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-plan', name: 'write_file', input: { file_path: 'draft.md', content: 'fixture' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => ({ approved: true, editedInput: { file_path: 'source.ts', content: 'fixture' } }) } as any, 1, true)
+    assert.equal(executed, false)
+    assert.equal((result.toolResult as any).is_error, true)
+  })
+
+  it('recomputes risk and executes the final approved parameters exactly once', async () => {
+    const deps = makeDeps()
+    let approvals = 0
+    const commands: unknown[] = []
+    deps.config.toolRegistry.needsApproval = () => true
+    deps.config.toolRegistry.execute = async (_name, params) => { commands.push(params.input.command); return { content: 'ok', isError: false } }
+    const result = await executeToolUse({ id: 'edited-risk', name: 'bash', input: { command: 'echo allowed' } }, deps,
+      { ...noopCallbacks, onApprovalRequired: async () => { approvals++; return { approved: true, editedInput: { command: 'git reset --hard' } } } } as any, 1, true)
+    assert.deepEqual(commands, ['git reset --hard'])
+    assert.equal(approvals, 1)
+    assert.equal(result.latestRisk.level, 'high')
+  })
+
   it('R2: blocks write_file when another session holds an exclusive claim (fail-closed)', async () => {
     let executed = false
     const fakeRegistry = {
@@ -1732,6 +1773,53 @@ describe('executeToolUse', () => {
     assert.equal(executed, false, 'harness must NOT execute the contested patch')
     assert.equal((result.toolResult as any).is_error, true)
   })
+
+  for (const boundary of ['planning', 'abort'] as const) {
+    it(`R2: ${boundary} during second approval prevents execution and restores every acquired claim`, async () => {
+      const owners = new Map([['src/stale.ts', 'stale-peer'], ['src/fresh.ts', 'fresh-peer']])
+      const touchedAt = new Date().toISOString()
+      const controller = new AbortController()
+      const approvals: string[] = []
+      let executions = 0
+      const deps = makeDeps({
+        sessionId: 'mine', abortSignal: controller.signal, isPathClean: async () => true,
+        sessionRegistry: {
+          acquireClaim: (sid: string, path: string) => {
+            if (owners.has(path) && owners.get(path) !== sid) return false
+            owners.set(path, sid); return true
+          },
+          checkClaim: (path: string) => owners.has(path) ? { sessionId: owners.get(path), claimType: 'exclusive', filePath: path } : null,
+          claimLiveness: (path: string) => ({ ownerSessionId: owners.get(path), ownerPid: process.pid, ownerAlive: path !== 'src/stale.ts', claimType: 'exclusive', acquiredAt: touchedAt, lastTouchedAt: touchedAt }),
+          releaseClaim: (sid: string, path: string) => { if (owners.get(path) === sid) owners.delete(path) },
+          releaseClaimIfUnchanged: (sid: string, path: string, expected: string) => {
+            if (owners.get(path) !== sid || expected !== touchedAt) return false
+            owners.delete(path); return true
+          },
+        } as any,
+      })
+      deps.config.toolRegistry.needsApproval = () => true
+      deps.config.toolRegistry.execute = async () => { executions++; return { content: 'ok', isError: false } }
+      const diff = ['src/free.ts', 'src/stale.ts', 'src/fresh.ts'].map(path => `--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-a\n+b`).join('\n')
+      const result = await executeToolUse({ id: 'second-approval', name: 'apply_patch', input: { diff } }, deps, {
+        ...noopCallbacks,
+        onApprovalRequired: async (id: string) => {
+          approvals.push(id)
+          if (id.endsWith(':claim-takeover')) {
+            if (boundary === 'abort') controller.abort()
+            else { deps.config.planModeState = 'planning'; deps.config.activePlanFilePath = join(deps.cwd, '.rivet/plans/draft.md') }
+          }
+          return true
+        },
+      } as any, 1, true)
+      assert.deepEqual(approvals, ['second-approval', 'second-approval:claim-takeover'])
+      assert.equal(executions, 0, 'a second approval cannot waive the current mode or cancellation')
+      assert.equal(owners.get('src/free.ts'), undefined, 'an uncontended claim must be released when nothing executed')
+      assert.equal(owners.get('src/stale.ts'), 'stale-peer', 'an auto-taken claim must return to its original owner')
+      assert.equal(owners.get('src/fresh.ts'), 'fresh-peer', 'the explicit takeover must return to its original owner')
+      assert.match((result.toolResult as any).content, boundary === 'abort' ? /interrupted/ : /Plan Mode/)
+      if (boundary === 'planning') assert.equal((result.toolResult as any).is_error, true)
+    })
+  }
 
   it('E6: checkpoint creation failure appends a rollback warning and does NOT latch checkpointCreated', async () => {
     let checkpointCalls = 0

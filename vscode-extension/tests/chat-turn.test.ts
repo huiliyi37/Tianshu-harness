@@ -49,9 +49,9 @@ test('approval_required 缺 toolName 给兜底名；缺 requestId 不产事件',
   assert.equal(interpretSessionEvent(ev('approval_required', {})), undefined)
 })
 
-test('approval_resolved → 审批闭环信号（不携带数据）', () => {
-  assert.deepEqual(interpretSessionEvent(ev('approval_resolved', { requestId: 'r1' })), { kind: 'approval-resolved' })
-  assert.deepEqual(interpretSessionEvent(ev('approval_resolved', {})), { kind: 'approval-resolved' })
+test('approval_resolved identifies the resolved request for reconnect state reconciliation', () => {
+  assert.deepEqual(interpretSessionEvent(ev('approval_resolved', { requestId: 'r1' })), { kind: 'approval-resolved', requestId: 'r1' })
+  assert.deepEqual(interpretSessionEvent(ev('approval_resolved', {})), { kind: 'approval-resolved', requestId: '' })
 })
 
 test('user_question → 结构化提问事件（questions 归一化：过滤非字符串 option、布尔化 allowMultiple）', () => {

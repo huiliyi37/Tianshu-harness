@@ -19,6 +19,7 @@ import { readFile, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { accessSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 export type ExtractEngine = 'pdftotext' | 'textutil' | 'soffice' | 'pandoc' | 'exceljs' | 'pdfjs' | 'office-xml'
 
@@ -316,7 +317,7 @@ export async function renderPdfPageImages(
   const outDir = await mkdtemp(join(tmpdir(), 'rivet-pdfpages-'))
   try {
     await runner('pdftoppm', ['-png', '-r', String(dpi), '-f', '1', '-l', String(maxPages), filePath, join(outDir, 'page')], { timeoutMs: 60_000 })
-    const files = (await readdir(outDir)).filter((f) => f.endsWith('.png')).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const files = (await readdir(outDir)).filter((f) => f.endsWith('.png') && !isFilesystemMetadata(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     const out: string[] = []
     for (const f of files) {
       const bytes = await readFile(join(outDir, f))

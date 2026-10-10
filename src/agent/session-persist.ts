@@ -203,12 +203,11 @@ export class SessionPersist {
 
   /** Read the transcript file as JSONL text (zstd frames or legacy passthrough). */
   private readTranscriptText(): string {
-    const onDisk = existsSync(this.filePath)
-      ? decodeTranscriptText(readFileSync(this.filePath))
-      : ''
+    const snapshot = this.batchWriter.captureReadSnapshot()
+    const onDisk = existsSync(this.filePath) ? readFileSync(this.filePath) : Buffer.alloc(0)
     // In-process readers must also see lines still queued in the write-behind
     // batch — append() followed by loadOai()/fork without a flush is valid.
-    return this.batchWriter.mergePending(onDisk)
+    return decodeTranscriptText(onDisk.subarray(0, snapshot.committedBytes)) + snapshot.tail
   }
 
   /** Load all messages from the session file (with checksum validation) */
@@ -226,9 +225,9 @@ export class SessionPersist {
     const json = serializeOaiSessionMessage(message)
     const line = appendChecksum(json) + '\n'
     this.batchWriter.enqueueLine(line)
-    if (options?.flush) await this.batchWriter.flush()
     this.transcriptWatermark += 1
     this.appendedCount += 1
+    if (options?.flush) await this.batchWriter.flush()
   }
 
   /**
@@ -290,10 +289,27 @@ export class SessionPersist {
   async loadOaiAsync(signal?: AbortSignal): Promise<OaiMessage[]> {
     signal?.throwIfAborted()
     let text = ''
-    try { text = decodeTranscriptText(await readFile(this.filePath, { signal })) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    const appendedBefore = this.appendedCount
-    const parser = this.parseOai(this.batchWriter.mergePending(text))
+    let appendedBefore: number
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted()
+      appendedBefore = this.appendedCount
+      const snapshot = this.batchWriter.captureReadSnapshot()
+      const before = this.transcriptIdentity()
+      let bytes = Buffer.alloc(0)
+      try { bytes = await readFile(this.filePath, { signal }) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      const after = this.transcriptIdentity()
+      // Atomic rewrites and legacy transcoding replace the inode. A byte
+      // offset captured for the previous file cannot describe the new one.
+      const limit = snapshot.committedBytes ?? before?.size ?? 0
+      if (before?.dev !== after?.dev || before?.ino !== after?.ino || bytes.length < limit) {
+        if (attempt >= 2) throw Object.assign(new Error('Session transcript changed during read; retry loading'), { code: 'EAGAIN' })
+        continue
+      }
+      text = decodeTranscriptText(bytes.subarray(0, limit)) + snapshot.tail
+      break
+    }
+    const parser = this.parseOai(text)
     for (;;) {
       signal?.throwIfAborted()
       const next = parser.next()
@@ -303,6 +319,14 @@ export class SessionPersist {
       }
       await yieldToLoop()
     }
+  }
+
+  private transcriptIdentity(): { dev: bigint; ino: bigint; size: number } | undefined {
+    try {
+      const stat = statSync(this.filePath, { bigint: true })
+      return { dev: stat.dev, ino: stat.ino, size: Number(stat.size) }
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   }
 
   private *parseOai(content: string): Generator<void, OaiMessage[]> {

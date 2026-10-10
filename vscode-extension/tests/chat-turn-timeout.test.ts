@@ -2,6 +2,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { TurnTimeout } from '../src/chat/turn-timeout.ts'
 
+test('reconnect approval snapshots replace pending count and an empty snapshot resumes the timeout', async () => {
+  let expired = 0
+  const timeout = new TurnTimeout(20, () => { expired++ })
+  try {
+    timeout.arm()
+    timeout.setPendingApprovals(1)
+    timeout.setPendingApprovals(1)
+    await new Promise(r => setTimeout(r, 35))
+    assert.equal(expired, 0)
+    timeout.setPendingApprovals(0)
+    await new Promise(r => setTimeout(r, 35))
+    assert.equal(expired, 1)
+  } finally { timeout.dispose() }
+})
+
 // 轮超时的审批豁免守卫（turn-timeout.ts）：TURN_TIMEOUT_MS 的语义是「静默的
 // sidecar 不应永远占住聊天视图」，但审批弹窗后的等待是用户在处理、不是 sidecar
 // 静默——超时弃轮后用户再点「允许一次」，恢复输出在 participant.dispatch 处因

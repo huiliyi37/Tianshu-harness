@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionPersist } from '../session-persist.js'
 import { SessionBatchWriter } from '../session-batch-writer.js'
@@ -38,6 +38,7 @@ describe('SessionPersist write-behind codec (P1)', () => {
     assert.equal(loaded.length, 2)
     assert.equal(loaded[0]!.content, 'one')
     assert.equal(loaded[1]!.content, 'two')
+    await persist.flushSessionBuffer()
   })
 
   it('flush:true makes a critical record durable before append resolves', async () => {
@@ -83,9 +84,9 @@ describe('SessionPersist write-behind codec (P1)', () => {
     assert.match(raw, /"old two"/)
     assert.match(raw, /"new one"/)
 
-    const backups = readdirSync(persist.getBackupDir())
-    assert.ok(backups.some(f => f.includes('pre-zstd')), 'pre-migration backup exists')
-    const backupRaw = decodeTranscriptText(readFileSync(join(persist.getBackupDir(), backups.find(f => f.includes('pre-zstd'))!)))
+    const backupPath = join(persist.getBackupDir(), basename(persist.getFilePath()) + '.pre-zstd')
+    assert.ok(existsSync(backupPath), 'pre-migration backup exists')
+    const backupRaw = decodeTranscriptText(readFileSync(backupPath))
     assert.match(backupRaw, /"old one"/)
   })
 
@@ -124,6 +125,7 @@ describe('SessionPersist write-behind codec (P1)', () => {
     const loaded = persist.loadOai()
     assert.equal(loaded.length, 2)
     assert.equal(loaded[1]!.content, 'two')
+    await persist.flushSessionBuffer()
   })
 
   it('updateMetadata is in-memory until the batch flush (no per-append read-modify-write)', async () => {
@@ -198,5 +200,99 @@ describe('SessionPersist write-behind codec (P1)', () => {
     assert.match(onDisk, /"n":3,"flushBarrier":true/,
       'line queued during an in-flight flush must be durable once the barrier resolves')
     assert.equal(writer.mergePending(''), '', 'nothing left hanging in the buffer')
+  })
+
+  it('loads retain an in-flight batch without duplicating identical messages', async () => {
+    const persist = new SessionPersist('codec-in-flight-load', tempDir)
+    const message = { role: 'user' as const, content: 'identical' }
+    await persist.appendOaiWithChecksum(message)
+    await persist.appendOaiWithChecksum(message)
+    const flushing = persist.flushSessionBuffer()
+    try {
+      assert.deepEqual(persist.loadOai().map(m => m.content), ['identical', 'identical'])
+    } finally {
+      await flushing
+    }
+    assert.deepEqual(persist.loadOai().map(m => m.content), ['identical', 'identical'])
+  })
+
+  it('async loads retain their snapshot while an accepted batch finishes', async () => {
+    const persist = new SessionPersist('codec-async-in-flight', tempDir)
+    await persist.appendOaiWithChecksum({ role: 'user', content: 'one' })
+    await persist.appendOaiWithChecksum({ role: 'assistant', content: 'two' })
+    const flushing = persist.flushSessionBuffer()
+    const reading = persist.loadOaiAsync()
+    try {
+      await persist.appendOaiWithChecksum({ role: 'user', content: 'later' })
+      assert.deepEqual((await reading).map(m => m.content), ['one', 'two'])
+      assert.equal(persist.getTranscriptWatermark(), 3)
+    } finally {
+      await flushing
+    }
+    assert.deepEqual((await persist.loadOaiAsync()).map(m => m.content), ['one', 'two', 'later'])
+  })
+
+  it('loads never double-count an appended frame while datasync is still pending', async () => {
+    const persist = new SessionPersist('codec-datasync-pending', tempDir)
+    const writer = (persist as unknown as { batchWriter: SessionBatchWriter }).batchWriter
+    const gateWriter = writer as unknown as { fdatasyncQuiet: () => Promise<void> }
+    const original = gateWriter.fdatasyncQuiet.bind(writer)
+    let entered!: () => void
+    let release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    gateWriter.fdatasyncQuiet = async () => { entered(); await gate; await original() }
+    await persist.appendOaiWithChecksum({ role: 'user', content: 'identical' })
+    await persist.appendOaiWithChecksum({ role: 'user', content: 'identical' })
+    const flushing = persist.flushSessionBuffer()
+    try {
+      await started
+      assert.equal(decodeTranscriptText(readFileSync(persist.getFilePath())).trim().split('\n').length, 2)
+      assert.deepEqual(persist.loadOai().map(m => m.content), ['identical', 'identical'])
+      assert.deepEqual((await persist.loadOaiAsync()).map(m => m.content), ['identical', 'identical'])
+    } finally {
+      release()
+      await flushing
+      gateWriter.fdatasyncQuiet = original
+    }
+  })
+
+  it('async loads retry when the transcript is atomically replaced during the read', async () => {
+    const persist = new SessionPersist('codec-read-replacement', tempDir)
+    await persist.appendOaiWithChecksum({ role: 'user', content: 'old' })
+    const replacement = 'replacement'.repeat(100)
+    const reader = persist as unknown as { transcriptIdentity: () => { dev: bigint; ino: bigint; size: number } | undefined }
+    const original = reader.transcriptIdentity.bind(persist)
+    const identity = original()
+    const exact = statSync(persist.getFilePath(), { bigint: true })
+    assert.equal(identity?.dev, exact.dev, 'device identity retains its full integer precision')
+    assert.equal(identity?.ino, exact.ino, 'file identity retains its full integer precision')
+    let reads = 0
+    // The read handle is closed before its captured inode is validated.
+    reader.transcriptIdentity = () => {
+      if (++reads === 2) persist.compactOai([{ role: 'user', content: replacement }])
+      return original()
+    }
+    try {
+      assert.deepEqual((await persist.loadOaiAsync()).map(m => m.content), [replacement])
+      assert.equal(persist.getTranscriptWatermark(), 1)
+    } finally {
+      reader.transcriptIdentity = original
+    }
+  })
+
+  it('a load during a critical flush does not count the same accepted message twice', async () => {
+    for (const mode of ['sync', 'async'] as const) {
+      const persist = new SessionPersist('codec-critical-watermark-' + mode, tempDir)
+      await persist.appendOaiWithChecksum({ role: 'user', content: 'one' })
+      const writing = persist.appendOaiWithChecksum({ role: 'user', content: 'two' }, { flush: true })
+      try {
+        const loaded = mode === 'sync' ? persist.loadOai() : await persist.loadOaiAsync()
+        assert.deepEqual(loaded.map(m => m.content), ['one', 'two'])
+      } finally {
+        await writing
+      }
+      assert.equal(persist.getTranscriptWatermark(), 2, mode + ' watermark matches the two accepted messages')
+    }
   })
 })

@@ -31,6 +31,7 @@ export interface UserImageDispatchConfig {
   cacheDescription?: (imageId: string, cacheKey: string, description: string) => void
   signal?: AbortSignal
   recordUsage?: (usage: Partial<import('../api/types.js').Usage>) => void
+  /** Bridge identity for description caching; the client binds the API model. */
   visionModel?: string
 }
 
@@ -81,7 +82,7 @@ export async function dispatchUserImages(
       accompanyingText: userInput,
       maxTokens: config.visionModelMaxTokens,
       signal: config.signal,
-      model: config.visionModel, recordUsage: config.recordUsage,
+      recordUsage: config.recordUsage,
       onOutcome: outcome => { complete = outcome.complete },
     })
     if (description) {

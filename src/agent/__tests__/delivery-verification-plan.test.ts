@@ -38,7 +38,7 @@ it('actual delivery returns executable batches; all batches cover obligations an
     assert.equal(first.isError, true)
     assert.equal(commits, 0)
     assert.match(first.content, /required 24，已覆盖 0，剩余 24/)
-    const commands = first.content.split('\n').filter(line => line.startsWith('  rtk node --test ')).map(line => line.trim())
+    const commands = first.content.split('\n').filter(line => line.startsWith('  node --test ')).map(line => line.trim())
     assert.equal(commands.length, 2)
     for (let i = 0; i < commands.length; i++) {
       const result = await BASH_TOOL.execute({ cwd, toolUseId: `batch-${i}`, input: { command: commands[i]! } })
@@ -63,9 +63,9 @@ it('nested packages get their own cwd; unsupported runners keep every pending ob
     const text = formatDeliveryVerificationPlan(cwd, required, required, 9999).join('\n')
     assert.match(text, /advisory 9999 不阻断/)
     assert.match(text, /未生成可采证批命令.*义务保留：a.test.js/)
-    if (process.platform !== 'win32') assert.ok(text.includes(`cd -- '${join(cwd, 'nested')}' && rtk node --test 'b.test.mjs'`))
+    if (process.platform !== 'win32') assert.ok(text.includes(`cd -- '${join(cwd, 'nested')}' && node --test 'b.test.mjs'`))
     else assert.match(text, /义务保留：nested\/b.test.mjs/)
-    assert.ok(!text.includes("rtk node --test 'a.test.js'"))
+    assert.ok(!text.includes("node --test 'a.test.js'"))
   } finally { rmSync(cwd, { recursive: true, force: true }) }
 })
 
@@ -75,10 +75,11 @@ it('batch suggestions preserve preload flags and never silently replace fixed or
     symlinkSync(join(import.meta.dirname, '../../../node_modules'), join(cwd, 'node_modules'), 'junction')
     const file = 'feature.test.ts'
     writeFileSync(join(cwd, file), '// fixture')
-    for (const script of ['rtk node --import tsx --require setup.cjs scripts/run-node-tests.ts', 'rtk node --import tsx --require setup.cjs --test']) {
+    for (const script of ['node --import tsx --require setup.cjs scripts/run-node-tests.ts', 'node --import tsx --require setup.cjs --test', 'rtk node --import tsx --require setup.cjs scripts/run-node-tests.ts', 'rtk node --import tsx --require setup.cjs --test']) {
       writeFileSync(join(cwd, 'package.json'), JSON.stringify({ scripts: { test: script } }))
       const output = formatDeliveryVerificationPlan(cwd, [file], [file], 0).join('\n')
-      assert.match(output, /rtk node --import tsx --require setup.cjs --test 'feature.test.ts'/)
+      const runner = script.startsWith('rtk ') ? 'rtk node' : 'node'
+      assert.ok(output.includes(`  ${runner} --import tsx --require setup.cjs --test 'feature.test.ts'`))
       assert.doesNotMatch(output, /rtk rtk/)
     }
     for (const script of ['node --test fixed.test.js', 'node --test --test-name-pattern selected', 'tsx scripts/run-node-tests.ts fixed.test.js']) {
@@ -86,7 +87,7 @@ it('batch suggestions preserve preload flags and never silently replace fixed or
       assert.match(formatDeliveryVerificationPlan(cwd, [file], [file], 0).join('\n'), /未生成可采证批命令.*义务保留：feature.test.ts/)
     }
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({ scripts: { test: 'tsx scripts/run-node-tests.ts' } }))
-    assert.match(formatDeliveryVerificationPlan(cwd, [file], [file], 0).join('\n'), /rtk node --import tsx --test 'feature.test.ts'/)
+    assert.match(formatDeliveryVerificationPlan(cwd, [file], [file], 0).join('\n'), /^  node --import tsx --test 'feature.test.ts'/m)
     assert.match(formatDeliveryVerificationPlan(cwd, ['../outside.test.ts'], ['../outside.test.ts'], 0).join('\n'), /路径不在当前项目内，义务保留/)
   } finally { rmSync(cwd, { recursive: true, force: true }) }
 })

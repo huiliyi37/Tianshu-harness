@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isFilesystemMetadata } from '../../utils/file-metadata.js'
 import { buildScratchRoutes, type ScratchReport, type ScratchCleanupResult } from '../scratch-cleanup.js'
 
 // 路由层端到端：真实 RIVET_HOME + 真实磁盘，从「隔离根解析」到「删除落盘」
@@ -25,6 +26,15 @@ async function withTempHome(fn: (home: string) => Promise<void>): Promise<void> 
 const TOKEN = 'scratch-route-token'
 const AUTH = { authorization: `Bearer ${TOKEN}` }
 
+/** Keep this synthetic size fixture limited to its payloads on sidecar-generating filesystems. */
+function removeFixtureMetadata(dir: string): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) removeFixtureMetadata(path)
+    else if (entry.isFile() && isFilesystemMetadata(entry.name)) rmSync(path)
+  }
+}
+
 test('GET /scratch + POST /scratch/cleanup：真实隔离根，只清无会话占用的目录', async () => {
   await withTempHome(async (home) => {
     const root = join(home, 'workspace')
@@ -32,6 +42,7 @@ test('GET /scratch + POST /scratch/cleanup：真实隔离根，只清无会话�
     writeFileSync(join(root, 'busy0001', 'payload.txt'), 'busy')
     mkdirSync(join(root, 'idle0002'), { recursive: true })
     writeFileSync(join(root, 'idle0002', 'payload.txt'), 'idle')
+    removeFixtureMetadata(root)
 
     const routes = buildScratchRoutes({ listSessions: () => [{ cwd: join(root, 'busy0001') }] }, TOKEN)
 

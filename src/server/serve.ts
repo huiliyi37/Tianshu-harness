@@ -90,8 +90,8 @@ import type { OaiMessage } from '../api/oai-types.js'
 import { findRecentUnrecordedWrites, formatDiskReconciliationNote, shouldReconcileDisk } from '../context/write-evidence-probe.js'
 import { createAuthProvider } from '../auth/registry.js'
 import type { AuthProvider } from '../auth/types.js'
-import { SessionPersist } from '../agent/session-persist.js'
-import { SessionContext } from '../agent/context.js'
+import type { SessionPersist } from '../agent/session-persist.js'
+import type { SessionContext } from '../agent/context.js'
 import { buildOpenPathCommand, buildRevealCommand, decideOpenAction, isDirectoryPath, windowsFileHasHandler } from '../tools/open-path.js'
 import { installStallObserver } from '../agent/stall-observer.js'
 import { SessionRegistry } from '../agent/session-registry.js'
@@ -1301,6 +1301,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       .then(() => timing.mark('serve-agent-loaded'))
       .catch(() => { /* createAgent 路径会带着真实错误重试 */ })
   }, resolveServeWarmDelayMs())
+  if (!ctx.configured || !ownsSessionStore) warmup.cancel()
   return {
     port,
     /** 本实例坐标（内存真源）——--json 握手输出用，不回读发现文件（双实例竞态）。 */

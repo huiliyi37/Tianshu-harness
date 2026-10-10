@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { starDomainRegistry } from './star-domain-registry.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const GENERALS_DIR = '.rivet/generals'
 
@@ -91,7 +92,7 @@ export function listGenerals(cwd: string): string[] {
   if (!existsSync(dir)) return []
   try {
     return readdirSync(dir)
-      .filter(f => f.endsWith('.md'))
+      .filter(f => f.endsWith('.md') && !isFilesystemMetadata(f))
       .map(f => f.replace(/\.md$/, ''))
   } catch {
     return []

@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 /**
  * Tab 补全的 `@` 触发后从光标前最近 `@` 起的非空白 token。
@@ -15,30 +16,33 @@ export function extractAtToken(text: string, cursorPos: number): string | null {
 /**
  * 走 `git ls-files` 拿补全候选。
  *
- * 超时降到 500ms：领航星 2026-06-11 实测原 3000ms 让 Tab 补全在大仓库下
- * 体验卡顿（用户按 Tab 之后光标停 1-3 秒），而正常 git ls-files 在
- * 1k-10k 文件仓库上 < 100ms 完成。500ms 仍是常规仓库 P99.9 的 3-5 倍
- * 安全边际，但已经是用户感知「即时」的临界。
+ * 在后台查询：外盘上的 git 可能超过原同步 500ms 预算，既不能堵住键盘，
+ * 也不能因此丢掉正常候选。3s 限制只约束后台进程；输入变化可提前取消。
  *
  * 非 git 目录 / 命令失败 / 超时 → 静默返回 []，**不抛错**：
  * @-补全是输入便利功能，不应污染主流程；上层也只把候选列表当作
  * 「建议」，空候选就当普通 @-token 提交给 agent。
  */
-const GIT_LS_FILES_TIMEOUT_MS = 500
+const GIT_LS_FILES_TIMEOUT_MS = 3_000
 
-export function getCompletions(partial: string, cwd: string, limit: number): string[] {
+export async function getCompletions(partial: string, cwd: string, limit: number, signal?: AbortSignal): Promise<string[]> {
+  if (signal?.aborted) return []
   try {
-    const output = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
-      cwd,
-      encoding: 'utf-8',
-      timeout: GIT_LS_FILES_TIMEOUT_MS,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
+    const output = await new Promise<string>(resolve => {
+      execFile('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+        cwd,
+        encoding: 'utf-8',
+        timeout: GIT_LS_FILES_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true,
+        signal,
+      }, (error, stdout) => resolve(error ? '' : stdout))
     })
-    const lower = partial.toLowerCase()
+    const lower = partial.replaceAll('\\', '/').toLowerCase()
     return output
       .split('\0')
       .filter(Boolean)
+      .filter(f => !f.split('/').some(isFilesystemMetadata))
       .filter(f => f.toLowerCase().includes(lower))
       .sort((a, b) => {
         const aS = a.toLowerCase().startsWith(lower) ? 0 : 1

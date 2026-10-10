@@ -858,6 +858,14 @@ export class TuiApp {
   // ── W4b: 输入辅助（W-B5: fields moved to InputController） ───
   /** W-B5: input state manager (slash/file-completion/history/ctrl+c/esc) */
   private inputController = new InputController()
+  private fileCompletionGeneration = 0
+  private fileCompletionQuery?: AbortController
+  private cancelFileCompletionQuery(): void {
+    this.fileCompletionGeneration++
+    this.fileCompletionQuery?.abort()
+    this.fileCompletionQuery = undefined
+    this.inputController.fileCompletion = null
+  }
   /** 协同建议（/team /scout /council 输入时情境提示）——见 engine/orchestration-hint.ts。 */
   private readonly orchHint: OrchestrationHint
   /** 输入框最近一次获得焦点的时间戳，用于 Ctrl+V 剪贴板图片防抖 */
@@ -1071,6 +1079,7 @@ export class TuiApp {
     // 审批/意图/overlay 模式下不处理粘贴——粘贴文本会"穿透"到输入框，
     // 退出模式后出现幽灵文本。
     this.input.onPaste(async (text) => {
+      this.cancelFileCompletionQuery()
       const generation = this.inputHandoffGeneration
       if (this.terminalRestored || this.editorActive) return
       const mode = this.input.getMode()
@@ -1176,6 +1185,7 @@ export class TuiApp {
 
     // Wire input: character input → inputLine → live region update
     this.input.onAnyKey((key) => {
+      if (key.name !== 'tab') this.cancelFileCompletionQuery()
       if (this.editorActive) return
       if (key.name === 'ctrl_c' && !this.approvalIntentController.approvalPending && !this.pendingPlanApproval && !this.pendingAskFlow && this.copyFrontendSelection()) return
       if (this.overlay.activeId() === 'ui-history') {
@@ -2265,6 +2275,7 @@ export class TuiApp {
 
   /** 设置输入文本（外部更新，如 slash command） */
   setInput(text: string): void {
+    this.cancelFileCompletionQuery()
     this.inputLine.setValue(text, text.length)
     this.renderLive()
   }
@@ -2282,6 +2293,7 @@ export class TuiApp {
    * 再调 setGitBranch()。
    */
   setCwd(cwd: string): void {
+    this.cancelFileCompletionQuery()
     // cwd 变化 = 旧目录的会话面结束：挂着的提问卡先归档再清面板（与
     // setUIHistorySession/dispose 同手法）——只清面板不归档的话，提问在会话内
     // 彻底不可见，直到 dispose 才以「未作答」入历史。
@@ -4069,6 +4081,7 @@ export class TuiApp {
 
   /** 销毁资源 */
   dispose(): void {
+    this.cancelFileCompletionQuery()
     this.archiveAskCards()
     this.decisions.clear()
     this.rejectPendingApprovals()
@@ -4641,15 +4654,24 @@ export class TuiApp {
 
     const token = extractAtToken(value, cursor)
     if (token === null) return false
-    const candidates = getCompletions(token, process.cwd(), 8)
-    if (candidates.length === 0) return false
-
-    this.inputController.fileCompletion = { baseText: value, baseCursor: cursor, candidates, idx: 0 }
-    const applied = applyCompletion(value, cursor, candidates[0]!)
-    this.inputLine.setValue(applied.text, applied.cursor)
-    if (candidates.length === 1) {
-      this.inputController.fileCompletion = null // 唯一候选，无需循环
-    }
+    this.cancelFileCompletionQuery()
+    const generation = this.fileCompletionGeneration
+    const query = new AbortController()
+    this.fileCompletionQuery = query
+    const cwd = this.sessionCwd ?? process.cwd()
+    void getCompletions(token, cwd, 8, query.signal).then(candidates => {
+      if (generation !== this.fileCompletionGeneration || query.signal.aborted || this.terminalRestored
+        || this.inputLine.value !== value || this.inputLine.cursor !== cursor
+        || (this.sessionCwd ?? process.cwd()) !== cwd || this.overlay.isActive()
+        || this.input.getMode() !== 'input' || this.editorActive) return
+      this.fileCompletionQuery = undefined
+      if (candidates.length === 0) return
+      this.inputController.fileCompletion = { baseText: value, baseCursor: cursor, candidates, idx: 0 }
+      const applied = applyCompletion(value, cursor, candidates[0]!)
+      this.inputLine.setValue(applied.text, applied.cursor)
+      if (candidates.length === 1) this.inputController.fileCompletion = null
+      this.renderLive()
+    })
     return true
   }
 

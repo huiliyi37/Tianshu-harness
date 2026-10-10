@@ -37,6 +37,7 @@ import { loadProjectRules } from '../context/rules-loader.js'
 import { exportDurableClaims, importClaims } from '../context/claim-export.js'
 import { formatVolatilePayloadReport } from '../context/payload-diagnostic.js'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { basename, join, resolve } from 'node:path'
 import { buildHandoffPrompt } from './handoff.js'
 import { ensureVerifyDeclaration, renderRivetMdStack, upsertStackSection } from '../bootstrap/verify-declaration.js'
@@ -345,7 +346,7 @@ export function formatMemoryOverview(ctx: SlashHandlerContext): string {
 
   const dir = knowledgeDir()
   const knowledgeFiles = existsSync(dir)
-    ? readdirSync(dir).filter(f => f.endsWith('.md')).slice(0, 8)
+    ? readdirSync(dir).filter(f => f.endsWith('.md') && !isFilesystemMetadata(f)).slice(0, 8)
     : []
   const knowledgeLines = knowledgeFiles.length === 0
     ? ['  (none)']
@@ -364,7 +365,7 @@ export function searchMemory(ctx: SlashHandlerContext, query: string): string {
     .map(p => `pheromone:${p.path} ${p.signal} ${p.context ?? ''}`)
   const dir = knowledgeDir()
   const knowledgeHits = existsSync(dir)
-    ? readdirSync(dir).filter(f => f.endsWith('.md')).flatMap(file => {
+    ? readdirSync(dir).filter(f => f.endsWith('.md') && !isFilesystemMetadata(f)).flatMap(file => {
       const content = readFileSync(join(dir, file), 'utf-8')
       return content.toLowerCase().includes(needle) ? [`knowledge:${file} ${content.slice(0, 160).replaceAll('\n', ' ')}`] : []
     })

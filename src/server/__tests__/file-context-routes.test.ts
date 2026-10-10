@@ -47,3 +47,18 @@ test('search reaches files beyond the former 2000-file cap; refresh invalidates 
     assert.equal((await cachedProjectFiles(root, true)).includes('new.md'), true)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('search omits metadata sidecars and preserves explicit cache refresh', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'file-context-metadata-'))
+  try {
+    writeFileSync(join(root, 'zz-final.sh'), 'echo marker')
+    writeFileSync(join(root, '._zz-final.sh'), 'synthetic sidecar')
+    const handler = buildFileContextRoutes('file-context-test')['GET /workspace/file-context']!
+    const res = await handler(undefined, { cwd: root, q: 'zz-final.sh' }, auth)
+    assert.equal(res.status, 200)
+    assert.deepEqual((res.body as { items: unknown[] }).items, [{ path: 'zz-final.sh', kind: 'file' }])
+    writeFileSync(join(root, 'new.md'), '')
+    assert.equal((await cachedProjectFiles(root)).includes('new.md'), false)
+    assert.equal((await cachedProjectFiles(root, true)).includes('new.md'), true)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

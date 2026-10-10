@@ -30,7 +30,7 @@
  *     「整棵树被 SIGKILL 端掉、没人来得及」（见 test-runner-flags.test.ts 的 8s 自毁）。
  *
  * 汇总已出现但进程不退时（句柄未释放）**不判失败**：测试确实跑完了，看门狗只负责
- * 收尾，退出码以汇总里的 fail 计数为准——否则等于把 flag 的过度自信换成过度悲观。
+ * 收尾，以完整汇总的 fail / cancelled 计数判定；自然退出的非零码仍须保留。
  */
 
 import { spawn } from 'node:child_process'
@@ -48,7 +48,8 @@ export interface GuardedResult {
   tests: number | null
   pass: number | null
   fail: number | null
-  /** 是否见到 node 的汇总段（`ℹ tests` 行）。false 即"跑了但什么都没验证"。 */
+  cancelled: number | null
+  /** 是否收齐 tests / pass / fail / cancelled 汇总；缺项即验证不完整。 */
   summarySeen: boolean
   /** 收尾方式：null = 子进程自己退出；'idle' / 'hard' = 看门狗动手。 */
   killed: 'idle' | 'hard' | null
@@ -57,7 +58,7 @@ export interface GuardedResult {
   seenChecks: { pass: number; fail: number }
   /** 流末尾若干行（无汇总时用于定位卡在哪个测试上）。 */
   tailExcerpt: string
-  /** 有失败时的更长末帧（覆盖 node 的 `failing tests:` 明细段）——runner 汇总后重放用。 */
+  /** 非零退出时的更长末帧（包括取消或提前退出）——runner 汇总后重放用。 */
   failureExcerpt: string
 }
 
@@ -73,7 +74,7 @@ export interface GuardOptions {
 }
 
 /** `ℹ tests 1789` —— node spec reporter 的汇总行，逐字匹配。 */
-const SUMMARY_LINE_RE = /^ℹ (tests|pass|fail) (\d+)\s*$/gm
+const SUMMARY_LINE_RE = /^ℹ (tests|pass|fail|cancelled) (\d+)\s*$/gm
 /** 汇总在流末尾；只留尾部即可覆盖，同时防止长跑批次把 buffer 撑爆。 */
 const TAIL_KEEP = 64 * 1024
 /** 用例结果行（spec reporter 形如 `✔ name (1ms)` / `  ✔ nested` / `✖ name`）。 */
@@ -94,6 +95,7 @@ export function runGuardedChild(opts: GuardOptions): Promise<GuardedResult> {
       tests: null,
       pass: null,
       fail: null,
+      cancelled: null,
       summarySeen: false,
       killed: null,
       seenChecks: { pass: 0, fail: 0 },
@@ -155,7 +157,9 @@ export function runGuardedChild(opts: GuardOptions): Promise<GuardedResult> {
         // 总时长失控：即使已见汇总也判失败（尚未正常收场）。
         result.code = 1
       } else if (result.summarySeen) {
-        result.code = (result.fail ?? 0) > 0 ? 1 : 0
+        if ((result.fail ?? 0) > 0 || (result.cancelled ?? 0) > 0) result.code = 1
+        else if (result.killed === 'idle') result.code = 0
+        else result.code = exitCode === 0 ? 0 : exitCode ?? 1
       } else {
         // 没有汇总 = 没有验证。子进程若非零退出则沿用，否则兜到 1（fail-closed）。
         result.code = exitCode !== null && exitCode !== 0 ? exitCode : 1
@@ -166,7 +170,7 @@ export function runGuardedChild(opts: GuardOptions): Promise<GuardedResult> {
       result.tailExcerpt = tailLines.slice(-TAIL_EXCERPT_LINES).join('\n')
       // 有失败时再留一段更长的末帧（含 `failing tests:` 明细）——runner 汇总后重放，
       // 让「只 tail 看输出尾部」的用法也能直接定位失败（台账 F5）。
-      result.failureExcerpt = (result.fail ?? 0) > 0 ? tailLines.slice(-FAILURE_EXCERPT_LINES).join('\n') : ''
+      result.failureExcerpt = result.code !== 0 ? tailLines.slice(-FAILURE_EXCERPT_LINES).join('\n') : ''
       capture.finish(result.code === 0 && result.killed === null && exitCode === 0)
       resolve(result)
     }
@@ -191,14 +195,16 @@ export function runGuardedChild(opts: GuardOptions): Promise<GuardedResult> {
         const key = m[1]
         const value = Number(m[2])
         if (key === 'tests') {
-          result.summarySeen = true
           result.tests = value
         } else if (key === 'pass') {
           result.pass = value
-        } else {
+        } else if (key === 'fail') {
           result.fail = value
+        } else {
+          result.cancelled = value
         }
       }
+      result.summarySeen = result.tests !== null && result.pass !== null && result.fail !== null && result.cancelled !== null
       if (opts.forwardOutput !== false) process.stdout.write(chunk)
       armIdle()
     }

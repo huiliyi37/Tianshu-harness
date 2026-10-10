@@ -8,7 +8,7 @@
  * immediately (listSessions resolves sessions by .jsonl presence).
  */
 
-import { appendFileSync, copyFileSync, existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { appendFile, open } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { encodeBatch, isZstdFrameStream } from './session-transcript-codec.js'
@@ -19,6 +19,7 @@ export class SessionBatchWriter {
   private pendingBuffer = ''
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private flushPromise: Promise<void> | null = null
+  private inFlight: { start: number; text: string } | null = null
   /** Set once the transcript file is known to be zstd-frame format. */
   private codecReady = false
 
@@ -113,12 +114,24 @@ export class SessionBatchWriter {
     return this.pendingBuffer.length > 0 ? onDiskText + this.pendingBuffer : onDiskText
   }
 
+  captureReadSnapshot(): { committedBytes?: number; tail: string } {
+    return {
+      committedBytes: this.inFlight?.start,
+      tail: (this.inFlight?.text ?? '') + this.pendingBuffer,
+    }
+  }
+
   private async writeBatch(text: string): Promise<void> {
     this.ensureCodecFormat()
     const frame = encodeBatch(text)
     if (frame.length === 0) return
-    await appendFile(this.filePath, frame, { mode: 0o600 })
-    await this.fdatasyncQuiet()
+    this.inFlight = { start: existsSync(this.filePath) ? statSync(this.filePath).size : 0, text }
+    try {
+      await appendFile(this.filePath, frame, { mode: 0o600 })
+      await this.fdatasyncQuiet()
+    } finally {
+      this.inFlight = null
+    }
   }
 
   /**

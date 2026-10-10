@@ -5,7 +5,7 @@ import { applyEol, chooseEol } from './line-endings.js'
 import { getTargetEol } from '../platform.js'
 import { incrementEditFailCount, resetEditFailCount } from './read-file.js'
 import { checkSyntax } from './syntax-check.js'
-import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
+import { withFileChangeTracking, restoreFileChange, type FileChangeRecord } from '../agent/recovery-stack.js'
 import { validatePathSafe } from './path-validate.js'
 import { cpuPool } from '../workers/cpu-pool.js'
 import type { AstEditChange, AstEditComputeArgs, AstEditComputeResult, AstEditOpArg } from '../workers/cpu-tasks.js'
@@ -61,7 +61,7 @@ export const AST_EDIT_TOOL: Tool = {
     },
   },
 
-  async execute(params: ToolCallParams): Promise<ToolResult> {
+  execute: withFileChangeTracking(async (params: ToolCallParams, trackFileChange): Promise<ToolResult> => {
     const input = params.input as Record<string, unknown>
     const ops = Array.isArray(input.ops) ? (input.ops as AstEditOp[]) : []
     if (ops.length === 0) return { content: '错误：至少需要一个 find/replace 操作', isError: true }
@@ -155,6 +155,7 @@ export const AST_EDIT_TOOL: Tool = {
 
     const errors = compute.errors
     const fileResults: Array<{ file: string; changes: AstEditChange[] }> = []
+    let rollbackFailed = false
 
     for (const fr of compute.files) {
       if (dryRun) {
@@ -172,8 +173,9 @@ export const AST_EDIT_TOOL: Tool = {
         // files); ast-grep edits operate on \n-normalized ranges internally.
         const eol = chooseEol(fr.file, fr.existingEol, getTargetEol())
         // Back up before writing so a fatal post-write check can roll back.
+        let capture: FileChangeRecord | undefined
         if (verify) {
-          await trackFileChange(cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'ast_edit' })
+          capture = await trackFileChange(cwd, { filePath: relPath, action: 'edit', toolCallId: params.toolUseId ?? 'ast_edit' })
         }
         await writeFileAtomicAsync(fr.file, applyEol(fr.newSource, eol), { preserveMode: true })
 
@@ -185,9 +187,10 @@ export const AST_EDIT_TOOL: Tool = {
           try {
             const check = await checkSyntax(fr.file, fr.newSource)
             if (check.fatal) {
-              await restoreLatestBackup(cwd, relPath, params.sessionId)
+              const restored = capture ? await restoreFileChange(cwd, capture, params.sessionId) : false
+              rollbackFailed ||= !restored
               incrementEditFailCount(fr.file)
-              errors.push(`${fr.file}: 写入后语法错误——已回滚：${check.fatal.split('\n')[0]}`)
+              errors.push(`${fr.file}: 写入后语法错误——${restored ? '已回滚' : '自动回滚失败'}：${check.fatal.split('\n')[0]}`)
               rolledBack = true
             }
           } catch {
@@ -237,8 +240,8 @@ export const AST_EDIT_TOOL: Tool = {
       incrementEditFailCount(fileResults.length > 0 ? fileResults[0]!.file : (paths[0] ?? ''))
     }
 
-    return { content: `${summary}\n${body}${errorSection}` }
-  },
+    return { content: `${summary}\n${body}${errorSection}`, ...(rollbackFailed ? { isError: true, errorKind: 'syntax_error' as const } : {}) }
+  }),
 
   requiresApproval: () => true, // ast-edit writes files — needs approval
   isConcurrencySafe: () => false,

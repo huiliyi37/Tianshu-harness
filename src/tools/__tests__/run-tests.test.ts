@@ -116,8 +116,8 @@ describe('mixed', () => {
   it('fails', () => { assert.equal(1, 2) })
 })`
 
-    passingDir = setupProject('tsx --test src/example.test.ts', passingTest)
-    failingDir = setupProject('tsx --test src/example.test.ts', failingTest)
+    passingDir = setupProject('node --import tsx --test src/example.test.ts', passingTest)
+    failingDir = setupProject('node --import tsx --test src/example.test.ts', failingTest)
   })
 
   after(async () => {
@@ -153,6 +153,8 @@ describe('mixed', () => {
     // verification metadata is always present
     assert.ok(typeof result.verification!.passed === 'number')
     assert.ok(typeof result.verification!.failed === 'number')
+    assert.equal(result.verification!.status, 'failed', result.content)
+    assert.deepEqual([result.verification!.passed, result.verification!.failed], [1, 1], result.content)
   })
 
   it('filter restricts which tests run with targeted scope', async () => {
@@ -163,7 +165,7 @@ describe('mixed', () => {
     assert.ok(result.content.includes('通过'), 'should include passed count')
     assert.ok(result.verification)
     assert.equal(result.verification!.scope, 'targeted')
-    assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
+    assert.equal(result.verification!.command, 'node --import tsx --test src/example.test.ts')
   })
 
   // 2026-07-27 实测：filter='edit.test' 被判「无法解析为 Node 测试文件」，
@@ -175,7 +177,7 @@ describe('mixed', () => {
       const result = await RUN_TESTS_TOOL.execute(makeParams({ filter }, passingDir))
 
       assert.equal(result.isError, false, `filter 应解析到 src/example.test.ts，实得：${result.content}`)
-      assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
+      assert.equal(result.verification!.command, 'node --import tsx --test src/example.test.ts')
       assert.equal(result.verification!.scope, 'targeted')
     })
   }
@@ -197,7 +199,7 @@ describe('mixed', () => {
 
     assert.equal(result.isError, false)
     assert.equal(result.verification!.command.startsWith('npx '), false)
-    assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
+    assert.equal(result.verification!.command, 'node --import tsx --test src/example.test.ts')
   })
 
   it('treats scripts/run-node-tests.ts projects as node-test for targeted filters', async () => {
@@ -208,7 +210,7 @@ it('works', () => assert.equal(2 + 2, 4))`)
       const result = await RUN_TESTS_TOOL.execute(makeParams({ filter: 'src/example.test.ts' }, dir))
 
       assert.equal(result.isError, false)
-      assert.equal(result.verification!.command, 'tsx --test src/example.test.ts')
+      assert.equal(result.verification!.command, 'node --import tsx --test src/example.test.ts')
       assert.equal(result.verification!.scope, 'targeted')
     } finally {
       await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })

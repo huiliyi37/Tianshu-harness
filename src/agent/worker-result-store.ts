@@ -136,7 +136,7 @@ export interface PersistedResultRound {
 }
 
 /**
- * 列出某个 order id 的全部归档轮次，按时间升序（第 0 条是首轮）。
+ * 列出某个 order id 的全部归档轮次，按时间升序；同 mtime 按 nonce 字节序。
  * 只数 `<key>.<nonce>.json`：`<key>.json` 最新副本（nonce 为空被排除）
  * 与指纹文件（不带 order id 前缀）都不算轮次。
  * 旧格式前缀（未编码原名）一并扫描做兼容；同一 nonce 新旧两份并存时
@@ -160,7 +160,7 @@ export function listPersistedResultRounds(orderId: string, homeDir?: string): Pe
       if (!existing || savedAt >= existing.savedAt) byNonce.set(nonce, { nonce, savedAt })
     }
     const rounds = [...byNonce.values()]
-    rounds.sort((a, b) => a.savedAt - b.savedAt)
+    rounds.sort((a, b) => a.savedAt - b.savedAt || (a.nonce < b.nonce ? -1 : a.nonce > b.nonce ? 1 : 0))
     return rounds
   } catch {
     return []

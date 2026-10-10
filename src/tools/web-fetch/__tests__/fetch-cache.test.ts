@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FetchCache, normalizeCacheUrl, formatCacheAge } from '../fetch-cache.js'
+import { isFilesystemMetadata } from '../../../utils/file-metadata.js'
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'fetch-cache-test-'))
@@ -104,7 +105,7 @@ describe('FetchCache', () => {
       await cache.write('https://ex.com/fresh', 'e1', { url: 'https://ex.com/fresh', markdown: '新', via: '', status: 200 })
       now += 800 // old 过期（1300 > 1000），fresh 未过期（800 < 1000）
       await cache.sweep()
-      const files = readdirSync(dir).filter((f) => f.endsWith('.json'))
+      const files = readdirSync(dir).filter((f) => f.endsWith('.json') && !isFilesystemMetadata(f))
       assert.equal(files.length, 1)
       assert.ok(await cache.read('https://ex.com/fresh', 'e1'))
     } finally {
@@ -119,7 +120,8 @@ describe('FetchCache', () => {
       await cache.write('https://ex.com/', 'e1', { url: 'https://ex.com/', markdown: '好', via: '', status: 200 })
       // 写入损坏内容覆盖
       const { writeFileSync } = await import('node:fs')
-      const files = readdirSync(dir).filter((f) => f.endsWith('.json'))
+      const files = readdirSync(dir).filter((f) => f.endsWith('.json') && !isFilesystemMetadata(f))
+      assert.equal(files.length, 1, 'corrupt the actual application cache entry')
       writeFileSync(join(dir, files[0]!), 'not-json{{{')
       assert.equal(await cache.read('https://ex.com/', 'e1'), undefined)
     } finally {

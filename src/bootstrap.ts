@@ -66,6 +66,7 @@ import { GATE_TSC_TIMEOUT_MS } from './agent/typecheck-gate.js'
 import { createCouncilConveneTool, type CouncilConveneCoordinator } from './tools/council-convene.js'
 import { needsTemplatesInit } from './bootstrap/project-templates.js'
 import { debugLog } from './utils/debug.js'
+import { plainText } from './utils/terminal-text.js'
 import { persistCouncilRoutingShadow } from './agent/council/council-routing.js'
 import { recordCouncilSession } from './agent/council/council-telemetry.js'
 import { createRecallCapsuleTool } from './tools/recall-capsule.js'
@@ -294,7 +295,7 @@ export function resolveProviderAndAuth(
   const name = providerName ?? config.provider.default
   const provider = config.provider.providers[name]
   if (!provider) {
-    console.error(`Provider "${name}" not configured. Available: ${Object.keys(config.provider.providers).join(', ')}`)
+    console.error(plainText(`Provider "${name}" not configured. Available: ${Object.keys(config.provider.providers).join(', ')}`))
     process.exit(1)
   }
 
@@ -1824,26 +1825,7 @@ export function switchAgentSession(ctx: BootstrapContext, targetId: string): Swi
   }
 }
 
-// ── Plan-mode restore（resume/切换会话共用）─────────────────────
-
-/**
- * Re-enter plan mode from persisted session metadata after a resume or an
- * in-app session switch. The runtime plan-mode state lives in AgentLoop memory
- * and dies with the process; the meta mirror (written by syncPlanModeToConfig)
- * lets us restore it. Returns the restored draft path, or null when the session
- * was not planning / the draft file no longer exists (silent downgrade to off).
- */
-export function restorePlanModeFromMeta(
-  agent: AgentLoop,
-  cwd: string,
-  meta: Pick<import('./context/types.js').SessionMetadata, 'planModeState' | 'activePlanFilePath'> | null | undefined,
-): string | null {
-  if (meta?.planModeState !== 'planning' || !meta.activePlanFilePath) return null
-  const rel = meta.activePlanFilePath.replace(/\\/g, '/')
-  if (!existsSync(join(cwd, rel))) return null
-  agent.enterPlanMode({ planFilePath: rel })
-  return rel
-}
+export { restorePlanModeFromMeta } from './plan/restore-plan-mode.js'
 
 // ── /cd：会话中途切换工作目录（保前缀缓存）──────────────────────
 

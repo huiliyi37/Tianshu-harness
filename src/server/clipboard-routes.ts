@@ -15,7 +15,7 @@
  */
 import { isAuthorizedRequest } from './auth.js'
 import type { RouteHandler } from './index.js'
-import { readImageFromClipboard } from '../tui/engine/clipboard-image.js'
+import type { readImageFromClipboard } from '../tui/engine/clipboard-image.js'
 
 /** 依赖注入口：测试替换取图实现，不碰真实系统剪贴板。 */
 export interface ClipboardRoutesDeps {
@@ -23,7 +23,10 @@ export interface ClipboardRoutesDeps {
 }
 
 export function buildClipboardRoutes(apiToken?: string, deps: ClipboardRoutesDeps = {}): Record<string, RouteHandler> {
-  const readImage = deps.readImage ?? readImageFromClipboard
+  const readImage = deps.readImage ?? (async () => {
+    const { readImageFromClipboard } = await import('../tui/engine/clipboard-image.js')
+    return readImageFromClipboard()
+  })
   const withAuth = (handler: RouteHandler): RouteHandler => async (body, params, headers, res) => {
     if (!isAuthorizedRequest({ body, headers }, apiToken)) {
       return { status: 401, body: { error: 'Unauthorized' } }

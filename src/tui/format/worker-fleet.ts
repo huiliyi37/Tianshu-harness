@@ -59,7 +59,9 @@ function truncate(text: string, max: number): string {
   // 宽度账按显示列数而非字符数——CJK objective 按字符放行必折行（树形崩坏、
   // live 行高估），且 slice 可劈开代理对。与同文件 formatWorkerRow 同口径。
   if (displayWidth(flat, WIDE) <= max) return flat
-  return `${truncateToDisplayWidth(flat, max - 1, WIDE)}…`
+  const ellipsisWidth = displayWidth('…', WIDE)
+  if (max < ellipsisWidth) return truncateToDisplayWidth(flat, max, WIDE)
+  return `${truncateToDisplayWidth(flat, max - ellipsisWidth, WIDE)}…`
 }
 
 /**

@@ -1,8 +1,7 @@
 /**
  * 人类交互桥：把聊天会话轮内的审批/提问事件转成 VS Code 原生对话框。
- * 审批回答经 REST 契约回传（interventions/answer）；提问回答经 chat 输入通道回流
- * （作为用户消息进入对话——显示与 turn 承接都由正常路径保证；REST 直发保留为回退——
- * ask_user_question 工具 endTurn 先于用户点选，直发轮的输出会落在无主 turn 上被丢弃）。
+ * 审批与提问回答经 REST 定向回原 session；全局 chat.open 无会话身份，用户在
+ * 弹窗期间切换聊天时会误投。提问之后的输出在座舱查看，成功时明确提示。
  *
  * dismiss（不回答）一律保持原状：审批继续 pending（agent 保持阻塞），
  * 提问视为未作答（可稍后自行回复）——与座舱卡片同一保守姿势。
@@ -109,30 +108,20 @@ export class ChatHumanInteraction implements vscode.Disposable {
       picked[q.id] = selected
     }
     const text = composeQuestionAnswer(questions, picked)
-    // 回答经 chat 输入通道回流：作为用户消息进入当前对话——既有显示（回答与后续
-    // 回复都有 turn 承接可桥回视图），又保持同一 conversation ↔ sidecar 会话绑定。
-    // （直连 REST 的教训：endTurn 先于用户点选，回答轮无主、输出全部被丢弃——用户
-    // 「选了没反应」实测。）
     try {
-      await vscode.commands.executeCommand('workbench.action.chat.open', { query: text, isPartialQuery: false })
-      this.log(`[human] question answered → chat input (${JSON.stringify(text.slice(0, 60))})`)
+      const client = await this.getClient()
+      if (this.disposed) return
+      const steered = await client.steer(sessionId, text)
+      if (this.disposed) return
+      if (steered !== 'queued') await client.prompt(sessionId, text)
+      if (this.disposed) return
+      this.log(`[human] question answered → original session ${sessionId} (${steered === 'queued' ? 'steer' : 'prompt'})`)
+      void vscode.window.showInformationMessage('回答已发送至原会话，请在天枢座舱查看后续结果。')
     } catch (error) {
-      // 回退：至少保证回答送达 sidecar（视图不显示，但输入不丢）。
+      if (this.disposed) return
       const message = error instanceof Error ? error.message : String(error)
-      this.log(`[human] chat input delivery failed, fallback to direct send: ${message}`)
-      try {
-        const client = await this.getClient()
-        const steered = await client.steer(sessionId, text)
-        // 'idle'（run 已收束）或 'lane_gone'（条目已被清理）都回退 prompt——输入不丢。
-        if (steered !== 'queued') {
-          await client.prompt(sessionId, text)
-        }
-        this.log(`[human] question answered → direct ${steered === 'queued' ? 'steer' : 'prompt'} (fallback)`)
-      } catch (fallbackError) {
-        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
-        this.log(`[human] question answer failed: ${fallbackMessage}`)
-        void vscode.window.showErrorMessage(`天枢提问回答发送失败: ${fallbackMessage}`)
-      }
+      this.log(`[human] question answer failed: ${message}`)
+      void vscode.window.showErrorMessage(`天枢提问回答发送失败: ${message}`)
     }
   }
 

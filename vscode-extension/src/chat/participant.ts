@@ -61,6 +61,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
   private usageBaseline: { sessionId: string; outputTotal: number } | undefined
   /** 工具 id → 参数全文（完成更新回填折叠卡 Input 区；结果到达即删，换会话清空）。 */
   private readonly toolInputs = new Map<string, string>()
+  private readonly pendingApprovals = new Map<string, { requestId: string; toolName: string; input: unknown }>()
   private unsubscribeCurrent: (() => void) | undefined
 
   /**
@@ -86,12 +87,33 @@ export class TianshuChatParticipant implements vscode.Disposable {
     this.unsubscribeCurrent = undefined
     this.permission.clearAll()
     this.toolInputs.clear()
+    this.pendingApprovals.clear()
     this.participant.dispose()
   }
 
   /** 把一条聊天轮事件落进视图，或在终结事件上收束本轮。 */
   private dispatch(event: ChatTurnEvent | undefined): void {
     const turn = this.activeTurn
+    if (event?.kind === 'approval' || event?.kind === 'approval-snapshot' || event?.kind === 'approval-resolved') {
+      const sessionId = this.gate.currentSession()
+      if (!sessionId) return
+      if (event.kind === 'approval-resolved') {
+        this.pendingApprovals.delete(event.requestId)
+      } else {
+        const rows = event.kind === 'approval' ? [event] : event.approvals
+        const previous = new Set(this.pendingApprovals.keys())
+        if (event.kind === 'approval-snapshot') this.pendingApprovals.clear()
+        for (const row of rows) {
+          this.pendingApprovals.set(row.requestId, row)
+          if (!previous.has(row.requestId)) {
+            turn?.stream.markdown(`\n\n> ⏸ 审批请求：${row.toolName}——请在弹出对话框中确认。`)
+            this.human.handleApproval(sessionId, row.requestId, row.toolName, row.input)
+          }
+        }
+      }
+      turn?.timeout.setPendingApprovals(this.pendingApprovals.size)
+      return
+    }
     if (event === undefined || turn === undefined) return
     if (event.kind === 'delta') {
       turn.sawText = true
@@ -147,16 +169,6 @@ export class TianshuChatParticipant implements vscode.Disposable {
       const outputDelta = Math.max(0, event.completionTokens - prevOutput)
       this.usageBaseline = { sessionId: turn.sessionId, outputTotal: Math.max(prevOutput, event.completionTokens) }
       turn.stream.usage?.({ promptTokens: event.promptTokens, completionTokens: outputDelta })
-      return
-    }
-    if (event.kind === 'approval') {
-      turn.stream.markdown(`\n\n> ⏸ 审批请求：${event.toolName}——请在弹出对话框中确认。`)
-      turn.timeout.approvalRequired()
-      this.human.handleApproval(turn.sessionId, event.requestId, event.toolName, event.input)
-      return
-    }
-    if (event.kind === 'approval-resolved') {
-      turn.timeout.approvalResolved()
       return
     }
     if (event.kind === 'question') {
@@ -265,6 +277,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
     if (!acquired.reuse || !this.unsubscribeCurrent) {
       this.unsubscribeCurrent?.()
       this.unsubscribeCurrent = undefined
+      this.pendingApprovals.clear()
       let since: number
       try {
         since = (await client.getSession(sessionId)).lastSeq
@@ -310,6 +323,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
     }
 
     timeout.arm()
+    timeout.setPendingApprovals(this.pendingApprovals.size)
 
     try {
       const queued = await client.queue(sessionId, request.prompt)

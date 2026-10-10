@@ -80,6 +80,15 @@ describe('general-ledger', () => {
       assert.deepEqual(listGenerals(cwd), ['yaoguang'])
     })
 
+    it('listGenerals excludes metadata while preserving ordinary dotfile ledgers', () => {
+      seedLedger()
+      seedLedger('.notes', '# Ordinary dotfile ledger')
+      seedLedger('._metadata', '# Filesystem metadata')
+      writeFileSync(join(cwd, '.rivet/generals', '.DS_Store'), 'filesystem metadata')
+      assert.deepEqual(listGenerals(cwd).sort(), ['.notes', 'yaoguang'])
+      assert.match(readGeneralLedger(cwd, '瑶光')!.content, /always-true-on-missing-field/)
+    })
+
     it('listGenerals returns [] when dir missing', () => {
       assert.deepEqual(listGenerals(cwd), [])
     })

@@ -10,7 +10,7 @@
  * 退出码 0、stderr 干净，与"本来就没有可恢复的历史"不可区分。
  *
  * `runHeadless` 自身的单元测试发现不了：那时 sessionId 是调用方传进来的既有事实。
- * 只有真跑一次 `src/main.ts -p ... -r <id>` 才能覆盖。
+ * 只有真跑 CLI 入口（已构建的 dist/main.js，否则 src/main.ts）才能覆盖。
  *
  * 断言分两层，缺一不可：
  *   1. 第二次运行的 `system/init.session_id` 必须**等于**目标 id（不是新 uuid）；
@@ -25,10 +25,12 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { cliFixtureEnv, cliProcessArgs } from './cli-process-fixture.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -83,7 +85,7 @@ async function makeFixture(): Promise<Fixture> {
     home,
     close: async () => {
       await new Promise<void>(r => server.close(() => r()))
-      rmSync(home, { recursive: true, force: true })
+      await rm(home, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     },
   }
 }
@@ -92,10 +94,10 @@ async function makeFixture(): Promise<Fixture> {
 function runCli(home: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', join(repoRoot, 'src', 'main.ts'), ...args],
+    cliProcessArgs(repoRoot, args),
     {
-      cwd: repoRoot,
-      env: { ...process.env, RIVET_CONFIG_PATH: join(home, 'config.json'), RIVET_HOME: home },
+      cwd: home,
+      env: cliFixtureEnv(home),
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -119,7 +121,7 @@ function transcriptPaths(home: string): string[] {
     let entries: string[]
     try { entries = readdirSync(join(sessionsRoot, slug)) } catch { continue }
     for (const entry of entries) {
-      if (entry.endsWith('.jsonl')) out.push(join(sessionsRoot, slug, entry))
+      if (entry.endsWith('.jsonl') && !entry.startsWith('._')) out.push(join(sessionsRoot, slug, entry))
     }
   }
   return out.sort()

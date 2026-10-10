@@ -78,9 +78,26 @@ fi
 
 # 3. 全局安装（幂等：重复执行覆盖升级）
 say "安装天枢 CLI tianshu-harness（registry=${REGISTRY}）"
-if ! npm install -g tianshu-harness; then
+NPM_INSTALL_LOG="$(umask 077; mktemp "${TMPDIR:-/tmp}/tianshu-install.XXXXXX")" || die "无法创建安装诊断日志，请检查临时目录是否可写后重跑。"
+trap 'rm -f "$NPM_INSTALL_LOG"' EXIT
+if npm install -g tianshu-harness 2>&1 | tee "$NPM_INSTALL_LOG"; then
+  :
+else
+  NPM_INSTALL_STATUS=("${PIPESTATUS[@]}")
+  if [ "${NPM_INSTALL_STATUS[1]}" -ne 0 ]; then
+    die "无法完整显示或保存安装诊断日志，请检查临时目录与终端输出后重跑。"
+  fi
+  if grep -Eq '^npm (error|ERR!) code (EACCES|EPERM)[[:space:]]*$' "$NPM_INSTALL_LOG"; then
+    die "安装失败：npm 报权限不足或路径不可写（EACCES/EPERM）。全局 prefix 可写时，已有包、缓存或 bin 目录仍可能拒绝访问。
+可改用用户级 prefix（无需 sudo），再重跑：
+  mkdir -p \"\$HOME/.npm-global\" && npm config set prefix \"\$HOME/.npm-global\"
+  将 \"\$HOME/.npm-global/bin\" 加进 PATH。
+或检查 npm 报错路径的属主，确认应属于当前用户后，用 sudo chown 修正该路径的所有权。"
+  fi
   die "安装失败。网络问题可换官方源重跑：NPM_CONFIG_REGISTRY=https://registry.npmjs.org bash $0"
 fi
+rm -f "$NPM_INSTALL_LOG" || die "无法清理安装诊断日志，请检查临时目录权限。"
+trap - EXIT
 
 # 3. 验证（个别环境装完当前 shell 拿不到 PATH，给出可操作指引而不是直接失败）
 if command -v tianshu >/dev/null 2>&1; then

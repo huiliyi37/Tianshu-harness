@@ -17,6 +17,7 @@
 import { existsSync, statSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { projectStateAllowed } from '../config/project-trust.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { BM25Index } from '../search/text-index.js'
 import { VectorIndex } from '../search/vector-index.js'
 import { reciprocalRankFusion } from '../search/hybrid-search.js'
@@ -97,7 +98,7 @@ export class KnowledgeIndex {
     } catch { parts.push('m:-') }
     try {
       for (const f of readdirSync(dir).sort()) {
-        if (!f.endsWith('.md')) continue
+        if (!f.endsWith('.md') || isFilesystemMetadata(f)) continue
         try {
           // mtime + size 双因子：NAS/SMB 挂载的 mtime 精度不可靠，size 兜底
           const st = statSync(join(dir, f))
@@ -155,7 +156,7 @@ export class KnowledgeIndex {
     const dir = join(this.cwd, '.rivet', 'knowledge')
     if (existsSync(dir)) {
       let files: string[] = []
-      try { files = readdirSync(dir).filter(f => f.endsWith('.md')) } catch { /* skip */ }
+      try { files = readdirSync(dir).filter(f => f.endsWith('.md') && !isFilesystemMetadata(f)) } catch { /* skip */ }
       for (const file of files) {
         let content = ''
         try { content = readFileSync(join(dir, file), 'utf-8') } catch { continue }

@@ -10,6 +10,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { readHistoricalTranscript } from '../agent/session-persist.js'
 import { tokenizeRecallQuery } from './query-terms.js'
 
@@ -56,7 +57,7 @@ export function collectTranscriptCandidates(
 
   const files: Array<{ sessionId: string; path: string; mtimeMs: number }> = []
   for (const name of readdirSync(sessionDir)) {
-    if (!name.endsWith('.jsonl') || name === 'cache-log.jsonl') continue
+    if (isFilesystemMetadata(name) || !name.endsWith('.jsonl') || name === 'cache-log.jsonl') continue
     const path = join(sessionDir, name)
     try { files.push({ sessionId: name.slice(0, -6), path, mtimeMs: statSync(path).mtimeMs }) } catch { /* skip */ }
   }

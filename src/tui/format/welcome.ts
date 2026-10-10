@@ -171,7 +171,7 @@ function logoSpec(style: LogoStyle): LogoSpec {
     const rowCount = glyphRows[0]?.length ?? 0
     const joined: string[] = []
     for (let r = 0; r < rowCount; r++) joined.push(glyphRows.map(g => g[r] ?? '').join(gap))
-    return { word, font, cols: Math.max(...joined.map(j => displayWidth(j))), rows: rowCount, gap }
+    return { word, font, cols: Math.max(...joined.map(j => displayWidth(j, WIDE))), rows: rowCount, gap }
   }
   return style === 'pixel'
     ? measured('TIANSHU', BLOCK_FONT, ' ')
@@ -182,7 +182,7 @@ function logoSpec(style: LogoStyle): LogoSpec {
  *  cols 不足以容纳立体字时强制 pixel(auto 降档,显式 pixel 不受影响)。 */
 function resolveLogoSpec(explicit: string | undefined, cols: number): { spec: LogoSpec; style: LogoStyle } {
   let style = resolveLogoStyle(explicit)
-  if (style === 'shadow' && cols < SHADOW_MIN_COLS) style = 'pixel' /* 窄屏自动降档保留 */
+  if (style === 'shadow' && (cols < SHADOW_MIN_COLS || logoSpec(style).cols > cols)) style = 'pixel'
   return { spec: logoSpec(style), style }
 }
 
@@ -281,9 +281,10 @@ export function smallWordmark(theme: RivetTheme, ascii: boolean): string {
 }
 
 export function formatWelcomeBrand(columns: number, theme: RivetTheme): string[] {
-  if (columns < SHADOW_MIN_COLS) return [smallWordmark(theme, false)]
+  const spec = logoSpec('shadow')
+  if (columns < SHADOW_MIN_COLS || spec.cols > columns) return [smallWordmark(theme, false)]
   const mission = missionLine(theme, columns)
-  return [...logoRows(theme, columns, undefined, logoSpec('shadow')), ...(mission ? [mission] : [])]
+  return [...logoRows(theme, columns, undefined, spec), ...(mission ? [mission] : [])]
 }
 
 /** 使命行(静态终态):整行装不下就整体消失,绝不腰斩 slogan。
@@ -358,9 +359,11 @@ function datumLine(theme: RivetTheme, ascii: boolean, cols: number, separator?: 
   const star = ascii ? '*' : '✦'
   const k = Math.max(1, Math.floor(cols * STAR_AT))
   const rest = Math.max(0, cols - k - displayWidth(star, WIDE))
-  return color(h.repeat(k), theme.muted, { bold: true })
+  const cell = displayWidth(h, WIDE)
+  const rule = (width: number) => h.repeat(Math.floor(width / cell)) + ' '.repeat(width % cell)
+  return color(rule(k), theme.muted, { bold: true })
     + color(star, theme.brandColor, { bold: true })
-    + color(h.repeat(rest), theme.muted, { bold: true })
+    + color(rule(rest), theme.muted, { bold: true })
 }
 
 /** 进入提示区:新会话一次性短提醒(竖排,规格 §三 中层)。

@@ -29,6 +29,10 @@ export function protectPrivatePath(path: string, platform = process.platform): v
   if (lstatSync(path).isSymbolicLink()) throw new Error('Private storage cannot be a symbolic link')
   if (platform !== 'win32') {
     chmodSync(path, lstatSync(path).isDirectory() ? 0o700 : 0o600)
+    const effective = lstatSync(path)
+    if (effective.isSymbolicLink() || (effective.mode & 0o077) !== 0) {
+      throw new Error('Private storage permissions could not be enforced')
+    }
     return
   }
   const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')

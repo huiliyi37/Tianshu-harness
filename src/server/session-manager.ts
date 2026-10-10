@@ -5499,7 +5499,7 @@ export class RuntimeSessionManager {
     if (approved && remember === true && pend.toolName === 'computer_use') {
       // 单动作取顶层 app；单应用 sequence 从 steps 里解析同一 app；多应用
       // sequence 返回 undefined（不记录，fail closed）。
-      const app = resolveRememberedComputerUseApp(pend.toolInput)
+      const app = resolveRememberedComputerUseApp(result.editedInput ?? pend.toolInput)
       if (app) {
         try {
           grantComputerUseApp(app)

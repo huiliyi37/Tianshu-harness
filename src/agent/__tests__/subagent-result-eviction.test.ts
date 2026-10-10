@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync, 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { evictOldSubagentResults } from '../coordinator.js'
+import { isFilesystemMetadata } from '../../utils/file-metadata.js'
 
 describe('evictOldSubagentResults', () => {
   it('LRU-evicts oldest .json files down to the limit', () => {
@@ -19,7 +20,7 @@ describe('evictOldSubagentResults', () => {
       const evicted = evictOldSubagentResults(dir, 2)
       // keeps 2 newest (wo_0, wo_1), evicts the 3 oldest
       assert.deepEqual(evicted.sort(), ['wo_2.json', 'wo_3.json', 'wo_4.json'])
-      const remaining = readdirSync(dir).sort()
+      const remaining = readdirSync(dir).filter(f => !isFilesystemMetadata(f)).sort()
       assert.deepEqual(remaining, ['wo_0.json', 'wo_1.json'])
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -9,7 +9,7 @@
  * 已把顶层槽剥进 provider-keys.json，最终 `key=''` 直接 exit 1。TUI/sidecar 走
  * resolveModelSpec（有守卫）不受影响，所以这个洞只在 headless 面上。
  *
- * 本文件跑真实 `src/main.ts`，断言 mock 端点实际收到的 Authorization / model，
+ * 本文件跑真实 CLI（优先构建入口，未构建时用绝对源码 loader），断言 mock 端点实际收到的 Authorization / model，
  * 是覆盖那段代码的唯一通道。
  *
  * ⚠ 凭据形态必须是 keyRef + secrets.json：内联 apiKey 会被 A′ 的 stripProviderKeys
@@ -24,6 +24,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { cliFixtureEnv, cliProcessArgs } from '../../__tests__/cli-process-fixture.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
@@ -109,10 +110,11 @@ async function makeFixture(providerName: string, keys: Array<{ id: string; model
 async function runHeadless(fx: Fixture, modelArg: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', 'src/main.ts', '-p', 'say hi', '--model', modelArg],
+    cliProcessArgs(repoRoot, ['-p', 'say hi', '--model', modelArg]),
     {
-      cwd: repoRoot,
-      env: { ...process.env, RIVET_CONFIG_PATH: join(fx.home, 'config.json'), RIVET_HOME: fx.home },
+      cwd: fx.home,
+      env: cliFixtureEnv(fx.home),
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -201,6 +203,7 @@ describe('headless 凭据归属（真进程 E2E）', () => {
       const r = await runHeadless(legacy, 'legacyprov:legacy-model')
       assert.equal(r.code, 0, `进程应成功退出，stderr: ${r.stderr.slice(0, 200)}`)
       assert.equal(legacy.seen[0]!.auth, 'Bearer sk-KEY-DEFAULT', '未迁移 provider 走顶层 keyRef')
+      assert.equal(legacy.seen[0]!.model, 'legacy-model')
     } finally {
       await legacy.close()
     }

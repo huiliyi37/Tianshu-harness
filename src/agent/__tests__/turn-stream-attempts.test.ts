@@ -37,7 +37,7 @@ test('actual incomplete SSE retry discards failed tools, text, reasoning and fin
     const id = `tool-${++sends}`
     const payload = { choices: [{ delta: { content: sends === 1 ? 'failed-text' : 'final-text', reasoning_content: `thinking-${sends}`,
       tool_calls: [{ index: 0, id, type: 'function', function: { name: 'write_file', arguments: '{"file_path":"fixture.txt","content":"fixture"}' } }] },
-    finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 10 } }
+    finish_reason: sends === 1 ? null : 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 10 } }
     return new Response(`data: ${JSON.stringify(payload)}\n\n${sends === 1 ? '' : 'data: [DONE]\n\n'}`, { headers: { 'content-type': 'text/event-stream' } })
   }
   try {

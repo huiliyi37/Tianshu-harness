@@ -17,6 +17,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { writeFileAtomicSync } from '../fs-atomic.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import type { TrajectoryEntry } from './trajectory.js'
 import type { VerificationMetadata } from '../tools/types.js'
 import { parseSkillMarkdown, type SkillDefinition } from '../skills/skill-loader.js'
@@ -238,7 +239,7 @@ export function persistSkillDraft(cwd: string, draft: SkillDraft): { written: bo
   // Dedup by draft-key across all existing drafts (same procedure → no re-draft).
   if (existsSync(dir)) {
     for (const name of readdirSync(dir)) {
-      if (!name.endsWith('.md')) continue
+      if (!name.endsWith('.md') || isFilesystemMetadata(name)) continue
       try {
         if (extractDraftKey(readFileSync(join(dir, name), 'utf-8')) === draft.draftKey) {
           return { written: false, path: join(dir, name) }
@@ -269,7 +270,7 @@ export function listSkillDrafts(cwd: string): SkillDraftSummary[] {
   if (!existsSync(dir)) return []
   const out: SkillDraftSummary[] = []
   for (const file of readdirSync(dir).sort()) {
-    if (!file.endsWith('.md')) continue
+    if (file.startsWith('._') || !file.endsWith('.md')) continue
     const path = join(dir, file)
     const name = file.replace(/\.md$/, '')
     let description = ''

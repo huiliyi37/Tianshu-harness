@@ -4,7 +4,7 @@
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
  * description 字段人工维护，重新生成时按 name 保留。
  * 最后生成：2026-10-06T16:03:14.219Z
- * 共 232 个变量。
+ * 共 234 个变量。
  *
  * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
  * 当源码中新增 RIVET_* 引用但注册表未同步时，
@@ -190,6 +190,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     defaultHint: '',
     files: ['tools/default-registry.ts', 'tools/__tests__/tool-preset.test.ts'],
     description: '',
+  },
+  {
+    name: 'RIVET_CAPTURED_PTY',
+    defaultHint: '',
+    files: ['tui/terminal-profile.ts', 'tui/__tests__/captured-pty-rendering.test.ts'],
+    description: '宿主远控标记：1 强制受限行式界面，0 禁止自动进程探测；CLI/terminal mode 优先。',
   },
   {
     name: 'RIVET_CLAIM_AUDIT',
@@ -918,6 +924,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     description: '',
   },
   {
+    name: 'RIVET_PRIVATE_PATH',
+    defaultHint: '',
+    files: ['platform/private-path.ts', 'platform/__tests__/private-path.test.ts'],
+    description: 'Windows 私有目录 ACL 子进程使用的临时路径，不作为用户配置项。',
+  },
+  {
     name: 'RIVET_PRO',
     defaultHint: '',
     files: ['server/__tests__/recordings-distill-route.test.ts', 'pro/__tests__/register-gate.test.ts', 'config/pro-license.ts', 'config/__tests__/pro-license.test.ts'],
@@ -1180,6 +1192,12 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
     defaultHint: '',
     files: ['agent/frame-telemetry.ts', 'agent/telemetry-writer.ts', 'agent/__tests__/frame-telemetry.test.ts', 'agent/__tests__/telemetry-writer.test.ts'],
     description: '',
+  },
+  {
+    name: 'RIVET_TERMINAL_MODE',
+    defaultHint: '',
+    files: ['tui/terminal-profile.ts', 'tui/__tests__/captured-pty-rendering.test.ts'],
+    description: '终端模式 auto/native/captured-pty；--terminal-mode 可覆盖，captured-pty 自动行式降级。',
   },
   {
     name: 'RIVET_TERSE',

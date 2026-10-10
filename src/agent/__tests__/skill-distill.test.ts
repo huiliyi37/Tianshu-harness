@@ -100,6 +100,29 @@ describe('persistSkillDraft / list / approve / reject', () => {
   beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), 'skill-distill-')) })
   afterEach(() => { rmSync(cwd, { recursive: true, force: true }) })
 
+  it('draft-key metadata cannot suppress creation of a real reviewable draft', () => {
+    const draft = distillSkillDraft(baseInput())!
+    const dir = join(cwd, '.rivet', 'skills', '_drafts')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '._missing.md'), renderSkillDraftMarkdown(draft))
+    const result = persistSkillDraft(cwd, draft)
+    assert.equal(result.written, true)
+    assert.equal(result.path, join(dir, `${draft.slug}.md`))
+    assert.ok(existsSync(result.path))
+    assert.deepEqual(listSkillDrafts(cwd).map(row => row.name), [draft.slug])
+    assert.deepEqual(persistSkillDraft(cwd, draft), { written: false, path: result.path })
+  })
+
+  it('draft-key dedup still recognizes an ordinary dotfile draft', () => {
+    const draft = distillSkillDraft(baseInput())!
+    const dir = join(cwd, '.rivet', 'skills', '_drafts')
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, '.notes.md')
+    writeFileSync(path, renderSkillDraftMarkdown(draft))
+    assert.deepEqual(persistSkillDraft(cwd, draft), { written: false, path })
+    assert.deepEqual(listSkillDrafts(cwd).map(row => row.name), ['.notes'])
+  })
+
   it('writes a draft under .rivet/skills/_drafts/ and dedups by draft-key', () => {
     const draft = distillSkillDraft(baseInput())!
     const r1 = persistSkillDraft(cwd, draft)
@@ -128,6 +151,17 @@ describe('persistSkillDraft / list / approve / reject', () => {
     assert.equal(drafts.length, 1)
     assert.equal(drafts[0]!.name, draft.slug)
     assert.ok(drafts[0]!.description.length > 0)
+  })
+
+  it('listSkillDrafts ignores AppleDouble metadata beside a Markdown draft', () => {
+    const dir = join(cwd, '.rivet', 'skills', '_drafts')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'draft.md'), '---\nname: draft\ndescription: Synthetic draft\n---\nFixture body.\n')
+    writeFileSync(join(dir, '._draft.md'), Buffer.from('0005160700020000' + '00'.repeat(18), 'hex'))
+
+    const drafts = listSkillDrafts(cwd)
+    assert.deepEqual(drafts.map(draft => draft.name), ['draft'])
+    assert.equal(drafts[0]!.description, 'Synthetic draft')
   })
 
   it('approveSkillDraft moves a valid draft into .rivet/skills/ and it becomes loadable', () => {

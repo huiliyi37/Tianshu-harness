@@ -223,7 +223,7 @@ const isVisible = useElementVisibility(ctnDom)
 let isAnimating = false
 
 let renderer: Renderer | null = null
-let gl: WebGLRenderingContext | null = null
+let gl: Renderer['gl'] | null = null
 let program: Program | null = null
 let mesh: Mesh | null = null
 let animateId = 0

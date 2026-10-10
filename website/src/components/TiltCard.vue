@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, type HTMLAttributes } from 'vue'
 import { usePrefersReducedMotion } from '@/composables/usePrefersReducedMotion'
 
 const props = defineProps<{
-  class?: string
+  class?: HTMLAttributes['class']
 }>()
 
 const cardRef = ref<HTMLDivElement | null>(null)

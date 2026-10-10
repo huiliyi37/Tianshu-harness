@@ -4,12 +4,12 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 // scripts/releases/ -> 仓库根
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT = 'scripts/releases/publish-release-catalog.sh'
-const run = (args = [], env) => spawnSync('bash', [SCRIPT, ...args], { cwd: root, encoding: 'utf8', env: env ?? process.env })
+const run = (args = [], env) => spawnSync('bash', [SCRIPT, ...args], { cwd: root, encoding: 'utf8', env: env ?? process.env, windowsHide: true })
 
 /** 造一个假的 gh 隔离网络；stub 只影响前置检查。 */
 function withStubGh(body) {
@@ -17,7 +17,7 @@ function withStubGh(body) {
   const f = join(dir, 'gh')
   writeFileSync(f, `#!/usr/bin/env bash\n${body}\n`)
   chmodSync(f, 0o755)
-  return { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return { website: dir.replace(/\\/g, '/'), env: { ...process.env, PATH: `${dir}${delimiter}${process.env.PATH}` }, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
 // release 存在、isDraft 可配、资产齐（含 latest.json 三平台引用的文件名）。
@@ -33,7 +33,7 @@ exit 0
 `
 
 test('publish-release-catalog.sh 语法正确', () => {
-  const r = spawnSync('bash', ['-n', SCRIPT], { cwd: root, encoding: 'utf8' })
+  const r = spawnSync('bash', ['-n', SCRIPT], { cwd: root, encoding: 'utf8', windowsHide: true })
   assert.equal(r.status, 0, r.stderr)
 })
 
@@ -70,7 +70,7 @@ test('前置检查 fail-closed：不齐则非 0 退出，齐则停在 DRY RUN', 
 test('release 仍是 draft 时 fail-closed', () => {
   const s = withStubGh(stubGh('true'))
   try {
-    const r = run([], s.env)
+    const r = run(['--website', s.website], s.env)
     assert.notEqual(r.status, 0, 'draft release 应被拦截')
     assert.match(r.stderr, /draft/)
     assert.ok(!r.stdout.includes('DRY RUN'), 'draft 不得放行到发布流程')
@@ -81,7 +81,7 @@ test('release 仍是 draft 时 fail-closed', () => {
 test('前置全过时停在 DRY RUN 且不触发任何写/对外步骤', () => {
   const s = withStubGh(stubGh('false'))
   try {
-    const r = run([], s.env)
+    const r = run(['--website', s.website], s.env)
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /DRY RUN/)
     assert.ok(!r.stdout.includes('==> 同步'))
@@ -94,7 +94,7 @@ test('前置全过时停在 DRY RUN 且不触发任何写/对外步骤', () => {
 test('默认不加 --with-atomgit 时显式告警 AtomGit 未纳入', () => {
   const s = withStubGh(stubGh('false'))
   try {
-    const r = run([], s.env)
+    const r = run(['--website', s.website], s.env)
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /AtomGit 源未纳入/)
   } finally { s.cleanup() }

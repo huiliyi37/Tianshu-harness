@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import { join } from 'node:path'
 import { planTemplatesDir } from '../config/paths.js'
 import { normalizeFrontmatterSource } from '../utils/frontmatter.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 const TEMPLATES_DIR = '.rivet/plan-templates'
 
@@ -72,7 +73,7 @@ export function loadPlanTemplates(cwd: string): PlanTemplate[] {
   const userDir = getUserTemplatesDir()
   if (existsSync(userDir)) {
     for (const file of readdirSync(userDir)) {
-      if (!file.endsWith('.md')) continue
+      if (!file.endsWith('.md') || isFilesystemMetadata(file)) continue
       const name = file.replace(/\.md$/, '')
       const raw = readFileSync(join(userDir, file), 'utf-8')
       const { meta, body } = parseFrontmatter(raw)
@@ -91,7 +92,7 @@ export function loadPlanTemplates(cwd: string): PlanTemplate[] {
   const projDir = getTemplatesDir(cwd)
   if (existsSync(projDir)) {
     for (const file of readdirSync(projDir)) {
-      if (!file.endsWith('.md')) continue
+      if (!file.endsWith('.md') || isFilesystemMetadata(file)) continue
       const name = file.replace(/\.md$/, '')
       const raw = readFileSync(join(projDir, file), 'utf-8')
       const { meta, body } = parseFrontmatter(raw)

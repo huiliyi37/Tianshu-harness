@@ -14,12 +14,13 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import { RuntimeSessionManager, type ManagedAgent, type SessionPersistenceAdapter } from '../session-manager.js'
 import { SessionJobs } from '../../tools/job-store.js'
+import { getShellCommand } from '../../platform.js'
 
 const persistence = (): SessionPersistenceAdapter => ({
   saveRecord() {}, appendEvent() {}, loadAll: () => [],
@@ -44,8 +45,13 @@ function managerCapturingJobs(root: string): { m: RuntimeSessionManager; jobs: (
 
 /** 起一条真长跑 job 并等它产出首行（日志流有未 flush 内容，句柄确实开着）。 */
 async function spawnLongJob(jobs: SessionJobs, cwd: string) {
-  const snap = jobs.spawn({ command: "sh -c 'echo BEFORE-KILL; sleep 30'", rawCommand: 'long job', cwd, env: process.env })
-  await jobs.await(snap.id, { pattern: 'BEFORE-KILL', timeoutMs: 5000 })
+  const script = join(cwd, 'long-job.mjs')
+  writeFileSync(script, "console.log('BEFORE-KILL'); setInterval(() => {}, 1000)\n")
+  const quotePath = (path: string) => JSON.stringify(path.replace(/\\/g, '/'))
+  const command = `${getShellCommand().kind === 'powershell' ? '& ' : ''}${quotePath(process.execPath)} ${quotePath(script)}`
+  const snap = jobs.spawn({ command, rawCommand: 'long job', cwd, env: process.env })
+  const started = await jobs.await(snap.id, { pattern: 'BEFORE-KILL', timeoutMs: 5000 })
+  assert.equal(started?.matched, true, 'the native job must start before cleanup is tested')
   return snap
 }
 

@@ -425,6 +425,26 @@ tianshu config mcp add-stdio tianshu-mcp npx -y tianshu-mcp
 
 **无需改文件的一键启动**：`/config` → Basics → 「最小集绑定星域」——选中某域（如 changgeng 或 taiyi），保存即自动写入 `defaultDomain` 钉定该域 + 该域的 taiyi 最小工具档覆盖（不含 lean 资源减配）。此后 `tianshu` 裸启动即进入该星域的最小集会话；配合「默认模型」字段（`agent.defaultModel`，`provider:modelId` 格式）即可完全免参数启动。清空绑定则恢复默认域（域覆盖配置保留）。桌面端同款项：设置 → 系统 → 「最小集绑定星域」。
 
+## 远控端与受限终端
+
+在远控端的 PowerShell、转发终端或手机软键盘上，可使用纯文本界面：
+
+```sh
+tianshu --terminal-mode captured-pty
+```
+
+它保留同一智能体、会话记录、工具和审批机制，按行显示完整内容，不启用备用屏幕、鼠标上报、括号粘贴及终端图像。流式输出约每 100ms 合并一次；中文和长内容交给终端自然换行，窗口缩放不会重建卡片。
+
+输入 `/help` 查看命令，`/model` 列出模型，`/model provider:model` 切换。问题可输入选项编号，多选用逗号分隔，也可直接输入文字或 `/skip`。工具等待审批时，输入 `/approve` 或 `/reject`；提前输入的批准不会授权后来出现的请求。`/abort` 中断当前任务，`/exit` 退出。
+
+计划可通过 `/plan-list`、`/plan-view <slug>` 阅读，再用 `/plan-approve <slug> [选项编号或名称]` 批准执行，或 `/plan-reject <slug>` 驳回并保留原稿。计划改变、请求取消或交互终端断开时，未提交的批准不会继续落盘或启动执行。
+
+宿主可设置 `RIVET_CAPTURED_PTY=1` 自动选择此界面；Windows 中具有精确桥接与复用器父链证据时也会自动识别。普通 ConPTY、`WT_SESSION`、SSH、tmux 或窗口尺寸本身不代表受限远控。组件名称脱敏、桥接位于另一条进程链或宿主未提供标记时，使用上述启动参数。
+
+`--terminal-mode native` 手动使用原生界面；`RIVET_TERMINAL_MODE` 支持 `auto`、`captured-pty`、`native`，命令行优先于此环境设置。`RIVET_CAPTURED_PTY=0` 禁用自动父链识别；显式模式仍优先。既有 `RIVET_FORCE_RECOVERY_CLI=1` 保留强制进入行式界面的行为。
+
+`RIVET_RECOVERY_STRUCTURED_TOOLS` 用于崩溃恢复时保留结构化工具历史，不是启用行式工具的开关。纯文本界面支持上文列出的命令；其他原生 TUI 面板命令请在原生终端使用。
+
 ## 终端 UI（TUI）
 
 天枢的命令行界面跑在自研的 **T9 渲染引擎**上——纯 ANSI、零 React/Ink 依赖、纯 TypeScript 实现（`src/tui/engine/`）。除了一般的对话与工具调用展示，TUI 还内置一组面向编码场景的交互能力：

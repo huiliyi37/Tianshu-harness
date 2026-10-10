@@ -6,7 +6,7 @@ import { validatePath } from './path-validate.js'
 import { syntaxCheck, checkSyntax } from './syntax-check.js'
 import { getFileReadMtime, recordSuccessfulEdit, incrementEditFailCount, resetEditFailCount } from './read-file.js'
 import { landingWriteFile, delegatedToToolResult, isDelegateRejected } from './client-delegate.js'
-import { trackFileChange, restoreLatestBackup } from '../agent/recovery-stack.js'
+import { withFileChangeTracking, restoreFileChange, type FileChangeRecord } from '../agent/recovery-stack.js'
 import { applyEol, chooseEol, detectFileEol, toLf } from './line-endings.js'
 import { getTargetEol } from '../platform.js'
 import { buildFileDiff, computeChangedLineRanges, type LineRange } from './edit-diff.js'
@@ -89,7 +89,7 @@ export const WRITE_FILE_TOOL: Tool = {
     },
   },
 
-  async execute(params) {
+  execute: withFileChangeTracking(async (params: ToolCallParams, trackFileChange): Promise<ToolResult> => {
     const abortedEarly = abortedWrite(params)
     if (abortedEarly) return abortedEarly
     let filePath: string
@@ -230,9 +230,10 @@ export const WRITE_FILE_TOOL: Tool = {
       }
     }
 
+    let capture: FileChangeRecord | undefined
     if (fileExists) {
       const relPath = relative(params.cwd, filePath)
-      await trackFileChange(params.cwd, { filePath: relPath, action: 'write', toolCallId: params.toolUseId ?? 'write_file' })
+      capture = await trackFileChange(params.cwd, { filePath: relPath, action: 'write', toolCallId: params.toolUseId ?? 'write_file' })
     }
 
     // Staleness fence (fail-closed) — W1 of the file-claim lease design
@@ -281,7 +282,6 @@ export const WRITE_FILE_TOOL: Tool = {
     // Post-write structural validation: if the file is unparseable, roll back.
     const syntax = await checkSyntax(filePath, finalContent)
     if (syntax.fatal) {
-      const relPath = relative(params.cwd, filePath)
       let rollbackMsg: string
       if (!fileExists && land.kind !== 'delegated') {
         // 新文件没有备份可恢复（trackFileChange 只备份已存在文件）——
@@ -293,7 +293,7 @@ export const WRITE_FILE_TOOL: Tool = {
           rollbackMsg = '自动回滚失败。'
         }
       } else {
-        const restored = await restoreLatestBackup(params.cwd, relPath, params.sessionId)
+        const restored = capture ? await restoreFileChange(params.cwd, capture, params.sessionId) : false
         rollbackMsg = restored ? '更改已自动回滚。' : '自动回滚失败。'
       }
       const fails = incrementEditFailCount(filePath)
@@ -355,7 +355,7 @@ export const WRITE_FILE_TOOL: Tool = {
       uiContent,
       changedRanges,
     }
-  },
+  }),
 
   requiresApproval: () => true,
   isConcurrencySafe: () => false,

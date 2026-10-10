@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { prepareCompletionCapture } from '../test-completion.js'
+import { shellWord } from '../verification-command.js'
 import { completionFacts } from '../verification-facts.js'
 import { SessionJobs } from '../job-store.js'
 import { BASH_TOOL } from '../bash.js'
@@ -29,7 +30,8 @@ it('multi-batch totals survive compressed output, output clipping and repeated f
   const f = fixture()
   try {
     const loader = pathToFileURL(join(repo, 'node_modules/tsx/dist/loader.mjs')).href
-    const script = `node --import ${loader} ${join(repo, 'scripts/run-node-tests.ts')}`
+    const script = ['node', '--import', loader, join(repo, 'scripts/run-node-tests.ts')]
+      .map(word => process.platform === 'win32' ? word : shellWord(word)).join(' ')
     writeFileSync(join(f.cwd, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: script } }))
     for (let i = 0; i < 55; i++) {
       const directory = join(f.cwd, 'src', ...Array.from({ length: 4 }, (_, j) => `${j}-${'a'.repeat(150)}`), String(i))

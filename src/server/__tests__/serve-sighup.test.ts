@@ -38,6 +38,9 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { cliProcessArgs, cliFixtureEnv } from '../../__tests__/cli-process-fixture.js'
 
 const SERVE_TS = new URL('../serve.ts', import.meta.url)
 
@@ -118,12 +121,13 @@ test('集成：SIGHUP 后 serve 优雅退出——发现文件清除 + breadcrum
   const desktop = join(root, 'desktop')
   mkdirSync(home, { recursive: true })
   mkdirSync(desktop, { recursive: true })
+  writeFileSync(join(home, 'config.json'), '{}')
 
   // 空闲端口（先占再放，竞态窗口可接受——测试独占机器时段）
   const port = await freePort()
 
-  // driver：子进程内调 serveCommand（复刻生产入口——契约测试盯源码，集成测试
-  // 盯真实行为，两者互补）。import 走 serve.ts 的 file URL，由 tsx 现场转译。
+  // 集成优先真实发布入口；未构建时保留直接导入 serveCommand 的源码驱动。
+  // 契约测试始终读取 serve.ts；两条入口共享相同的信号、发现文件与退出断言。
   const driverPath = join(root, 'driver.mjs')
   const driverSrc = `import { serveCommand } from ${JSON.stringify(SERVE_TS.href)}\nawait serveCommand(['--port', String(${port})])\n`
   writeFileSync(driverPath, driverSrc, 'utf8')
@@ -131,10 +135,15 @@ test('集成：SIGHUP 后 serve 优雅退出——发现文件清除 + breadcrum
   const infoPath = join(home, 'server-info.json')
   const exitPath = join(desktop, 'sidecar-exit.json')
 
-  const child = spawn(process.execPath, ['--import', 'tsx', driverPath], {
+  const repoRoot = fileURLToPath(new URL('../../', SERVE_TS))
+  const built = existsSync(join(repoRoot, 'dist', 'main.js'))
+  const args = built ? cliProcessArgs(repoRoot, ['serve', '--port', String(port)])
+    : ['--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href, driverPath]
+  if (!built) console.error('[serve fixture] dist/main.js absent; exercising the source serve driver')
+  const child = spawn(process.execPath, args, {
+    cwd: root,
     env: {
-      ...process.env,
-      RIVET_HOME: home,
+      ...cliFixtureEnv(home),
       RIVET_DESKTOP_DIR: desktop,
       RIVET_SERVER_TOKEN: 'sighup-test-token',
     },
@@ -146,7 +155,7 @@ test('集成：SIGHUP 后 serve 优雅退出——发现文件清除 + breadcrum
   try {
     // 等 serve ready：发现文件出现 = listen 成功且退出通路已接好。轮询必须远快于
     // 「发布 → 处理器就位」这类毫秒级空档，发布顺序回归时这里才测得出来。
-    await waitFor(() => existsSync(infoPath), 20_000, `server-info.json 未出现；stderr=${stderr.join('').slice(-600)}`)
+    await waitFor(() => existsSync(infoPath), 20_000, () => `server-info.json 未出现；exitCode=${child.exitCode}; signalCode=${child.signalCode}; stderr=${stderr.join('').slice(-600)}`)
     const info = JSON.parse(readFileSync(infoPath, 'utf8'))
     assert.equal(info.port, port, '发现文件记录的端口应与启动参数一致')
     assert.equal(info.pid, child.pid, '发现文件的 pid 应是子进程 pid（清除侧靠它做归属校验）')
@@ -192,13 +201,13 @@ async function freePort(): Promise<number> {
 }
 
 /** 轮询等待条件成立。 */
-async function waitFor(cond: () => boolean, timeoutMs: number, msg: string): Promise<void> {
+async function waitFor(cond: () => boolean, timeoutMs: number, msg: string | (() => string)): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (cond()) return
     await new Promise((r) => setTimeout(r, 5))
   }
-  throw new Error(msg)
+  throw new Error(typeof msg === 'function' ? msg() : msg)
 }
 
 /** 等子进程退出，返回 exit code（被信号杀时 code 为 null → 返回 -1 以便断言失败可见）。 */

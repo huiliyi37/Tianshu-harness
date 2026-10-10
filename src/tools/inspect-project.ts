@@ -1,4 +1,5 @@
 import { readFile, stat, readdir } from 'node:fs/promises'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { join } from 'path'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { relativePosix } from '../path-format.js'
@@ -139,6 +140,7 @@ async function findTestFiles(cwd: string): Promise<string[]> {
       return
     }
     for (const name of names) {
+      if (isFilesystemMetadata(name)) continue
       const fullPath = join(dir, name)
       let s: Awaited<ReturnType<typeof stat>>
       try {

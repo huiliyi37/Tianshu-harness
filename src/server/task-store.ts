@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { errorContext, serverLogger } from './logger.js'
 import type { ScheduledTaskRetry } from './cron-scheduler.js'
 import type { ApprovalMode } from '../agent/loop-types.js'
@@ -182,7 +183,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async list(filter?: TaskFilter): Promise<TaskRecord[]> {
-    const files = readdirSync(this.dir).filter(f => f.endsWith('.json'))
+    const files = readdirSync(this.dir).filter(f => !isFilesystemMetadata(f) && f.endsWith('.json'))
     const results: TaskRecord[] = []
     for (const f of files) {
       if (!isValidTaskId(f.slice(0, -'.json'.length))) {

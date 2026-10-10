@@ -11,6 +11,7 @@
 import { readdir, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { relativePosix } from '../path-format.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { GitignoreFilter } from '../tools/gitignore.js'
 import { classifyPath } from '../context/attention-filter.js'
 import { SCAN_EXCLUDE_DIRS } from '../tools/scan-excludes.js'
@@ -45,6 +46,7 @@ async function walk(
 
   for (const s of entries) {
     const name = s.name
+    if (isFilesystemMetadata(name)) continue
     const fullPath = join(dir, name)
     if (s.isSymbolicLink()) continue
     const rel = relativePosix(root, fullPath)
@@ -150,6 +152,7 @@ export async function listDirEntries(dir: string, strict = false): Promise<DirEn
   const entries: DirEntry[] = []
   for (const s of children) {
     const name = s.name
+    if (isFilesystemMetadata(name)) continue
     // Exclude hidden dirs like .git, .rivet — but allow dotfiles (.env.example)
     if (name.startsWith('.') && EXCLUDE_DIRS.has(name)) continue
     const fullPath = join(dir, name)

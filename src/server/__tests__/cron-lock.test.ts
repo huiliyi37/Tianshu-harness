@@ -9,7 +9,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname as osHostname, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -243,7 +243,8 @@ describe('CronLock P0 regressions', () => {
 
 function writeOwner(path: string, info: LockInfo): void {
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(info, null, 2), 'utf-8')
+  const ownerPath = existsSync(path) && lstatSync(path).isDirectory() ? join(path, 'owner.json') : path
+  writeFileSync(ownerPath, JSON.stringify(info, null, 2), 'utf-8')
 }
 
 function startContender(lockPath: string, releasePath: string): ContenderRun {

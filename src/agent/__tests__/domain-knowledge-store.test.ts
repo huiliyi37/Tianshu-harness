@@ -362,20 +362,30 @@ describe('DomainKnowledgeStore — compact', () => {
   test('compact prunes decayed lessons', () => {
     const store = makeStore()
     try {
-      // Deposit a lesson with very short half-life, then age it
-      store.deposit({ domainId: 'tianji', kind: 'reframe', text: 'old insight', evidence: 'e', halfLifeMs: 1 })
+      // Persist first, then age only the synthetic JSON fixture. A 1ms half-life
+      // before flushSync lets its own compaction remove the lesson during I/O.
+      store.deposit({ domainId: 'tianji', kind: 'reframe', text: 'old insight', evidence: 'e' })
+      store.deposit({ domainId: 'tianji', kind: 'reframe', text: 'fresh insight', evidence: 'fresh' })
       store.flushSync()
+      const path = join(TMP, 'domains', 'tianji.jsonl')
+      const persisted = readFileSync(path, 'utf-8').trim().split('\n').map(line => JSON.parse(line) as DomainLesson)
+      assert.equal(persisted.length, 2)
+      const old = persisted.find(lesson => lesson.text === 'old insight')!
+      assert.ok(old)
+      old.depositedAt = Date.now() - 1_000
+      old.halfLifeMs = 1
+      writeFileSync(path, persisted.map(lesson => JSON.stringify(lesson)).join('\n') + '\n')
 
-      // Wait for decay (halfLifeMs=1, so after 1ms it's at 0.5, after ~7ms it's below PRUNE_THRESHOLD=0.05)
-      // Actually need more time for the decay. Let's just verify the compact API works.
-      // Force strength to 0 manually by manipulating the cache
-      const lessons = store.recall('tianji', 10)
-      // At least 1 lesson exists
+      const agedStore = new DomainKnowledgeStore(TMP)
+      const lessons = agedStore.recall('tianji', 10)
       assert.ok(lessons.length >= 1)
-
-      // compact should work without error
-      const pruned = store.compact('tianji')
+      assert.ok(lessons.some(lesson => lesson.text === 'old insight'))
+      const pruned = agedStore.compact('tianji')
       assert.ok(typeof pruned === 'number')
+      assert.equal(pruned, 1)
+      assert.deepEqual(agedStore.recall('tianji', 10).map(lesson => lesson.text), ['fresh insight'])
+      agedStore.flushSync()
+      assert.deepEqual(new DomainKnowledgeStore(TMP).recall('tianji', 10).map(lesson => lesson.text), ['fresh insight'])
     } finally {
       cleanup()
     }

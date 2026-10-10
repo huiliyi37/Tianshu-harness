@@ -1,4 +1,5 @@
 import { basename, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 
 export interface VerificationInvocation {
@@ -15,24 +16,29 @@ export interface VerificationInvocation {
 
 /** Classification only. Unsupported shell syntax fails towards less evidence. */
 export function verificationArgv(command: string): string[] | null {
-  const argv: string[] = []
-  let word = '', quote = '', active = false
+  const argv: string[] = [], literalWords: boolean[] = []
+  let word = '', quote = '', active = false, literal = true
   for (let i = 0; i < command.length; i++) {
     const c = command[i]!
-    if (/[\n\r`$%]/.test(c)) return null
+    if (/[\n\r`$]/.test(c)) return null
     if (quote) {
       if (c === quote) quote = ''
       else word += c
       continue
     }
-    if (c === "'" || c === '"') { quote = c; active = true; continue }
+    if (c === "'" || c === '"') { quote = c; active = true; if (c !== "'") literal = false; continue }
     if (/[;&|<>()]/.test(c)) return null
     if (/\s/.test(c)) {
-      if (active) { argv.push(word); word = ''; active = false }
-    } else { word += c; active = true }
+      if (active) { argv.push(word); literalWords.push(literal); word = ''; active = false; literal = true }
+    } else { word += c; active = true; literal = false }
   }
   if (quote) return null
-  if (active) argv.push(word)
+  if (active) { argv.push(word); literalWords.push(literal) }
+  // Percent syntax is literal only in a quoted, validated file URL import.
+  for (const [index, value] of argv.entries()) if (value.includes('%')) {
+    if (argv[index - 1] !== '--import' || !literalWords[index] || !value.startsWith('file:') || /%(?![0-9a-f]{2})/i.test(value)) return null
+    try { fileURLToPath(value) } catch { return null }
+  }
   return argv
 }
 

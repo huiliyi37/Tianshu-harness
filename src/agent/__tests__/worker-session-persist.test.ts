@@ -20,6 +20,7 @@ import type { WorkerCheckpoint } from '../worker-session.js'
 import { proveWirePrefix } from '../../api/continuation-prefix.js'
 import type { FrozenSnapshotData } from '../../prompt/frozen-snapshot.js'
 import { leaseWorkerResume } from '../worker-resume-lease.js'
+import { isFilesystemMetadata } from '../../utils/file-metadata.js'
 
 describe('worker-session-persist', () => {
   function makeMessages(): OaiMessage[] {
@@ -274,9 +275,12 @@ describe('worker-session-persist', () => {
   it('atomic write: no temp files remain after save', () => {
     const home = mkdtempSync(join(tmpdir(), 'rivet-home-'))
     const id = 'wo_atomic'
-    saveWorkerSession(id, 'patcher', 'atomic test', makeMessages(), home)
+    const messages = makeMessages()
+    const outcome = saveWorkerSession(id, 'patcher', 'atomic test', messages, home)
+    assert.equal(outcome.ok, true, 'atomic save should succeed')
+    assert.deepEqual(loadWorkerSession(id, home)?.messages, messages, 'saved messages should round-trip')
     const dir = join(home, '.rivet', 'subagents')
-    const leftovers = readdirSync(dir).filter((f) => f !== `${id}.session.jsonl`)
+    const leftovers = readdirSync(dir).filter((f) => !isFilesystemMetadata(f) && f !== `${id}.session.jsonl`)
     assert.deepEqual(leftovers, [], 'temp/rename artifacts should be cleaned up')
   })
 })

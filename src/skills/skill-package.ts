@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } fr
 import { createHash } from 'node:crypto'
 import { parseSkillMarkdown, type SkillDefinition } from './skill-loader.js'
 import { parseSkillYaml, skillMetadata } from './skill-metadata.js'
+import { isFilesystemMetadata } from '../utils/file-metadata.js'
 
 export interface PackageFile { path: string; data: string; executable: boolean }
 export interface SkillPackage { definition: SkillDefinition; files: PackageFile[]; fingerprint: string; subpath: string }
@@ -40,7 +41,7 @@ export function readPackage(path: string): SkillPackage {
     inside(realpathSync(root), realpathSync(file))
     if (st.isDirectory()) {
       for (const entry of readdirSync(file).sort()) {
-        if (entry === '.git') continue
+        if (entry === '.git' || isFilesystemMetadata(entry)) continue
         read(join(file, entry), `${name ? name + '/' : ''}${entry}`, depth + 1)
       }
     } else {

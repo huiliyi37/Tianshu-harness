@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  DEFAULT_TEST_TIMEOUT_MS, nodeTestFlags, resolveTestTimeoutMs,
+  DEFAULT_TEST_TIMEOUT_MS, nodeTestFlags, resolveTestTimeoutMs, resolveTestConcurrency,
 } from '../test-runner-flags.js'
 
 test('nodeTestFlags 必须带 --test-timeout —— 缺了它挂死的测试会永久挂着', () => {
@@ -33,6 +33,17 @@ test('resolveTestTimeoutMs 对非法值退回默认，不产出 NaN', () => {
   assert.equal(resolveTestTimeoutMs('-5'), DEFAULT_TEST_TIMEOUT_MS)
   assert.equal(resolveTestTimeoutMs('Infinity'), DEFAULT_TEST_TIMEOUT_MS, '无穷等于没有上限')
   assert.equal(resolveTestTimeoutMs('5000'), 5000)
+})
+
+test('concurrency defaults stay bounded and invalid overrides cannot remove the bound', () => {
+  assert.equal(resolveTestConcurrency(undefined, 1), 1)
+  assert.equal(resolveTestConcurrency(undefined, 32), 4)
+  for (const raw of ['', '0', '-1', '1.5', 'Infinity', 'NaN', 'no']) {
+    assert.equal(resolveTestConcurrency(raw, 32), 4, raw)
+  }
+  assert.equal(resolveTestConcurrency('1', 32), 1)
+  assert.equal(resolveTestConcurrency('8', 32), 8)
+  assert.ok(nodeTestFlags(1234, 1).includes('--test-concurrency=1'))
 })
 
 test('默认上限须显著高于实测最慢用例，只兜挂死不误杀慢测试', () => {

@@ -429,3 +429,4 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #436 fix(mcp): close 成功才摘除连接登记，杜绝孤儿子进程（OPEN）
 - #435 fix(agent): 工具批 abort drain 竞速定时器 clear + unref（OPEN）
 - #434 fix(agent): P7 watchdog ghost-abort rescue 真正清除 abort 状态（并 fail-closed 保住用户 Esc）（OPEN）
+- #433 fix(coordinator): 批级共享表以派发唯一的 parentTurnId 为键，消除顶层批 order-id 碰撞（OPEN）

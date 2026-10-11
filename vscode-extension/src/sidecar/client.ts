@@ -18,6 +18,11 @@ import type {
   SetupCustomProviderRequest,
   SetupProviderRequest,
   WorkingTreeFile,
+  TokenLedgerSummary,
+  TokenLedgerStatus,
+  TokenLedgerSettings,
+  TokenLedgerSettingsPatch,
+  TokenLedgerSyncOutcome,
 } from './protocol.js'
 import { classifyStreamEvent } from './stream-accept.js'
 
@@ -43,7 +48,7 @@ export class SidecarClient {
     if (!res.ok) {
       let detail = ''
       try { detail = ((await res.json()) as { error?: string }).error ?? '' } catch { /* non-json */ }
-      throw new Error(`${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`)
+      throw Object.assign(new Error(`${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`), { status: res.status })
     }
     return (await res.json()) as T
   }
@@ -80,6 +85,26 @@ export class SidecarClient {
       `/sessions/search?q=${encodeURIComponent(q)}`,
     )
     return body.results
+  }
+
+  getTokenLedgerSummary(days = 30): Promise<TokenLedgerSummary> {
+    return this.request('GET', `/token-ledger/summary?days=${encodeURIComponent(days)}`)
+  }
+
+  getTokenLedgerStatus(): Promise<TokenLedgerStatus> {
+    return this.request('GET', '/token-ledger/status')
+  }
+
+  getTokenLedgerSettings(): Promise<TokenLedgerSettings> {
+    return this.request('GET', '/token-ledger/settings')
+  }
+
+  setTokenLedgerSettings(settings: TokenLedgerSettingsPatch): Promise<TokenLedgerSettings> {
+    return this.request('PUT', '/token-ledger/settings', settings)
+  }
+
+  syncTokenLedger(): Promise<TokenLedgerSyncOutcome> {
+    return this.request('POST', '/token-ledger/sync', {})
   }
 
   getApprovalConfig(): Promise<{ approval: string; unsandboxed: boolean }> {

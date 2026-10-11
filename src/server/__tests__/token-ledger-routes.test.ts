@@ -23,7 +23,7 @@ describe('/token-ledger routes', () => {
 
   const fetchImpl: FetchLike = async (url, init) => {
     pushed.push({ url, body: JSON.parse(init?.body ?? '{}') })
-    return { status: 200, text: async () => '{}' }
+    return { status: 200, text: async () => '{"ok":true,"stale":false}' }
   }
 
   const makeService = () => new TokenLedgerService(configSchema.parse({
@@ -121,5 +121,31 @@ describe('/token-ledger routes', () => {
     const res = await createRouter(buildTokenLedgerRoutes({ apiToken: TOKEN, service: svc }))('POST', '/token-ledger/sync', {}, AUTH)
     assert.equal(res.status, 400)
     assert.match((res.body as { hint?: string }).hint ?? '', /tokenLedger\.forum\.endpoint/)
+  })
+})
+
+
+describe('Token ledger settings routes', () => {
+  it('requires authorization for reads and writes and never returns a key', async () => {
+    let config = configSchema.parse({ provider: { default: 'deepseek', providers: {} }, tokenLedger: { forum: { apiKey: 'tsu_fixture_only', endpoint: 'https://tianshuharness.com/token/v1/token-usage' } } })
+    const base = mkdtempSync(join(tmpdir(), 'ledger-settings-routes-'))
+    try {
+      const service = new TokenLedgerService(config, { statePath: join(base, 'ledger.json'), sessionsRoot: join(base, 'sessions') })
+      const routes = buildTokenLedgerRoutes({ apiToken: TOKEN, service, settingsDeps: { load: () => structuredClone(config), save: next => { config = next } } })
+      const router = createRouter(routes)
+      assert.equal((await router('GET', '/token-ledger/settings', {}, {})).status, 401)
+      assert.equal((await router('PUT', '/token-ledger/settings', { forum: { apiKey: '' } }, {})).status, 401)
+      const read = await router('GET', '/token-ledger/settings', {}, AUTH)
+      assert.equal(read.status, 200)
+      assert.equal(JSON.stringify(read.body).includes('tsu_fixture_only'), false)
+      const bad = await router('PUT', '/token-ledger/settings', { forum: { apiKey: 'candidate-secret', endpoint: 'bad' } }, AUTH)
+      assert.equal(bad.status, 400)
+      assert.equal(JSON.stringify(bad.body).includes('candidate-secret'), false)
+      const write = await router('PUT', '/token-ledger/settings', { forum: { autoSync: true } }, AUTH)
+      assert.equal(write.status, 200)
+      assert.equal(service.status().autoSync, true)
+      await router('PUT', '/token-ledger/settings', { forum: { apiKey: '' } }, AUTH)
+      assert.equal(service.status().autoSync, false)
+    } finally { rmSync(base, { recursive: true, force: true }) }
   })
 })

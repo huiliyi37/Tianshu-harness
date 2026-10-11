@@ -128,6 +128,8 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/cd', description: '会话中途切换工作目录（保前缀缓存，会话归属迁往新项目）', argsHint: '<path>' },
   // ── 2026-09-19 补齐：此前已注册、但不在面板里因而无从发现的命令 ──
   { name: '/status', description: '显示 agent 状态（模型 / 星域 / 缓存命中 / token / 账号星籍）', tier: 'core' },
+  { name: '/token-ledger', description: 'Token 账本：本地累计用量、手动同步与明确开启的 30 分钟自动上传', argsHint: '[status|sync|auto on|auto off|connect|disconnect]', tier: 'core' },
+  { name: '/usage', description: '查看本地 Token 账本（/token-ledger 别名）' },
   { name: '/todo', description: '管理任务清单：list / add <内容> / done <id> / skip <id> / move <id> up|down', argsHint: '[list|add|done|skip|move]' },
   { name: '/tools', description: '查看工具分层（CORE / EXTENDED）与已挂载状态；enable <name> 把 EXTENDED 工具挂到主 agent（会碎一次前缀缓存）', argsHint: '[enable <name>]' },
   { name: '/trust', description: '授信当前项目：项目级 hooks 生效、配置安全键（verify/permissions/mcp…）参与合并。status 查询 / off 撤销；仅本机生效，绝不写回仓库', argsHint: '[status|off]' },

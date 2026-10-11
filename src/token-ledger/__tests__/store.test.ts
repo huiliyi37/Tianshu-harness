@@ -3,9 +3,13 @@
  * 夹具统一 mkdtemp（仓库外）；每个用例独立的 sessionsRoot/statePath，
  * cache-log 行形态对齐 loop-factory recordTurnCache。
  */
-import { test, after } from 'node:test'
+import { test, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, existsSync, readFileSync, truncateSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, existsSync, readFileSync, truncateSync, unlinkSync, readdirSync } from 'node:fs'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+import { spawn } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TokenLedgerStore, ledgerDigest } from '../store.js'
@@ -169,11 +173,11 @@ test('markPushed 仅 2xx 钉摘要；回执随状态落盘', async () => {
   assert.notEqual(digest, ledgerDigest({}))
   assert.equal(store.digest(), digest)
 
-  store.markPushed({ ok: false, code: 'network', error: 'boom' })
+  await store.markPushed({ ok: false, code: 'network', error: 'boom' })
   assert.equal(store.lastPushedDigest, undefined)
   assert.equal(store.lastPushResult?.ok, false)
 
-  store.markPushed({ ok: true, status: 200 })
+  await store.markPushed({ ok: true, status: 200 })
   assert.equal(store.lastPushedDigest, digest)
   assert.equal(store.lastPushResult?.ok, true)
   assert.ok(store.lastPushAt)
@@ -187,7 +191,7 @@ test('snapshot 形状：version/deviceId/sentAt/totals/days 齐全且为累计�
   writeLog(fx.sessionsRoot, 'sess-1', [mainRow(), sidePathRow()])
   const store = fx.makeStore()
   await store.refresh()
-  const snap = store.snapshot('test-machine')
+  const snap = await store.snapshot('test-machine')
   assert.equal(snap.version, 1)
   assert.equal(snap.deviceId, store.deviceId)
   assert.equal(snap.deviceName, 'test-machine')
@@ -201,14 +205,245 @@ test('snapshot 形状：version/deviceId/sentAt/totals/days 齐全且为累计�
   assert.equal(parsed.days[0].model, 'deepseek-flash')
 })
 
-test('状态文件损坏：从空台账重建并全量重扫恢复', async () => {
-  const fx = setup('corrupt')
+test('损坏账本无法恢复设备身份时拒绝重新生成并推送', async () => {
+  const fx = setup('corrupt-unknown')
   writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
   writeFileSync(fx.statePath, '{broken json')
+  await assert.rejects(fx.makeStore().refresh(), /identity|身份/i)
+  assert.equal(readFileSync(fx.statePath, 'utf8'), '{broken json')
+})
+
+test('半行尾部跨refresh与restart完成后恰好计入一次', async () => {
+  const fx = setup('partial')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const row = mainRow({ input: 7, turn: 2 })
+  appendFileSync(file, row.slice(0, 40))
+  const store = fx.makeStore()
+  await store.refresh()
+  assert.equal(store.totals().input, 1000)
+  appendFileSync(file, row.slice(40) + '\n')
+  const restarted = fx.makeStore()
+  await restarted.refresh()
+  await restarted.refresh()
+  assert.equal(restarted.totals().input, 1007)
+})
+
+test('attempt跨refresh与restart去重；不同会话的相同id独立计费', async () => {
+  const fx = setup('dedupe-restart')
+  const row = mainRow({ requestId: 'request', attemptId: 'attempt' })
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [row])
+  const store = fx.makeStore()
+  await store.refresh()
+  appendFileSync(file, row + '\n')
+  await store.refresh()
+  appendFileSync(file, row + '\n')
+  writeLog(fx.sessionsRoot, 'sess-2', [row])
+  const restarted = fx.makeStore()
+  await restarted.refresh()
+  assert.equal(restarted.totals().requests, 2)
+})
+
+test('预加载旧实例和并发refresh不能覆盖已落盘行与回执', async () => {
+  const fx = setup('concurrent')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const first = fx.makeStore()
+  await first.refresh()
+  const stale = fx.makeStore()
+  stale.totals()
+  await first.markPushed({ ok: true, status: 200 }, first.digest(), 'target')
+  appendFileSync(file, mainRow({ input: 7 }) + '\n')
+  await Promise.all([first.refresh(), stale.refresh()])
+  const latest = fx.makeStore()
+  assert.equal(latest.totals().input, 1007)
+  assert.equal(latest.lastPushedTargetHash, 'target')
+  assert.ok(latest.lastPushedDigest)
+})
+
+test('回执确认上传digest而非后来折叠的当前digest', async () => {
+  const fx = setup('receipt')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const store = fx.makeStore()
+  await store.refresh()
+  const uploaded = store.digest()
+  appendFileSync(file, mainRow({ input: 7 }) + '\n')
+  await store.refresh()
+  await store.markPushed({ ok: true, status: 200 }, uploaded, 'target')
+  assert.equal(store.lastPushedDigest, uploaded)
+  assert.notEqual(store.lastPushedDigest, store.digest())
+})
+
+test('identity sidecar让丢失或损坏账本重建仍复用原设备id', async () => {
+  const fx = setup('identity')
+  writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const store = fx.makeStore()
+  await store.refresh()
+  const id = store.deviceId
+  writeFileSync(fx.statePath, '{broken json')
+  const repaired = fx.makeStore()
+  await repaired.refresh()
+  assert.equal(repaired.deviceId, id)
+  assert.equal(repaired.totals().input, 1000)
+  const backups = readdirSync(join(fx.statePath, '..')).filter(name => name.startsWith('ledger.json.corrupt-'))
+  assert.equal(backups.length, 1)
+  assert.equal(readFileSync(join(fx.statePath, '..', backups[0]!), 'utf8'), '{broken json')
+  unlinkSync(fx.statePath)
+  const missing = fx.makeStore()
+  await missing.refresh()
+  assert.equal(missing.deviceId, id)
+  assert.equal(missing.totals().input, 1000)
+})
+
+test('无新增日志也持久化安装身份并迁移旧账本identity', async () => {
+  const fx = setup('empty-identity')
+  const store = fx.makeStore()
+  await store.refresh()
+  assert.equal(fx.makeStore().deviceId, store.deviceId)
+  writeFileSync(fx.statePath, JSON.stringify({ version: 1, deviceId: 'legacy-device', offsets: {}, days: {} }))
+  unlinkSync(fx.statePath + '.identity.json')
+  await fx.makeStore().refresh()
+  unlinkSync(fx.statePath)
+  await fx.makeStore().refresh()
+  assert.equal(fx.makeStore().deviceId, 'legacy-device')
+})
+
+test('snapshot sentAt跨实例、重启和时钟回拨严格递增；旧回执不覆盖新回执', async () => {
+  const fx = setup('snapshot-clock')
+  const store = fx.makeStore()
+  await store.refresh()
+  const first = await store.snapshotWithDigest('device')
+  const second = await fx.makeStore().snapshotWithDigest('device')
+  const rollback = new TokenLedgerStore({ statePath: fx.statePath, sessionsRoot: fx.sessionsRoot, now: () => T0 })
+  const third = await rollback.snapshotWithDigest('device')
+  assert.ok(first.snapshot.sentAt < second.snapshot.sentAt)
+  assert.ok(second.snapshot.sentAt < third.snapshot.sentAt)
+  await store.markPushed({ ok: true, status: 200 }, 'new-digest', 'new-target', third.snapshot.sentAt)
+  await rollback.markPushed({ ok: true, status: 200 }, 'old-digest', 'old-target', first.snapshot.sentAt)
+  assert.equal(fx.makeStore().lastPushedDigest, 'new-digest')
+  assert.equal(fx.makeStore().lastPushedTargetHash, 'new-target')
+})
+
+test('state持久化失败必须reject且不能保留未落盘累计', async () => {
+  const fx = setup('write-error')
+  writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const store = fx.makeStore()
+  await store.refresh()
+  unlinkSync(fx.statePath)
+  mkdirSync(fx.statePath)
+  await assert.rejects(store.refresh())
+})
+
+
+test('stat之后追加的行不在本批消费，下一次refresh恰好消费一次', async () => {
+  const fx = setup('bounded-read')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const original = fs.createReadStream
+  let appended = false
+  const mocked = mock.method(fs, 'createReadStream', (...args: Parameters<typeof fs.createReadStream>) => {
+    if (!appended && args[0] === file) {
+      appended = true
+      appendFileSync(file, mainRow({ input: 7 }) + '\n')
+    }
+    return original(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    const store = fx.makeStore()
+    await store.refresh()
+    assert.equal(store.totals().input, 1000)
+    await store.refresh()
+    await store.refresh()
+    assert.equal(store.totals().input, 1007)
+  } finally { mocked.mock.restore(); syncBuiltinESMExports() }
+})
+
+test('旧v1已有游标但无attempt状态，迁移后不重复计费已消费attempt', async () => {
+  const fx = setup('legacy-attempts')
+  const row = mainRow({ requestId: 'r', attemptId: 'a' })
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [row])
+  await fx.makeStore().refresh()
+  const state = JSON.parse(readFileSync(fx.statePath, 'utf8'))
+  delete state.attempts
+  writeFileSync(fx.statePath, JSON.stringify(state))
+  appendFileSync(file, row + '\n')
+  const migrated = fx.makeStore()
+  await migrated.refresh()
+  assert.equal(migrated.totals().requests, 1)
+})
+
+test('真实并发进程共享账本时累计不重计且设备身份一致', async () => {
+  const fx = setup('processes')
+  writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const source = fileURLToPath(new URL('../store.ts', import.meta.url))
+  const run = () => new Promise<string>((resolve, reject) => {
+    const script = `import { TokenLedgerStore } from ${JSON.stringify(pathToFileURL(source).href)};
+      const store = new TokenLedgerStore(${JSON.stringify({ statePath: fx.statePath, sessionsRoot: fx.sessionsRoot })});
+      const deadline = Date.now() + 30_000;
+      let snapshot;
+      for (;;) {
+        try { await store.refresh(); snapshot = await store.snapshot('child'); break; }
+        catch (error) {
+          if (error.message !== 'Cannot lock token ledger: contended' || Date.now() >= deadline) throw error;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      }
+      console.log(JSON.stringify({ id: snapshot.deviceId, requests: snapshot.totals.requests, at: snapshot.sentAt }));`
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: process.cwd() })
+    let out = ''; let error = ''
+    child.stdout.on('data', data => { out += data })
+    child.stderr.on('data', data => { error += data })
+    child.on('error', reject)
+    child.on('exit', code => code === 0 ? resolve(out.trim()) : reject(new Error(error)))
+  })
+  const results = (await Promise.all([run(), run(), run()])).map(result => JSON.parse(result))
+  assert.equal(new Set(results.map(result => result.id)).size, 1)
+  assert.equal(new Set(results.map(result => result.at)).size, 3)
+  assert.deepEqual(results.map(result => result.requests), [1, 1, 1])
+  assert.equal(fx.makeStore().totals().input, 1000)
+})
+
+test('非计费事件不会凭相同attemptid吞掉真实计费行', async () => {
+  const fx = setup('nonbilled-attempt')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow({ requestId: 'r', attemptId: 'a' }),
+    JSON.stringify({ event: 'reclaim_decision', requestId: 'r', attemptId: 'a', model: 'deepseek-flash', provider: 'deepseek' })])
   const store = fx.makeStore()
   await store.refresh()
   assert.equal(store.totals().requests, 1)
-  assert.ok(store.deviceId)
-  // 重建后状态文件被修复为合法 JSON
-  assert.ok(JSON.parse(readFileSync(fx.statePath, 'utf8')).deviceId)
+  appendFileSync(file, JSON.stringify({ event: 'reclaim_decision', requestId: 'r2', attemptId: 'a2', model: 'deepseek-flash', provider: 'deepseek' }) + '\n')
+  await store.refresh()
+  appendFileSync(file, mainRow({ requestId: 'r2', attemptId: 'a2', input: 7 }) + '\n')
+  await store.refresh()
+  assert.equal(store.totals().input, 1007)
+})
+
+test('model为__proto__时仍正常计费且不会修改对象原型', async () => {
+  const fx = setup('prototype-model')
+  writeLog(fx.sessionsRoot, 'sess-1', [mainRow({ model: '__proto__', provider: undefined, input: 17 })])
+  const store = fx.makeStore()
+  await store.refresh()
+  assert.equal(store.totals().requests, 1)
+  assert.equal(store.totals().input, 17)
+  assert.equal(store.records()[0]?.model, '__proto__')
+  assert.equal(Object.hasOwn(Object.prototype, 'requests'), false)
+})
+
+
+test('原子发布失败会抛出并恢复已落盘累计；恢复后重试不重复计费', async () => {
+  const fx = setup('publish-error')
+  const file = writeLog(fx.sessionsRoot, 'sess-1', [mainRow()])
+  const store = fx.makeStore()
+  await store.refresh()
+  appendFileSync(file, mainRow({ input: 7 }) + '\n')
+  const original = fs.promises.rename
+  const mocked = mock.method(fs.promises, 'rename', async (...args: Parameters<typeof fs.promises.rename>) => {
+    if (args[1] === fx.statePath) throw Object.assign(new Error('publication denied'), { code: 'EACCES' })
+    return original(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(store.refresh(), /publication denied/)
+    assert.equal(store.totals().input, 1000)
+    assert.equal(fx.makeStore().totals().input, 1000)
+  } finally { mocked.mock.restore(); syncBuiltinESMExports() }
+  await store.refresh()
+  assert.equal(store.totals().input, 1007)
 })

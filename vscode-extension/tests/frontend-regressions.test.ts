@@ -15,7 +15,7 @@ async function load(relative: string, mocks: Record<string, any> = {}, globals: 
     b.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ contents: stubs[args.path]!, loader: 'ts' }))
   } }] })
   const module = { exports: {} as any }
-  vm.runInNewContext(output.outputFiles[0]!.text, { module, exports: module.exports, require: (id: string) => id in mocks ? mocks[id] : require(id), console, process, Buffer, TextEncoder, TextDecoder, setTimeout, clearTimeout, setInterval, clearInterval, ...globals })
+  vm.runInNewContext(output.outputFiles[0]!.text, { module, exports: module.exports, require: (id: string) => id in mocks ? mocks[id] : require(id), console, process, Buffer, TextEncoder, TextDecoder, URL, setTimeout, clearTimeout, setInterval, clearInterval, ...globals })
   return module.exports
 }
 const tick = () => new Promise<void>(r => setImmediate(r))
@@ -351,7 +351,7 @@ async function webviewFixture() {
   const jsx = { jsx: (type: any, props: any) => ({ type, props }), jsxs: (type: any, props: any) => ({ type, props }), Fragment: 'fragment' }
   const handlers = new Set<any>(), sent: any[] = [], readers: any[] = []
   class Reader { result: string | null = null; onload: any; onloadend: any; onerror: any; aborted = false; constructor() { readers.push(this) } readAsDataURL() {} abort() { this.aborted = true } }
-  const mod = await load('webview-ui/src/App.tsx', { react, 'react/jsx-runtime': jsx }, { auditSend: (m: any) => { sent.push(m) }, auditOnHost: (f: any) => { handlers.add(f); return () => handlers.delete(f) }, FileReader: Reader, window: { confirm: () => true }, document: { addEventListener() {}, removeEventListener() {} }, requestAnimationFrame: () => {} }, '\nexport { Composer, PlanCard };', { './bridge.js': 'export const send=m=>globalThis.auditSend(m); export const onHostMessage=f=>globalThis.auditOnHost(f);', './markdown.js': 'export const renderMarkdown=s=>s;' })
+  const mod = await load('webview-ui/src/App.tsx', { react, 'react/jsx-runtime': jsx }, { auditSend: (m: any) => { sent.push(m) }, auditOnHost: (f: any) => { handlers.add(f); return () => handlers.delete(f) }, FileReader: Reader, window: { confirm: () => true }, document: { addEventListener() {}, removeEventListener() {} }, requestAnimationFrame: () => {} }, '\nexport { Composer, PlanCard, TokenLedgerPanel };', { './bridge.js': 'export const send=m=>globalThis.auditSend(m); export const onHostMessage=f=>globalThis.auditOnHost(f);', './markdown.js': 'export const renderMarkdown=s=>s;' })
   const runner = (fn: any) => ({ slots: [] as any[], pending: [] as any[], index: 0, render(props?: any) { current = this; this.index = 0; const tree = fn(props); this.pending.splice(0).forEach(f => f()); return tree }, unmount() { this.slots.forEach(s => s?.off?.()) } })
   return { ...mod, sent, readers, runner, deliver: (msg: any) => [...handlers].forEach(f => f(msg)) }
 }
@@ -464,4 +464,251 @@ test('queue restart cancellation retains the queued text and explains its termin
   assert.equal(nodes(card).find(n => n.props.className === 'queue-status').props.children, '内核重启，排队已取消')
   assert(!nodes(card).some(n => n.type === 'button'), 'cancelled queue cannot be steered again')
   app.unmount()
+})
+
+
+const ledgerFixtureSettings = { enabled: true, deviceName: 'Fixture device', forum: { endpoint: 'https://tianshuharness.com/token/v1/token-usage', apiKeyConfigured: true, autoSync: false, intervalMinutes: 30 } }
+const ledgerFixtureTotals = { requests: 2, input: 12000, output: 450, cacheRead: 9000, cacheCreate: 300, cost: 1.25 }
+const ledgerFixtureStatus = { enabled: true, endpointConfigured: true, autoSync: false, autoSyncConfigured: false, deviceId: 'fixture-device', deviceName: 'Fixture device', totals: ledgerFixtureTotals, dayCount: 1, pending: true, lastPushAt: '2026-10-10T12:00:00Z', lastPushResult: { ok: false, code: 'timeout', at: '2026-10-11T12:00:00Z' }, statePath: '/fixture/local-ledger' }
+const ledgerFixtureSummary = { enabled: true, deviceId: 'fixture-device', deviceName: 'Fixture device', windowDays: 30, totals: ledgerFixtureTotals, allTime: ledgerFixtureTotals, days: [], pending: true }
+
+async function ledgerHostFixture(key: string | undefined = undefined) {
+  const messages: any[] = [], calls: any[] = [], prompts: any[] = []
+  const { CockpitProvider } = await load('src/views/cockpit-provider.ts', { vscode: { window: { showInputBox: async (options: any) => { prompts.push(options); return key } } } })
+  const client = {
+    getTokenLedgerSummary: async (days: number) => { calls.push(['summary', days]); return ledgerFixtureSummary },
+    getTokenLedgerStatus: async () => { calls.push(['status']); return ledgerFixtureStatus },
+    getTokenLedgerSettings: async (settings?: any) => { calls.push(['settings']); return ledgerFixtureSettings },
+    setTokenLedgerSettings: async (settings: any) => { calls.push(['save', settings]); return ledgerFixtureSettings },
+    syncTokenLedger: async () => { calls.push(['sync']); return { ok: true, skipped: 'unchanged' } },
+  }
+  const provider = new CockpitProvider({}, async () => client, '/fixture')
+  provider.panel = { webview: { postMessage: (message: any) => { messages.push(message) } } }
+  return { provider, client, messages, calls, prompts }
+}
+
+test('Token ledger reads local summary/settings/status without uploading and strips raw error details', async () => {
+  const f = await ledgerHostFixture()
+  f.client.getTokenLedgerStatus = async () => ({ ...ledgerFixtureStatus, lastPushResult: { ...ledgerFixtureStatus.lastPushResult, error: 'untrusted-private-detail' } })
+  await f.provider.onMessage({ type: 'getTokenLedger', requestId: 1 })
+  assert.equal(f.messages.at(-1)?.type, 'tokenLedger')
+  assert.equal(f.messages.at(-1)?.settings.forum.autoSync, false)
+  assert.equal(f.messages.at(-1)?.summary.totals.input, 12000)
+  assert(!f.calls.some(([action]) => action === 'sync'))
+  assert(!JSON.stringify(f.messages).includes('untrusted-private-detail'))
+})
+
+test('Token ledger key is entered in a host password prompt and never returned to the webview', async () => {
+  const key = 'fixture-ledger-input'
+  const f = await ledgerHostFixture(key)
+  await f.provider.onMessage({ type: 'setTokenLedgerKey', requestId: 2 })
+  assert.equal(f.prompts.length, 1)
+  assert.equal(f.prompts[0].password, true)
+  assert.equal(f.prompts[0].ignoreFocusOut, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(([action]) => action === 'save'))), ['save', { forum: { apiKey: key } }])
+  assert(!JSON.stringify(f.messages).includes(key))
+  assert.equal(f.messages.at(-1)?.type, 'tokenLedgerResult')
+  assert.equal(f.messages.at(-1)?.ok, true)
+})
+
+test('Token ledger cancelled password prompt preserves key and clear requires an explicit action', async () => {
+  const f = await ledgerHostFixture()
+  await f.provider.onMessage({ type: 'setTokenLedgerKey', requestId: 3 })
+  assert(!f.calls.some(([action]) => action === 'save'))
+  assert.equal(f.messages.at(-1)?.cancelled, true)
+  await f.provider.onMessage({ type: 'clearTokenLedgerKey', requestId: 4 })
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(([action]) => action === 'save'))), ['save', { forum: { apiKey: '' } }])
+})
+
+test('Token ledger normal settings cannot smuggle a key and failed sync reports a controlled error', async () => {
+  const f = await ledgerHostFixture()
+  await f.provider.onMessage({ type: 'saveTokenLedgerSettings', requestId: 5, forum: { autoSync: true, intervalMinutes: 30, apiKey: 'webview-key-must-be-ignored' } })
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(([action]) => action === 'save'))), ['save', { forum: { autoSync: true, intervalMinutes: 30 } }])
+  f.client.syncTokenLedger = async () => { throw new Error('POST /token-ledger/sync → 502: untrusted-private-detail') }
+  await f.provider.onMessage({ type: 'syncTokenLedger', requestId: 6 })
+  assert.equal(f.messages.at(-1)?.ok, false)
+  assert(!JSON.stringify(f.messages).includes('untrusted-private-detail'))
+})
+
+test('settings drawer exposes the local Token ledger without changing conversation usage', async () => {
+  const f = await webviewFixture(), app = f.runner(f.App)
+  const tree = app.render()
+  find(tree, 'Header').props.onSettings()
+  const settings = find(app.render(), 'SettingsPanel')
+  assert(settings)
+  const panel = settings.type(settings.props)
+  assert(find(panel, 'TokenLedgerPanel'), 'settings should offer a local Token ledger card')
+  app.unmount()
+})
+
+
+function ledgerSnapshotMessage(requestId: number, overrides: any = {}) {
+  return { type: 'tokenLedger', requestId, settings: ledgerFixtureSettings, status: ledgerFixtureStatus, summary: ledgerFixtureSummary, ...overrides }
+}
+function button(tree: any, label: string) { return nodes(tree).find(n => n.type === 'button' && n.props.children === label) }
+function text(tree: any): string {
+  if (tree === null || tree === undefined) return ''
+  if (typeof tree !== 'object') return String(tree)
+  if (Array.isArray(tree)) return tree.map(text).join(' ')
+  return text(tree.props?.children)
+}
+
+test('Token ledger card reads locally, totals input plus output, and retains the last successful push after failure', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render()
+  assert.deepEqual(f.sent.map(m => m.type), ['getTokenLedger'])
+  const requestId = f.sent.at(-1).requestId
+  f.deliver(ledgerSnapshotMessage(requestId))
+  const tree = card.render(), visible = text(tree)
+  assert.match(visible, /12,450/)
+  assert.match(visible, /9,000/)
+  assert(!visible.includes('21,750'))
+  assert.match(visible, /已含在输入/)
+  assert.match(visible, /连接超时/)
+  assert.match(visible, /最近成功/)
+  assert.match(visible, /默认只保存在本机/)
+  assert.doesNotMatch(visible, /[$¥]/)
+  assert.match(visible, /可能混合币种/)
+  assert.equal(nodes(tree).find(n => n.type === 'input' && n.props.type === 'checkbox' && n.props.checked === false).props.checked, false)
+  card.unmount()
+})
+
+test('Token ledger card saves opt-in settings without a key, validates interval and prevents duplicate sync clicks', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render(); f.deliver(ledgerSnapshotMessage(f.sent.at(-1).requestId)); let tree = card.render()
+  const checkboxes = nodes(tree).filter(n => n.type === 'input' && n.props.type === 'checkbox')
+  checkboxes[1].props.onChange({ target: { checked: true } })
+  const intervalInput = nodes(tree).find(n => n.type === 'input' && n.props.inputMode === 'numeric')
+  intervalInput.props.onChange({ target: { value: '0' } })
+  tree = card.render(); button(tree, '保存账本设置').props.onClick(); tree = card.render()
+  assert.match(text(tree), /正整数/)
+  assert.equal(f.sent.length, 1)
+  nodes(tree).find(n => n.type === 'input' && n.props.inputMode === 'numeric').props.onChange({ target: { value: '30' } })
+  tree = card.render(); button(tree, '保存账本设置').props.onClick()
+  assert.equal(f.sent.at(-1).type, 'saveTokenLedgerSettings')
+  assert.equal(f.sent.at(-1).forum.autoSync, true)
+  assert.equal(f.sent.at(-1).forum.intervalMinutes, 30)
+  assert(!('apiKey' in f.sent.at(-1).forum))
+  const requestId = f.sent.at(-1).requestId
+  f.deliver(ledgerSnapshotMessage(requestId)); f.deliver({ type: 'tokenLedgerResult', requestId, ok: true, message: '已保存' })
+  tree = card.render(); const sync = button(tree, '立即同步')
+  sync.props.onClick(); sync.props.onClick()
+  assert.equal(f.sent.filter(m => m.type === 'syncTokenLedger').length, 1)
+  assert.equal(button(card.render(), '立即同步').props.disabled, true)
+  card.unmount()
+})
+
+test('Token ledger card key buttons send only intents and outdated results cannot overwrite a new card', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render(); const original = f.sent.at(-1).requestId
+  f.deliver(ledgerSnapshotMessage(original)); let tree = card.render()
+  button(tree, '设置同步密钥').props.onClick()
+  assert.equal(f.sent.at(-1).type, 'setTokenLedgerKey')
+  assert.deepEqual(Object.keys(f.sent.at(-1)).sort(), ['requestId', 'type'])
+  const setting = f.sent.at(-1).requestId
+  f.deliver({ type: 'tokenLedgerResult', requestId: setting, ok: true, cancelled: true, message: '已取消' })
+  tree = card.render(); button(tree, '清除同步密钥').props.onClick()
+  assert.equal(f.sent.at(-1).type, 'clearTokenLedgerKey')
+  assert.deepEqual(Object.keys(f.sent.at(-1)).sort(), ['requestId', 'type'])
+  card.unmount()
+  const fresh = f.runner(f.TokenLedgerPanel); fresh.render(); const current = f.sent.at(-1).requestId
+  assert.notEqual(current, original)
+  f.deliver(ledgerSnapshotMessage(original)); assert(!text(fresh.render()).includes('12,450'))
+  f.deliver(ledgerSnapshotMessage(current)); assert(text(fresh.render()).includes('12,450'))
+  fresh.unmount()
+})
+
+test('Token ledger legacy API failure leaves the card retryable and never enables sync without a key', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render(); let requestId = f.sent.at(-1).requestId
+  f.deliver({ type: 'tokenLedgerResult', requestId, ok: false, unavailable: true, message: '当前内核暂不支持 Token 账本，请升级内核。' })
+  let tree = card.render()
+  assert.match(text(tree), /其他设置仍可正常使用/)
+  assert.equal(button(tree, '刷新账本').props.disabled, false)
+  button(tree, '刷新账本').props.onClick(); requestId = f.sent.at(-1).requestId
+  f.deliver(ledgerSnapshotMessage(requestId, { settings: { ...ledgerFixtureSettings, forum: { ...ledgerFixtureSettings.forum, apiKeyConfigured: false } } }))
+  tree = card.render(); assert.equal(button(tree, '立即同步').props.disabled, true)
+  assert(!nodes(tree).some(n => n.type === 'input' && n.props.type === 'password'))
+  card.unmount()
+})
+
+test('Token ledger host discards a password entered after the panel was closed', async () => {
+  const messages: any[] = [], saves: any[] = []
+  let resolvePrompt: any
+  const { CockpitProvider } = await load('src/views/cockpit-provider.ts', { vscode: { window: { showInputBox: () => new Promise(resolve => { resolvePrompt = resolve }) } } })
+  const provider = new CockpitProvider({}, async () => ({ setTokenLedgerSettings: async (patch: any) => { saves.push(patch) } }), '/fixture')
+  provider.panel = { webview: { postMessage: (msg: any) => messages.push(msg) } }
+  const operation = provider.onMessage({ type: 'setTokenLedgerKey', requestId: 55 })
+  for (let n = 0; n < 20 && !resolvePrompt; n++) await tick()
+  provider.panel = undefined
+  resolvePrompt('fixture-ledger-input')
+  await operation
+  assert.equal(saves.length, 0)
+  assert.equal(messages.length, 0)
+})
+
+
+test('Token ledger host allows only one in-flight upload and reads the receipt again afterwards', async () => {
+  const f = await ledgerHostFixture()
+  let release: any, pushes = 0
+  f.client.syncTokenLedger = async () => { pushes++; return await new Promise(resolve => { release = resolve }) }
+  const first = f.provider.onMessage({ type: 'syncTokenLedger', requestId: 101 })
+  for (let n = 0; n < 20 && !release; n++) await tick()
+  await f.provider.onMessage({ type: 'syncTokenLedger', requestId: 102 })
+  assert.equal(pushes, 1)
+  release({ ok: true, skipped: 'unchanged' }); await first
+  assert(f.messages.some(msg => msg.requestId === 101 && msg.type === 'tokenLedger'))
+  assert.match(f.messages.at(-1).message, /无新数据/)
+})
+
+test('Token ledger bridge drops unexpected response properties including keys in nested totals and day rows', async () => {
+  const f = await ledgerHostFixture()
+  const privateValue = 'fixture-never-in-webview'
+  f.client.getTokenLedgerSettings = async () => ({ ...ledgerFixtureSettings, forum: { ...ledgerFixtureSettings.forum, apiKey: privateValue } })
+  f.client.getTokenLedgerSummary = async () => ({ ...ledgerFixtureSummary, totals: { ...ledgerFixtureTotals, apiKey: privateValue }, days: [{ ...ledgerFixtureTotals, date: '2026-10-11', model: 'fixture-model', apiKey: privateValue }] })
+  await f.provider.onMessage({ type: 'getTokenLedger', requestId: 103 })
+  assert(!JSON.stringify(f.messages).includes(privateValue))
+})
+
+test('Token ledger user can turn auto sync off even when the effective key disappeared', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render(); const requestId = f.sent.at(-1).requestId
+  f.deliver(ledgerSnapshotMessage(requestId, { settings: { ...ledgerFixtureSettings, forum: { ...ledgerFixtureSettings.forum, apiKeyConfigured: false, autoSync: true } } }))
+  const checks = nodes(card.render()).filter(n => n.type === 'input' && n.props.type === 'checkbox')
+  assert.equal(checks[1].props.disabled, false)
+  checks[1].props.onChange({ target: { checked: false } })
+  assert.equal(nodes(card.render()).filter(n => n.type === 'input' && n.props.type === 'checkbox')[1].props.checked, false)
+  card.unmount()
+})
+
+test('Token ledger HTTP client uses authorized local endpoints and never sends a key on reads or ordinary settings', async () => {
+  const requests: any[] = []
+  const { SidecarClient } = await load('src/sidecar/client.ts', {}, { fetch: async (url: string, init: any) => { requests.push({ url, ...init }); return { ok: true, json: async () => ledgerFixtureSettings } } })
+  const client = new SidecarClient('http://127.0.0.1:9000', 'fixture-sidecar-auth')
+  await client.getTokenLedgerSummary(30); await client.getTokenLedgerStatus(); await client.getTokenLedgerSettings()
+  await client.setTokenLedgerSettings({ forum: { autoSync: true, intervalMinutes: 30 } })
+  await client.syncTokenLedger()
+  assert.deepEqual(requests.map(r => [r.method, new URL(r.url).pathname]), [
+    ['GET', '/token-ledger/summary'], ['GET', '/token-ledger/status'], ['GET', '/token-ledger/settings'], ['PUT', '/token-ledger/settings'], ['POST', '/token-ledger/sync'],
+  ])
+  assert.equal(new URL(requests[0].url).searchParams.get('days'), '30')
+  assert(requests.every(r => r.headers.authorization === 'Bearer fixture-sidecar-auth'))
+  assert(requests.slice(0, 3).every(r => r.body === undefined))
+  assert(!requests[3].body.includes('apiKey'))
+})
+
+
+test('Token ledger settings reject insecure remote endpoints and sync intervals beyond one day before saving', async () => {
+  const f = await webviewFixture(), card = f.runner(f.TokenLedgerPanel)
+  card.render(); f.deliver(ledgerSnapshotMessage(f.sent.at(-1).requestId)); let tree = card.render()
+  const input = nodes(tree).find(n => n.type === 'input' && n.props.value === ledgerFixtureSettings.forum.endpoint)
+  input.props.onChange({ target: { value: 'http://remote.example.com/token-usage' } })
+  tree = card.render(); button(tree, '保存账本设置').props.onClick()
+  assert.equal(f.sent.length, 1)
+  tree = card.render()
+  nodes(tree).find(n => n.type === 'input' && n.props.value === 'http://remote.example.com/token-usage').props.onChange({ target: { value: ledgerFixtureSettings.forum.endpoint } })
+  nodes(tree).find(n => n.type === 'input' && n.props.inputMode === 'numeric').props.onChange({ target: { value: '1441' } })
+  tree = card.render(); button(tree, '保存账本设置').props.onClick()
+  assert.equal(f.sent.length, 1)
+  card.unmount()
 })

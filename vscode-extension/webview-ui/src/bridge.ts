@@ -1,3 +1,6 @@
+import type { TokenLedgerSnapshot } from '../../src/sidecar/token-ledger.js'
+export type { TokenLedgerSnapshot, TokenLedgerSettings, TokenLedgerTotals, TokenLedgerReceipt } from '../../src/sidecar/token-ledger.js'
+
 /** webview ↔ 扩展宿主 postMessage 桥（webview 侧）。 */
 
 export interface SessionEvent {
@@ -83,6 +86,9 @@ export interface PlanDocument {
 }
 
 export type HostMsg =
+  | ({ type: 'tokenLedger'; requestId: number } & TokenLedgerSnapshot)
+  | { type: 'tokenLedgerResult'; requestId: number; ok: boolean; cancelled?: boolean; message?: string; unavailable?: boolean }
+
   | { type: 'sessions'; sessions: SessionRecord[]; activeSessionId?: string }
   | { type: 'sessionCreated'; session: SessionRecord }
   | { type: 'sessionAttached'; sessionId: string }

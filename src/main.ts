@@ -514,6 +514,9 @@ async function main() {
     // 位置说明：在 createAgent 闭包**之外**创建——收尾段的 goal_actual 预算回馈
     // 也要用它，闭包内的声明在收尾处不可见。
     const headlessIndexer = new MeridianIndexer(process.cwd())
+    const { TokenLedgerService } = await import('./token-ledger/service.js')
+    const headlessLedger = new TokenLedgerService(cfg)
+    headlessLedger.startAutoSync()
     const result = await runHeadless({
       prompt: effectivePrompt,
       json: parsed.json,
@@ -721,7 +724,9 @@ async function main() {
     // 审计面收尾：sink 是缓冲写入，不 await close 就落到下面的 process.exit 会丢掉
     // 尾段（TUI 侧同一份清理挂在 shutdown() 的 cleanup 列表上，无头分支不走
     // shutdown）。finally 同时覆盖 runHeadless 抛错的情形——异常路径也要收尾。
-    }).finally(() => eventStream?.close())
+    }).finally(async () => {
+      try { await eventStream?.close() } finally { await headlessLedger.shutdownFlush() }
+    })
 
     if (result.stdout) process.stdout.write(result.stdout + '\n')
     else if (result.json) process.stdout.write(JSON.stringify(result.json) + '\n')

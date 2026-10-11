@@ -3,7 +3,7 @@
  *
  * 增量消费各会话 cache-log.jsonl（append-only）的计费行，折叠成
  * day × model(×provider) 累计记录，整体原子落盘。消费游标是字节偏移：
- * 上次读到 EOF，本次从 EOF 接着读，行边界天然对齐。
+ * 仅提交完整换行边界；每次读取以上次 stat 的文件大小为上界。
  *
  * 失效方向（修复纪律）：
  *  - 文件被截断（size < offset）→ 游标直接钉到当前 size、跳过未知区间，
@@ -16,14 +16,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, readFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
-import { writeFileAtomicSync } from '../fs-atomic.js'
+import { join, relative, resolve, sep } from 'node:path'
+import { writeFileAtomicDurableAsync } from '../fs-atomic.js'
 import {
+  attemptDedupeKey,
   dayKey,
   parseUsageRows,
   type CacheUsageRow,
   type PricingResolver,
 } from '../cache/usage-aggregator.js'
+import { StoreLock } from '../server/store-lock.js'
 import { computeUsageCost } from '../utils/pricing.js'
 import type {
   TokenDayModelRecord,
@@ -33,6 +35,40 @@ import type {
 } from './types.js'
 
 const CACHE_LOG_NAME = 'cache-log.jsonl'
+const transactions = new Map<string, Promise<unknown>>()
+
+interface LedgerIdentity {
+  version: 1
+  deviceId: string
+  lastSnapshotAt?: string
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validState(value: unknown): value is TokenLedgerState {
+  if (!object(value) || value.version !== 1 || typeof value.deviceId !== 'string' || !value.deviceId
+    || !object(value.offsets) || !object(value.days)) return false
+  if (Object.values(value.offsets).some(n => !Number.isSafeInteger(n) || (n as number) < 0)) return false
+  return Object.values(value.days).every(buckets => object(buckets) && Object.values(buckets).every(record =>
+    object(record) && typeof record.date === 'string' && typeof record.model === 'string'
+    && ['requests', 'input', 'output', 'cacheRead', 'cacheCreate', 'cost'].every(key =>
+      typeof record[key] === 'number' && Number.isFinite(record[key]) && (record[key] as number) >= 0)))
+}
+
+function readOptional(path: string): string | undefined {
+  try { return readFileSync(path, 'utf8') }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return undefined
+  }
+}
+
+function parseJson(content: string | undefined): unknown {
+  if (content === undefined) return undefined
+  try { return JSON.parse(content) } catch { return undefined }
+}
 
 /** 与 usage-aggregator 的 rollup 键同构：provider 存在时参与复合键。 */
 export function ledgerBucketKey(model: string, provider?: string): string {
@@ -108,6 +144,10 @@ export class TokenLedgerStore {
     return this.load().lastPushResult
   }
 
+  get lastPushedTargetHash(): string | undefined {
+    return this.load().lastPushedTargetHash
+  }
+
   get lastPushedDigest(): string | undefined {
     return this.load().lastPushedDigest
   }
@@ -144,17 +184,23 @@ export class TokenLedgerStore {
     return out
   }
 
-  /** 构造推送论坛的累计快照。 */
-  snapshot(deviceName: string): TokenUsageSnapshot {
-    const records = this.records()
-    return {
-      version: 1,
-      deviceId: this.deviceId,
-      deviceName,
-      sentAt: new Date(this.now()).toISOString(),
-      totals: this.totals(),
-      days: records,
-    }
+  /** 构造快照并持久化跨进程单调时间；digest 与载荷来自同一份锁内状态。 */
+  async snapshot(deviceName: string): Promise<TokenUsageSnapshot> {
+    return (await this.snapshotWithDigest(deviceName)).snapshot
+  }
+
+  snapshotWithDigest(deviceName: string): Promise<{ snapshot: TokenUsageSnapshot; digest: string }> {
+    return this.transaction(async state => {
+      const previous = Date.parse(state.lastSnapshotAt ?? '')
+      const sentAt = new Date(Math.max(this.now(), Number.isFinite(previous) ? previous + 1 : 0)).toISOString()
+      state.lastSnapshotAt = sentAt
+      this.state = state
+      const snapshot: TokenUsageSnapshot = {
+        version: 1, deviceId: state.deviceId, deviceName, sentAt,
+        totals: this.totals(), days: this.records(),
+      }
+      return { snapshot, digest: ledgerDigest(state.days) }
+    })
   }
 
   /**
@@ -168,91 +214,155 @@ export class TokenLedgerStore {
     return this.refreshing
   }
 
-  /** 推送回执：2xx 才钉 lastPushedDigest；失败只留 lastPushResult，不动游标。 */
-  markPushed(result: { ok: boolean; status?: number; code?: string; error?: string }): void {
-    const state = this.load()
-    const at = new Date(this.now()).toISOString()
-    if (result.ok) {
-      state.lastPushAt = at
-      state.lastPushedDigest = ledgerDigest(state.days)
-    }
-    state.lastPushResult = { ...result, at }
-    this.persist()
-  }
-
-  private load(): TokenLedgerState {
-    if (this.state) return this.state
-    let loaded: TokenLedgerState | undefined
-    try {
-      const parsed = JSON.parse(
-        // 状态文件小（day×model 粒度），同步读即可；坏了就重建——台账是 cache-log
-        // 的派生物，重置 offsets/days 后全量重扫可恢复。
-        readFileSync(this.statePath, 'utf8'),
-      ) as TokenLedgerState
-      if (parsed && parsed.version === 1 && typeof parsed.deviceId === 'string'
-        && parsed.offsets && typeof parsed.offsets === 'object'
-        && parsed.days && typeof parsed.days === 'object') {
-        loaded = parsed
+  /** 回执仅确认实际上送的digest；迟到旧快照的回执不能覆盖较新的结果。 */
+  markPushed(
+    result: { ok: boolean; status?: number; code?: string; error?: string },
+    digest?: string,
+    targetHash?: string,
+    sentAt?: string,
+  ): Promise<void> {
+    return this.transaction(async state => {
+      if (sentAt && state.lastPushSnapshotAt && sentAt < state.lastPushSnapshotAt) return
+      const at = new Date(this.now()).toISOString()
+      if (result.ok) {
+        state.lastPushAt = at
+        state.lastPushedDigest = digest ?? ledgerDigest(state.days)
+        state.lastPushedTargetHash = targetHash
       }
-    } catch { /* 缺失或损坏：从空台账重建 */ }
-    this.state = loaded ?? { version: 1, deviceId: randomUUID(), offsets: {}, days: {} }
-    return this.state
+      if (sentAt) state.lastPushSnapshotAt = sentAt
+      state.lastPushResult = { ...result, at }
+    })
   }
 
-  private persist(): void {
-    if (!this.state) return
-    try {
-      writeFileAtomicSync(this.statePath, JSON.stringify(this.state))
-    } catch { /* best-effort：内存态仍在，下次 refresh 再试 */ }
+  private load(reload = false): TokenLedgerState {
+    if (this.state && !reload) return this.state
+    const raw = readOptional(this.statePath)
+    const parsed = parseJson(raw)
+    const identityRaw = readOptional(this.statePath + '.identity.json')
+    const candidate = parseJson(identityRaw)
+    const identity = object(candidate) && candidate.version === 1
+      && typeof candidate.deviceId === 'string' && candidate.deviceId ? candidate as unknown as LedgerIdentity : undefined
+    const recoveredId = object(parsed) && typeof parsed.deviceId === 'string' && parsed.deviceId
+      ? parsed.deviceId : undefined
+    const deviceId = identity?.deviceId ?? recoveredId
+    if (!deviceId && (raw !== undefined || identityRaw !== undefined)) {
+      throw new Error('Token ledger identity cannot be recovered; restore the original device identity before syncing.')
+    }
+    if (validState(parsed) && identity && parsed.deviceId !== identity.deviceId) {
+      throw new Error('Token ledger identity conflicts with its installation identity; restore matching files before syncing.')
+    }
+    const state: TokenLedgerState = validState(parsed) ? parsed : {
+      version: 1, deviceId: deviceId ?? this.state?.deviceId ?? randomUUID(), offsets: {}, days: {},
+    }
+    const identityTimestamp = identity?.lastSnapshotAt
+    if (identityTimestamp && (!state.lastSnapshotAt || identityTimestamp > state.lastSnapshotAt)) {
+      state.lastSnapshotAt = identityTimestamp
+    }
+    this.state = state
+    return state
   }
 
-  private async refreshImpl(): Promise<LedgerRefreshResult> {
-    const state = this.load()
-    const files = await findCacheLogFiles(this.sessionsRoot)
-    let newRows = 0
-    let dirty = false
-
-    for (const file of files) {
-      const rel = relative(this.sessionsRoot, file).split(sep).join('/')
-      const prevOffset = state.offsets[rel] ?? 0
-      let size: number
+  /** StoreLock recognizes all same-process holders; the shared queue also serializes instances. */
+  private transaction<T>(operation: (state: TokenLedgerState) => Promise<T>): Promise<T> {
+    const key = resolve(this.statePath)
+    const previous = transactions.get(key) ?? Promise.resolve()
+    const current = previous.catch(() => {}).then(async () => {
+      const lock = new StoreLock({ lockPath: key + '.lock', legacyWriterLockPaths: [] })
+      const acquired = await lock.acquire({ retryWindowMs: 5_000, retryIntervalMs: 25 })
+      if (!acquired.acquired) throw new Error(`Cannot lock token ledger: ${acquired.status}`)
       try {
-        size = (await stat(file)).size
-      } catch {
-        continue
-      }
-      if (size < prevOffset) {
-        // 截断：未知区间已不可信，跳过重算（往少算侧失效，见模块 docstring）。
-        state.offsets[rel] = size
-        dirty = true
-        continue
-      }
-      if (size === prevOffset) continue
+        const raw = readOptional(this.statePath)
+        const state = this.load(true)
+        if (raw !== undefined && !validState(parseJson(raw))) {
+          await writeFileAtomicDurableAsync(this.statePath + '.corrupt-' + randomUUID() + '.bak', raw)
+        }
+        // Identity commits first, so a crash before state publication can still rebuild under the same id.
+        const identity: LedgerIdentity = { version: 1, deviceId: state.deviceId,
+          ...(state.lastSnapshotAt ? { lastSnapshotAt: state.lastSnapshotAt } : {}) }
+        await writeFileAtomicDurableAsync(this.statePath + '.identity.json', JSON.stringify(identity))
+        const result = await operation(state)
+        if (state.lastSnapshotAt !== identity.lastSnapshotAt) {
+          identity.lastSnapshotAt = state.lastSnapshotAt
+          await writeFileAtomicDurableAsync(this.statePath + '.identity.json', JSON.stringify(identity))
+        }
+        await writeFileAtomicDurableAsync(this.statePath, JSON.stringify(state))
+        this.state = state
+        return result
+      } catch (error) {
+        this.state = undefined
+        throw error
+      } finally { lock.release() }
+    })
+    transactions.set(key, current)
+    void current.finally(() => {
+      if (transactions.get(key) === current) transactions.delete(key)
+    }).catch(() => {})
+    return current
+  }
 
-      const content = await readFromOffset(file, prevOffset)
-      const rows = parseUsageRows(content)
-      for (const row of rows) this.fold(state, row)
-      newRows += rows.length
-      state.offsets[rel] = size
-      dirty = true
-    }
-
-    if (dirty) this.persist()
-    return { newRows, scannedFiles: files.length }
+  private refreshImpl(): Promise<LedgerRefreshResult> {
+    return this.transaction(async state => {
+      const files = await findCacheLogFiles(this.sessionsRoot)
+      let newRows = 0
+      for (const file of files) {
+        const rel = relative(this.sessionsRoot, file).split(sep).join('/')
+        const prevOffset = state.offsets[rel] ?? 0
+        let size: number
+        try { size = (await stat(file)).size } catch { continue }
+        const attempts = state.attempts ??= {}
+        if (prevOffset > 0 && attempts[rel] === undefined) {
+          // Migrate consumed v1 history once, collecting ids without replaying any usage.
+          const consumed = await readFromOffset(file, 0, Math.min(prevOffset, size))
+          attempts[rel] = [...new Set(consumed.toString('utf8').split(/\r?\n/).flatMap(line => {
+            if (!parseUsageRows(line).length) return []
+            const record = parseJson(line)
+            const key = object(record) ? attemptDedupeKey(record) : undefined
+            return key === undefined ? [] : [key]
+          }))]
+        }
+        if (size < prevOffset) {
+          // Preserve conservative truncation behavior; never replay previously consumed bytes.
+          state.offsets[rel] = size
+          continue
+        }
+        if (size === prevOffset) continue
+        const content = await readFromOffset(file, prevOffset, size)
+        if (!content.length) continue
+        const seen = new Set(attempts[rel] ?? [])
+        const lines = content.toString('utf8').split(/\r?\n/).reverse()
+        const accepted: string[] = []
+        for (const line of lines) {
+          if (!parseUsageRows(line).length) continue
+          const record = parseJson(line)
+          const dedupeKey = object(record) ? attemptDedupeKey(record) : undefined
+          if (dedupeKey !== undefined) {
+            if (seen.has(dedupeKey)) continue
+            seen.add(dedupeKey)
+          }
+          accepted.push(line)
+        }
+        const rows = parseUsageRows(accepted.reverse().join('\n'))
+        for (const row of rows) this.fold(state, row)
+        attempts[rel] = [...seen]
+        newRows += rows.length
+        state.offsets[rel] = prevOffset + content.length
+      }
+      return { newRows, scannedFiles: files.length }
+    })
   }
 
   private fold(state: TokenLedgerState, row: CacheUsageRow): void {
     const date = dayKey(row.t)
     const key = ledgerBucketKey(row.model, row.provider)
-    let buckets = state.days[date]
+    let buckets = Object.hasOwn(state.days, date) ? state.days[date] : undefined
     if (!buckets) state.days[date] = buckets = {}
-    let record = buckets[key]
+    let record = Object.hasOwn(buckets, key) ? buckets[key] : undefined
     if (!record) {
       record = {
         date, model: row.model, ...(row.provider ? { provider: row.provider } : {}),
         requests: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, cost: 0,
       }
-      buckets[key] = record
+      Object.defineProperty(buckets, key, { value: record, enumerable: true, writable: true, configurable: true })
     }
     record.requests += 1
     record.input += row.input
@@ -291,10 +401,13 @@ async function findCacheLogFiles(root: string): Promise<string[]> {
   return files
 }
 
-async function readFromOffset(file: string, offset: number): Promise<string> {
+async function readFromOffset(file: string, offset: number, end: number): Promise<Buffer> {
+  if (end <= offset) return Buffer.alloc(0)
   const chunks: Buffer[] = []
-  for await (const chunk of createReadStream(file, { start: offset })) {
+  for await (const chunk of createReadStream(file, { start: offset, end: end - 1 })) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
   }
-  return Buffer.concat(chunks).toString('utf8')
+  const content = Buffer.concat(chunks)
+  const lastNewline = content.lastIndexOf(10)
+  return content.subarray(0, lastNewline + 1)
 }

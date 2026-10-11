@@ -221,4 +221,16 @@ body { padding: 0; margin: 0; font-family: var(--vscode-font-family); color: var
 .settings-actions { display: flex; justify-content: flex-end; }
 .provider-list { margin: 0 0 8px 0; padding-left: 16px; color: var(--vscode-descriptionForeground); }
 .settings-drawer .setup-card { margin: 0; max-width: none; }
+
+/* Token ledger shares the settings drawer and remains readable at sidebar widths. */
+.ledger-totals, .ledger-status { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 12px; margin: 12px 0; }
+.ledger-totals dt, .ledger-status dt { color: var(--vscode-descriptionForeground); }
+.ledger-totals dd, .ledger-status dd { margin: 0; overflow-wrap: anywhere; }
+.ledger-totals dd { font-variant-numeric: tabular-nums; }
+.ledger-form { display: grid; gap: 10px; }
+.ledger-form label { display: grid; gap: 5px; }
+.ledger-form input { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.ledger-form .ledger-checkbox { display: flex; align-items: center; gap: 6px; }
+.ledger-checkbox input { width: auto; }
+.token-ledger .settings-actions { flex-wrap: wrap; gap: 6px; }
 `

@@ -39,7 +39,7 @@ export interface TokenLedgerTotals {
 /** 推送论坛的快照载荷（POST body）。累计快照，论坛端按 deviceId upsert。 */
 export interface TokenUsageSnapshot {
   version: 1
-  /** 安装级匿名 id（首次生成后持久化于台账状态文件） */
+  /** 安装级匿名 id（首次生成后独立持久化，并兼容旧台账身份迁移） */
   deviceId: string
   /** 展示用设备名（config tokenLedger.deviceName，缺省 os.hostname()） */
   deviceName: string
@@ -52,10 +52,9 @@ export interface TokenUsageSnapshot {
 
 /**
  * 台账落盘状态。失效方向：offsets 与 days 必须同一份原子写入——
- * 推送失败两者都不前进（下次重扫重算），绝不允许「days 已加、offsets 未走」
- * 之外的反向（offsets 走、days 没加 = 丢数据）。多进程并发刷新时整文件
- * 原子替换保证每份落盘状态自洽，最坏情况是某个进程的折叠被整体覆盖后
- * 重扫重做，不会重复计数。
+ * 折叠持久化失败两者都不前进（下次重扫重算），绝不允许「days 已加、offsets 未走」
+ * 之外的反向（offsets 走、days 没加 = 丢数据）。跨进程刷新和回执在独占锁内
+ * reload → 更新 → 原子持久化，避免旧实例整文件覆盖较新的累计和回执。
  */
 export interface TokenLedgerState {
   version: 1
@@ -64,6 +63,14 @@ export interface TokenLedgerState {
   offsets: Record<string, number>
   /** date → bucketKey(provider\0model 或裸 model) → 累计记录 */
   days: Record<string, Record<string, TokenDayModelRecord>>
+  /** cache-log相对路径 → 已消费attempt键，跨增量批次/重启去重。 */
+  attempts?: Record<string, string[]>
+  /** 最近一次构造快照的单调时间；独立身份文件也保留用于账本恢复。 */
+  lastSnapshotAt?: string
+  /** 最近一次回执所确认/处理的快照时间，防止乱序回执覆盖。 */
+  lastPushSnapshotAt?: string
+  /** 最近一次确认的同步目标摘要（不含API key原文）。 */
+  lastPushedTargetHash?: string
   /** 最近一次成功推送（2xx）时间 */
   lastPushAt?: string
   /** 最近一次 2xx 确认的快照摘要；与当前 digest 不同 = 有未推送变更 */

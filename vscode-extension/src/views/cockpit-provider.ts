@@ -9,11 +9,13 @@
  */
 import * as vscode from 'vscode'
 import { SidecarClient } from '../sidecar/client.js'
+import { handleTokenLedgerMessage, type TokenLedgerInboundMsg } from './token-ledger-bridge.js'
 import type { SessionEvent, SessionRecord } from '../sidecar/protocol.js'
 import { buildSessionCatalog } from '../sidecar/session-catalog.js'
 
 /** webview → host 消息 */
 type InboundMsg =
+  | TokenLedgerInboundMsg
   | { type: 'ready' }
   | { type: 'listSessions'; includeArchived?: boolean }
   | { type: 'createSession'; prompt?: string; isolatedWorktree?: boolean; model?: string; domain?: string }
@@ -65,6 +67,7 @@ export class CockpitProvider {
   private activeSessionId: string | undefined
   private subscriptionGeneration = 0
   private rewindRequestGeneration = 0
+  private ledgerBusy = false
 
   /** 会话切换 / 文件可能变化的活动信号（extension.ts 接变更视图刷新）。 */
   onSessionActivity: ((kind: 'attach' | 'activity', sessionId: string) => void) | undefined
@@ -119,6 +122,31 @@ export class CockpitProvider {
   }
 
   private async onMessage(msg: InboundMsg): Promise<void> {
+    if (['getTokenLedger', 'saveTokenLedgerSettings', 'setTokenLedgerKey', 'clearTokenLedgerKey', 'syncTokenLedger'].includes(msg.type)) {
+      const panel = this.panel
+      const ledgerMsg = msg as TokenLedgerInboundMsg
+      if (this.ledgerBusy && ledgerMsg.type !== 'getTokenLedger') {
+        this.post({ type: 'tokenLedgerResult', requestId: ledgerMsg.requestId, ok: false, message: '账本操作正在进行，请稍候。' })
+        return
+      }
+      const mutation = ledgerMsg.type !== 'getTokenLedger'
+      if (mutation) this.ledgerBusy = true
+      try {
+        await handleTokenLedgerMessage(ledgerMsg, {
+          getClient: this.getClient,
+          active: () => this.panel === panel && !!panel,
+          post: message => this.post(message),
+          promptKey: async () => vscode.window.showInputBox({
+            title: '设置 Token 账本同步密钥',
+            prompt: '粘贴论坛签发的同步密钥。密钥只用于同步，不会发送到聊天。',
+            password: true,
+            ignoreFocusOut: true,
+            validateInput: value => value.trim() ? undefined : '请输入同步密钥，或按 Esc 取消。',
+          }),
+        })
+      } finally { if (mutation) this.ledgerBusy = false }
+      return
+    }
     if (msg.type === 'copyText') {
       await vscode.env.clipboard.writeText(msg.text)
       return

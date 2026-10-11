@@ -318,6 +318,8 @@ const PROJECT_FORBIDDEN_SAFETY_NESTED_KEYS: ReadonlyArray<readonly [string, stri
   ['agent', 'approval'],
   ['agent', 'unsandboxed'],
   ['agent', 'permissions'],
+  // Global usage and credential upload require a user decision, even in trusted repositories.
+  ['tokenLedger', 'forum'],
 ]
 
 /**

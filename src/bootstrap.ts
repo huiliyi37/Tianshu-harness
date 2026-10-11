@@ -2491,10 +2491,8 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   // 定时推送。台账是旁路观测面，任何构造失败都不得影响启动。
   let tokenLedger: TokenLedgerService | undefined
   try {
-    if (config.tokenLedger?.enabled !== false) {
-      tokenLedger = new TokenLedgerService(config)
-      tokenLedger.startAutoSync()
-    }
+    tokenLedger = new TokenLedgerService(config)
+    tokenLedger.startAutoSync()
   } catch { /* best-effort */ }
 
   // 14. Shutdown handler

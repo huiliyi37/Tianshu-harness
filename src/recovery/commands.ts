@@ -3,10 +3,16 @@ import { contractModels } from '../config/contract-models.js'
 import { listPlans, rejectPlan, resolvePlanOptionLabel, resolvePlanRef } from '../plan/plan-store.js'
 import { planRevision } from '../plan/plan-revision.js'
 import type { RecoveryOutput } from './output.js'
+import { handleTokenLedgerCommand } from '../tui/token-ledger-command.js'
 
 export const RECOVERY_HELP = `Text commands (Enter to submit):
 /help                         Show commands
 /model [provider:model]       List or switch configured models
+/usage, /token-ledger        Local Token usage and sync status
+/token-ledger sync           Manually upload cumulative usage
+/token-ledger auto on|off    Opt in to 30 min upload or keep local only
+/token-ledger connect        Safe connection guidance (no plain text key input)
+/token-ledger disconnect     Remove saved sync key and stop automatic upload
 /abort                        Interrupt the current run
 /exit, /quit                  Exit (also interrupts an active run)
 /approve, /reject              Answer the currently displayed tool approval
@@ -26,6 +32,7 @@ export class RecoveryCommands {
     const arg = parts.join(' ')
     const say = (text: string) => this.output.line(text)
     if (command === '/help') say(RECOVERY_HELP)
+    else if (command === '/usage' || command === '/token-ledger') return { handled: await handleTokenLedgerCommand(this.ctx, [command, ...parts], say, { canCommit: this.canCommit }) }
     else if (command === '/abort') say('[recovery] No active run.')
     else if (command === '/approve' || command === '/reject') say('[recovery] No tool approval is pending.')
     else if (command === '/model') {

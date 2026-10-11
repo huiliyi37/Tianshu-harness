@@ -117,6 +117,8 @@ export const HELP_TEXT = `天枢帮助
 /prefix-budget — 前缀预算归因：各块字符/token 占比 + 当前档位
 /index — Rebuild codebase index (modules + CLI entries)
 /status — Show agent status (model, domain, cache, tokens)
+/usage — Local cumulative Token ledger (total = input + output; cache read is included in input)
+/token-ledger [status|sync|auto on|auto off|connect|disconnect] — 本地记录默认开启；sync 手动上传；auto on 明确开启每 30 分钟上传；connect 遮蔽输入密钥；disconnect 删除密钥并停自动上传
 /tools — Show available tools and their descriptions
 /doctor — Environment health check (Node/Git/Python/uv) + which shell the bash tool uses
 /python [status|setup] — Check Python/uv/Git environment or auto-setup a Python project with uv

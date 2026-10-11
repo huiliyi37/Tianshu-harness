@@ -54,6 +54,7 @@ export function redactTextWithCount(text: string): { text: string; findings: num
     .replace(/(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}/g, hit)
     .replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, hit)
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, hit)
+    .replace(/\btsu_[a-f0-9]{32}\b/gi, hit)
   return { text: out, findings }
 }
 

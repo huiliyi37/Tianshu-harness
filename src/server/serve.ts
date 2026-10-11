@@ -1086,10 +1086,8 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   let tokenLedgerService: TokenLedgerService | undefined
   try {
     const tlConfig = loadConfig()
-    if (tlConfig.tokenLedger?.enabled !== false) {
-      tokenLedgerService = new TokenLedgerService(tlConfig)
-      tokenLedgerService.startAutoSync()
-    }
+    tokenLedgerService = new TokenLedgerService(tlConfig)
+    tokenLedgerService.startAutoSync()
   } catch { /* best-effort */ }
   Object.assign(routes, buildTokenLedgerRoutes({ apiToken, service: tokenLedgerService }))
 
@@ -1347,6 +1345,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       // 共享资源要等 claims/worker finally 完成后再拆，避免 handoff 紧接着
       // 进入同一工作区时撞上上一会话的文件归属。
       const finish = async () => {
+        await tokenLedgerService?.shutdownFlush()
         await disposeAllBrowserContexts()
         disposeSessionFilePreviews()
         // 先收执行后端：隔离模式下这是 kill 每个会话执行进程的第一道口。

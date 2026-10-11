@@ -78,6 +78,7 @@ import { switchAgentRuntime, switchAgentSession, switchAgentCwd } from '../boots
 //（architecture-guards 的 max-lines ratchet 只降不升）。
 import { applySessionSwitch, registerNewSessionCommand } from './new-session.js'
 import { registerCvmNoticeCommand } from './cvm-notice-command.js'
+import { registerTokenLedgerCommands } from './token-ledger-command.js'
 import { registerSteerCommand } from './steer-command.js'
 import { rememberUserNote, listUserNotes } from '../memory/user-remember.js'
 import { formatPermissionLabel, parsePermissionAlias, tierToMode } from '../agent/approval-vocabulary.js'
@@ -3985,6 +3986,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
   // /cvm：CVM 拦截提示的级别开关（issue #247 第 2 条）。实现在独立模块——与
   // /new、/queue 同一处置（本文件是点名巨石，只降不升）。
   registerCvmNoticeCommand(app)
+  registerTokenLedgerCommands(app, ctx)
 
   // /new：会话中途开新会话（对齐 Claude Code 的 /clear——同进程换一段干净上下文）。
   // 与 /clear 同走 register 形式：busy 守卫与清屏需要 app 句柄。实现在

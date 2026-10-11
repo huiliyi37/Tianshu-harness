@@ -11,6 +11,8 @@
 import type { RouteHandler } from './index.js'
 import { isAuthorizedRequest } from './auth.js'
 import { loadConfig } from '../config/manager.js'
+import { readTokenLedgerSettings, updateTokenLedgerSettings } from '../token-ledger/settings.js'
+import type { Config } from '../config/schema.js'
 import { dayKey } from '../cache/usage-aggregator.js'
 import { TokenLedgerService, type TokenLedgerServiceDeps } from '../token-ledger/service.js'
 import type { TokenDayModelRecord } from '../token-ledger/types.js'
@@ -19,6 +21,7 @@ const MAX_DAYS = 366
 
 export interface TokenLedgerRoutesDeps {
   apiToken?: string
+  settingsDeps?: { load?: () => Config; save?: (config: Config) => void }
   /** 测试注入；缺省在 builder 内懒建（serve 进程级单例，共享自动同步状态） */
   service?: TokenLedgerService
   /** 透传给懒建 service 的依赖（测试注入 fetch/路径/时钟） */
@@ -56,6 +59,19 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
     isAuthorizedRequest({ body, headers }, deps.apiToken)
 
   return {
+    'GET /token-ledger/settings': async (body, _params, headers) => {
+      if (!authorized(body, headers)) return { status: 401, body: { error: 'Unauthorized' } }
+      try { return { status: 200, body: readTokenLedgerSettings((deps.settingsDeps?.load ?? loadConfig)()) } }
+      catch { return { status: 500, body: { error: 'Unable to read Token ledger settings' } } }
+    },
+    'PUT /token-ledger/settings': async (body, _params, headers) => {
+      if (!authorized(body, headers)) return { status: 401, body: { error: 'Unauthorized' } }
+      try {
+        const config = updateTokenLedgerSettings(body, deps.settingsDeps)
+        getService().reconfigure(config)
+        return { status: 200, body: readTokenLedgerSettings(config) }
+      } catch { return { status: 400, body: { error: 'Unable to save Token ledger settings. Check fields and sync key.' } } }
+    },
     'GET /token-ledger/summary': async (body, params, headers) => {
       if (!authorized(body, headers)) return { status: 401, body: { error: 'Unauthorized' } }
       const days = parseDays(params?.days)
@@ -65,7 +81,10 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
       try {
         await svc.refresh()
         const status = svc.status()
-        const since = dayKey(Date.now() - days * 86_400_000)
+        const start = new Date()
+        start.setHours(0, 0, 0, 0)
+        start.setDate(start.getDate() - days + 1)
+        const since = dayKey(start.getTime())
         const windowDays = svc.records(since)
         return {
           status: 200,
@@ -82,7 +101,7 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
           },
         }
       } catch (err) {
-        return { status: 500, body: { error: (err as Error).message } }
+        return { status: 500, body: { error: 'Token ledger operation failed; local data retained' } }
       }
     },
 
@@ -93,7 +112,7 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
         await svc.refresh()
         return { status: 200, body: svc.status() }
       } catch (err) {
-        return { status: 500, body: { error: (err as Error).message } }
+        return { status: 500, body: { error: 'Token ledger operation failed; local data retained' } }
       }
     },
 
@@ -105,6 +124,7 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
         if (outcome.skipped === 'disabled') {
           return { status: 400, body: { error: 'tokenLedger.enabled is false' } }
         }
+        if (outcome.skipped === 'no_key') return { status: 400, body: { error: 'Configure your personal forum sync key first' } }
         if (outcome.skipped === 'no_endpoint') {
           return {
             status: 400,
@@ -119,7 +139,7 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
         }
         return { status: 200, body: outcome }
       } catch (err) {
-        return { status: 500, body: { error: (err as Error).message } }
+        return { status: 500, body: { error: 'Token ledger operation failed; local data retained' } }
       }
     },
   }

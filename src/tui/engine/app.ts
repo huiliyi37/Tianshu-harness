@@ -141,6 +141,7 @@ import { renderPager, renderStarmap, renderCommandPalette, followListWindow, ren
 import type { PagerData, StarmapData, PaletteData, ChronicleData, TasksData, TasksGroup, TasksWorkerRow, DomainPickerData, ModelPickerData, ThemePickerData, ChoicePanelData, PlanPickerData, ChoiceEntry, ConnectOverlayData, InitOverlayData } from '../format/overlay.js'
 import { ConnectFlow, DIY_PENDING_KEY_REF, type ConnectCommit, type ConnectProviderRef, type ConnectStepResult } from '../connect-flow.js'
 import { VisionOnboardingFlow, type VisionCandidate, type VisionOnboardingRequest, type VisionOnboardingResult } from '../vision-onboarding-flow.js'
+import { TokenLedgerConnect } from '../token-ledger-connect.js'
 import { dismissOnboarding } from '../../onboarding.js'
 import { readConnectDraft, saveConnectDraft, clearConnectDraft } from '../connect-draft.js'
 import { readSecret, writeSecret, deleteSecret } from '../../config/secrets-store.js'
@@ -474,6 +475,7 @@ export class TuiApp {
   private connectBlinkTimer: ReturnType<typeof setInterval> | null = null
   /** /vision 独立识图桥向导：只发 discover/onboard 请求，不复用通用 provider onboarding。 */
   private visionOnboardingFlow?: VisionOnboardingFlow
+  private tokenLedgerConnect?: TokenLedgerConnect
   private visionInput = ''
   private visionError?: string
   private visionExec?: (request: VisionOnboardingRequest) => Promise<{ candidates?: VisionCandidate[] }>
@@ -1088,6 +1090,7 @@ export class TuiApp {
       const mode = this.input.getMode()
       if (mode !== 'input') return
       if (!this.overlay.isActive() && !this.approvalIntentController.approvalPending && this.decisions.paste(text)) return
+      if (this.overlay.activeId() === 'token-ledger-connect') { this.tokenLedgerConnect?.paste(text); this.overlay.rerender(); return }
       // Connect overlay active → route paste into connectInput, not the main input box
       if (this.overlay.activeId() === 'connect' && this.connectFlow) {
         const view = this.connectFlow.view()
@@ -1931,6 +1934,9 @@ export class TuiApp {
     // 入口先规范化图片数组，后续气泡/渲染/回调看到的是同一份。
     images = normalizeSubmitImages(images)
     let trimmed = text.trim()
+    if (/^\/(?:token-ledger|usage)(?:\s|$)/.test(trimmed) && this.slashRegistry.has(trimmed.split(/\s+/)[0]!)) {
+      this.inputLine.clearAll(); await this.tryDispatchSlash(trimmed); return
+    }
     const hasImages = images && images.length > 0
     // 允许只发图片：空文本时补一个占位 prompt，让后端能触发 run。
     if (!trimmed && hasImages) {
@@ -2423,6 +2429,7 @@ export class TuiApp {
   /** 激活 overlay */
   activateOverlay(id: string): boolean {
     if (this.terminalRestored) return false
+    if (id !== 'token-ledger-connect') { this.tokenLedgerConnect?.clear(); this.tokenLedgerConnect = undefined }
     this.inputHandoffGeneration++
     this.historyOpenGeneration++
     if (this.historyOpening) { this.historyOpening = false; this.frontend.closeHistory() }
@@ -2452,6 +2459,7 @@ export class TuiApp {
       case 'chronicle':
       case 'connect':
       case 'vision-onboarding':
+      case 'token-ledger-connect':
       case 'init':
       case 'settings':
       case 'jobs':
@@ -2544,6 +2552,7 @@ export class TuiApp {
     const wasActive = this.overlay.isActive()
     if (!wasActive) return
     const closingId = this.overlay.activeId()
+    if (closingId === 'token-ledger-connect') { this.tokenLedgerConnect?.clear(); this.tokenLedgerConnect = undefined }
     if (closingId === 'ui-history') this.frontend.closeHistory()
     const preview = this.planPreview
     if (closingId === 'pager') this.detailPager = null
@@ -2621,6 +2630,15 @@ export class TuiApp {
     this.input.setMode('input')
     this.activateOverlay('connect')
   }
+
+  /** Open a masked sync-key input outside the composer and history. */
+  startTokenLedgerConnect(save: (key: string) => void): void {
+    this.tokenLedgerConnect?.clear()
+    this.tokenLedgerConnect = new TokenLedgerConnect(save)
+    this.input.setMode('input')
+    if (!this.activateOverlay('token-ledger-connect')) { this.tokenLedgerConnect.clear(); this.tokenLedgerConnect = undefined }
+  }
+  getTokenLedgerConnectData(): ConnectOverlayData { return (this.tokenLedgerConnect ?? new TokenLedgerConnect()).data() }
 
   /** Open the dedicated image-recognition bridge wizard. */
   startVisionOnboarding(execute: (request: VisionOnboardingRequest) => Promise<{ candidates?: VisionCandidate[] }>): void {
@@ -3248,6 +3266,12 @@ export class TuiApp {
    */
   private handleOverlayKey(key: { name: string; char: string; ctrl?: boolean; meta?: boolean; shift?: boolean }): boolean {
     const id = this.overlay.activeId()
+    if (id === 'token-ledger-connect' && this.tokenLedgerConnect) {
+      const result = this.tokenLedgerConnect.key(key)
+      if (result === 'edit') this.overlay.rerender()
+      else { if (result === 'saved') this.commitStatic('Token 账本密钥已保存；自动上传关闭。/token-ledger sync 手动同步。'); this.deactivateOverlay() }
+      return true
+    }
     if (id === 'terminal-mode') { this.modePanel.handleKey(key as KeyPress); this.overlay.rerender(); return true }
     if (id === 'permissions' && this.permissionPanel) { this.permissionPanel.handleKey(key as KeyPress); this.overlay.rerender(); return true }
     if (id === 'help') { this.helpPanel.handleKey(key as KeyPress); this.overlay.rerender(); return true }
@@ -4114,6 +4138,7 @@ export class TuiApp {
 
   /** 销毁资源 */
   dispose(): void {
+    this.tokenLedgerConnect?.clear(); this.tokenLedgerConnect = undefined
     this.cancelFileCompletionQuery()
     this.archiveAskCards()
     this.decisions.clear()
@@ -7313,6 +7338,14 @@ export class TuiApp {
     this.overlayController.setConnectExec(connectExec)
     this.overlayController.setPlanPickerExec(planPickerExec)
     this.overlayController.setInitExec(initExec)
+    this.overlay.register('token-ledger-connect', {
+      render: () => {
+        const data = this.getTokenLedgerConnectData()
+        const lines = renderConnect(data, this.columns, this.rows, this.theme)
+        this.connectCaret = data.caret ?? null
+        return lines
+      }, caret: () => this.connectCaret,
+    })
     // Dedicated vision bridge wizard. It shares only generic wizard rendering;
     // state, endpoint discovery, and persistence are distinct from /connect.
     this.overlay.register('vision-onboarding', {

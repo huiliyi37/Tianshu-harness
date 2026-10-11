@@ -7,6 +7,8 @@ import { z } from 'zod'
 import { resolveProfileName, resolveProfileOverlay, resolveHookDisabledEnv } from './profile.js'
 import { unBakeProfileOverlay } from './profile-persist.js'
 import { configSchema, reviewConfigSchema, workersSchema, councilConfigSchema, editorSchema, mirrorsSchema, prDefaultsSchema, envSchema, uiSchema, permissionsSchema, networkSchema, fetchSchema, searchSchema, modelConfigSchema, type Config, type ProviderConfig, type ProviderProtocol, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderAdvancedConfig, type ReviewConfig, type WorkersConfig, type CouncilConfig, type EditorConfig, type MirrorsConfig, type PrDefaultsConfig, type UiConfig } from './schema.js'
+import { maskConfigSecrets } from './config-display.js'
+export { maskConfigSecrets } from './config-display.js'
 import { DEFAULT_CONFIG } from './default.js'
 import { userConfigPath } from './paths.js'
 import { findPresetModel, isProviderPresetKey, type ProviderPresetKey } from './provider-presets.js'
@@ -2395,27 +2397,6 @@ Examples:
   rivet config set-url mimo https://token-plan-sgp.xiaomimimo.com/v1
   rivet config set-model minimax MiniMax-M3 1000000 64000
   rivet config mcp add-stdio fs npx -y @modelcontextprotocol/server-filesystem /tmp`)
-}
-
-/** Mask every credential in a config snapshot for display (`config show`).
- *  provider.apiKey may be a secrets-store value materialized by loadConfig. */
-function maskKey(value: string | undefined): string | undefined {
-  if (!value) return value
-  return '***' + value.slice(-4)
-}
-
-export function maskConfigSecrets(config: Config): Config {
-  const masked = structuredClone(config)
-  for (const provider of Object.values(masked.provider.providers)) {
-    provider.apiKey = maskKey(provider.apiKey)
-  }
-  const search = masked.search
-  if (search) {
-    search.bochaApiKey = maskKey(search.bochaApiKey)
-    search.braveApiKey = maskKey(search.braveApiKey)
-    search.tavilyApiKey = maskKey(search.tavilyApiKey)
-  }
-  return masked
 }
 
 export async function runConfigCLI(args: string[], io: ConfigCliIO = {}): Promise<void> {

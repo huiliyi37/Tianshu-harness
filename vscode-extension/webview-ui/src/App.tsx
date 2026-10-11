@@ -1,3 +1,4 @@
+import { TokenLedgerPanel } from './TokenLedgerPanel.js'
 import { useEffect, useMemo, useReducer, useRef, useState, useCallback, type DragEvent } from 'react'
 import {
   onHostMessage,
@@ -857,6 +858,7 @@ function SettingsPanel(props: {
 }) {
   return (
     <div className="drawer settings-drawer">
+      <TokenLedgerPanel />
       <div className="settings-block">
         <h3>新会话默认权限</h3>
         <p>只影响之后新建的会话。当前会话用工具栏切换。</p>

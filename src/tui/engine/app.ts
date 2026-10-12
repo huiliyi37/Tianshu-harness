@@ -657,7 +657,8 @@ export class TuiApp {
 
   /** 测试断言用：暂存待随下一条 prompt 发送的附件数。 */
   getDeferredImagesCount(): number {
-    return this.deferredImages.length
+    const queueImages = this.steerBuffer.getPendingEntries().reduce((sum, e) => sum + (e.images?.length ?? 0), 0)
+    return queueImages + this.deferredImages.length
   }
   /**
    * /queue 显式排队 lane：简单 FIFO（不走 steer 的优先级/意图分类）。
@@ -1529,9 +1530,12 @@ export class TuiApp {
       }
       // ── W4a: Up 箭头取回最近 queued 消息到输入框编辑 ─────────
       if (key.name === 'up' && !this.inputLine.value && this.steerBuffer.hasPending()) {
-        const msg = this.steerBuffer.popLast()
-        if (msg) {
-          this.inputLine.setValue(msg)
+        const entry = this.steerBuffer.popLastEntry()
+        if (entry) {
+          this.inputLine.setValue(entry.text)
+          if (entry.images?.length) {
+            for (const img of entry.images) this.inputLine.addImage(img)
+          }
           this.renderLive()
         }
         return
@@ -2017,7 +2021,7 @@ export class TuiApp {
         // 显式插队（Alt+Enter / /steer）→ now 优先级，本轮工具边界立即注入；
         // 仅插队消息立即 commit 气泡到 scrollback（带 [⚡ 插队引导] 标识）。
         await this.awaitUserCommit(`[⚡ 插队引导] ${trimmed}`, images, questionRequestId)
-        this.steerBuffer.pushNow(trimmed)
+        this.steerBuffer.pushNow(trimmed, true, images)
         if (images?.length) {
           this.deferredImages.push(...images)
           this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（插话通道仅能传文本）`, this.theme.muted))
@@ -2025,10 +2029,9 @@ export class TuiApp {
       } else {
         // 普通 Enter → later 优先级，排队等待当前轮次彻底结束（settle）后逐条作为新 run 发出。
         // 排队消息不立即 commit 气泡，固定在输入框上方横幅展示等待（支持多条 FIFO），
-        // 避免在会话中渲染无实际响应的幽灵消息；待轮末 dispatch 时再 commit 用户气泡。
-        this.steerBuffer.push(trimmed)
+        // 附件与消息粒度绑定（entry.images）；待轮末 dispatch 时再 commit 用户气泡并连带专属图片发出。
+        this.steerBuffer.push(trimmed, 'later', false, images)
         if (images?.length) {
-          this.deferredImages.push(...images)
           this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（排队通道仅能传文本）`, this.theme.muted))
         }
       }
@@ -2046,10 +2049,14 @@ export class TuiApp {
     // 此处不再重复 commit，仅输出合并提示并归并文本。
     let submitText = text
     let steerMerged = false
+    const mergedImages: string[] = []
     if (trimmed && (this.steerBuffer.hasPending() || this.queueLane.length > 0)) {
       const pendingEntries = [...this.steerBuffer.getPendingEntries()]
       this.steerBuffer.clear()
       const pending = pendingEntries.map(entry => entry.text)
+      for (const entry of pendingEntries) {
+        if (entry.images?.length) mergedImages.push(...entry.images)
+      }
       const lane = this.queueLane.splice(0)
       const mergedCount = pending.length + lane.length
       submitText = [...pending, ...lane, trimmed].join('\n\n')
@@ -2062,10 +2069,11 @@ export class TuiApp {
         this.state.committedCount++
       })
     }
-
     // Commit user message to scrollback
     if (trimmed) {
-      await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
+      const allSubmitImages = [...mergedImages, ...(images ?? [])]
+      const outgoingCommitImages = allSubmitImages.length > 0 ? allSubmitImages : undefined
+      await this.awaitUserCommit(submitText.trim(), outgoingCommitImages, questionRequestId, true)
       // 新 run 启动前丢弃上一 run 未 finalize 的流式残留：blockWriter 缓冲
       // 与 streamRenderer pending 若不清，会把上一轮文字追加进新轮输出。
       this.blockWriter.discard()
@@ -2082,10 +2090,13 @@ export class TuiApp {
     this.streamRenderController.lastActivityMs = Date.now()
     // 上一 run 期间暂存的附件（插话送不出去的图片）随本次 prompt 一次性发出：
     // 顺序按时间序——暂存在前、本次提交的图在后（与文本归并同序）。
-    const outgoingImages = this.deferredImages.length > 0
-      ? [...this.deferredImages, ...(images ?? [])]
-      : images
+    const allOutgoing = [
+      ...mergedImages,
+      ...(this.deferredImages.length > 0 ? this.deferredImages : []),
+      ...(images ?? [])
+    ]
     if (this.deferredImages.length > 0) this.deferredImages = []
+    const outgoingImages = allOutgoing.length > 0 ? allOutgoing : undefined
     try {
       await this.onSubmitCallback?.(submitText, outgoingImages, decision ? { origin: 'human', literalText: true } : undefined)
       // 投递成功才归档「已提交回答」：失败时提问卡仍是挂起态（面板保留错误可重试），
@@ -2094,7 +2105,6 @@ export class TuiApp {
     }
     catch (error) { this.rejectSubmit(); throw error }
   }
-
   /** Contract 预览按键：Enter 确认 / e 返回编辑 / Esc 取消。返回是否已消费。 */
   private handleContractPreviewKey(key: KeyPress): boolean {
     if (!this.contractPreview) return false
@@ -2240,6 +2250,11 @@ export class TuiApp {
     const entries = [...this.steerBuffer.getPendingEntries()]
     this.steerBuffer.clear()
     this.inputLine.setValue(entries.map(entry => entry.text).join('\n\n'))
+    for (const entry of entries) {
+      if (entry.images?.length) {
+        for (const img of entry.images) this.inputLine.addImage(img)
+      }
+    }
     this.commitAbove(() => {
       this.commit.write({
         text: color(`⏮ 已把 ${entries.length} 条排队消息拉回输入框`, this.theme.muted),
@@ -2270,9 +2285,9 @@ export class TuiApp {
     const entry = this.steerBuffer.shiftEntry()
     if (!entry) return
     const text = entry.text
-    const outgoingImages = this.deferredImages.length > 0
-      ? this.deferredImages.splice(0)
-      : undefined
+    const outgoingImages = entry.images?.length
+      ? entry.images
+      : (this.deferredImages.length > 0 ? this.deferredImages.splice(0) : undefined)
     this.agentBusy = true
     this.decisions.setBusy(true)
     if (!entry.bubbleCommitted) {
@@ -4268,8 +4283,15 @@ export class TuiApp {
     images = normalizeSubmitImages(images)
     // 暂存附件（run 期间插话送不出去的图）与 handleInputSubmit 走同一条出口：
     // 否则 slash/workflow 路径会让它们滞留到下一次打字提交（附件必达不变量）。
-    if (this.deferredImages.length > 0) {
-      images = normalizeSubmitImages([...this.deferredImages, ...(images ?? [])])
+    const queueImages: string[] = []
+    if (this.steerBuffer.hasPending()) {
+      for (const entry of this.steerBuffer.getPendingEntries()) {
+        if (entry.images?.length) queueImages.push(...entry.images)
+        entry.images = undefined
+      }
+    }
+    if (this.deferredImages.length > 0 || queueImages.length > 0) {
+      images = normalizeSubmitImages([...queueImages, ...this.deferredImages, ...(images ?? [])])
       this.deferredImages = []
     }
     // 带图提交是异步原子单元（转码完成后「气泡+图片」一起落 scrollback），

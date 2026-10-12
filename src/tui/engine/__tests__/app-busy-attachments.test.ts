@@ -111,3 +111,82 @@ test('slash/workflow 入口（submitText）同样带走暂存附件——附件�
   assert.deepEqual(last.images, [PNG_DATA_URL], '暂存附件不得因提交路径不同而滞留')
   assert.equal((app as unknown as { getDeferredImagesCount(): number }).getDeferredImagesCount(), 0)
 })
+
+test("连续排队多条带图消息：settle 出队时各自分发专属图片（粒度绑定）", async () => {
+  const { app, stdin } = makeApp()
+  const sent: Array<{ text: string; images?: string[] }> = []
+  app.onSubmit((text, images) => {
+    sent.push(images ? { text, images } : { text })
+  })
+
+  const IMG_1 = "data:image/png;base64,QUJD"
+  const IMG_2 = "data:image/png;base64,REVm"
+
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
+  await tick()
+  assert.equal(app.busy, true)
+
+  // 排队第一条带图消息
+  app.setInput("排队消息1")
+  ;(app as unknown as { inputLine: { addImage(u: string): void } }).inputLine.addImage(IMG_1)
+  stdin.dataHandler!("\r")
+  await tick(40)
+  assert.equal(app.getDeferredImagesCount(), 1)
+
+  // 排队第二条带图消息
+  app.setInput("排队消息2")
+  ;(app as unknown as { inputLine: { addImage(u: string): void } }).inputLine.addImage(IMG_2)
+  stdin.dataHandler!("\r")
+  await tick(40)
+  assert.equal(app.getDeferredImagesCount(), 2)
+
+  // 结算 task A → 自动发出排队消息1
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 1, true)
+  await tick()
+  app.notifyRunSettled()
+  await tick(40)
+
+  assert.equal(sent.length, 2)
+  assert.equal(sent[1]!.text, "排队消息1")
+  assert.deepEqual(sent[1]!.images, [IMG_1], "第一条排队消息只带第一条绑定的图片")
+  assert.equal(app.getDeferredImagesCount(), 1, "第二条消息的图片仍在队列中")
+
+  // 结算排队消息1 → 自动发出排队消息2
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
+  await tick()
+  app.notifyRunSettled()
+  await tick(40)
+
+  assert.equal(sent.length, 3)
+  assert.equal(sent[2]!.text, "排队消息2")
+  assert.deepEqual(sent[2]!.images, [IMG_2], "第二条排队消息只带第二条绑定的图片")
+  assert.equal(app.getDeferredImagesCount(), 0, "全部发出后暂存清空")
+})
+
+test("↑ 键取回排队带图消息：恢复文本同时还原 inputLine 附件图片", async () => {
+  const { app, stdin } = makeApp()
+  app.onSubmit(() => {})
+
+  const IMG_X = "data:image/png;base64,R0hJ"
+
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
+  await tick()
+  assert.equal(app.busy, true)
+
+  app.setInput("待撤回的带图消息")
+  ;(app as unknown as { inputLine: { addImage(u: string): void } }).inputLine.addImage(IMG_X)
+  stdin.dataHandler!("\r")
+  await tick(40)
+  assert.equal(app.getDeferredImagesCount(), 1)
+
+  // 用户按 ↑ 取回
+  stdin.dataHandler!("\x1b[A")
+  await tick(20)
+
+  assert.equal(app.getInputValue(), "待撤回的带图消息")
+  const inputImages = (app as unknown as { inputLine: { images: string[] } }).inputLine.images
+  assert.deepEqual(inputImages, [IMG_X], "图片必须还原回 inputLine")
+  assert.equal(app.getDeferredImagesCount(), 0, "从队列取出后暂存计数为 0")
+})

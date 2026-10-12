@@ -34,6 +34,8 @@ export interface SteerEntry {
   intent: SteerIntent
   /** Whether user bubble was already committed to scrollback */
   bubbleCommitted?: boolean
+  /** Attached images bound to this queued entry */
+  images?: string[]
 }
 
 const PRIORITY_ORDER: Record<SteerPriority, number> = {
@@ -78,7 +80,7 @@ export class SteerBuffer {
   private guidanceSequence = 0
 
   /** Add a user guidance message to the buffer (default priority: later). */
-  push(message: string, priority: SteerPriority = 'later', bubbleCommitted = false): void {
+  push(message: string, priority: SteerPriority = 'later', bubbleCommitted = false, images?: string[]): void {
     const { intent } = classifySteerIntent(message)
     this.pending.push({
       id: this.nextId++,
@@ -86,6 +88,7 @@ export class SteerBuffer {
       priority: elevatePriority(priority, intent),
       intent,
       bubbleCommitted,
+      ...(images?.length ? { images: [...images] } : {}),
     })
     this.notify()
   }
@@ -95,13 +98,14 @@ export class SteerBuffer {
    * Skips intent classification (slash / explicit path) — always `guidance`
    * at `now` priority so caller-chosen urgency is not rewritten.
    */
-  pushNow(message: string, bubbleCommitted = true): void {
+  pushNow(message: string, bubbleCommitted = true, images?: string[]): void {
     this.pending.push({
       id: this.nextId++,
       text: message,
       priority: 'now',
       intent: 'guidance',
       bubbleCommitted,
+      ...(images?.length ? { images: [...images] } : {}),
     })
     this.notify()
   }
@@ -199,11 +203,15 @@ export class SteerBuffer {
   }
 
   /** Take back the most recently queued message (Up-arrow recall). */
-  popLast(): string | null {
+  popLastEntry(): SteerEntry | null {
     if (this.pending.length === 0) return null
     const last = this.pending.pop()!
     this.notify()
-    return last.text
+    return last
+  }
+
+  popLast(): string | null {
+    return this.popLastEntry()?.text ?? null
   }
 
   /** Clear all pending messages. */

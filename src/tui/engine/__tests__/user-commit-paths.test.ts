@@ -48,32 +48,49 @@ test('idle 路径：空闲时提交 → scrollback 包含用户气泡', async ()
   assert.ok(hasUserBubbleFor(sb, 'hello from idle'), 'scrollback 应包含用户消息')
 })
 
-// ── 路径 2: Steer 路径（agent 执行中） ─────────────────────────
+// ── 路径 2: Steer 路径（agent 执行中显式插队） ───────────────────
 
-test('steer 路径：agent 执行中提交 → scrollback 立即包含用户气泡', async () => {
+test("steer 路径：agent 执行中显式插队（Alt+Enter）→ scrollback 立即包含用户气泡", async () => {
   const { app, stdin } = makeApp()
   const runs: string[] = []
   app.onSubmit((t) => { runs.push(t) })
-
-  // 发起第一个 run，使 agentBusy = true
-  app.setInput('task A')
-  stdin.dataHandler!('\r')
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
   await tick()
   assert.equal(app.busy, true)
-
-  // agent 执行中再发消息 → steer 路径
-  app.setInput('note during busy')
-  stdin.dataHandler!('\r')
+  app.setInput("note during busy")
+  stdin.dataHandler!("\x1b\r")
   await tick()
-
-  // steer 路径应已将用户气泡 commit 到 scrollback
   const sb = app.getScrollbackContent()
-  assert.ok(hasUserBubbleFor(sb, 'note during busy'), 'steer 路径应立即 commit 用户气泡')
-
-  // 确认 steerBuffer 中有排队消息
-  assert.ok(app.steerBuffer.hasPending(), '消息应在 steer buffer 中排队')
+  assert.ok(hasUserBubbleFor(sb, "note during busy"), "steer 路径应立即 commit 用户气泡")
+  assert.ok(app.steerBuffer.hasPending(), "消息应在 steer buffer 中排队")
 })
 
+// ── 路径 2b: Queue 路径（agent 执行中普通 Enter 排队） ─────────────
+
+test("queue 路径：agent 执行中普通 Enter 排队 → scrollback 此时不包含用户气泡，settle 时才发出", async () => {
+  const { app, stdin } = makeApp()
+  const runs: string[] = []
+  app.onSubmit((t) => { runs.push(t) })
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
+  await tick()
+  assert.equal(app.busy, true)
+  app.setInput("queued note")
+  stdin.dataHandler!("\r")
+  await tick()
+  let sb = app.getScrollbackContent()
+  assert.equal(hasUserBubbleFor(sb, "queued note"), false, "排队期间不应提前在 scrollback 生成用户气泡")
+  assert.ok(app.steerBuffer.hasPending(), "消息在 steer buffer 中排队等待")
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 1, true)
+  await tick()
+  app.notifyRunSettled()
+  await tick()
+  sb = app.getScrollbackContent()
+  assert.ok(hasUserBubbleFor(sb, "queued note"), "settle 启动新 run 时应渲染用户气泡")
+  assert.equal(runs.length, 2)
+  assert.equal(runs[1], "queued note")
+})
 // ── 路径 3: Slash passthrough ──────────────────────────────────
 
 test('slash passthrough 路径：透传命令 → scrollback 包含用户原始输入', async () => {

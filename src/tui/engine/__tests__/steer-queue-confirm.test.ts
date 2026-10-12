@@ -174,35 +174,72 @@ test('多条排队 FIFO：settle 先发第一条，其余留队等下一轮 sett
   const runs: string[] = []
   app.onSubmit((t) => { runs.push(t) })
 
-  app.setInput('task A')
-  stdin.dataHandler!('\r')
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
   await tick()
-  app.setInput('note 1')
-  stdin.dataHandler!('\r')
+  app.setInput("note 1")
+  stdin.dataHandler!("\r")
   await tick()
-  app.setInput('note 2')
-  stdin.dataHandler!('\r')
+  app.setInput("note 2")
+  stdin.dataHandler!("\r")
   await tick()
   assert.equal(app.steerBuffer.getPending().length, 2)
+
+  // 排队期间：scrollback 中只有 task A，绝不提前包含 note 1 与 note 2
+  let sb = app.getScrollbackContent()
+  assert.ok(sb.includes("task A"))
+  assert.equal(sb.includes("note 1"), false, "排队期间 note 1 不得提前进入会话")
+  assert.equal(sb.includes("note 2"), false, "排队期间 note 2 不得提前进入会话")
 
   app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 1, true)
   await tick()
   app.notifyRunSettled()
   await tick()
 
-  assert.equal(runs[1], 'note 1', '先发第一条')
-  assert.deepEqual([...app.steerBuffer.getPending()], ['note 2'], '第二条留队')
-  assert.equal(app.busy, true, '自动发出后应进入新 run')
+  assert.equal(runs[1], "note 1", "先发第一条")
+  assert.deepEqual([...app.steerBuffer.getPending()], ["note 2"], "第二条留队")
+  assert.equal(app.busy, true, "自动发出后应进入新 run")
+  sb = app.getScrollbackContent()
+  assert.ok(sb.includes("note 1"), "第一条真正发起时才进入会话")
+  assert.equal(sb.includes("note 2"), false, "第二条仍在队列，不得提前进入会话")
 
   app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 2, true)
   await tick()
   app.notifyRunSettled()
   await tick()
 
-  assert.equal(runs[2], 'note 2', '下一轮 settle 再发第二条')
+  assert.equal(runs[2], "note 2", "下一轮 settle 再发第二条")
   assert.equal(app.steerBuffer.hasPending(), false)
+  sb = app.getScrollbackContent()
+  assert.ok(sb.includes("note 2"), "第二条真正发起时才进入会话")
 })
 
+test('↑ 键取回排队消息：输入框还原内容，scrollback 保持干净无幽灵气泡', async () => {
+  const { app, stdin } = makeApp()
+  app.onSubmit(() => {})
+
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
+  await tick()
+  assert.equal(app.busy, true)
+
+  app.setInput("想取回的消息")
+  stdin.dataHandler!("\r")
+  await tick()
+
+  assert.equal(app.steerBuffer.hasPending(), true)
+  let sb = app.getScrollbackContent()
+  assert.equal(sb.includes("想取回的消息"), false, "排队时不进 scrollback")
+
+  // 用户在空输入框按 ↑ 取回
+  stdin.dataHandler!("\x1b[A")
+  await tick()
+
+  assert.equal(app.getInputValue(), "想取回的消息", "输入框恢复排队内容")
+  assert.equal(app.steerBuffer.hasPending(), false, "队列已清空")
+  sb = app.getScrollbackContent()
+  assert.equal(sb.includes("想取回的消息"), false, "取回后 scrollback 仍无残留死气泡")
+})
 // ── 契约 5: ESC 仍回填 ─────────────────────────────────────────
 
 test('ESC abort settle：队列回填输入框，不自动发出', async () => {

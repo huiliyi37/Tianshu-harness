@@ -2011,19 +2011,26 @@ export class TuiApp {
       return
     }
 
-    // W4a: agent 执行中 → 入队（turn 边界 drain 注入）。
-    // 同时立即 commit 用户气泡到 scrollback，确保用户始终能看到自己说了什么。
+    // W4a: agent 执行中 → 显式插队（Alt+Enter / /steer）或 普通排队（Enter）。
     if (this.agentBusy && trimmed) {
-      // 显式插队（Alt+Enter / /steer）→ now 优先级，本轮工具边界立即注入；
-      // 普通 Enter → later，本轮结束后自动作为下一轮发出（见 onSteerDrain 注释）。
-      await this.awaitUserCommit(steer ? `[⚡ 插队引导] ${trimmed}` : trimmed, images, questionRequestId)
-      if (steer) this.steerBuffer.pushNow(trimmed)
-      else this.steerBuffer.push(trimmed)
-      // 插话只走文本：图片暂存到下一轮随 prompt 发出，并明确告知去向。此前这里是
-      // 静默丢弃——气泡里图已经显示出来了，用户以为模型看到了，实际从未收到。
-      if (images?.length) {
-        this.deferredImages.push(...images)
-        this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（插话通道仅能传文本）`, this.theme.muted))
+      if (steer) {
+        // 显式插队（Alt+Enter / /steer）→ now 优先级，本轮工具边界立即注入；
+        // 仅插队消息立即 commit 气泡到 scrollback（带 [⚡ 插队引导] 标识）。
+        await this.awaitUserCommit(`[⚡ 插队引导] ${trimmed}`, images, questionRequestId)
+        this.steerBuffer.pushNow(trimmed)
+        if (images?.length) {
+          this.deferredImages.push(...images)
+          this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（插话通道仅能传文本）`, this.theme.muted))
+        }
+      } else {
+        // 普通 Enter → later 优先级，排队等待当前轮次彻底结束（settle）后逐条作为新 run 发出。
+        // 排队消息不立即 commit 气泡，固定在输入框上方横幅展示等待（支持多条 FIFO），
+        // 避免在会话中渲染无实际响应的幽灵消息；待轮末 dispatch 时再 commit 用户气泡。
+        this.steerBuffer.push(trimmed)
+        if (images?.length) {
+          this.deferredImages.push(...images)
+          this.commitStatic(color(`📎 ${images.length} 张图片已保留，将随下一条消息发送（排队通道仅能传文本）`, this.theme.muted))
+        }
       }
       this.renderLive()
       return
@@ -2056,11 +2063,9 @@ export class TuiApp {
       })
     }
 
-    // Commit user message to scrollback（steer 已单独 commit 时跳过）
+    // Commit user message to scrollback
     if (trimmed) {
-      if (!steerMerged) {
-        await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
-      }
+      await this.awaitUserCommit(submitText.trim(), images, questionRequestId, true)
       // 新 run 启动前丢弃上一 run 未 finalize 的流式残留：blockWriter 缓冲
       // 与 streamRenderer pending 若不清，会把上一轮文字追加进新轮输出。
       this.blockWriter.discard()
@@ -2260,19 +2265,27 @@ export class TuiApp {
     this.dispatchQueuedAfterSettle()
   }
 
-  private dispatchQueuedAfterSettle(): void {
+  private async dispatchQueuedAfterSettle(): Promise<void> {
     if (this.inputLine.value.trim().length > 0) return
     const text = this.steerBuffer.shift()
     if (!text) return
+    const outgoingImages = this.deferredImages.length > 0
+      ? this.deferredImages.splice(0)
+      : undefined
+    this.agentBusy = true
+    this.decisions.setBusy(true)
+    await this.awaitUserCommit(text, outgoingImages)
     this.blockWriter.discard()
     this.streamRenderer.reset()
     this.streamRenderController.assistantHeaderDone = false
-    this.agentBusy = true
-    this.decisions.setBusy(true)
     this.todosWrittenThisRun = false
     this.state.turnStartMs = Date.now()
     this.streamRenderController.lastActivityMs = Date.now()
-    this.onSubmitCallback?.(text)
+    try {
+      await this.onSubmitCallback?.(text, outgoingImages)
+    } catch {
+      this.rejectSubmit()
+    }
     this.renderLive()
   }
 

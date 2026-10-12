@@ -2267,14 +2267,17 @@ export class TuiApp {
 
   private async dispatchQueuedAfterSettle(): Promise<void> {
     if (this.inputLine.value.trim().length > 0) return
-    const text = this.steerBuffer.shift()
-    if (!text) return
+    const entry = this.steerBuffer.shiftEntry()
+    if (!entry) return
+    const text = entry.text
     const outgoingImages = this.deferredImages.length > 0
       ? this.deferredImages.splice(0)
       : undefined
     this.agentBusy = true
     this.decisions.setBusy(true)
-    await this.awaitUserCommit(text, outgoingImages)
+    if (!entry.bubbleCommitted) {
+      await this.awaitUserCommit(text, outgoingImages)
+    }
     this.blockWriter.discard()
     this.streamRenderer.reset()
     this.streamRenderController.assistantHeaderDone = false

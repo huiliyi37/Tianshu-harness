@@ -1,5 +1,5 @@
 /**
- * 显式插队引导（Alt+Enter / /steer）—— 与普通 Enter 排队、/queue lane 的契约区分。
+ * 显式紧急改用方案B（Alt+Enter / /steer）—— 与普通 Enter 排队、/queue lane 的契约区分。
  *
  * 契约：
  * 1. busy 时 Alt+Enter / /steer 以 now 优先级进 steer 队列 → 下一个工具边界
@@ -51,17 +51,17 @@ test('busy 时 /steer 以 now 优先级插队：工具边界 drain 立即取走'
   await tick()
 
   const entries = app.steerBuffer.getPendingEntries()
-  assert.equal(entries.length, 1, '插队引导进了 steer 队列')
+  assert.equal(entries.length, 1, '紧急改用方案B进了 steer 队列')
   assert.equal(entries[0]!.priority, 'now', '显式插队必须是 now 优先级')
   assert.equal(runs.length, 1, 'busy 期间不发起新 run')
 
-  // 工具边界只取 now/next——插队引导必须在这里被取走
+  // 工具边界只取 now/next——紧急改用方案B必须在这里被取走
   // 0c8840f60：TUI 工具边界迁移至 onHumanGuidanceDrain（drainHuman），返回
   // HumanGuidance 对象；旧 onSteerDrain 不再挂载（app.callbacks 上已无此键）。
   const drained = await app.callbacks.onHumanGuidanceDrain?.() ?? null
-  assert.ok(drained !== null, '插队引导在工具边界被注入')
-  assert.ok(drained!.text.includes('跳过当前步骤'), '注入内容包含插队引导文本')
-  assert.equal(app.steerBuffer.hasPending(), false, '插队引导已消费')
+  assert.ok(drained !== null, '紧急改用方案B在工具边界被注入')
+  assert.ok(drained!.text.includes('跳过当前步骤'), '注入内容包含紧急改用方案B文本')
+  assert.equal(app.steerBuffer.hasPending(), false, '紧急改用方案B已消费')
 })
 
 test('普通 Enter（busy）保持 later：工具边界不取，留给本轮结束', async () => {
@@ -122,4 +122,37 @@ test('/steer 无参：只提示用法，不提交也不入队', async () => {
 
   assert.equal(runs.length, 0, '无参不提交')
   assert.equal(app.steerBuffer.hasPending(), false, '无参不入队')
+})
+
+test("Alt+Enter 在纯文本（无工具调用）轮次下 settle：不产生重复气泡", async () => {
+  const { app, stdin } = makeApp()
+  const runs: string[] = []
+  app.onSubmit((t) => { runs.push(t) })
+
+  app.setInput("task A")
+  stdin.dataHandler!("\r")
+  await tick()
+  assert.equal(app.busy, true)
+
+  // 显式插队
+  app.setInput("紧急改用方案B")
+  stdin.dataHandler!("\x1b\r")
+  await tick()
+
+  let sb = app.getScrollbackContent()
+  const countBefore = (sb.match(/紧急改用方案B/g) ?? []).length
+  assert.equal(countBefore, 1, "插队时立即 commit 一次气泡")
+
+  // 本轮没有调用任何工具（纯文本结束）→ settle
+  app.callbacks.onTurnComplete({ input_tokens: 10, output_tokens: 1 }, 1, true)
+  await tick()
+  app.notifyRunSettled()
+  await tick()
+
+  // settle 之后自动发起新 run，由于此前已 commit 过气泡，不应重复 commit
+  sb = app.getScrollbackContent()
+  const countAfter = (sb.match(/紧急改用方案B/g) ?? []).length
+  assert.equal(countAfter, 1, "settle 启动新 run 时不得重复 commit 该消息气泡")
+  assert.equal(runs.length, 2)
+  assert.equal(runs[1], "紧急改用方案B")
 })

@@ -32,6 +32,8 @@ export interface SteerEntry {
   priority: SteerPriority
   /** Classified intent (guidance for explicit pushNow / slash path). */
   intent: SteerIntent
+  /** Whether user bubble was already committed to scrollback */
+  bubbleCommitted?: boolean
 }
 
 const PRIORITY_ORDER: Record<SteerPriority, number> = {
@@ -76,13 +78,14 @@ export class SteerBuffer {
   private guidanceSequence = 0
 
   /** Add a user guidance message to the buffer (default priority: later). */
-  push(message: string, priority: SteerPriority = 'later'): void {
+  push(message: string, priority: SteerPriority = 'later', bubbleCommitted = false): void {
     const { intent } = classifySteerIntent(message)
     this.pending.push({
       id: this.nextId++,
       text: message,
       priority: elevatePriority(priority, intent),
       intent,
+      bubbleCommitted,
     })
     this.notify()
   }
@@ -92,12 +95,13 @@ export class SteerBuffer {
    * Skips intent classification (slash / explicit path) — always `guidance`
    * at `now` priority so caller-chosen urgency is not rewritten.
    */
-  pushNow(message: string): void {
+  pushNow(message: string, bubbleCommitted = true): void {
     this.pending.push({
       id: this.nextId++,
       text: message,
       priority: 'now',
       intent: 'guidance',
+      bubbleCommitted,
     })
     this.notify()
   }
@@ -182,12 +186,16 @@ export class SteerBuffer {
    * 取出队列头部一条的原文（drain 序：优先级再 FIFO），不包 [User guidance]。
    * 给 run 结束后自动发出下一条用——drain() 的注入格式不能当新 prompt。
    */
-  shift(): string | null {
+  shiftEntry(): SteerEntry | null {
     if (this.pending.length === 0) return null
     const first = this.sorted()[0]!
     this.pending = this.pending.filter(entry => entry.id !== first.id)
     this.notify()
-    return first.text
+    return first
+  }
+
+  shift(): string | null {
+    return this.shiftEntry()?.text ?? null
   }
 
   /** Take back the most recently queued message (Up-arrow recall). */

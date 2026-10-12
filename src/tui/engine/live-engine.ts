@@ -37,7 +37,7 @@ export interface LiveRegionLine {
   inputLine?: number
   inputStartCol?: number
   decisionPart?: 'title' | 'fact' | 'action' | 'footer' | 'body'
-  livePart?: 'status' | 'disclosure' | 'tail'
+  livePart?: 'status' | 'disclosure' | 'tail' | 'pinned'
   region?: 'identity' | 'mode' | 'composer'
 }
 
@@ -54,6 +54,8 @@ export interface LiveEngineOptions {
   onProbeRequest?: () => void
   /** 检测到 live region 被外来写入污染（光标偏离驻停点）时回调——调用方应重渲染。 */
   onPolluted?: () => void
+  /** 是否在有 caretCol 驻停时显示终端硬件光标（默认看 RIVET_TUI_HARDWARE_CURSOR 环境变量） */
+  hardwareCursorVisible?: boolean
 }
 
 /**
@@ -109,12 +111,12 @@ export function padDynamicRegion(
     kept = [...selected].sort((a, b) => a - b).map(index => dynamic[index]!)
   }
 
-  if (!dynamic.some(line => line.decisionPart) && dynamic.some(line => line.livePart === 'status' || line.livePart === 'disclosure')) {
+  if (!dynamic.some(line => line.decisionPart) && dynamic.some(line => line.livePart === 'pinned' || line.livePart === 'status' || line.livePart === 'disclosure')) {
     const selected = new Set<number>()
     rows = 0
     for (const [index, line] of dynamic.entries()) {
       const cost = rowsForLine(line.text)
-      if ((line.livePart === 'status' || line.livePart === 'disclosure') && rows + cost <= budget) {
+      if ((line.livePart === 'pinned' || line.livePart === 'status' || line.livePart === 'disclosure') && rows + cost <= budget) {
         selected.add(index); rows += cost
       }
     }
@@ -193,7 +195,7 @@ export class LiveEngine {
   private parkedCol: number | null = null
   /** 发 CPR 探针那一刻的驻停记账——响应按它折算区域末行，防 caret 移动误判污染。 */
   private probeParked: { rowsUp: number; col: number | null } | null = null
-  private readonly hardwareCursorVisible = process.env.RIVET_TUI_HARDWARE_CURSOR === '1'
+  private readonly hardwareCursorVisible: boolean
 
   /** 探针最小间隔：渲染每帧都可能触发，防探针风暴。 */
   private static readonly CPR_PROBE_MIN_INTERVAL_MS = 1000
@@ -214,6 +216,7 @@ export class LiveEngine {
     this.maxRows = options.maxRows ?? 20
     this.onProbeRequest = options.onProbeRequest
     this.onPolluted = options.onPolluted
+    this.hardwareCursorVisible = options.hardwareCursorVisible ?? (process.env.RIVET_TUI_HARDWARE_CURSOR === '1')
   }
 
   // ── CPR 自愈 ──────────────────────────────────────────────────
@@ -527,10 +530,12 @@ export class LiveEngine {
     if (parking) {
       if (parking.rowsUp > 0) seq += cursorUp(parking.rowsUp)
       seq += cursorToCol(parking.col + 1)
+      if (this.hardwareCursorVisible !== false) {
+        seq += ANSI.SHOW_CURSOR
+      }
+    } else {
+      seq += ANSI.HIDE_CURSOR
     }
-    // 默认隐藏（定位不可见，单指针视觉）；RIVET_TUI_HARDWARE_CURSOR=1 时可见化——
-    // 个别终端光标可见才跟踪 IME。无 caret 帧显式 HIDE（防 stray 指针）。
-    if (this.hardwareCursorVisible) seq += parking ? ANSI.SHOW_CURSOR : ANSI.HIDE_CURSOR
     return seq
   }
 

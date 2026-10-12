@@ -14,6 +14,7 @@ import { workerDispatchKey } from '../../tools/worker-identity.js'
 
 import { DecisionController, type PlanDecision, type PlanDecisionResult, type PlanReviewView } from './decision-controller.js'
 import { renderDecisionCard } from '../format/decision-card.js'
+import { formatPinnedPrompt } from '../format/pinned-prompt.js'
 import type { WriteStream, ReadStream } from 'node:tty'
 import { CommitEngine } from './commit-engine.js'
 import { LiveEngine, padDynamicRegion, thinkingRowBudgetFor, type LiveRegionLine } from './live-engine.js'
@@ -654,6 +655,8 @@ export class TuiApp {
    * 现在暂存到这里，随下一条 prompt 一并发出，并即时告知用户去向。
    */
   private deferredImages: string[] = []
+  /** 置顶上一轮/执行中指令条状态（对标 Codex CLI prompt_header 契约） */
+  private pinnedPrompt: { text: string; status: 'running' | 'completed' } | null = null
 
   /** 测试断言用：暂存待随下一条 prompt 发送的附件数。 */
   getDeferredImagesCount(): number {
@@ -934,6 +937,7 @@ export class TuiApp {
       // 检出污染（外来写入移动光标）→ 重渲染走恢复路径重锚帧。
       onProbeRequest: () => { options.stdout.write(QUERY_CURSOR_POS) },
       onPolluted: () => { this.renderLive() },
+      hardwareCursorVisible: true,
     })
     this.overlay = new OverlayEngine({
       stdout: options.stdout,
@@ -2082,6 +2086,7 @@ export class TuiApp {
       this.agentBusy = true
       this.decisions.setBusy(true)
       this.todosWrittenThisRun = false
+      this.pinnedPrompt = { text: submitText.trim(), status: 'running' }
       // 新 run 开始，上一轮的 thinking 回看作废——否则 ctrl+t 会重印出陈旧思考。
       this.thinkingReview.clear()
     }
@@ -2104,6 +2109,7 @@ export class TuiApp {
       if (questionRequestId) this.archiveAskCards(questionRequestId, 'answered')
     }
     catch (error) { this.rejectSubmit(); throw error }
+    this.renderLive()
   }
   /** Contract 预览按键：Enter 确认 / e 返回编辑 / Esc 取消。返回是否已消费。 */
   private handleContractPreviewKey(key: KeyPress): boolean {
@@ -2290,6 +2296,7 @@ export class TuiApp {
       : (this.deferredImages.length > 0 ? this.deferredImages.splice(0) : undefined)
     this.agentBusy = true
     this.decisions.setBusy(true)
+    this.pinnedPrompt = { text: text.trim(), status: 'running' }
     if (!entry.bubbleCommitted) {
       await this.awaitUserCommit(text, outgoingImages)
     }
@@ -4304,6 +4311,7 @@ export class TuiApp {
       this.agentBusy = true
       this.decisions.setBusy(true)
       this.todosWrittenThisRun = false
+      this.pinnedPrompt = { text: text.trim(), status: 'running' }
       this.state.turnStartMs = Date.now()
       this.streamRenderController.lastActivityMs = Date.now()
       this.onSubmitCallback?.(text, images, options)
@@ -5612,7 +5620,7 @@ export class TuiApp {
 
   private async handleTurnComplete(usage: Partial<Usage>, turnNumber: number, isFinal: boolean, stopReason?: string): Promise<void> {
     this.turnCompleteInFlight++
-    if (isFinal) { this.rejectPendingApprovals(); this.decisions.setBusy(false) }
+    if (isFinal) { this.rejectPendingApprovals(); this.decisions.setBusy(false); if (this.pinnedPrompt) this.pinnedPrompt.status = 'completed' }
     try {
     this.state.turnNumber = turnNumber
 
@@ -5943,6 +5951,7 @@ export class TuiApp {
     this.frontend.record({ kind: 'error', text: reason ?? '已中止当前执行' })
     this.mainTaskStopped = true
     this.mainTaskEnded = Date.now()
+    if (this.pinnedPrompt) this.pinnedPrompt.status = 'completed'
     // 用户主动 abort（非 watchdog 守护）= 参与——取消倒计时自动批准
     if (!reason?.startsWith('watchdog')) this.cancelPlanAutoApprove()
     // 中断走自有回填路径（abortSettling backfill）——错误回填底料作废，防双份回填
@@ -6369,6 +6378,17 @@ export class TuiApp {
     let lines: LiveRegionLine[] = []
     lines = []
 
+    // 0. 置顶上一轮/执行中指令条（对标 Codex CLI prompt_header 契约）
+    if (this.pinnedPrompt && !this.frontend.isFullscreen) {
+      const pinnedLine = formatPinnedPrompt({
+        prompt: this.pinnedPrompt.text,
+        status: this.pinnedPrompt.status,
+        width: cols,
+        theme: this.theme,
+      })
+      lines.push({ text: this.clampLine(pinnedLine), livePart: 'pinned' })
+    }
+
     // 身份/环境不再占独立行：星域·分支·cwd 内嵌输入框顶边框标签（formatGlanceLeft），
     // 模型与指标收敛到状态行（5b）——辅助信息只此两处。
     if (!this.frontend.isFullscreen && !this.streamRenderer.hasCommitted) {
@@ -6720,9 +6740,7 @@ export class TuiApp {
       /** 在 caret 行的 █ 后注入 ghost（lastIndexOf：用户文本含 █ 时 marker 仍在末尾）。 */
       const withGhost = (raw: string, lineIdx: number): string => {
         if (!ghostText || lineIdx !== inputDisplay.caret.line) return raw
-        const bi = raw.lastIndexOf('█')
-        if (bi < 0) return raw
-        return raw.slice(0, bi + 1) + color(ghostText, this.theme.dim) + raw.slice(bi + 1)
+        return raw + color(ghostText, this.theme.dim)
       }
       /** 折叠粘贴标记 → 反色 pill（纯渲染着色，buffer 与提交不受影响）。 */
       const withPastePills = (raw: string): string =>

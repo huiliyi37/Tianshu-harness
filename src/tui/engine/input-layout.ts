@@ -36,7 +36,6 @@ export function inputCaretAt(value: string, line: number, column: number, width:
     return undefined
   }
   for (const part of parts) {
-    if (part.index === cursor) { const result = hit('█', cursor); if (result !== undefined) return result }
     if (part.segment === '\n') { if (row >= line) return part.index; row++; col = 0; continue }
     const result = hit(part.segment, part.index)
     if (result !== undefined) return result
@@ -60,12 +59,13 @@ function pushWrappedSegment(
   maxContentWidth: number,
   cursorOffset: number | null,
   ambiguousAsWide: boolean,
-  /** 输出参数：记录 █ 插入点左侧的 cell 数（不含前缀）。仅在插入时写入。 */
+  /** 输出参数：记录光标插入点左侧的 cell 数（不含前缀，零位移硬件光标）。仅在光标命中行写入。 */
   caretCol?: { value: number },
   /** segment 在 buffer 中的绝对起始偏移（选区高亮定位用）。 */
   segAbsStart?: number,
   /** 键盘选区（buffer 绝对偏移，start<end）：范围内字符反色渲染。 */
   sel?: { start: number; end: number } | null,
+  softwareCursor = false,
 ): void {
   const chars = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(segment), part => part.segment)
   let current = ''
@@ -87,12 +87,14 @@ function pushWrappedSegment(
     if (sel && inSel && absOff === sel.end) { current += ANSI.RESET; inSel = false }
     if (sel && !inSel && absOff === sel.start) { current += ANSI.REVERSE; inSel = true }
     if (cursorOffset !== null && cursorOffset >= offset && cursorOffset < offset + ch.length) {
-      const markerWidth = inputDisplayWidth('█', ambiguousAsWide)
-      if (currentWidth > 0 && currentWidth + markerWidth > maxContentWidth) flush()
       if (caretCol) caretCol.value = currentWidth
-      current += '█'
-      currentWidth += markerWidth
       currentHasCursor = true
+      if (softwareCursor) {
+        const markerWidth = inputDisplayWidth('█', ambiguousAsWide)
+        if (currentWidth > 0 && currentWidth + markerWidth > maxContentWidth) flush()
+        current += '█'
+        currentWidth += markerWidth
+      }
     }
 
     const chWidth = Math.max(1, inputDisplayWidth(ch, ambiguousAsWide))
@@ -106,18 +108,20 @@ function pushWrappedSegment(
     const absOff = (segAbsStart ?? 0) + offset
     if (sel && inSel && absOff === sel.end) { current += ANSI.RESET; inSel = false }
     if (sel && !inSel && absOff === sel.start) { current += ANSI.REVERSE; inSel = true }
-    const markerWidth = inputDisplayWidth('█', ambiguousAsWide)
-    if (currentWidth > 0 && currentWidth + markerWidth > maxContentWidth) flush()
     if (caretCol) caretCol.value = currentWidth
-    current += '█'
-    currentWidth += markerWidth
     currentHasCursor = true
+    if (softwareCursor) {
+      const markerWidth = inputDisplayWidth('█', ambiguousAsWide)
+      if (currentWidth > 0 && currentWidth + markerWidth > maxContentWidth) flush()
+      current += '█'
+      currentWidth += markerWidth
+    }
   }
 
   if (currentWidth > 0 || currentHasCursor || segment.length === 0) flush()
 }
 
-export function wrapInputLines(value: string, cursor: number, maxWidth: number, sel?: { start: number; end: number } | null): { lines: string[]; cursorLine: number; cursorCol: number } {
+export function wrapInputLines(value: string, cursor: number, maxWidth: number, sel?: { start: number; end: number } | null, softwareCursor = false): { lines: string[]; cursorLine: number; cursorCol: number } {
   const ambiguousAsWide = ambiguousWideEnabled()
   const visual: VisualLine[] = []
   const logicalLines = value.split('\n')
@@ -135,7 +139,7 @@ export function wrapInputLines(value: string, cursor: number, maxWidth: number, 
     const prefix = cursorInLine ? '❯ ' : '  '
     const beforeCount = visual.length
     const caretCol: { value: number } = { value: 0 }
-    pushWrappedSegment(visual, logicalLine, prefix, maxContentWidth, cursorInLine ? cursor - lineStart : null, ambiguousAsWide, caretCol, lineStart, sel)
+    pushWrappedSegment(visual, logicalLine, prefix, maxContentWidth, cursorInLine ? cursor - lineStart : null, ambiguousAsWide, caretCol, lineStart, sel, softwareCursor)
     if (cursorInLine) {
       const found = visual.findIndex((line, idx) => idx >= beforeCount && line.cursor)
       cursorLine = found >= 0 ? found : beforeCount

@@ -321,7 +321,7 @@ export class InputLine {
    *   maxLines 仍按光标所在视觉行裁剪，保证正在编辑的位置始终可见。
    */
   displayLines(options: InputLineDisplayOptions = {}): string[] {
-    return this.displayLinesWithCaret(options).lines
+    return this.displayLinesWithCaret({ softwareCursor: true, ...options }).lines
   }
 
   /**
@@ -335,23 +335,23 @@ export class InputLine {
   displayLinesWithCaret(options: InputLineDisplayOptions = {}): { lines: string[]; caret: { line: number; col: number } } {
     const ambiguousAsWide = ambiguousWideEnabled()
     const prefixWidth = inputDisplayWidth('❯ ', ambiguousAsWide)
+    const softwareCursor = options.softwareCursor ?? false
     if (!this._value) {
-      return { lines: [`❯ █${this._placeholder}`], caret: { line: 0, col: prefixWidth } }
+      const marker = softwareCursor ? "█" : ""
+      return { lines: [`❯ ${marker}${this._placeholder}`], caret: { line: 0, col: prefixWidth } }
     }
     const before = this._value.slice(0, this._cursor)
     const cursorLine = before.split('\n').length - 1
     const cursorCol = before.length - (before.lastIndexOf('\n') + 1)
-
     if (options.maxWidth !== undefined) {
-      const wrapped = wrapInputLines(this._value, this._cursor, options.maxWidth, this.selectionRange)
+      const wrapped = wrapInputLines(this._value, this._cursor, options.maxWidth, this.selectionRange, softwareCursor)
       const view = viewportWithCaret(wrapped.lines, wrapped.cursorLine, options.maxLines)
       return { lines: view.lines, caret: { line: view.caretLine, col: wrapped.cursorCol } }
     }
-
     const lines = this._value.split('\n').map((line, i) => {
       const isCursorLine = i === cursorLine
       const prefix = isCursorLine ? '❯ ' : '  '
-      if (!isCursorLine) return `${prefix}${line}`
+      if (!isCursorLine || !softwareCursor) return `${prefix}${line}`
       const beforeCursor = line.slice(0, cursorCol)
       const afterCursor = `█${line.slice(cursorCol)}`
       return `${prefix}${beforeCursor}${afterCursor}`

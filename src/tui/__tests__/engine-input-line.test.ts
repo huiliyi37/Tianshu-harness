@@ -210,12 +210,12 @@ describe('InputLine multi-line (W4b)', () => {
     assert.ok(lines.some(l => l.includes('lines below')), '报告被裁掉的下方行数')
   })
 
-  // ── displayLinesWithCaret：IME 硬件光标归位坐标（2026-07-23）──────────
+  // ── displayLinesWithCaret：零位移硬件光标定位（对标 Codex CLI）──────────
 
   it('caret: placeholder 空值时光标在 ❯ 之后（line 0, col 2）', () => {
     const input = new InputLine({ placeholder: 'Type here' })
     const { lines, caret } = input.displayLinesWithCaret()
-    assert.deepEqual(lines, ['❯ █Type here'])
+    assert.deepEqual(lines, ['❯ Type here'])
     assert.deepEqual(caret, { line: 0, col: 2 })
   })
 
@@ -225,51 +225,60 @@ describe('InputLine multi-line (W4b)', () => {
     assert.deepEqual(caret, { line: 1, col: 5 }) // '❯ ' 2 + 'two' 3
   })
 
-  it('caret: 光标在行中间时 col 指向 █ 左侧', () => {
+  it('caret: 光标在行中间时 col 精确指向字符边界且文本零位移', () => {
     const input = new InputLine({ value: 'hello' })
     input.setValue('hello', 2)
     const { lines, caret } = input.displayLinesWithCaret()
-    assert.deepEqual(lines, ['❯ he█llo'])
+    assert.deepEqual(lines, ['❯ hello'], '文本保持原样，不插入 █ 字符导致文字右移')
     assert.deepEqual(caret, { line: 0, col: 4 }) // '❯ ' 2 + 'he' 2
   })
 
+  it('caret: zero-displacement 光标在文本间移动时文本内容保持完全静止', () => {
+    const input = new InputLine({ value: 'hello world' })
+    input.setValue('hello world', 0)
+    const d0 = input.displayLinesWithCaret()
+    input.setValue('hello world', 5)
+    const d5 = input.displayLinesWithCaret()
+    input.setValue('hello world', 11)
+    const d11 = input.displayLinesWithCaret()
+    assert.deepEqual(d0.lines, ['❯ hello world'])
+    assert.deepEqual(d5.lines, ['❯ hello world'])
+    assert.deepEqual(d11.lines, ['❯ hello world'])
+    assert.deepEqual(d0.caret, { line: 0, col: 2 })
+    assert.deepEqual(d5.caret, { line: 0, col: 7 })
+    assert.deepEqual(d11.caret, { line: 0, col: 13 })
+  })
+
   it('caret: wrap 路径坐标按软换行后的视觉行/列计算', () => {
-    // maxWidth 15 → maxContentWidth 13；30 个 a：行0=13 行1=13 行2=4，光标在末
     const input = new InputLine({ value: 'a'.repeat(30) })
     const { lines, caret } = input.displayLinesWithCaret({ maxWidth: 15 })
     assert.equal(lines.length, 3)
-    assert.ok(lines[2]!.endsWith('█'), '光标在第三视觉行行尾')
-    assert.deepEqual(caret, { line: 2, col: 6 }) // '❯ ' 2 + 4
+    assert.deepEqual(caret, { line: 2, col: 6 })
   })
 
   it('caret: wrap+maxLines 视口裁剪后 line 映射到窗口内下标', () => {
-    // maxWidth 10 → maxContentWidth 8；60 个 x → 8 视觉行；光标 offset 30 → 视觉行 3
     const value = 'x'.repeat(60)
     const input = new InputLine({ value })
     input.setValue(value, 30)
     const { lines, caret } = input.displayLinesWithCaret({ maxWidth: 10, maxLines: 4 })
     assert.equal(lines.length, 4)
-    assert.ok(lines[2]!.includes('█'), '光标行在窗口内第 3 行')
-    assert.deepEqual(caret, { line: 2, col: 8 }) // '❯ ' 2 + 6（offset 30 - 行起始 24）
+    assert.deepEqual(caret, { line: 2, col: 8 })
   })
 
   it('caret: CJK 宽字符按 cell 计列（非 code unit）', () => {
-    // maxWidth 8 → maxContentWidth 6；'一二三四'各 2 列：行0='一二三' 行1='四█'
     const input = new InputLine({ value: '一二三四' })
     const { lines, caret } = input.displayLinesWithCaret({ maxWidth: 8 })
-    assert.ok(lines[1]!.includes('四█'))
+    assert.ok(lines[1]!.includes('四'))
     assert.deepEqual(caret, { line: 1, col: 4 }) // '❯ ' 2 + '四' 2 列
   })
 
   it('caret: 行尾光标恰好填满行宽时不折行、col 为满宽', () => {
-    // 镜像上文 141 行用例：12a + █ = 13 恰好 = maxContentWidth(15-2)
     const input = new InputLine({ value: 'a'.repeat(12) })
     const { lines, caret } = input.displayLinesWithCaret({ maxWidth: 15 })
     assert.equal(lines.length, 1)
-    assert.deepEqual(caret, { line: 0, col: 14 }) // '❯ ' 2 + 12
+    assert.deepEqual(caret, { line: 0, col: 14 })
   })
 })
-
 describe('InputLine', () => {
   describe('basic editing', () => {
     it('inserts characters', () => {

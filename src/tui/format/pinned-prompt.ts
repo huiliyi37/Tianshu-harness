@@ -16,11 +16,13 @@ export interface FormatPinnedPromptInput {
  */
 export function formatPinnedPrompt(input: FormatPinnedPromptInput): string {
   const { prompt, status, width, theme } = input
+  if (width < 16) return ''
   const policy = { ambiguousAsWide: ambiguousWideEnabled() }
   const maxWidth = Math.max(16, width - 1)
 
-  // 截取首行，压缩多行换行与连续空白，过滤控制符
-  const firstLine = prompt.split('\n')[0]!.trim()
+  // 截流前 512 字符（对标 Codex CLI take(512) 防御超大 Prompt 正则卡顿），截取首行，压缩多行换行与连续空白
+  const boundedPrompt = prompt.length > 512 ? prompt.slice(0, 512) : prompt
+  const firstLine = boundedPrompt.split('\n')[0]!.trim()
   const sanitized = firstLine.replace(/[\r\t]/g, ' ').replace(/\s+/g, ' ')
   const text = sanitized || '[附件消息]'
 

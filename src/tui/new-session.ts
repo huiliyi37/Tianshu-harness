@@ -36,6 +36,7 @@ export function applySessionSwitch(app: TuiApp, ctx: BootstrapContext, targetId:
   // 会话边界重置定高视口高水位——旧会话的峰值空白不带进新会话
   //（对齐 tianshu-public switchSession）。
   app.resetLiveHighWater()
+  app.clearPinnedPrompt()
   // 切换后恢复目标、todo 列表与 side panel 状态，保持会话连续性。
   try {
     const restoredGoal = restoreGoalTracker(getSessionDir(ctx.cwd), targetId, {

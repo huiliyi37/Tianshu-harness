@@ -2181,6 +2181,7 @@ export class TuiApp {
     this.agentBusy = false
     this.decisions.setBusy(false)
     this.setPhase('idle')
+    if (this.pinnedPrompt?.status === 'running') this.pinnedPrompt.status = 'completed'
     this.renderLive()
   }
 
@@ -2325,6 +2326,7 @@ export class TuiApp {
     this.agentBusy = false
     this.decisions.setBusy(false)
     this.currentTaskTitle = ''
+    if (this.pinnedPrompt?.status === 'running') this.pinnedPrompt.status = 'completed'
     this.frontend.record({ kind: 'error', text: '上一轮尚未收尾，这条没有发出 — 请重新发送' })
     this.setPhase('idle')
     this.commitAbove(() => {
@@ -4823,7 +4825,12 @@ export class TuiApp {
     this.frontend.clearDisplay()
     this.live.reset()
     this.resetLiveHighWater()
+    this.pinnedPrompt = null
     this.renderLive()
+  }
+
+  clearPinnedPrompt(): void {
+    this.pinnedPrompt = null
   }
 
   /** 注册内置 slash 命令（/clear、/starmap、/chronicle、/exit）。 */
@@ -5762,6 +5769,7 @@ export class TuiApp {
     this.setPhase('idle')
     this.state.isStreaming = false
     this.state.isThinking = false
+    if (this.pinnedPrompt) this.pinnedPrompt.status = 'completed'
     // 与 abort 同口径 flush 折叠组，避免错误后孤儿结果滞留组内无法提交。
     if (this.toolGroupController.isActiveGroup()) this.flushToolGroup()
     if (this.toolGroupController.isActiveBashGroup()) this.flushBashGroup()

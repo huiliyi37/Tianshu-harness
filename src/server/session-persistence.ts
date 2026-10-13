@@ -47,20 +47,15 @@ import type {
   SessionRecord,
 } from './session-manager.js'
 
+type EventWriteChain = { running: boolean; again: boolean; active?: { line: string; seq: number }[] }
+
 export class FileSessionPersistence implements SessionPersistenceAdapter {
   constructor(
     private readonly baseDir: string,
     private readonly opts: { maxEventsDiskBytes?: number; maxTransientWriteRetries?: number } = {},
   ) {}
 
-  /** Per-session event write buffer — batches high-frequency appendFileSync
-   *  (streaming deltas can fire hundreds per turn) into one disk write per
-   *  FLUSH_INTERVAL_MS. Critical events (CRITICAL_TYPES) flush their session's
-   *  buffer immediately so a host-process crash can never lose them — closing
-   *  the 100ms window that used to swallow the tail (e.g. a tool_result whose
-   *  loss later resurfaces as "session interrupted, tool result lost"). The
-   *  flush is one batched write() (not fsync); the threat model is process
-   *  death, where page-cache contents survive. */
+  /** Accepted rows start the async single writer; only flushThrough confirms writes and fsync. */
   private eventBuffers = new Map<string, BufferedLine[]>()
   private writtenWatermarks = new Map<string, number>()
 
@@ -304,12 +299,8 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     }
   }
 
-  // ── 每会话异步写链（events.jsonl 唯一写者）────────────────────────────
-  // 同一时刻同一会话只有一条链在跑；新事件在链运行期间置 again 续跑。链内
-  // 依次完成：追加事件批 → 推进稀疏索引 → 执行排队裁剪。读路径的同步
-  // flushSession 兼容垫片只在链未启动时同步排空（启动/首开等空闲路径），
-  // 与链不存在双写竞态。
-  private writeChains = new Map<string, { running: boolean; again: boolean }>()
+  // 唯一写链按序追加、索引、裁剪；again 让新事件续跑；同步排空只在链未启动时执行。
+  private writeChains = new Map<string, EventWriteChain>()
   private pendingChainTrims = new Set<string>()
 
   private kickWriteChain(sessionId: string): void {
@@ -329,7 +320,7 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     })
   }
 
-  private async runWriteChain(sessionId: string, st: { running: boolean; again: boolean }): Promise<void> {
+  private async runWriteChain(sessionId: string, st: EventWriteChain): Promise<void> {
     try {
       for (;;) {
         st.again = false
@@ -340,6 +331,7 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
         if (buf.length > 0) {
           this.eventBuffers.set(sessionId, [])
           const text = buf.map((b) => b.line).join('')
+          st.active = buf
           try {
             await mkdir(d, { recursive: true })
             await appendFile(join(d, 'events.jsonl'), text, { encoding: 'utf8', mode: 0o600 })
@@ -355,6 +347,8 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
             if (this.registerWriteFailure(this.eventChainFailures, sessionId, code)) return
             await new Promise((r) => setTimeout(r, 250))
             continue
+          } finally {
+            st.active = undefined
           }
           try {
             await this.advanceSparseIndexAsync(sessionId, d, buf)
@@ -453,13 +447,8 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
     }
   }
 
-  /** Flush a single session's buffered events to disk immediately.
-   *
-   *  兼容垫片（2026-09-06 write-behind 后）：正常路径写入全走异步写链——
-   *  本方法只在「链未启动且仍有滞留行」时同步排空（appendEvent 的
-   *  queueMicrotask 尚未执行的同步上下文，如 loadAll/测试的即时断言），
-   *  或显式被 flushSync 调用。链在跑时双写会乱序，故链激活时直接放行
-   *  （同步读路径全是启动/首开等空闲场景，链必然不在跑）。 */
+  /** Drain buffered events synchronously only while their async writer is idle.
+   *  A running chain owns its batch; synchronous readers must not double-write. */
   private flushSession(sessionId: string, immediateTrim = false): void {
     const st = this.writeChains.get(sessionId)
     if (st?.running) return
@@ -815,6 +804,16 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
   loadEvents(id: string): SessionEvent[] {
     this.flushSession(id)
     return this.readEvents(this.dir(id))
+  }
+
+  /** Accepted local events for synchronous rewind; never a durability receipt. */
+  loadEventsForRewind(id: string): SessionEvent[] {
+    const events = new Map(this.readEvents(this.dir(id)).map(event => [event.seq, event]))
+    const pending = [...(this.writeChains.get(id)?.active ?? []), ...(this.eventBuffers.get(id) ?? [])]
+    for (const event of parseEventsJsonlRaw(pending.map(row => row.line).join('')) as SessionEvent[]) {
+      if (!events.has(event.seq)) events.set(event.seq, event)
+    }
+    return [...events.values()].sort((a, b) => a.seq - b.seq)
   }
 
   /** 跨进程同步的漂移探针（issue #274）：纯 stat，不 flush 本进程缓冲——

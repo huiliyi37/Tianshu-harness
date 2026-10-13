@@ -172,7 +172,8 @@ test('看门狗收场必须带走孙进程——祖父被杀时孙进程不能 r
         `,
       ],
       env: process.env,
-      idleMs: 1_500,
+      // 同本文件默认启动余量，仍早于孙进程 8s 自毁，确保探活验证的是看门狗回收。
+      idleMs: 3_000,
       hardMs: 10_000,
       forwardOutput: false,
     })

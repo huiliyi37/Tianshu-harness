@@ -18,12 +18,10 @@ import { OFFICE_EXTENSIONS, readOfficeFile } from './office-reader.js'
 import { buildFocusedReadView } from './focused-read.js'
 import { readExplicitRange, supplyNoRangeContent, headBoundedPayload } from './read-file-range.js'
 import { buildLogPreviewContent, buildFileUiOutput } from './read-file-views.js'
-
 // Cache GitignoreFilter instances by cwd to avoid re-reading .gitignore on every call
 const gitignoreCache = new Map<string, { filter: Promise<GitignoreFilter>; ts: number }>()
 const GITIGNORE_CACHE_TTL = 60_000 // 60 seconds
 const GITIGNORE_CACHE_MAX = 50
-
 function trimGitignoreCache(): void {
   if (gitignoreCache.size <= GITIGNORE_CACHE_MAX) return
   const now = Date.now()
@@ -35,7 +33,6 @@ function trimGitignoreCache(): void {
     gitignoreCache.delete(key!)
   }
 }
-
 // P5+P6 follow-up: in-process dedup for read_file to prevent the model from
 // burning tokens by repeatedly reading the same unchanged file. Entries record
 // the file's mtime AND size at read time so an external edit (or our own
@@ -62,7 +59,6 @@ interface ReadHistoryEntry {
 }
 const readHistory = new Map<string, ReadHistoryEntry>()
 const READ_HISTORY_MAX = 500
-
 /**
  * P2-3 邻居提示数据源：返回给定文件的经络出边（绝对路径数组）。由装配方
  * （loop-factory，RIVET_NEIGHBOR_HINT=1 且 meridianIndexer 存在时）注入。

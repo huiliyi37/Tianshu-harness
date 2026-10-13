@@ -717,6 +717,8 @@ export interface SessionPersistenceAdapter {
    */
   loadRecords?(): SessionRecord[]
   loadEvents?(sessionId: string): SessionEvent[]
+  /** Local accepted snapshot including pending writes, only for rewind anchors. */
+  loadEventsForRewind?(sessionId: string): SessionEvent[]
   /**
    * Return the maximum valid sequence already durable for one session. This
    * is the allocation high-water mark; `SessionRecord.lastSeq` is only a
@@ -5614,15 +5616,16 @@ export class RuntimeSessionManager {
    * `user` 事件列表（seq/ts/原文），rewind 锚点解析用。内存环被截尾（首事件
    * seq > 1）时改读磁盘全量——长会话的早期 user 事件不在环里，只按环配对会
    * 让 anchorSeq 静默缺失（前端退到文本回退，prompt 也只能靠剥离注入兜底）。
-   * rewind 是低频人工操作，同步读一次的代价可接受；读失败退回环。
+   * 写链在途时需包含已接受的待写事件；该快照不表示持久化完成。读失败退回环。
    */
   private userEventListFor(s: InternalSession): { seq: number; ts: number; text: string }[] {
     const ringTrimmed = s.events.length > 0 && s.events[0]!.seq > 1
     let src: SessionEvent[] = s.events
     const p = this.persistence
-    if (ringTrimmed && p?.loadEvents) {
+    const loader = p?.loadEventsForRewind ?? p?.loadEvents
+    if (ringTrimmed && loader) {
       try {
-        src = p.loadEvents.call(p, s.record.id)
+        src = loader.call(p, s.record.id)
       } catch {
         src = s.events
       }

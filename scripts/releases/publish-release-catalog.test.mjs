@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { delimiter, dirname, join } from 'node:path'
@@ -9,6 +9,9 @@ import { delimiter, dirname, join } from 'node:path'
 // scripts/releases/ -> 仓库根
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT = 'scripts/releases/publish-release-catalog.sh'
+const manifest = JSON.parse(readFileSync(join(root, 'latest.json'), 'utf8'))
+const manifestAssets = Object.values(manifest.platforms).map(platform => new URL(platform.url).pathname.split('/').pop())
+const quotedAssets = manifestAssets.map(name => "'" + name.replaceAll("'", "'\\''") + "'").join(' ')
 
 function resolveBash() {
   if (process.platform !== 'win32') return 'bash'
@@ -36,7 +39,7 @@ const stubGh = isDraft => `
 if [ "$1" = release ] && [ "$2" = view ]; then
   case "$*" in
     *--json\\ isDraft*) echo ${isDraft} ;;
-    *--json\\ assets*) printf '%s\\n' Tianshu_3.29.2_aarch64.app.tar.gz Tianshu_3.29.2_aarch64.dmg Tianshu_3.29.2_x64.app.tar.gz Tianshu_3.29.2_x64.dmg Tianshu_3.29.2_x64-setup.exe ;;
+    *--json\\ assets*) printf '%s\\n' ${quotedAssets} ;;
   esac
   exit 0
 fi

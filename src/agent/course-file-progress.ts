@@ -27,7 +27,7 @@ async function fingerprint(path: string, cwd: string): Promise<string | null> {
   try {
     const real = await realpath(path)
     const rel = relative(cwd, real)
-    if (rel.startsWith('..') || isAbsolute(rel) || SENSITIVE_PATH_RE.test(real)) return null
+    if (rel.startsWith('..') || isAbsolute(rel) || SENSITIVE_PATH_RE.test(rel)) return null
     const info = await stat(real)
     if (!info.isFile() || info.size > 2_000_000) return null
     return createHash('sha256').update(await readFile(real)).digest('hex')

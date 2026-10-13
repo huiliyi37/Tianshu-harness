@@ -1,27 +1,8 @@
-/**
- * env-registry.ts — RIVET_* 环境变量注册表（自动生成）。
- *
- * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；
- * description 字段人工维护，重新生成时按 name 保留。
- * 最后生成：2026-10-11T07:00:21.622Z
- * 共 242 个变量。
- *
- * 每个条目含：名称 / 默认值提示 / 引用文件 / 简要说明。
- * 当源码中新增 RIVET_* 引用但注册表未同步时，
- * assembly-audit.test.ts 的 env completeness 测试会失败（双向检查）。
+/** RIVET_* 环境变量注册表（自动生成于 2026-10-11T07:00:21.622Z，共 242 个变量）。
+ * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成，勿手改；description 人工维护，重生成按 name 保留。
+ * 新引用必须同步；assembly-audit.test.ts 的 env completeness 双向检查注册表与源码。
  */
-
-export interface EnvRegistryEntry {
-  /** 环境变量名（含 RIVET_ 前缀） */
-  name: string
-  /** 从源码 ??/|| 推断的默认值，若无则为空 */
-  defaultHint: string
-  /** 引用该变量的源文件列表（相对 src/） */
-  files: string[]
-  /** 简要说明（人工维护，重新生成时保留） */
-  description: string
-}
-
+export interface EnvRegistryEntry { name: string; defaultHint: string; files: string[]; description: string }
 export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_ACCOUNT_ANON_KEY',

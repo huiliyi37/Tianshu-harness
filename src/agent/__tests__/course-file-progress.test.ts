@@ -17,6 +17,17 @@ import { captureCourseFileProgress } from '../course-file-progress.js'
 
 function tmp() { return mkdtempSync(join(tmpdir(), 'rivet-fileprogress-')) }
 
+test('project directory names containing token do not hide changes to ordinary source files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'project-token-ledger-'))
+  try {
+    const path = join(dir, 'ordinary.ts')
+    writeFileSync(path, 'before')
+    const monitor = await captureCourseFileProgress('write_file', { file_path: path }, dir)
+    writeFileSync(path, 'after')
+    assert.equal((await monitor.finish({ isError: false })).outcome, 'changed')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('WRITE_TOOL_NAMES 全族：真实变化计 changed（edit_file/write_file/hash_edit/ast_edit/apply_patch）', async () => {
   const dir = tmp()
   try {

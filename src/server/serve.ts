@@ -107,7 +107,6 @@ import { RecoveryJournal } from './recovery-journal.js'
 import type { SharedRuntime } from './serve-agent.js'
 import { getLoadedServeAgentModule, loadServeAgent } from './serve-agent-loader.js'
 export { _resetServeAgentForTests, isServeAgentLoadStarted, loadServeAgent } from './serve-agent-loader.js'
-
 export interface ServeContext {
   config: Config
   provider: ProviderConfig
@@ -117,7 +116,6 @@ export interface ServeContext {
   /** true when the default provider has a usable API key (inline or env). */
   configured: boolean
 }
-
 /**
  * Resolve provider/model/auth/apiKey once at server start (refreshed in place by refreshServeContext when Settings routes persist provider/key changes). On first launch
  * the user may have no API key configured yet — instead of crashing (which
@@ -134,7 +132,6 @@ export function resolveServeContext(loader: () => Config = loadConfig): ServeCon
   if (!provider) {
     throw new Error(`Provider "${config.provider.default}" not configured. Run 'rivet config setup' first.`)
   }
-
   let auth: AuthProvider | undefined
   let apiKey = ''
   let configured = true
@@ -161,7 +158,6 @@ export function resolveServeContext(loader: () => Config = loadConfig): ServeCon
       console.error(`[serve] No API key configured for provider "${provider.name}". Server started in setup mode — configure via desktop Settings or 'rivet config setup'.`)
     }
   }
-
   // When the default provider has no models, fall back to the first
   // available model across all providers (or a minimal placeholder) so
   // the UI can still enumerate models in the setup flow.
@@ -171,10 +167,8 @@ export function resolveServeContext(loader: () => Config = loadConfig): ServeCon
     ?? Object.values(config.provider.providers)
       .flatMap(p => contractModels(p))[0]
     ?? { id: 'unknown', maxTokens: 4096, contextWindow: 128_000 }
-
   return { config, provider, model, apiKey, auth, configured }
 }
-
 /**
  * Settings 变更后的启动快照原地刷新（「替换 key 不生效」与「env 压新 inline key」
  * 的根治）：重新 resolveServeContext() 并**原地替换** ctx 各字段——createAgent /
@@ -200,7 +194,6 @@ export function refreshServeContext(ctx: ServeContext): void {
     serverLogger.warn(`[serve] refreshServeContext: keeping previous snapshot (miss-path reload still reads disk): ${err instanceof Error ? err.message : String(err)}`)
   }
 }
-
 export interface ResolvedModelSpec {
   provider: ProviderConfig
   apiKey: string
@@ -209,7 +202,6 @@ export interface ResolvedModelSpec {
   /** 命中模型所属的 key（多 key provider）；未迁移 provider 无此字段。 */
   keyId?: string
 }
-
 /**
  * Resolve a model id (or alias) to its provider/apiKey/auth/model spec, scanning
  * every configured provider. Returns null when the id is unknown or the target
@@ -226,14 +218,12 @@ export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedMo
   const { provider: pinnedProvider, keyId: pinnedKeyId, modelRef } =
     resolveModelRef(ctx.config.provider.providers, modelId)
   if (!modelRef) return null
-
   const entries = pinnedProvider
     ? (() => {
         const prov = ctx.config.provider.providers[pinnedProvider]
         return prov ? [[pinnedProvider, prov] as const] : []
       })()
     : Object.entries(ctx.config.provider.providers)
-
   for (const [provName, prov] of entries) {
     // 多 key：模型归属 key（provider → keys → models）。keyId 前缀走精确槽查找，
     // 否则取第一个命中的 key；未迁移 provider 单池回退（owner=null → 沿用
@@ -242,11 +232,9 @@ export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedMo
     if (!owner) continue
     const found = owner.model
     const ownerKey = owner.owner
-
     let provider = ctx.provider
     let apiKey = ctx.apiKey
     let auth = ctx.auth
-
     if (prov.auth?.type === 'oauth') {
       if (provName !== ctx.provider.name) {
         // B5（2026-09-07 审查）：oauth 分支此前命中即 return，不查可用凭据——
@@ -265,7 +253,6 @@ export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedMo
         prov.apiKey
         ?? process.env[prov.apiKeyEnv ?? '']
         ?? (() => { try { return resolveApiKey(prov) } catch { return undefined } })()
-
       // key 配了任一凭据槽 → 只用它（keyRef 实时读 secrets；解析失败即 fail-closed，
       // 绝不静默改用别的 key 或 provider 级凭据——多账号并行下用错 key 比拿不到
       // key 更糟）。
@@ -296,7 +283,6 @@ export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedMo
       apiKey = provKey
       auth = undefined
     }
-
     return {
       provider,
       apiKey,
@@ -312,7 +298,6 @@ export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedMo
   }
   return null
 }
-
 /**
  * Classify why a model spec resolution missed — for actionable error messages
  * (2026-09-06 自定义模型「切不了」排查配套）。只看模型存在性（不碰 keychain/env，
@@ -336,7 +321,6 @@ export function classifyModelSpecMiss(config: Config, modelId: string): 'unknown
   }
   return 'unknown-model'
 }
-
 /**
  * Resolve a model id against the startup `ctx`, falling back to a fresh on-disk
  * read when the snapshot can't resolve it. On first install the server starts in

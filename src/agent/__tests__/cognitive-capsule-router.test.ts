@@ -385,17 +385,24 @@ More text.
 
   describe('dynamic principle pool (with cwd)', () => {
     it('loads principles from capsule docs when cwd is set', () => {
-      const cwd = process.cwd()
-      const h = createHarness({ evidenceOverrides: { filesModified: new Set(['a.ts']) }, cwd })
-      h.run(makeSnapshot({
-        turn: 5,
-        sensorium: makeSensorium({ confidence: 0.2 }),
-        vigor: makeVigor({ vigor: 0.8 }),
-      }))
-      const ccrEntries = h.submitted.filter(e => e.key.startsWith('ccr-'))
-      assert.equal(ccrEntries.length, 1)
-      assert.equal(h.triggerEvents.length, 1)
-      assert.equal(h.triggerEvents[0]!.dynamicPool, true, 'should use dynamic pool from capsule docs')
+      const previousTrust = process.env.RIVET_TRUST_PROJECT
+      process.env.RIVET_TRUST_PROJECT = '1'
+      try {
+        const cwd = process.cwd()
+        const h = createHarness({ evidenceOverrides: { filesModified: new Set(['a.ts']) }, cwd })
+        h.run(makeSnapshot({
+          turn: 5,
+          sensorium: makeSensorium({ confidence: 0.2 }),
+          vigor: makeVigor({ vigor: 0.8 }),
+        }))
+        const ccrEntries = h.submitted.filter(e => e.key.startsWith('ccr-'))
+        assert.equal(ccrEntries.length, 1)
+        assert.equal(h.triggerEvents.length, 1)
+        assert.equal(h.triggerEvents[0]!.dynamicPool, true, 'should use dynamic pool from capsule docs')
+      } finally {
+        if (previousTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+        else process.env.RIVET_TRUST_PROJECT = previousTrust
+      }
     })
 
     it('falls back to hardcoded pool when cwd has no capsule docs', () => {
@@ -414,18 +421,25 @@ More text.
 
   describe('capsule recall attachment (触发面修复 2026-07-04)', () => {
     it('attaches an informational capsule-recall entry when a rule fires with capsule docs', () => {
-      const cwd = process.cwd()
-      const h = createHarness({ evidenceOverrides: { filesModified: new Set(['a.ts']) }, cwd })
-      h.run(makeSnapshot({
-        turn: 5,
-        sensorium: makeSensorium({ confidence: 0.2 }),
-        vigor: makeVigor({ vigor: 0.8 }),
-      }))
-      const recall = h.submitted.find(e => e.key === 'capsule-recall')
-      assert.ok(recall, 'capsule-recall entry attached alongside the CCR entry')
-      assert.equal(recall!.tier, 'informational')
-      assert.equal(recall!.category, 'star_domain')
-      assert.ok(recall!.content.includes('recall_capsule'), 'content points to the recall entrypoint')
+      const previousTrust = process.env.RIVET_TRUST_PROJECT
+      process.env.RIVET_TRUST_PROJECT = '1'
+      try {
+        const cwd = process.cwd()
+        const h = createHarness({ evidenceOverrides: { filesModified: new Set(['a.ts']) }, cwd })
+        h.run(makeSnapshot({
+          turn: 5,
+          sensorium: makeSensorium({ confidence: 0.2 }),
+          vigor: makeVigor({ vigor: 0.8 }),
+        }))
+        const recall = h.submitted.find(e => e.key === 'capsule-recall')
+        assert.ok(recall, 'capsule-recall entry attached alongside the CCR entry')
+        assert.equal(recall!.tier, 'informational')
+        assert.equal(recall!.category, 'star_domain')
+        assert.ok(recall!.content.includes('recall_capsule'), 'content points to the recall entrypoint')
+      } finally {
+        if (previousTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+        else process.env.RIVET_TRUST_PROJECT = previousTrust
+      }
     })
 
     it('does not attach recall when cwd is absent (no capsule source)', () => {

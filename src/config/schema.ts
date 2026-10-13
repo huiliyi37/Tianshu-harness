@@ -3,11 +3,9 @@ import { mcpConfigSchema, type McpConfig } from '../mcp/config.js'
 import { workspaceConfigSchema, type WorkspaceConfig } from './workspace-schema.js'
 import { providerRetrySchema } from './retry-schema.js'
 import { imageGenModelSchema } from './image-gen-schema.js'
-
 export type { ProviderRetryConfig } from './retry-schema.js'
 import { THEME_NAMES } from '../tui/theme.js'
 import { MIN_MAX_EVENTS_DISK_BYTES, MIN_MAX_LOADED_SESSIONS, MIN_IDLE_AGENT_TTL_MS } from './runtime-lean.js'
-
 /**
  * Capability override fields valid at BOTH provider and model level — pure
  * semantics about the model's reasoning behavior. All optional: when absent,
@@ -31,9 +29,7 @@ export const modelCapabilitiesSchema = z.object({
    *  Declared by DeepSeek-derived providers not in WELL_KNOWN_DEFAULTS (e.g. pro spark). */
   preservedThinkingProtocol: z.boolean().optional(),
 }).default({})
-
 export type ModelCapabilitiesConfig = z.infer<typeof modelCapabilitiesSchema>
-
 /**
  * Provider-level capabilities = model-level semantics + endpoint wire fields.
  * The wire fields (param stripping, cache strategy, usage bugs) describe the
@@ -54,13 +50,11 @@ export const providerCapabilitiesSchema = z.object({
   // Model-level semantic fields (shared shape with modelCapabilitiesSchema).
   ...modelCapabilitiesSchema.removeDefault().shape,
 }).default({})
-
 /** Conservative fallback when a model's context window is unknown. */
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 524_288
 /** Conservative output ceiling for models with unknown maxTokens — high enough
  *  for real work, low enough to stay under most endpoints' output caps. */
 export const DEFAULT_MODEL_MAX_TOKENS = 65_536
-
 /**
  * Infer a context window from size suffixes in the model id
  * ('glm-4.6-air-128k' → 131072, 'qwen-long-1m' → 1048576).
@@ -73,7 +67,6 @@ export function inferModelContextWindow(modelId: string): number | undefined {
   if (!Number.isFinite(n) || n <= 0 || n > 4096) return undefined
   return match[2] === 'k' ? n * 1024 : n * 1024 * 1024
 }
-
 export const modelConfigSchema = z.object({
   id: z.string(),
   /** 惯用短名（glm-53 / k27-code 等）2026-09 起废弃——模型一律按原 ID 保存
@@ -135,7 +128,6 @@ export const modelConfigSchema = z.object({
   const maxTokens = Math.min(model.maxTokens ?? DEFAULT_MODEL_MAX_TOKENS, contextWindow)
   return { ...model, contextWindow, maxTokens }
 })
-
 export const authConfigSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('api-key'),
@@ -146,7 +138,6 @@ export const authConfigSchema = z.discriminatedUnion('type', [
     provider: z.enum(['codex']),
   }),
 ])
-
 /** 多 key 池的单个 key（PR-3）。每个 key 有自己的模型列表——用哪个 key 由请求
  *  模型归属决定。三槽与 provider 级同构且互斥语义相同；keyRef 优先
  *  （config.json 不落明文），secret 键名命名空间见 config/provider-keys.ts。 */
@@ -158,15 +149,12 @@ export const providerKeySchema = z.object({
   keyRef: z.string().nullable().optional().transform(value => value ?? undefined),
   models: z.array(modelConfigSchema).default([]),
 })
-
 /** 由 providerKeySchema 推出的 key 类型——provider-keys.ts 纯函数模块消费。 */
 export type ProviderKeyConfig = z.infer<typeof providerKeySchema>
-
 /** Wire-protocol union — runtime list + TS type in one place so the zod enum,
  *  route validation and CLI parsing can never drift apart. */
 export const PROVIDER_PROTOCOL_VALUES = ['openai', 'anthropic', 'openai-responses', 'gemini'] as const
 export type ProviderProtocol = (typeof PROVIDER_PROTOCOL_VALUES)[number]
-
 export const providerBaseSchema = z.object({
   name: z.string(),
   apiKey: z.string().nullable().optional().transform(value => value ?? undefined),
@@ -267,7 +255,6 @@ export const providerBaseSchema = z.object({
    */
   usageCalibrationFactor: z.number().min(0).max(1).optional(),
 })
-
 /** Name-based protocol normalization: a provider literally named 'anthropic'
  *  is presumed to speak /v1/messages unless the config explicitly says
  *  otherwise (e.g. an OpenAI-compatible proxy). Preprocess runs before
@@ -279,19 +266,16 @@ export const providerSchema = z.preprocess(raw => {
   }
   return raw
 }, providerBaseSchema)
-
 export const permissionAllowRuleSchema = z.object({
   tool: z.string().min(1),
   params: z.record(z.string()).optional(),
 })
-
 export const bashAllowlistSchema = z.object({
   /** Command prefixes that bypass bash-write approval. Matched by prefix: "git status" allows "git status --porcelain". */
   allowlist: z.array(z.string().min(1)).default([]),
   /** Command prefixes that are always blocked, regardless of mode or allowlist. */
   denylist: z.array(z.string().min(1)).default([]),
 }).default({})
-
 export const permissionsSchema = z.object({
   allow: z.array(permissionAllowRuleSchema).default([]),
   /** Deny rules take precedence over allow rules and approval mode. */
@@ -308,7 +292,6 @@ export const permissionsSchema = z.object({
   additionalReadDirs: z.array(z.string().min(1)).default([]),
   additionalWriteDirs: z.array(z.string().min(1)).default([]),
 })
-
 export const antiAnchoringSchema = z.object({
   enabled: z.boolean().default(false),
   blindExploration: z.boolean().default(true),
@@ -325,7 +308,6 @@ export const antiAnchoringSchema = z.object({
     scoutMaxTokens: z.number().int().positive().default(2048),
   }).default({}),
 }).default({})
-
 /** Tier 2 LLM speculation: during a tool-batch await window, fire a side-path
  *  LLM request sharing the main session prefix (near-free on DeepSeek prefix
  *  cache) to predict the next read-only tool calls, feeding ShadowQueue.
@@ -349,7 +331,6 @@ export const llmSpeculationSchema = z.preprocess(
     slowToolsOnly: z.boolean().default(true),
   }).default({}),
 )
-
 export const intentRetrievalRouterSchema = z.preprocess(
   value => {
     if (value === true) return { enabled: true }
@@ -365,9 +346,7 @@ export const intentRetrievalRouterSchema = z.preprocess(
     temperature: z.number().min(0).max(2).default(0),
   }).default({}),
 )
-
 export const banditPromotionModeSchema = z.enum(['off', 'shadow', 'auto', 'forced'])
-
 /** Per-profile review model override. When set, review workers with the
  *  matching profile use this provider+model instead of the session's primary
  *  model. The provider must exist in config.provider.providers. */
@@ -375,7 +354,6 @@ export const reviewProfileOverrideSchema = z.object({
   provider: z.string(),
   model: z.string(),
 })
-
 /** Review worker configuration block.
  *  - profiles: per-profile override map; omitted profiles fall back to session model
  *  - skipAuto: bypass deliver_task post-commit auto review (per-config equivalent
@@ -396,11 +374,9 @@ export const reviewConfigSchema = z.object({
    *  owned_failure RED is NEVER bypassed. Default true. */
   mechanicalFastPath: z.boolean().default(true),
 }).default({})
-
 /** Inferred TS type for the review config block. Consumers (e.g. B1Context.reviewConfig)
  *  should use this instead of redeclaring the shape inline. */
 export type ReviewConfig = z.infer<typeof reviewConfigSchema>
-
 /** Per-seat council configuration. When `provider`+`model` are set, that seat's
  *  worker runs on an independent provider/model (its own server-side cache),
  *  enabling heterogeneous councils — e.g. one seat on DeepSeek Pro, another on
@@ -415,15 +391,12 @@ export const councilSeatConfigSchema = z.object({
   provider: z.string().optional(),
   model: z.string().optional(),
 })
-
 /** council_convene seat configuration. `seats` overrides the built-in
  *  tianquan/tianfu/tianxuan default when non-empty. */
 export const councilConfigSchema = z.object({
   seats: z.array(councilSeatConfigSchema).default([]),
 }).default({})
-
 export type CouncilConfig = z.infer<typeof councilConfigSchema>
-
 export const agentSchema = z.object({
   approval: z.enum(['auto-accept', 'auto-safe', 'suggest', 'manual', 'dangerously-skip-permissions']).default('auto-safe'),
   /** 关写沙箱——完全权限档（approval 仍为 dangerously-skip-permissions 但
@@ -492,7 +465,6 @@ export const agentSchema = z.object({
     /** 每次重连前的退避 ms（可被 abort 打断）。默认 500。 */
     backoffMs: z.number().int().nonnegative().default(500),
   }).optional(),
-
   /** PLAN §4 恢复行为开关（灰度）。`structuredTools`：恢复时把「结果未知」的工具
    *  从静默剔除升级为结构化注入（明确 tool 消息 + 事件待确认）。默认关——行为变更
    *  先灰度；env RIVET_RECOVERY_STRUCTURED_TOOLS=1 仍可覆盖（优先级低于本配置项时

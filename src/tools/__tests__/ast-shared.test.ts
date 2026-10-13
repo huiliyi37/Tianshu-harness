@@ -186,16 +186,18 @@ describe('dynamic language support', () => {
 
 describe('collectFiles configurable exclusion', () => {
   it('excludes dist/build/out by default (build artifacts)', () => {
-    const dir = join(process.cwd(), '.test-tmp', `ast-exclude-${randomBytes(4).toString('hex')}`)
+    const dir = join(process.cwd(), '.test-tmp', `ast-exclude-dist-build-out-${randomBytes(4).toString('hex')}`)
     return (async () => {
-      await mkdir(join(dir, 'dist'), { recursive: true })
-      await mkdir(join(dir, 'src'), { recursive: true })
-      await writeFile(join(dir, 'dist', 'bundle.js'), 'compiled')
-      await writeFile(join(dir, 'src', 'real.ts'), 'source')
-      const files = await collectFiles(dir)
-      assert.ok(files.some(f => f.includes('real.ts')), 'src file should be collected')
-      assert.ok(!files.some(f => f.includes('dist')), 'dist should be excluded')
-      await rm(dir, { recursive: true, force: true })
+      try {
+        for (const excluded of ['dist', 'build', 'out']) {
+          await mkdir(join(dir, excluded), { recursive: true })
+          await writeFile(join(dir, excluded, 'bundle.js'), 'compiled')
+        }
+        await mkdir(join(dir, 'src'), { recursive: true })
+        await writeFile(join(dir, 'src', 'real.ts'), 'source')
+        const files = await collectFiles(dir)
+        assert.deepEqual(files.map(file => relative(dir, file).replace(/\\/g, '/')), ['src/real.ts'])
+      } finally { await rm(dir, { recursive: true, force: true }) }
     })()
   })
 

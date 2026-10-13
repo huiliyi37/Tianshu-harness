@@ -1,7 +1,8 @@
 import './disable-cpu-pool.js' // must precede session-persistence import (worker hangs node:test)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs'
+import fs, { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { FileSessionPersistence } from '../session-persistence.js'
@@ -459,3 +460,86 @@ test('rewind：环底之前的 user 消息仍能解析 anchorSeq（磁盘全量�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+for (const targetTurn of [1, 2]) {
+  test(`rewind：write-behind ${targetTurn === 1 ? '在途' : '排队'}批次的环外 user 保留 anchorSeq`, { timeout: 10_000 }, async () => {
+    class TurnMirrorAgent extends NoopAgent {
+      messages: OaiMessage[] = []
+      override run(prompt: string): Promise<void> {
+        this.messages.push({ role: 'user', content: prompt }, { role: 'assistant', content: 'ok' })
+        return Promise.resolve()
+      }
+      override getMessages(): OaiMessage[] { return this.messages }
+      override rewindToMessages(messages: OaiMessage[]): void { this.messages = messages }
+    }
+
+    const dir = tmp()
+    const p = new FileSessionPersistence(dir)
+    const mgr = new RuntimeSessionManager({ createAgent: () => new TurnMirrorAgent(), defaultCwd: dir, persistence: p, maxEvents: 5 })
+    const session = mgr.createSession()
+    const logFile = join(dir, session.id, 'events.jsonl')
+    const nativeAppend = fs.promises.appendFile
+    let releaseWrite!: () => void
+    let enteredWrite!: () => void
+    let firstBatch: SessionEvent[] = []
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+    const writeEntered = new Promise<void>(resolve => { enteredWrite = resolve })
+    let held = false
+    fs.promises.appendFile = async (...args: Parameters<typeof nativeAppend>) => {
+      if (String(args[0]) === logFile && !held) {
+        held = true
+        firstBatch = String(args[1]).trim().split('\n').map(line => JSON.parse(line) as SessionEvent)
+        enteredWrite()
+        await writeGate
+      }
+      return nativeAppend(...args)
+    }
+    syncBuiltinESMExports()
+    const accepted: SessionEvent[] = []
+    let done: (() => void) | undefined
+    const unsubscribe = mgr.subscribe(session.id, event => {
+      accepted.push(event)
+      if (event.type === 'done') done?.()
+    })!
+    const runTurn = async (turn: number) => {
+      const finished = new Promise<void>(resolve => { done = resolve })
+      assert.equal(mgr.run(session.id, `turn-${turn}`), true)
+      await finished
+      done = undefined
+    }
+    try {
+      await runTurn(1)
+      await writeEntered
+      for (let turn = 2; turn <= 8; turn++) await runTurn(turn)
+
+      const target = accepted.find(event => event.type === 'user' && event.data.text === `turn-${targetTurn}`)!
+      assert.ok(target, '目标 user 已被真实 manager 接受')
+      assert.equal(firstBatch.some(event => event.seq === target.seq), targetTurn === 1, '分别覆盖在途与后来排队批次')
+      assert.ok(!mgr.getEvents(session.id, 0)!.events.some(event => event.seq === target.seq), '目标 user 已被内存环截尾')
+      assert.ok(!existsSync(logFile), '写入 gate 尚未释放，目标不能靠磁盘读取获得')
+
+      assert.equal(mgr.rewind(session.id, (targetTurn - 1) * 2), true)
+      const rewind = accepted.filter(event => event.type === 'rewind').at(-1)!
+      assert.equal(rewind.data.prompt, `turn-${targetTurn}`)
+      assert.equal(rewind.data.anchorSeq, target.seq, '同步 rewind 必须解析已接受但尚未落盘的 user 锚点')
+      assert.ok(!existsSync(logFile), 'rewind 不得与在途写入并行同步双写')
+
+      releaseWrite()
+      const persisted = (await mgr.getAllEventsAsync(session.id))!.events
+      assert.deepEqual(persisted, accepted, '释放后完整 append-only 日志保留所有原事件和 rewind')
+      const seqs = persisted.map(event => event.seq)
+      assert.equal(new Set(seqs).size, seqs.length, '在途与排队批次不得重复写入 seq')
+      assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), '真实日志保持事件顺序')
+      assert.equal(persisted.filter(event => event.type === 'user').length, 8)
+    } finally {
+      releaseWrite()
+      try { await p.flushAllAsync() }
+      finally {
+        unsubscribe()
+        fs.promises.appendFile = nativeAppend
+        syncBuiltinESMExports()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+  })
+}

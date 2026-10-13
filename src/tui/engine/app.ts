@@ -2588,11 +2588,14 @@ export class TuiApp {
     this.inputHandoffGeneration++
     this.historyOpenGeneration++
     if (this.historyOpening) { this.historyOpening = false; this.frontend.closeHistory() }
+    const wasActive = this.overlay.isActive()
     const returnTo = this.overlay.activeId() === 'pager' ? this.detailReturn : undefined
     this.detailReturn = undefined
     // 统一收口：suppress 窗口让回放只写 scrollback，最后由本方法
     // 统一 renderLive 画唯一帧，避免两层框体叠影。
     this.exitOverlayCore()
+    // Inline decisions can reveal without an overlay. Keep the live cursor anchor.
+    if (!wasActive) { this.renderLive(); return }
     if (returnTo) { Object.assign(this.overlayController.nav(), returnTo.nav); this.overlay.activate(returnTo.id); return }
     // 计划预览返回路径：exitOverlayCore 已按 returnTo 重开面板（choice-panel /
     // plan-picker），此处不得再做主屏恢复——写主屏会污染 alt screen。
@@ -6120,9 +6123,15 @@ export class TuiApp {
   /** Classic live chrome keeps a bounded high-water height; fullscreen owns its fixed grid. */
   private getDynamicBudget(chromeRows: number, dynamicRows: number): number {
     const rows = this.rows || 24
-    const expanded = !!(this.approvalIntentController.approvalPending || this.decisions.active
+    const decision = this.decisions.active
+    const expanded = !!(this.approvalIntentController.approvalPending || decision?.visible
       || this.inputController.slashMenu.open || this.inputLine.value.startsWith('/'))
     const cap = expanded ? liveMaxRowsFor(rows) : Math.min(liveMaxRowsFor(rows), Math.ceil(rows / 2))
+    if (decision && !this.approvalIntentController.approvalPending) {
+      // Decisions have a stable row budget of their own; collapsing must release it.
+      this.liveRowsHighWater = Math.min(Math.max(chromeRows, cap), dynamicRows + chromeRows)
+      return Math.max(0, this.liveRowsHighWater - chromeRows)
+    }
     if (!expanded && this.state.phase === 'idle') {
       this.liveRowsHighWater = dynamicRows + chromeRows
       return dynamicRows

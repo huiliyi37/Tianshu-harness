@@ -101,17 +101,16 @@ describe('Overlay deactivate · picker exit regression', () => {
     assert.ok(plain.includes('❯'), 'Input prompt symbol ❯ must be present after connect overlay exit')
   })
 
-  it('deactivateOverlay after deactivateOverlay is safe (no crash, renders live region)', () => {
+  it('deactivateOverlay without an active overlay preserves the existing frame', () => {
     const { app, out } = makeApp()
     app.activateOverlay('domain-picker')
     app.deactivateOverlay()
     out.clear()
-    // Second deactivate without activate — overlay.deactivate() is a no-op,
-    // but deactivateOverlay still calls renderLive (harmless repaint).
+    // No overlay was left: the live frame must retain its cursor anchor and diff cache.
     app.deactivateOverlay()
     const output = out.chunks.join('')
-    const plain = stripAnsi(output)
-    assert.ok(plain.includes('❯'), 'Double deactivate should still render input box without crashing')
+    assert.equal(output, '', 'An unchanged frame must not append another input box at the caret')
+    app.dispose()
   })
 
   // 回归：overlay 期间有 pending commit（commitStatic 排队），退出时

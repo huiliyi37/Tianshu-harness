@@ -50,23 +50,7 @@ import { summarizeBashOutput } from '../artifact/summarize.js'
 import { getToolArtifactThreshold } from './artifact-threshold.js'
 import { debugLog } from '../utils/debug.js'
 import { loadConfig } from '../config/manager.js'
-import { buildMirrorEnv, rewriteGitHubUrls } from './mirror-env.js'
-import type { MirrorsConfig } from '../config/schema.js'
-
-/**
- * When autoFallback is enabled, inject git early-fail env vars so that
- * `git clone https://github.com/...` commands abort quickly on slow
- * connections (instead of hanging for 2 minutes). This lets the user see
- * the error and manually try a mirror.
- */
-function gitCloneEarlyFailEnv(command: string, config: MirrorsConfig): Record<string, string> {
-  if (config.autoFallback === false) return {}
-  if (!/\bgit\b.*\bclone\b.*github\.com/.test(command)) return {}
-  return {
-    GIT_HTTP_LOW_SPEED_LIMIT: '1000',
-    GIT_HTTP_LOW_SPEED_TIME: '15',
-  }
-}
+import { buildMirrorEnv, rewriteGitHubUrls, gitCloneEarlyFailEnv } from './mirror-env.js'
 import { buildNotFoundHint, extractMissingCommand } from './env-check.js'
 import { getResolvedEnv } from './resolved-env.js'
 import { OutputStreamBudget } from './output-stream-budget.js'

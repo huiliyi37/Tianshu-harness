@@ -1,17 +1,43 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { MAX_DOCUMENTS, MAX_DOCUMENT_BYTES, MAX_ARCHIVES, MAX_ARCHIVE_DATAURL_BYTES } from './attachment-limits.js'
+import { MAX_IMAGES, MAX_IMAGE_BYTES, MAX_DOCUMENTS, MAX_DOCUMENT_BYTES, MAX_ARCHIVES, MAX_ARCHIVE_DATAURL_BYTES } from './attachment-limits.js'
 import { contextFileKind, contextDataUrlBytes, decodeContextText, isSupportedArchiveName, MAX_TEXT_ATTACHMENT_BYTES } from './file-context-policy.js'
 import { extractDocumentText, EXTRACTION_CAVEAT, isExtractableDocument } from '../tools/doc-extract.js'
 import { isSafeFileName } from '../utils/safe-path.js'
 
+const ACCEPTED_IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,.+$/i
+
+/** Decoded byte size of a `data:...;base64,<payload>` URL (without decoding it). */
 function decodedBase64Bytes(dataUrl: string): number {
   const comma = dataUrl.indexOf(',')
   if (comma < 0) return 0
   const b64 = dataUrl.slice(comma + 1)
   const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
   return Math.floor((b64.length * 3) / 4) - padding
+}
+
+/** Validate an images payload: array of provider-safe base64 data URLs. Defense in
+ *  depth — the desktop already compresses + transcodes, but the server is the
+ *  trust boundary (formats the model can't consume, oversized payloads).
+ *  Shared by POST /sessions (create-with-images) and POST /sessions/:id/prompt. */
+export function validateImagesPayload(value: unknown): { images?: string[]; error?: string } {
+  if (value === undefined) return {}
+  if (!Array.isArray(value) || value.length === 0) {
+    return { error: '"images" must be a non-empty array' }
+  }
+  if (value.length > MAX_IMAGES) {
+    return { error: `Max ${MAX_IMAGES} images allowed` }
+  }
+  for (const image of value) {
+    if (typeof image !== 'string' || !ACCEPTED_IMAGE_DATA_URL.test(image)) {
+      return { error: 'Each image must be a data:image/(png|jpeg|webp|gif);base64 URL' }
+    }
+    if (decodedBase64Bytes(image) > MAX_IMAGE_BYTES) {
+      return { error: `Each image must be <= ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB` }
+    }
+  }
+  return { images: value as string[] }
 }
 
 /** Validate a documents payload: array of { name, dataUrl } for office/pdf files.

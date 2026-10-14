@@ -7,6 +7,7 @@ import type { ContentBlock, Usage } from './types.js'
  *  streamed reasoning; forensics had to reverse-engineer the loss from
  *  cache-log timestamp gaps. This event makes the discard observable. */
 export interface StreamAttemptAbortedInfo {
+  turn?: number
   usage?: Partial<Usage>
   requestId?: string
   attemptId?: string
@@ -101,6 +102,7 @@ export interface StreamClient {
   consumeWireDivergence?(): WireDivergence | null
   getMainPrefixProof?(): import('./continuation-prefix.js').ContinuationPrefixProof | undefined
   authorizeCacheGeneration?(reason: string): void
+  restoreRewindAuthorization?(authorization: import('./continuation-prefix.js').RewindGenerationAuthorization): void
   restoreExecutionSnapshot?(snapshot: import('./continuation-prefix.js').ContinuationPrefixProof): void
   restoreExecutionOptions?(options: Record<string, unknown>): void
   setRuntimeSessionId?(id: string): void

@@ -11,6 +11,7 @@ import { collectPostBoundaryEditIds } from '../agent/file-history.js'
 import { computeUsageCost, findModelPricing } from '../utils/pricing.js'
 import { deepseekPricingPhase } from '../utils/pricing-phase.js'
 import { projectCacheTelemetry } from './cache-telemetry.js'
+import { rewindAgentSession } from '../agent/loop-factory.js'
 import type { CacheStatus } from './status-types.js'
 
 const compactCursors = new WeakMap<TuiApp, { session: SessionContext; last?: CompactEvent }>()
@@ -98,8 +99,7 @@ export function executeFrontendRewind(app: TuiApp, ctx: BootstrapContext, messag
     } else app.commitStatic('无文件历史，无法恢复代码。')
   }
   if ((mode === 'convo' || mode === 'both') && messageIndex >= 0) {
-    ctx.session.rewindToMessages(messages.slice(0, messageIndex))
-    ctx.agent.config.promptEngine.resetAppendixBaseline()
+    rewindAgentSession(ctx.agent, messages.slice(0, messageIndex), () => ctx.agent)
     if (messageIndex < messages.length) app.markUIHistoryBoundary('对话已回溯到所选消息；原阅读历史保留', 'rewind')
     app.commitStatic('⏪ 已截断对话到此消息 — 已回填输入框。')
     app.setInput(content)

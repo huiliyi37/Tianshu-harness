@@ -48,6 +48,7 @@ export class FallbackStreamClient implements StreamClient {
   getMainPrefixProof() { return this.activeClient.getMainPrefixProof?.() }
   authorizeCacheGeneration(reason: string): void { this.activeClient.authorizeCacheGeneration?.(reason) }
   restoreExecutionSnapshot(snapshot: import('./continuation-prefix.js').ContinuationPrefixProof): void { this.activeClient.restoreExecutionSnapshot?.(snapshot) }
+  restoreRewindAuthorization(authorization: import('./continuation-prefix.js').RewindGenerationAuthorization): void { this.activeClient.restoreRewindAuthorization?.(authorization) }
 
   async stream(
     request: OaiChatRequest,

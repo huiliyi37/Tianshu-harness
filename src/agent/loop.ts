@@ -140,14 +140,14 @@ import type { SensoriumEntry } from './retrospect.js'
 import { join, dirname } from 'node:path'
 import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { extractRegressionInventory } from './regression-inventory.js'
-import { extractPlanConstraints, planRefFor, renderPlanConstraints } from './plan-constraints.js'
+import { extractPlanConstraints, planRefFor, renderPlanConstraints, formatActivePlanPointer } from './plan-constraints.js'
 import type { ApprovalMode, AgentConfig, AgentCallbacks } from './loop-types.js'
 import type { PermissionAllowRule, PermissionOverlay } from './permissions.js'
 import { createPermissionOverlay } from './permissions.js'
 import { recordToolHistory, RECENT_TOOL_HISTORY_CAP } from "./tool-history-recorder.js";
 import { OutputWindowTracker } from './output-window-tracker.js'
 import { requestThetaCheck } from "./theta-controller.js";
-import { createTurnStreamController, createTurnCompletionController, createToolExecutionController, createPlanTraceCoordinator, createCompactBoundaryCoordinator, createTurnOrchestrator, createTurnStepProducer, createReasoningEffortController, createIntentRetrievalRouteController, createAntiAnchoringController, createModelRoutingShadowController, createPrewarmController, createRuntimeHooksPipeline, buildRuntimeSnapshot, createSidePathUsageRecorder, createReclaimDecisionRecorder, resolveHookDisabledEnv } from "./loop-factory.js";
+import { createTurnStreamController, createTurnCompletionController, createToolExecutionController, createPlanTraceCoordinator, createCompactBoundaryCoordinator, createTurnOrchestrator, createTurnStepProducer, createReasoningEffortController, createIntentRetrievalRouteController, createAntiAnchoringController, createModelRoutingShadowController, createPrewarmController, createRuntimeHooksPipeline, buildRuntimeSnapshot, createSidePathUsageRecorder, createReclaimDecisionRecorder, resolveHookDisabledEnv, waitForAgentRewind } from "./loop-factory.js";
 import type { TurnStepProducer } from './turn-step-producer.js'
 import { ReasoningEffortController } from './reasoning-effort-controller.js'
 import { IntentRetrievalRouteController } from './intent-retrieval-route-controller.js'
@@ -173,22 +173,7 @@ export type { ApprovalMode, AgentConfig, AgentCallbacks }
  */
 export type AgentRunOutcome = 'completed' | 'skipped-already-running'
 
-/**
- * Build the tiny approved-plan pointer block injected into the dynamic appendix.
- * Carries only slug/title/path — NOT the plan body, which stays the single
- * source of truth on disk at `.rivet/plans/<slug>.md`. The agent reads it on
- * demand and tracks steps via the existing todo mechanism.
- */
-export function formatActivePlanPointer(plan: { slug: string; title: string; selectedApproach?: string }): string {
-  const esc = (s: string) =>
-    s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
-  const slug = esc(plan.slug)
-  const title = esc(plan.title)
-  const approach = plan.selectedApproach
-    ? `已选方案: ${esc(plan.selectedApproach)}。只执行此方案，勿执行未选中的备选。 `
-    : ''
-  return `<active-plan slug="${slug}" title="${title}" path=".rivet/plans/${slug}.md">${approach}已批准,正在执行此方案。完整步骤见该文件,需要时用 read_file 查看;开工前先用 todo 列出有序步骤跟踪进度,完成后 plan_close。</active-plan>`
-}
+export { formatActivePlanPointer }
 
 
 
@@ -211,6 +196,7 @@ export class AgentLoop {
     if (!this.config.promptEngine.getRequestBudgetPolicy()) throw new Error('当前模型尚未接入安全手动整理')
     this._running = true
     try {
+      await waitForAgentRewind(this)
       await this.cancelIdleCompaction()
       this.abortController = new AbortController()
       const changed = await this.compactContextBudget(true)

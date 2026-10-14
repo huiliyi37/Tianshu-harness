@@ -133,3 +133,13 @@ node scripts/releases/report-routing.mjs /path/to/update-downloads.jsonl
 ```
 
 These tests cover mocked/native boundaries and local HTTP services. They do not certify a real Windows/macOS package upgrade or public mirror deployment.
+
+## OSS mirror publisher
+
+The restored `scripts/upload-update-to-oss.sh` keeps GitHub acquisition, original packages/signatures, OSS manifest rewriting, dry run and idempotent retries. Run `DRY_RUN=1 bash scripts/upload-update-to-oss.sh` first; candidate prereleases require `--assets-only --version X.Y.Z` and may upload only immutable version packages/signatures, never either fixed or versioned manifests/catalogs. The legacy default remains publishing; `--dry-run` is explicitly read-only and `--publish` is explicit operator intent.
+
+Stable metadata requires the real `guardStablePublication(version, catalogBytes)` before writes, both control sources and the confirmed local snapshot. Exact pinned catalog bytes are copied, never regenerated or amended; conflicting existing catalogs are rejected. GitHub source proofs plus actual authoritative SHA-256/size and three-way original signature matching are mandatory. AtomGit manifest references additionally require existing anonymous/manual/Range qualification; OSS backup upload does not qualify a default route or manufacture signed-upgrade acceptance. Promotion and control writes remain exclusive to their existing publishers.
+
+The immutable upload path requires ossutil 2.x `api put-object --forbid-overwrite true` and a never-versioned bucket; unsupported tools or Enabled/Suspended buckets fail closed rather than falling back to `cp -f`. Only fixed, already-controlled stable metadata uses `cp`. All uploads have full anonymous readback; identical objects are reused on retries, including ambiguous command failures that already stored the expected bytes. See [the operations guide](../upload-update-to-oss.md) for prerequisites, commands, source qualification boundaries and failure recovery.
+
+`node --import tsx scripts/run-node-tests.ts scripts/releases/publish-oss.test.mjs` uses the production runner's existing `scripts/**/*.test.mjs` discovery. The behavior tests use local fake CLIs and controlled fetch only. Windows uses Git Bash and native Node-copy executable substitutes with a preload router (not extensionless native execution or `shell:true`); missing Git Bash fails rather than skipping. Local probe success is not real package-upgrade or public-service acceptance.

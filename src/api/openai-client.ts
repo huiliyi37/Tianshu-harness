@@ -1,4 +1,4 @@
-import { proveWirePrefix, assertContinuationPrefix, wireObservation, type ContinuationPrefixProof, type RequestDiagnostics } from './continuation-prefix.js'
+import { proveWirePrefix, assertContinuationPrefix, wireObservation, isLocalWorkerPolicyError, type ContinuationPrefixProof, type RequestDiagnostics } from './continuation-prefix.js'
 import { currentExecutionScope } from './execution-continuity.js'
 import { beginCallAudit, auditConfigFingerprint, observedAuditUsage } from './call-audit.js'
 import { createHash } from 'node:crypto'
@@ -26,7 +26,7 @@ import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS } from '
 import { parseOpenAIError } from './error-hints.js'
 import { createBodyGuardNotifyState, enforceRequestBodyLimit, notifyBodyGuard } from './request-body-guard.js'
 import { stableStringify } from './stable-json.js'
-import { RequestInvariantMonitor } from './request-invariant.js'
+import { RequestInvariantMonitor, compareWirePrefixes } from './request-invariant.js'
 import { recoverDsmlToolCallsFromContent } from './dsml-tool-calls.js'
 import { stripThinkTags, filterThinkTagDelta } from './inline-reasoning.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
@@ -742,50 +742,14 @@ export class OpenAIClient implements StreamClient {
    *  request's; record the first diverged message. Pure appends record nothing.
    *  tools 数组单独成维——它不进 messages，消息级对比对其隐形。 */
   private recordWireDivergence(messages: Array<Record<string, unknown>>, tools?: unknown[]): void {
-    this.lastWireDivergence = null
     const sigs = messages.map(m => {
       const s = JSON.stringify(m)
       return { sig: wireHash(s), len: s.length, role: String(m.role ?? '?') }
     })
     const toolsSig = tools && tools.length > 0 ? wireHash(stableStringify(tools)) : null
-    const prev = this.prevWireSignatures
-    const prevToolsSig = this.prevWireToolsSig
+    this.lastWireDivergence = compareWirePrefixes(this.prevWireSignatures, sigs, this.prevWireToolsSig, toolsSig)
     this.prevWireSignatures = sigs
     this.prevWireToolsSig = toolsSig
-    if (!prev) return
-
-    // 工具定义变化优先报告——它打的是整个前缀（system+tools 段），不是某条消息。
-    if (prevToolsSig !== toolsSig) {
-      this.lastWireDivergence = {
-        idx: -1,
-        role: 'tools',
-        kind: 'tools_changed',
-        prevCount: prev.length,
-        newCount: sigs.length,
-        approxCharPos: 0,
-      }
-      return
-    }
-
-    const shared = Math.min(prev.length, sigs.length)
-    let divergedIdx = -1
-    for (let i = 0; i < shared; i++) {
-      if (prev[i]!.sig !== sigs[i]!.sig) { divergedIdx = i; break }
-    }
-    if (divergedIdx === -1) {
-      if (sigs.length >= prev.length) return // pure append (or identical)
-      divergedIdx = sigs.length
-    }
-    let approxCharPos = 0
-    for (let i = 0; i < divergedIdx; i++) approxCharPos += sigs[i]?.len ?? prev[i]!.len
-    this.lastWireDivergence = {
-      idx: divergedIdx,
-      role: sigs[divergedIdx]?.role ?? 'removed',
-      kind: divergedIdx >= sigs.length ? 'message_removed' : 'message_changed',
-      prevCount: prev.length,
-      newCount: sigs.length,
-      approxCharPos,
-    }
   }
 
   /** Consume-once accessor for the latest wire-level prefix divergence. */
@@ -905,11 +869,13 @@ export class OpenAIClient implements StreamClient {
       // 复读纠正重发（2026-09-24，issue #260）：不清掉那段退化推理就等于把同一个
       // 循环再喂一遍（故 reasoningRef 置空 + 历史里本来就只存正常轮），尾部附一句
       // 纠正让模型换思路。只改本次 attempt 的 wire 副本，不进口历史。
-      if (repeatCorrectionRequested && !repeatCorrectionApplied) {
-        repeatCorrectionApplied = true
-        reasoningRef.content = ''
+      if (repeatCorrectionRequested) {
+        if (!repeatCorrectionApplied) {
+          repeatCorrectionApplied = true
+          reasoningRef.content = ''
+          debugLog('[openai-client] reasoning_repetition 自愈：丢弃退化推理 + 尾部纠正指令，重发一次')
+        }
         wireMessages = [...wireMessages, { role: 'user', content: REASONING_REPETITION_CORRECTION }]
-        debugLog('[openai-client] reasoning_repetition 自愈：丢弃退化推理 + 尾部纠正指令，重发一次')
       }
 
       let effectiveBody = body
@@ -978,6 +944,9 @@ export class OpenAIClient implements StreamClient {
       // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
       await acquireRateLimitSlot(this.config.providerName ?? this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const proof = proveWirePrefix(guard.body, this.config.providerName ?? 'openai', requestId, normalizeBaseUrl(this.config.baseUrl))
+      const previousProof = this.mainPrefixProof
+      const previousSignatures = this.prevWireSignatures
+      const previousToolsSignature = this.prevWireToolsSig
       identity.wire = wireObservation(guard.body, proof, diagnostics, this.mainPrefixProof)
       if (diagnostics?.continuationSource && !currentExecutionScope()?.beforeSend) {
         try {
@@ -1075,6 +1044,11 @@ export class OpenAIClient implements StreamClient {
       await this.parseStreamFromReader(reader, observedCallbacks, signal, reasoningRef, lifecycle, firstByteMs, identity, !!((body.tools as unknown[] | undefined)?.length))
       audit.finish({ status: 'complete', responseId: identity.responseId, responseModel: identity.responseModel, systemFingerprint: identity.systemFingerprint, finishReason: identity.finishReason })
       } catch (error) {
+        if (isLocalWorkerPolicyError(error)) {
+          this.mainPrefixProof = previousProof
+          this.prevWireSignatures = previousSignatures
+          this.prevWireToolsSig = previousToolsSignature
+        }
         audit.finish({ status: lifecycle.signal.aborted ? 'aborted' : 'failed', responseId: identity.responseId, errorName: (error as Error).name })
         if (!parserStarted) callbacks.onStreamAttemptAborted?.({
           ...identity, provider: this.config.providerName ?? 'openai', receivedChars: 0,

@@ -17,6 +17,40 @@ export interface ContinuationPrefixProof {
   messages: Array<{ hash: string; chars: number; role: string }>
 }
 
+export interface RewindGenerationAuthorization {
+  version: 1
+  reason: 'explicit_user_rewind'
+  cacheGenerationId: string
+  model: string
+  history: ContinuationPrefixProof['messages']
+  prior: ContinuationPrefixProof
+}
+
+export function isRewindGenerationAuthorization(value: unknown): value is RewindGenerationAuthorization {
+  if (!value || typeof value !== 'object') return false
+  const authorization = value as RewindGenerationAuthorization
+  return authorization.version === 1 && authorization.reason === 'explicit_user_rewind'
+    && typeof authorization.cacheGenerationId === 'string' && authorization.cacheGenerationId.length > 0
+    && typeof authorization.model === 'string' && authorization.model.length > 0
+    && isCompleteExecutionSnapshot(authorization.prior)
+    && authorization.cacheGenerationId !== authorization.prior.cacheGenerationId
+    && Array.isArray(authorization.history) && authorization.history.every(message => message
+      && typeof message.hash === 'string' && /^[a-f0-9]{64}$/.test(message.hash)
+      && typeof message.role === 'string' && Number.isFinite(message.chars))
+}
+
+export function proveRewindHistory(messages: readonly unknown[]): ContinuationPrefixProof['messages'] {
+  return messages.map(message => ({ hash: hash(message), chars: JSON.stringify(message).length,
+    role: String((message as { role?: unknown }).role) }))
+}
+
+export function assertRewindHistory(authorization: RewindGenerationAuthorization, messages: readonly unknown[]): void {
+  const current = proveRewindHistory(messages)
+  if (authorization.history.some((message, index) => current[index]?.hash !== message.hash)) {
+    throw new LocalWorkerPolicyError('回退授权对应的保留历史发生变化；禁止发送请求')
+  }
+}
+
 export interface RequestDiagnostics {
   purpose: 'worker_execution' | 'worker_finalize' | 'worker_report_repair' | 'compact_summary' | 'side_question' | 'vision_description' | 'vision_question' | 'reasoning_recovery' | 'essence_gate' | 'llm_speculation' | 'risk_explain'
   workOrderId?: string

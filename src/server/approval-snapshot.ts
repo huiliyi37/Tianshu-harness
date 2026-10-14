@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import type { ApprovalSnapshot } from './protocol.js'
 import { redactValue } from './redact.js'
-import { outOfWorkspaceFilePaths } from '../agent/tool-pipeline.js'
+import { outOfWorkspaceFilePaths } from '../agent/tool-path-access.js'
 
 interface PendingApprovalView {
   requestId: string

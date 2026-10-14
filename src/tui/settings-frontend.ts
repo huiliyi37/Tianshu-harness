@@ -1,6 +1,38 @@
 import { DEFAULT_FRONTEND_PREFERENCES, validateFrontendPreferences, type FrontendPreferences } from './frontend-preferences.js'
-import type { SettingsCategory, SettingsDraft, SettingsField, SettingsEffect, SettingsOption } from './settings-model.js'
+import type { SettingsBlockId, SettingsCategory, SettingsDraft, SettingsField, SettingsEffect, SettingsOption } from './settings-model.js'
 export type { FrontendPreferences } from './frontend-preferences.js'
+
+export function intField(input: {
+  id: string
+  label: string
+  block: SettingsBlockId
+  effect: SettingsEffect
+  hint?: string
+  min: number
+  get: (draft: SettingsDraft) => number
+  set: (draft: SettingsDraft, value: number) => SettingsDraft
+  guard?: (draft: SettingsDraft) => string | undefined
+}): SettingsField {
+  return {
+    id: input.id,
+    label: input.label,
+    kind: 'int',
+    block: input.block,
+    effect: input.effect,
+    hint: input.hint,
+    display: draft => String(input.get(draft)),
+    raw: draft => String(input.get(draft)),
+    apply: (draft, raw) => {
+      const blocked = input.guard?.(draft)
+      if (blocked) return { error: blocked }
+      const value = Number.parseInt(raw.trim(), 10)
+      if (!Number.isInteger(value) || value < input.min) {
+        return { error: `需为不小于 ${input.min} 的整数` }
+      }
+      return input.set(draft, value)
+    },
+  }
+}
 
 export function frontendCategories(): SettingsCategory[] {
   const get = (d: SettingsDraft): FrontendPreferences => d.frontend ?? DEFAULT_FRONTEND_PREFERENCES

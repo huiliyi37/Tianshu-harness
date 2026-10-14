@@ -27,6 +27,35 @@ after(() => {
 })
 
 describe('attachSessionPersistListener — meta tokenUsage accounting', () => {
+  it('runtime rebuild on the same session and persistence owner reuses the write barrier', async () => {
+    const session = new SessionContext()
+    const persist = new SessionPersist('listener-same-owner', tempDir)
+    persist.initMetadata({ model: 'fixture' })
+    const original = attachSessionPersistListener({ session, persist })
+    const rebuilt = attachSessionPersistListener({ session, persist })
+    assert.equal(rebuilt, original)
+    session.addUserMessage('single durable append')
+    await rebuilt.drain()
+    await original.drain()
+    assert.deepEqual(persist.loadOai(), session.getMessages())
+  })
+
+  it('a different persistence owner keeps its own destination and write barrier', async () => {
+    const session = new SessionContext()
+    const originalPersist = new SessionPersist('listener-original-owner', tempDir)
+    const nextPersist = new SessionPersist('listener-next-owner', tempDir)
+    originalPersist.initMetadata({ model: 'fixture' })
+    nextPersist.initMetadata({ model: 'fixture' })
+    const original = attachSessionPersistListener({ session, persist: originalPersist })
+    const replacement = attachSessionPersistListener({ session, persist: nextPersist })
+    assert.notEqual(replacement, original)
+    session.addUserMessage('new destination only')
+    await replacement.drain()
+    await original.drain()
+    assert.equal(originalPersist.loadOai().length, 0)
+    assert.deepEqual(nextPersist.loadOai(), session.getMessages())
+  })
+
   it('worker knowledge and runtime instructions never replace a human session title', async () => {
     const session = new SessionContext(), persist = new SessionPersist('origin-title', tempDir)
     persist.initMetadata({ model: 'fixture' })

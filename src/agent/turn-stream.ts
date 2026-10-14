@@ -293,7 +293,7 @@ export class TurnStreamController {
           : info.usage
         // Settle each failed attempt separately, including explicit provider zero.
         // Keep fields unchanged: local estimates are not provider observations.
-        if (this.deps.recordStreamAttemptAborted) this.deps.recordStreamAttemptAborted({ ...info, usage })
+        if (this.deps.recordStreamAttemptAborted) this.deps.recordStreamAttemptAborted({ ...info, turn: input.turn, usage })
         else if (usage) this.deps.addUsage(usage)
         discardAttempt()
       },

@@ -308,7 +308,7 @@ import type { IntentPreview } from '../../agent/intent-preview.js'
 import { describeIntentNote } from '../../agent/intent-preview.js'
 import type { ApprovalResult } from '../../agent/approval-edit.js'
 import type { DelegationActivity } from '../../tools/types.js'
-import type { AutonomyCheckpointInfo } from '../../agent/loop-types.js'
+import type { AgentCallbacks as RuntimeAgentCallbacks, AutonomyCheckpointInfo } from '../../agent/loop-types.js'
 import { CVM_NOTICE_GATE_DEFAULT, cvmNoticeLevelEnabled, type CvmInterceptionNotice, type CvmNoticeGate } from '../../agent/cvm-notice.js'
 import { CvmNoticeCoalescer, CVM_NOTICE_WINDOW_MS_DEFAULT, type CvmCoalescedLine } from '../cvm-notice-coalescer.js'
 import type { DomainDriftResult } from '../../agent/domain-drift-detector.js'
@@ -343,8 +343,8 @@ export interface AgentCallbacks {
   onPhaseChange?: (phase: string, detail?: { tool?: string; reason?: string; voluntary?: boolean; source?: string }) => void
   onIntentNote?: (intent: IntentPreview) => void
   onDomainDrift?: (drift: DomainDriftResult) => void
-  onSteerDrain?: () => string | null
-  onHumanGuidanceDrain?: () => import('../../agent/course-episodes.js').HumanGuidance | null
+  onSteerDrain?: RuntimeAgentCallbacks['onSteerDrain']
+  onHumanGuidanceDrain?: RuntimeAgentCallbacks['onHumanGuidanceDrain']
   /** C3 — autonomy checkpoint pause (cruise) / progress ping (unleashed). */
   onAutonomyCheckpoint?: (info: AutonomyCheckpointInfo) => void
   /** T4 — structured per-worker delegation status/progress feeding the fleet read model. */

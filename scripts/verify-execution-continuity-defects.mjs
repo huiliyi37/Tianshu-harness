@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, '..')
 const temporary = mkdtempSync(join(tmpdir(), 'execution-continuity-defects-'))
 const mirror = join(temporary, 'repo')
 mkdirSync(mirror)
-const dirty = execFileSync('rtk', ['proxy', 'git', 'diff', '--name-only'], { cwd: root, encoding: 'utf8' }).trim().split('\n')
+const dirty = execFileSync('rtk', ['proxy', 'git', 'diff', '--name-only'], { cwd: root, encoding: 'utf8', windowsHide: true }).trim().split('\n')
 const owned = new Set([...dirty.filter(p => /^(src|desktop\/src)\//.test(p)),
   'src/api/execution-continuity.ts', 'src/api/__tests__/execution-continuity.test.ts',
   'src/agent/worker-terminal-policy.ts', 'src/agent/__tests__/worker-fixed-execution.integration.test.ts',
@@ -75,7 +75,7 @@ for (const name of ['package.json', 'tsconfig.json', 'node_modules']) {
 const results = []
 function run(name, files) {
   const result = spawnSync('rtk', ['proxy', 'node', '--preserve-symlinks', '--import', 'tsx', '--test', '--test-concurrency=1', ...files], {
-    cwd: mirror, encoding: 'utf8', timeout: 60_000, maxBuffer: 8_000_000,
+    cwd: mirror, encoding: 'utf8', timeout: 60_000, maxBuffer: 8_000_000, windowsHide: true,
     env: { ...process.env, RIVET_HOME: join(temporary, `home-${name}`), RIVET_SESSION_DIR: join(temporary, `sessions-${name}`), RIVET_TEST: '1' },
   })
   writeFileSync(join(temporary, `${name}.log`), `${result.stdout ?? ''}\n${result.stderr ?? ''}`)

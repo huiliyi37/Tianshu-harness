@@ -92,6 +92,7 @@ for (const outputs of [[0], [10, undefined], [undefined, undefined]]) {
     assert.equal(out.total.estimated === true, outputs.includes(undefined))
     assert.equal(out.text, 'previous turn;')
     for (const [index, output] of outputs.entries()) {
+      assert.equal(out.aborted[index]?.turn, 1)
       assert.equal(out.aborted[index]?.usage?.output_tokens, output ?? 4)
       assert.equal(!!out.aborted[index]?.usage?.observation?.fields.output_tokens, output !== undefined)
     }

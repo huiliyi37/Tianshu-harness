@@ -29,6 +29,23 @@ import { projectSurfaceAllowed } from '../config/project-trust.js'
 import { listPlansSync } from '../plan/plan-store.js'
 import { MAX_TASK_CONSTRAINT_CHARS } from './work-order.js'
 
+/**
+ * Build the tiny approved-plan pointer block injected into the dynamic appendix.
+ * Carries only slug/title/path — NOT the plan body, which stays the single
+ * source of truth on disk at `.rivet/plans/<slug>.md`. The agent reads it on
+ * demand and tracks steps via the existing todo mechanism.
+ */
+export function formatActivePlanPointer(plan: { slug: string; title: string; selectedApproach?: string }): string {
+  const esc = (value: string) =>
+    value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+  const slug = esc(plan.slug)
+  const title = esc(plan.title)
+  const approach = plan.selectedApproach
+    ? `已选方案: ${esc(plan.selectedApproach)}。只执行此方案，勿执行未选中的备选。 `
+    : ''
+  return `<active-plan slug="${slug}" title="${title}" path=".rivet/plans/${slug}.md">${approach}已批准,正在执行此方案。完整步骤见该文件,需要时用 read_file 查看;开工前先用 todo 列出有序步骤跟踪进度,完成后 plan_close。</active-plan>`
+}
+
 export type PlanConstraintKind = 'anti-goal' | 'constraint' | 'assumption'
 
 export interface PlanConstraint {

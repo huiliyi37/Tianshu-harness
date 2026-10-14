@@ -207,7 +207,9 @@ export interface OaiToolDefinition {
 
 /** Request body for OpenAI-compatible Chat Completions APIs. */
 export interface OaiChatRequest {
-  onExecutionSnapshot?: (proof: import('./continuation-prefix.js').ContinuationPrefixProof) => void
+  onExecutionSnapshot?: (proof: import('./continuation-prefix.js').ContinuationPrefixProof) => void | Promise<void>
+  validateRewindRequest?: (messages: OaiMessage[]) => void
+  rewindAuthorizationId?: string
   /** Internal accounting, never serialized as a provider field. */
   contextBudget?: import('../server/protocol.js').ContextBudgetSnapshot
   model: string

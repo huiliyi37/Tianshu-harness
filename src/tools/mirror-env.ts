@@ -1,5 +1,20 @@
 import type { MirrorsConfig } from '../config/schema.js'
 
+/**
+ * When autoFallback is enabled, inject git early-fail env vars so that
+ * `git clone https://github.com/...` commands abort quickly on slow
+ * connections (instead of hanging for 2 minutes). This lets the user see
+ * the error and manually try a mirror.
+ */
+export function gitCloneEarlyFailEnv(command: string, config: MirrorsConfig): Record<string, string> {
+  if (config.autoFallback === false) return {}
+  if (!/\bgit\b.*\bclone\b.*github\.com/.test(command)) return {}
+  return {
+    GIT_HTTP_LOW_SPEED_LIMIT: '1000',
+    GIT_HTTP_LOW_SPEED_TIME: '15',
+  }
+}
+
 export type MirrorEcosystem = 'npm' | 'pypi' | 'go' | 'rust' | 'github'
 
 export type GithubMirrorId = NonNullable<MirrorsConfig['github']>

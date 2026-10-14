@@ -917,6 +917,7 @@ export function createInteractiveToolRegistry(
  * 顶多下次 resume 退化为全量重建）。startup / /resume 切换 / /cd 三处统一挂。
  */
 function wireFrozenSnapshotPersist(persist: SessionPersist, engine: import('./prompt/engine.js').PromptEngine): void {
+  engine.setExecutionSnapshotCommit(snapshot => persist.commitFrozenSnapshot(snapshot))
   engine.setOnFrozenSnapshotChanged(() => persist.queueFrozenSnapshot(engine.exportFrozenSnapshot()))
 }
 

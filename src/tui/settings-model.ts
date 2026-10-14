@@ -12,7 +12,7 @@
  */
 
 import type { ReviewConfig, WorkersConfig } from '../config/schema.js'
-import { frontendCategories, frontendBlockValue, type FrontendPreferences } from './settings-frontend.js'
+import { frontendCategories, frontendBlockValue, intField, type FrontendPreferences } from './settings-frontend.js'
 import {
   MIN_MAX_EVENTS_DISK_BYTES,
   MIN_MAX_LOADED_SESSIONS,
@@ -326,38 +326,6 @@ function textField(input: {
       const blocked = input.guard?.(draft)
       if (blocked) return { error: blocked }
       return input.set(draft, value.trim())
-    },
-  }
-}
-
-function intField(input: {
-  id: string
-  label: string
-  block: SettingsBlockId
-  effect: SettingsEffect
-  hint?: string
-  min: number
-  get: (draft: SettingsDraft) => number
-  set: (draft: SettingsDraft, value: number) => SettingsDraft
-  guard?: (draft: SettingsDraft) => string | undefined
-}): SettingsField {
-  return {
-    id: input.id,
-    label: input.label,
-    kind: 'int',
-    block: input.block,
-    effect: input.effect,
-    hint: input.hint,
-    display: draft => String(input.get(draft)),
-    raw: draft => String(input.get(draft)),
-    apply: (draft, raw) => {
-      const blocked = input.guard?.(draft)
-      if (blocked) return { error: blocked }
-      const value = Number.parseInt(raw.trim(), 10)
-      if (!Number.isInteger(value) || value < input.min) {
-        return { error: `需为不小于 ${input.min} 的整数` }
-      }
-      return input.set(draft, value)
     },
   }
 }

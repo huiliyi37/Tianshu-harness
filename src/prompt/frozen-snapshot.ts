@@ -8,8 +8,11 @@
  * prompt/engine ↔ agent/session-persist 的循环依赖。
  */
 
+import { isRewindGenerationAuthorization } from '../api/continuation-prefix.js'
+
 export interface FrozenSnapshotData {
   executionSnapshot?: import('../api/continuation-prefix.js').ContinuationPrefixProof
+  rewindAuthorization?: import('../api/continuation-prefix.js').RewindGenerationAuthorization
   v: 1 | 2
   userKeys?: string[]
   anchors?: import('./frozen-anchors.js').FrozenAnchor[]
@@ -28,6 +31,7 @@ export interface FrozenSnapshotData {
 export function parseFrozenSnapshotData(raw: unknown): FrozenSnapshotData | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const d = raw as Record<string, unknown>
+  if (d.rewindAuthorization !== undefined && !isRewindGenerationAuthorization(d.rewindAuthorization)) return undefined
   if (d['v'] !== 1 && d['v'] !== 2) return undefined
   if (d.userKeys !== undefined && (!Array.isArray(d.userKeys) || !d.userKeys.every(k => typeof k === 'string' && /^[a-f0-9]{64}:\d+$/.test(k)))) return undefined
   if (d.frozenBaseHash !== undefined && (typeof d.frozenBaseHash !== 'string' || !/^[a-f0-9]{64}$/.test(d.frozenBaseHash))) return undefined

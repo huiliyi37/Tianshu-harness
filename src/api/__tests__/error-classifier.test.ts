@@ -225,6 +225,35 @@ describe('classifyApiError', () => {
     assert.equal(result.maxRetries, 0)
   })
 
+  it('does not retry a local stream-rule interruption', () => {
+    const error = new Error('Stream rule triggered')
+    error.name = 'RuleTriggeredError'
+    const result = classifyApiError(error)
+    assert.equal(result.category, 'client_error')
+    assert.equal(result.retryable, false)
+    assert.equal(result.shouldReconnect, false)
+    assert.equal(result.maxRetries, 0)
+    assert.equal(result.retryDelayMs, 0)
+    assert.equal(result.userMessage, error.message)
+  })
+
+  it('prioritizes a stream-rule interruption over retryable status and message patterns', () => {
+    const error = Object.assign(new Error('Stream rule triggered: connection reset (503)'), {
+      name: 'RuleTriggeredError', status: 503,
+    })
+    const result = classifyApiError(error)
+    assert.equal(result.retryable, false)
+    assert.equal(result.shouldReconnect, false)
+    assert.equal(result.maxRetries, 0)
+  })
+
+  it('keeps unknown errors retryable even when their message mentions a stream rule', () => {
+    const result = classifyApiError(new Error('Stream rule triggered'))
+    assert.equal(result.category, 'unknown')
+    assert.equal(result.retryable, true)
+    assert.ok(result.maxRetries > 0)
+  })
+
   it('classifies RequestBodyTooLargeError as request_body_too_large (no retry — 确定性失败)', () => {
     // 护栏的超限判定是确定性的：重试逐字节重现同一个超限体。走 unknown 兜底
     // 会白烧 2 轮 backoff 才把可行动文案还给用户（该文案原样透出，不含凭证）。

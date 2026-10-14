@@ -1,4 +1,4 @@
-import { isCompleteExecutionSnapshot, LocalWorkerPolicyError } from '../api/continuation-prefix.js'
+import { isCompleteExecutionSnapshot, assertRewindHistory, LocalWorkerPolicyError } from '../api/continuation-prefix.js'
 import { readHandoffWithCoverage, writeHandoffCoverage, writeHandoffTail } from './handoff-coverage.js'
 import { readFile } from 'node:fs/promises'
 import { setImmediate as yieldToLoop } from 'node:timers/promises'
@@ -24,7 +24,7 @@ import { assertValidSessionId } from '../validation.js'
 import { appendChecksum, verifyLines } from './checksum.js'
 import { decodeTranscriptText, encodeBatch } from './session-transcript-codec.js'
 import { SessionBatchWriter } from './session-batch-writer.js'
-import { SessionMetadataStore, compactEventKey, mergeCompactEvent } from './session-metadata.js'
+import { SessionMetadataStore, FrozenSnapshotWriter, compactEventKey, mergeCompactEvent } from './session-metadata.js'
 
 /** Re-export for backward compatibility — tests still import projectSlug from here. */
 export { projectSlug } from '../config/paths.js'
@@ -131,18 +131,11 @@ export function readHistoricalTranscript(filePath: string): Array<{ role: string
 }
 
 export class SessionPersist {
-  private frozenWrites: Promise<void> = Promise.resolve()
-  private frozenSaveError?: string
-
-  queueFrozenSnapshot(data: FrozenSnapshotData): void {
-    this.frozenWrites = this.frozenWrites.then(async () => {
-      await writeFileAtomicAsync(this.frozenPath, JSON.stringify(data))
-      this.frozenSaveError = undefined
-    }).catch(() => { this.frozenSaveError = 'snapshot_save_failed' })
-  }
-
-  async drainFrozenSnapshots(): Promise<void> { await this.frozenWrites }
-  getFrozenSnapshotError(): string | undefined { return this.frozenSaveError }
+  private readonly frozenWriter = new FrozenSnapshotWriter(() => this.frozenPath)
+  queueFrozenSnapshot(data: FrozenSnapshotData): void { this.frozenWriter.queue(data) }
+  async drainFrozenSnapshots(): Promise<void> { await this.frozenWriter.drain() }
+  async commitFrozenSnapshot(data: FrozenSnapshotData): Promise<void> { await this.frozenWriter.commit(data) }
+  getFrozenSnapshotError(): string | undefined { return this.frozenWriter.error }
   private filePath: string
   private metadataPath: string
   private frozenPath: string
@@ -694,7 +687,14 @@ export class SessionPersist {
     let data: FrozenSnapshotData | undefined
     try {
       if (existsSync(this.frozenPath)) data = parseFrozenSnapshotData(JSON.parse(readFileSync(this.frozenPath, 'utf8')))
-    } catch { this.frozenSaveError = 'snapshot_corrupt' }
+    } catch { this.frozenWriter.error = 'snapshot_corrupt' }
+    if (data?.rewindAuthorization) {
+      assertRewindHistory(data.rewindAuthorization, this.loadOai())
+      if (JSON.stringify(data.executionSnapshot) !== JSON.stringify(data.rewindAuthorization.prior)) {
+        throw new LocalWorkerPolicyError('回退授权与冻结执行证据不一致；禁止恢复')
+      }
+      return data
+    }
     if (!hasRequests) return data
     if (!data) throw new LocalWorkerPolicyError('历史会话缺少完整冻结快照；本次请求受阻，请显式开始新会话')
     if (!isCompleteExecutionSnapshot(data.executionSnapshot)) {

@@ -23,7 +23,7 @@
 import { fetchCauseDetail } from './error-classifier.js'
 import { beginCallAudit, auditConfigFingerprint, type CallAuditContext } from './call-audit.js'
 import { observeAuditResponse } from './transport-audit.js'
-import { checkExecutionSend, credentialPrincipal, currentExecutionScope } from './execution-continuity.js'
+import { prepareExecutionSend, credentialPrincipal, currentExecutionScope } from './execution-continuity.js'
 
 const DEFAULT_TIMEOUT_MS = 45_000
 
@@ -37,10 +37,13 @@ export async function fetchWithTimeout(
 ): Promise<Response> {
   const userSignal = init.signal
   const execution = currentExecutionScope()
-  if (execution && auditContext?.requestId) execution.requestId = auditContext.requestId
+  if (execution && auditContext?.requestId) {
+    execution.requestId = auditContext.requestId
+    execution.attemptId = auditContext.attemptId
+  }
   if (execution && typeof init.body === 'string') {
     const body = JSON.parse(init.body) as Record<string, unknown>
-    checkExecutionSend(String(url), body, credentialPrincipal(init.headers))
+    await prepareExecutionSend(String(url), body, credentialPrincipal(init.headers))
   }
   if (execution?.sessionId) {
     const headers = new Headers(init.headers)

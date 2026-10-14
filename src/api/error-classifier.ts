@@ -569,7 +569,7 @@ export function classifyApiError(error: unknown): ClassifiedError {
     return { retryable: false, retryDelayMs: 0, shouldReconnect: false,
       category: 'request_body_too_large', userMessage: error.message, maxRetries: 0 }
   }
-  if (error instanceof Error && ['ContextPreparationError', 'ImageInputRejectedError'].includes(error.name)) {
+  if (error instanceof Error && ['ContextPreparationError', 'ImageInputRejectedError', 'RuleTriggeredError'].includes(error.name)) {
     return { retryable: false, retryDelayMs: 0, shouldReconnect: false,
       category: 'client_error', userMessage: error.message, maxRetries: 0 }
   }

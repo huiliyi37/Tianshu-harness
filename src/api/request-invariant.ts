@@ -39,12 +39,42 @@
 import { debugLog } from '../utils/debug.js'
 import { messageSignature } from '../prompt/message-signature.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
+import type { WireDivergence } from './stream-client.js'
 
 /** 违规处置策略。 */
 export type RequestInvariantPolicy = 'enforce' | 'warn' | 'off'
 
 /** 违规类别——目前只有一类：同一请求对象的两次派发字节不一致。 */
 export type RequestInvariantKind = 'identity_reentry_churn'
+
+export function compareWirePrefixes(
+  previous: readonly { sig: string; len: number; role: string }[] | null,
+  next: readonly { sig: string; len: number; role: string }[],
+  previousTools: string | null,
+  nextTools: string | null,
+): WireDivergence | null {
+  if (!previous) return null
+  if (previousTools !== nextTools) {
+    return { idx: -1, role: 'tools', kind: 'tools_changed',
+      prevCount: previous.length, newCount: next.length, approxCharPos: 0 }
+  }
+  const shared = Math.min(previous.length, next.length)
+  let changed = -1
+  for (let index = 0; index < shared; index++) {
+    if (previous[index]!.sig !== next[index]!.sig) { changed = index; break }
+  }
+  if (changed === -1) {
+    if (next.length >= previous.length) return null
+    changed = next.length
+  }
+  let approxCharPos = 0
+  for (let index = 0; index < changed; index++) approxCharPos += next[index]?.len ?? previous[index]!.len
+  return {
+    idx: changed, role: next[changed]?.role ?? 'removed',
+    kind: changed >= next.length ? 'message_removed' : 'message_changed',
+    prevCount: previous.length, newCount: next.length, approxCharPos,
+  }
+}
 
 export interface RequestInvariantViolation {
   kind: RequestInvariantKind

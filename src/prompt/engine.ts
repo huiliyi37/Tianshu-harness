@@ -34,6 +34,7 @@ import { debugLog } from '../utils/debug.js'
 import { skillRegistry, type SkillRegistry } from '../skills/skill-loader.js'
 import { parseFrozenSnapshotData, type FrozenSnapshotData } from './frozen-snapshot.js'
 import { stableStringify } from '../api/stable-json.js'
+import { assertRewindHistory, proveRewindHistory, LocalWorkerPolicyError, type RewindGenerationAuthorization } from '../api/continuation-prefix.js'
 
 export type { PrefixFingerprint, DriftEvent, ContextLayerReport }
 export type { FrozenSnapshotData } from './frozen-snapshot.js'
@@ -90,9 +91,17 @@ export interface PromptEngineConfig {
 
 export class PromptEngine {
   private executionSnapshot?: import('../api/continuation-prefix.js').ContinuationPrefixProof
+  private rewindAuthorization?: RewindGenerationAuthorization
+  private commitExecutionSnapshot?: (snapshot: FrozenSnapshotData) => Promise<void>
+  setExecutionSnapshotCommit(commit: (snapshot: FrozenSnapshotData) => Promise<void>): void { this.commitExecutionSnapshot = commit }
   private toolCatalogPublished = false
   getExecutionSnapshot(): import('../api/continuation-prefix.js').ContinuationPrefixProof | undefined { return this.executionSnapshot }
-  authorizeCacheGeneration(): void { this.executionSnapshot = undefined }
+  getRewindAuthorization(): RewindGenerationAuthorization | undefined { return this.rewindAuthorization }
+  authorizeCacheGeneration(): void { this.executionSnapshot = undefined; this.rewindAuthorization = undefined }
+  authorizeRewindGeneration(authorization: RewindGenerationAuthorization): void {
+    this.executionSnapshot = undefined
+    this.rewindAuthorization = structuredClone(authorization)
+  }
   getRequestBudgetPolicy(): import('../context/request-budget.js').RequestBudgetPolicy | undefined {
     return this.config.requestBudgetPolicy
   }
@@ -273,6 +282,7 @@ export class PromptEngine {
     const initialFrozenBase = buildStableVolatileBlock(config.volatileCtx)
     if (inherit instanceof PromptEngine) {
       this.executionSnapshot = inherit.executionSnapshot
+      this.rewindAuthorization = inherit.rewindAuthorization
       this.anchors = new FrozenAnchors(inherit.anchors.export())
       this.anchorHistory = [...inherit.anchorHistory]
       this.checkInheritedHistory = true
@@ -286,6 +296,8 @@ export class PromptEngine {
       const data = inherit ? parseFrozenSnapshotData(inherit) : undefined
       if (data) {
         this.executionSnapshot = data.executionSnapshot
+        this.rewindAuthorization = data.rewindAuthorization
+        if (this.rewindAuthorization) this.executionSnapshot = undefined
         this.anchors = new FrozenAnchors(data.anchors)
         this.anchorHistory = data.userKeys ?? []
         this.checkInheritedHistory = true
@@ -302,8 +314,9 @@ export class PromptEngine {
       }
     }
     this.toolCatalogPublished = !!this.executionSnapshot
-    const savedMaxTokens = this.executionSnapshot?.options?.max_tokens ?? this.executionSnapshot?.options?.max_completion_tokens
-    if (this.executionSnapshot?.model === config.model && typeof savedMaxTokens === 'number') this.config = { ...this.config, maxTokens: savedMaxTokens }
+    const restoredOptions = this.executionSnapshot ?? this.rewindAuthorization?.prior
+    const savedMaxTokens = restoredOptions?.options?.max_tokens ?? restoredOptions?.options?.max_completion_tokens
+    if (restoredOptions?.model === config.model && typeof savedMaxTokens === 'number') this.config = { ...this.config, maxTokens: savedMaxTokens }
     this.approvalMode = config.approvalMode
     this.systemPrompt = buildSystemPrompt(config.staticCtx)
     this.frozenBase = initialFrozenBase
@@ -422,6 +435,7 @@ export class PromptEngine {
     return {
       v: 2,
       ...(this.executionSnapshot ? { executionSnapshot: this.executionSnapshot } : {}),
+      ...(this.rewindAuthorization ? { executionSnapshot: this.rewindAuthorization.prior, rewindAuthorization: structuredClone(this.rewindAuthorization) } : {}),
       anchors: this.anchors.export(),
       userKeys: [...this.anchorHistory],
       frozenBaseHash: this.inheritedActiveBase ? this.inheritedActiveBase.hash : frozenBaseHash(this.volatileBlock),
@@ -448,6 +462,7 @@ export class PromptEngine {
   }
 
   buildOaiRequest(inputMessages: OaiMessage[], toolHistory?: ToolHistoryEntry[], contextWindow?: number, options?: { sidePath?: boolean; onOrphanRepair?: (repairedMessages: OaiMessage[], count: number) => void; writeProbe?: WriteProbe }): OaiChatRequest {
+    if (!options?.sidePath && this.rewindAuthorization) assertRewindHistory(this.rewindAuthorization, inputMessages)
     // Side-path builds (compaction summaries etc.) pass an unrelated message
     // array through the same engine. They must be HERMETIC: any state write
     // here (cachedFreshForUser, frozen snapshots, firstUserKey, volatile swap,
@@ -798,10 +813,25 @@ export class PromptEngine {
       // through the same client would poison its baseline too).
       prefixProbe: !sidePath || undefined,
       onExecutionSnapshot: sidePath ? undefined : proof => {
+        if (this.rewindAuthorization) {
+          if (!this.commitExecutionSnapshot) throw new LocalWorkerPolicyError('回退授权缺少耐久提交通道；请求未发送')
+          const snapshot = { ...this.exportFrozenSnapshot(), executionSnapshot: proof, rewindAuthorization: undefined }
+          return this.commitExecutionSnapshot(snapshot).then(() => {
+            this.executionSnapshot = proof
+            this.rewindAuthorization = undefined
+            this.toolCatalogPublished = true
+          })
+        }
         this.executionSnapshot = proof
+        this.rewindAuthorization = undefined
         this.toolCatalogPublished = true
         try { this.onFrozenChanged?.() } catch { /* persistence cannot break dispatch */ }
       },
+    }
+    if (!sidePath && this.rewindAuthorization) {
+      const authorization = { ...this.rewindAuthorization, history: proveRewindHistory(request.messages) }
+      request.rewindAuthorizationId = authorization.cacheGenerationId
+      request.validateRewindRequest = messages => assertRewindHistory(authorization, messages)
     }
     // Side-path builds (compaction summaries etc.) have unrelated message
     // arrays — recording them would poison the main-turn baseline and report

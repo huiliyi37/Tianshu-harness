@@ -3,6 +3,46 @@ import { type SessionPersist } from './session-persist.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import { debugLog } from '../utils/debug.js'
 import { isHumanInput } from './input-origin.js'
+import type { AgentLoop } from './loop.js'
+import { randomUUID } from 'node:crypto'
+import { proveRewindHistory, type ContinuationPrefixProof, type RewindGenerationAuthorization } from '../api/continuation-prefix.js'
+
+const agentRewindCommits = new WeakMap<AgentLoop['session'], { commit: Promise<void>; prior?: ContinuationPrefixProof }>()
+export function rewindAgentSession(agent: AgentLoop, messages: OaiMessage[], liveAgent: () => AgentLoop = () => agent): void {
+  const expected = JSON.stringify(messages)
+  const prior = agent.config.client.getMainPrefixProof?.() ?? agent.config.promptEngine.getRewindAuthorization()?.prior ?? agentRewindCommits.get(agent.session)?.prior
+  agent.session.rewindToMessages(messages)
+  agent.config.promptEngine.resetAppendixBaseline()
+  const commit = agent.drainPersistWrites().then(async () => {
+    let current = liveAgent()
+    for (;;) {
+      if (JSON.stringify(agent.session.getMessages()) !== expected || JSON.stringify(current.session.getMessages()) !== expected) throw new Error('历史在回退提交期间发生变化')
+      const authorization: RewindGenerationAuthorization | undefined = prior ? {
+        version: 1, reason: 'explicit_user_rewind', cacheGenerationId: randomUUID(),
+        model: current.config.promptEngine.getModel(), history: proveRewindHistory(messages), prior: structuredClone(prior),
+      } : undefined
+      if (authorization && current.persist) await current.persist.commitFrozenSnapshot({
+        ...current.config.promptEngine.exportFrozenSnapshot(), executionSnapshot: authorization.prior, rewindAuthorization: authorization,
+      })
+      if (current !== liveAgent()) { current = liveAgent(); continue }
+      if (JSON.stringify(current.session.getMessages()) !== expected) throw new Error('历史在回退提交期间发生变化')
+      if (authorization) current.config.client.restoreRewindAuthorization?.(authorization)
+      else current.config.client.authorizeCacheGeneration?.('explicit_user_rewind')
+      current.config.promptEngine.authorizeCacheGeneration()
+      if (authorization) current.config.promptEngine.authorizeRewindGeneration(authorization)
+      if (current.persist) current.config.promptEngine.setExecutionSnapshotCommit(snapshot => current.persist!.commitFrozenSnapshot(snapshot))
+      break
+    }
+  })
+  agentRewindCommits.set(agent.session, { commit, prior })
+  void commit.catch(() => {})
+}
+export async function waitForAgentRewind(agent: AgentLoop): Promise<void> {
+  await agentRewindCommits.get(agent.session)?.commit
+}
+
+type SessionPersistenceListener = { drain: () => Promise<void>; commitCompaction: (expected: OaiMessage[], candidate: OaiMessage[]) => Promise<void> }
+const persistenceListeners = new WeakMap<SessionContext, { persist: SessionPersist; listener: SessionPersistenceListener }>()
 
 /**
  * drain 终值快照（2026-10-02 第四批）：meta.tokenUsage 原只在「消息 append」时
@@ -40,8 +80,10 @@ export function writeFinalUsageSnapshot(session: SessionContext, persist: Sessio
 export function attachSessionPersistListener(deps: {
   session: SessionContext
   persist: SessionPersist
-}): { drain: () => Promise<void>; commitCompaction: (expected: OaiMessage[], candidate: OaiMessage[]) => Promise<void> } {
+}): SessionPersistenceListener {
   const { session, persist } = deps
+  const existing = persistenceListeners.get(session)
+  if (existing?.persist === persist) return existing.listener
   let writeChain: Promise<void> = Promise.resolve()
   let writeFailure: unknown
   let rewriteActive = false
@@ -151,7 +193,7 @@ export function attachSessionPersistListener(deps: {
     writeChain = operation.catch(() => {})
     return operation
   }
-  return { commitCompaction, drain: async () => {
+  const listener = { commitCompaction, drain: async () => {
     // 终值快照（2026-10-02 第四批）：原 drain 只刷已排队的写入，末次 append
     // 之后的记账（turn 末 side-path 等）没有快照点——尾账永失。见
     // writeFinalUsageSnapshot（单调守卫同处）。
@@ -164,4 +206,6 @@ export function attachSessionPersistListener(deps: {
     // never acknowledge history that failed to reach disk.
     if (writeFailure) throw writeFailure
   } }
+  persistenceListeners.set(session, { persist, listener })
+  return listener
 }

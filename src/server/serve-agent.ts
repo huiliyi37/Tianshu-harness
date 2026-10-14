@@ -12,7 +12,7 @@ import { SessionPersist, getSessionDir } from '../agent/session-persist.js'
 import { captureGitBaselineAsync } from '../agent/git-baseline-async.js'
 import type { BaselineSnapshot } from '../agent/worktree-baseline.js'
 import { findRecentUnrecordedWritesAsync, formatDiskReconciliationNote, shouldReconcileDisk } from '../context/write-evidence-probe.js'
-import { runGateCompletion } from '../agent/gate-completion.js'
+import { runGateCompletion, rewindAgentSession, waitForAgentRewind } from '../agent/loop-factory.js'
 import { memoryBackfillEnabled, runMemoryBackfill } from '../memory/backfill.js'
 import { restoreGoalTracker } from '../agent/goal-persist.js'
 import { FileHistory } from '../agent/file-history.js'
@@ -894,13 +894,10 @@ export function buildManagedAgent(
         // against the live config and rebuild in place — the session then
         // just works instead of demanding a sidecar restart.
         const healed = reload ? resolveModelSpecWithReload(ctx, spec.model.id, reload) : null
-        if (healed && isModelSpecUsable(healed)) {
-          rebuildOnSpec(healed)
-        } else {
-          return Promise.reject(new Error(unconfiguredSpecMessage(spec)))
-        }
+        if (healed && isModelSpecUsable(healed)) rebuildOnSpec(healed)
+        else return Promise.reject(new Error(unconfiguredSpecMessage(spec)))
       }
-      return agent.run(prompt, callbacks, images, options)
+      return waitForAgentRewind(agent).then(() => agent.run(prompt, callbacks, images, options))
     },
     abort: () => agent.abort(),
     setApprovalMode: (mode) => {
@@ -919,7 +916,7 @@ export function buildManagedAgent(
     getMessages: () => agent.session.getMessages(),
     getHistoryRestore: () => stores.historyRestore,
     replaceMessages: (msgs) => { agent.session.replaceMessages(msgs); agent.config.promptEngine.resetAppendixBaseline() },
-    rewindToMessages: (msgs) => { agent.session.rewindToMessages(msgs); agent.config.promptEngine.resetAppendixBaseline() },
+    rewindToMessages: (msgs) => rewindAgentSession(agent, msgs, () => agent),
     getFileHistory: () => agent.getFileHistory(),
     // PlusMenu — star domain (delegate to the live agent).
     setSessionDomain: (domain) => agent.setSessionDomain(domain),
@@ -1032,15 +1029,13 @@ export function buildManagedAgent(
     },
     // Wave L: 进程退出释放本 session 的 coordinator timer + in-flight worker
     // 句柄。abort() 仅中止当前 turn；shutdown() 是终结性操作。
-    flushPersistence: () => agent.drainPersistWrites(),
-    getRecoverySnapshot: () => ({
-      messages: agent.session.getMessages(),
-      frozen: agent.config.promptEngine.exportFrozenSnapshot(),
-      usage: agent.session.getTotalUsage(),
+    flushPersistence: () => waitForAgentRewind(agent).then(() => agent.drainPersistWrites()),
+    getRecoverySnapshot: () => ({ messages: agent.session.getMessages(),
+      frozen: agent.config.promptEngine.exportFrozenSnapshot(), usage: agent.session.getTotalUsage(),
     }),
     shutdown: async () => {
       let persistenceError: unknown
-      try { await agent.drainPersistWrites() } catch (error) { persistenceError = error }
+      try { await waitForAgentRewind(agent); await agent.drainPersistWrites() } catch (error) { persistenceError = error }
       // config 热载 watcher 是 AgentLoop 级句柄：sidecar 空闲回收/归档 agent 时必须
       // 显式 close，否则每次漏 2-3 个 FSWatcher 并经闭包钉住整个旧 AgentLoop 对象图。
       // （TUI switch 三路径已在 bootstrap 显式调 stop——此处补齐 serve 释放链。）

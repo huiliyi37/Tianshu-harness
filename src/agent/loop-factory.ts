@@ -30,7 +30,7 @@ import { getSessionDir } from './session-persist.js'
 import type { AgentCallbacks } from './loop-types.js'
 import { anchorsFromBlocks } from './reasoning-anchors.js'
 import { proRegistry } from '../api/pro-registry.js'
-import type { ContentBlock } from '../api/types.js'
+import type { ContentBlock, OaiMessage } from '../api/types.js'
 import { diagnoseCacheMiss } from '../prompt/cache-diagnostic.js'
 import { computeCompactAttribution } from './compact-attribution.js'
 import type { ReclaimDecisionRecord } from '../compact/reclaim-estimate.js'
@@ -54,6 +54,7 @@ import { createLlmSpeculationEngine, normalizeLlmSpeculationConfig } from './llm
 import { TurnStepProducer } from './turn-step-producer.js'
 import { skillRegistry } from '../skills/skill-loader.js'
 import { runGateCompletion } from './gate-completion.js'
+export { rewindAgentSession, waitForAgentRewind } from './session-persist-listener.js'
 export { runGateCompletion, type GateCompletionClient } from './gate-completion.js'
 
 /**
@@ -107,6 +108,33 @@ export function createReclaimDecisionRecorder(self: AgentLoop): (record: Reclaim
   }
 }
 
+function addPromptCacheMetadata(self: AgentLoop, entry: Record<string, unknown>, messages: OaiMessage[]): void {
+  let userMsgCount = 0
+  let injectedCount = 0
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    userMsgCount++
+    if (isSystemReminder(message.content)) injectedCount++
+  }
+  entry.userMsgs = userMsgCount
+  if (injectedCount > 0) entry.injected = injectedCount
+
+  const projLen = self.config.promptEngine.getCognitiveProjectionLength?.()
+  const appxLen = self.config.promptEngine.getCachedAppendixLength?.()
+  if (projLen !== undefined && projLen > 0) entry.projChars = projLen
+  if (appxLen !== undefined && appxLen > 0) entry.appendixChars = appxLen
+
+  const anatomy = self.config.promptEngine.getAppendixAnatomy?.()
+  if (anatomy) {
+    if (anatomy.partsChars > 0) entry.appendixPartsChars = anatomy.partsChars
+    if (anatomy.cvmChars > 0) {
+      entry.appendixCvmChars = anatomy.cvmChars
+      entry.appendixCvmBySource = anatomy.cvmBySource
+    }
+    if (anatomy.keepChars > 0) entry.appendixKeepChars = anatomy.keepChars
+  }
+}
+
 export function createTurnStreamController(self: AgentLoop): TurnStreamController {
   return new TurnStreamController({
       recordContextBudget: budget => self.recordContextBudget(budget),
@@ -142,6 +170,7 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
         const entry: Record<string, unknown> = {
           ...info.usage?.observation,
           event: 'stream_attempt_aborted',
+          turn: info.turn,
           requestId: info.requestId, attemptId: info.attemptId,
           usageFields: info.usage?.observation?.fields,
           prefix: info.usage?.observation?.prefix,
@@ -159,6 +188,12 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
           errorName: info.errorName,
           errorMessage: info.errorMessage.slice(0, 300),
         }
+        try {
+          addPromptCacheMetadata(self, entry, self.session.getMessages())
+          if (self.config.promptEngine.getCacheEventStats?.()) {
+            entry.frozenPersistence = self.persist?.getFrozenSnapshotError() ?? 'available'
+          }
+        } catch {}
         const divergence = self.config.promptEngine.consumePrefixDivergence?.()
         if (divergence) entry.prefixDiverged = divergence
         const wireDivergence = self.config.client.consumeWireDivergence?.()
@@ -211,37 +246,7 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
         }
         try {
           const messages = self.session.getMessages()
-          let userMsgCount = 0
-          let injectedCount = 0
-          for (const m of messages) {
-            if (m.role !== 'user') continue
-            userMsgCount++
-            if (isSystemReminder((m as { content?: unknown }).content)) injectedCount++
-          }
-          entry.userMsgs = userMsgCount
-          if (injectedCount > 0) entry.injected = injectedCount
-
-          // Prompt anatomy: projection and appendix byte sizes for delta cost analysis.
-          const projLen = self.config.promptEngine.getCognitiveProjectionLength?.()
-          const appxLen = self.config.promptEngine.getCachedAppendixLength?.()
-          if (projLen !== undefined && projLen > 0) entry.projChars = projLen
-          if (appxLen !== undefined && appxLen > 0) entry.appendixChars = appxLen
-
-          // Appendix composition: appendixChars 只有总量，看不出 zenLean 裁了多少。
-          // 拆成 CVM 计量块与 keep-list 两笔字符账后，「zen 相位 cvmChars 归零」
-          // 可以直接在 cache-log 上判定，不必依赖 telemetry 开关或重跑会话。
-          const anatomy = self.config.promptEngine.getAppendixAnatomy?.()
-          if (anatomy) {
-            // partsChars 与 appendixChars 的差 = 包装开销（<context-update> 标签 +
-            // join 分隔符 + ephemeral 前缀），恒等式 partsChars == cvmChars +
-            // keepChars 供外部脚本自校验。
-            if (anatomy.partsChars > 0) entry.appendixPartsChars = anatomy.partsChars
-            if (anatomy.cvmChars > 0) {
-              entry.appendixCvmChars = anatomy.cvmChars
-              entry.appendixCvmBySource = anatomy.cvmBySource
-            }
-            if (anatomy.keepChars > 0) entry.appendixKeepChars = anatomy.keepChars
-          }
+          addPromptCacheMetadata(self, entry, messages)
 
           // Read-ref telemetry (Part B): bytes saved by [read-ref] shortcuts.
           const refStats = getReadRefStats()

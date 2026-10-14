@@ -65,13 +65,12 @@ import { parseUsageRows } from '../cache/usage-aggregator.js'
 import { getRollbackPreview, rollbackToCheckpoint, makeOwnershipGuard } from '../agent/checkpoint.js'
 import { rankFiles, listDirEntries } from './file-list.js'
 import { cachedProjectFiles } from './file-context-routes.js'
-import { validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, buildArchiveHandleText, type SessionArchivePayload } from './attachment-validation.js'
+import { validateImagesPayload, validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, buildArchiveHandleText, type SessionArchivePayload } from './attachment-validation.js'
 import {
   MAX_ARCHIVES,
   MAX_DOCUMENTS,
   MAX_DOCUMENT_BYTES,
   MAX_IMAGES,
-  MAX_IMAGE_BYTES,
 } from './attachment-limits.js'
 import { listPrs, getPrDetail, isGhAvailable, getPrDiff, submitPrReview, listPrChecks, getCheckRunLog, mergePr, type PrReviewInput } from './gh-cli.js'
 import { pushFixToPrBranch } from './pr-fix-push.js'
@@ -119,39 +118,6 @@ type SessionRouteDependencies = {
 
 /** Cap on a single CI check log payload returned to the desktop (tail-kept). */
 const MAX_CHECK_LOG_CHARS = 200_000
-const ACCEPTED_IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,.+$/i
-
-/** Decoded byte size of a `data:...;base64,<payload>` URL (without decoding it). */
-function decodedBase64Bytes(dataUrl: string): number {
-  const comma = dataUrl.indexOf(',')
-  if (comma < 0) return 0
-  const b64 = dataUrl.slice(comma + 1)
-  const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
-  return Math.floor((b64.length * 3) / 4) - padding
-}
-
-/** Validate an images payload: array of provider-safe base64 data URLs. Defense in
- *  depth — the desktop already compresses + transcodes, but the server is the
- *  trust boundary (formats the model can't consume, oversized payloads).
- *  Shared by POST /sessions (create-with-images) and POST /sessions/:id/prompt. */
-function validateImagesPayload(value: unknown): { images?: string[]; error?: string } {
-  if (value === undefined) return {}
-  if (!Array.isArray(value) || value.length === 0) {
-    return { error: '"images" must be a non-empty array' }
-  }
-  if (value.length > MAX_IMAGES) {
-    return { error: `Max ${MAX_IMAGES} images allowed` }
-  }
-  for (const img of value) {
-    if (typeof img !== 'string' || !ACCEPTED_IMAGE_DATA_URL.test(img)) {
-      return { error: 'Each image must be a data:image/(png|jpeg|webp|gif);base64 URL' }
-    }
-    if (decodedBase64Bytes(img) > MAX_IMAGE_BYTES) {
-      return { error: `Each image must be <= ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB` }
-    }
-  }
-  return { images: value as string[] }
-}
 
 /** S — accepted autonomy levels for per-session approval-mode overrides. */
 const APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set<ApprovalMode>([

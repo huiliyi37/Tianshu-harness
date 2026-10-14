@@ -31,7 +31,7 @@ try {
     await writeFile(policyCopy, absolutize(mutatedPolicy, policyPath))
     await writeFile(runtimeCopy, absolutize(mutatedRuntime, runtimePath).replace(path.join(root, 'src/agent/worker-model-policy.js'), policyCopy))
     await writeFile(testCopy, absolutize(test, testPath).replace(path.join(root, 'src/agent/worker-runtime.js'), runtimeCopy).replace(path.join(root, 'src/agent/worker-model-policy.js'), policyCopy))
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', testCopy], { cwd: root, encoding: 'utf8', timeout: 60000 })
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', testCopy], { cwd: root, encoding: 'utf8', timeout: 60000, windowsHide: true })
     const log = result.stdout + result.stderr
     assert.notEqual(result.status, 0, `${defect} must fail`)
     assert.match(log, /AssertionError/, 'must fail a behavioral assertion, not an import or fixture error')

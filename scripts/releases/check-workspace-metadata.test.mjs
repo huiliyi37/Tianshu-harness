@@ -67,7 +67,7 @@ test('generator CLI refuses a revision change before overwriting the pinned root
     globalThis.fetch = async () => new Response(JSON.stringify({ assets: ${JSON.stringify([{ name: f.catalog.artifacts[0].fileName, size: f.bytes.length, digest: 'sha256:' + digest(f.bytes) }])} }))
     process.argv = ['node', 'fixture', '--assets', '.', '--revision', '15']
     await main()
-  `], { cwd: root, encoding: 'utf8', timeout: 10000 })
+  `], { cwd: root, encoding: 'utf8', timeout: 10000, windowsHide: true })
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /immutable/)
   assert.deepEqual(readFileSync(join(root, 'release-catalog.json')), f.catalogBytes)

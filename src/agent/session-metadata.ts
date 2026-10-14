@@ -8,8 +8,30 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { writeFileAtomicSync } from '../fs-atomic.js'
+import { writeFileAtomicSync, writeFileAtomicAsync, writeFileAtomicDurableAsync } from '../fs-atomic.js'
 import type { CompactEvent, SessionMetadata } from '../context/types.js'
+import type { FrozenSnapshotData } from '../prompt/frozen-snapshot.js'
+
+export class FrozenSnapshotWriter {
+  private writes: Promise<void> = Promise.resolve()
+  error?: string
+  constructor(private readonly path: () => string) {}
+  queue(data: FrozenSnapshotData): void {
+    this.writes = this.writes.then(async () => {
+      await writeFileAtomicAsync(this.path(), JSON.stringify(data))
+      this.error = undefined
+    }).catch(() => { this.error = 'snapshot_save_failed' })
+  }
+  async drain(): Promise<void> { await this.writes }
+  async commit(data: FrozenSnapshotData): Promise<void> {
+    const write = this.writes.then(async () => {
+      await writeFileAtomicDurableAsync(this.path(), JSON.stringify(data))
+      this.error = undefined
+    })
+    this.writes = write.catch(() => { this.error = 'snapshot_save_failed' })
+    await write
+  }
+}
 
 /**
  * 持久化压缩台账的容量上限——与内存账本 SessionContext 的 MAX_CACHE_HISTORY

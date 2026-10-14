@@ -41,7 +41,10 @@ function append(record: CallAuditRecord): void {
 export function beginCallAudit(context: CallAuditContext) {
   const execution = currentExecutionScope()
   context = { ...context, sessionId: execution?.sessionId ?? context.sessionId }
-  if (execution && context.requestId) execution.requestId = context.requestId
+  if (execution && context.requestId) {
+    execution.requestId = context.requestId
+    execution.attemptId = context.attemptId
+  }
   const operationId = context.attemptId ?? randomUUID()
   const identity: CallAuditContext = Object.fromEntries(Object.entries(context).filter(([key, value]) =>
     ['requestId', 'attemptId', 'sessionId', 'parentRequestId', 'workOrderId', 'provider', 'model', 'purpose', 'routeReason', 'configFingerprint'].includes(key) && typeof value === 'string'))

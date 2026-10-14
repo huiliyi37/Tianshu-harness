@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "revision": 3,
+  "stable": {
+    "version": "3.31.0",
+    "catalogSha256": "9274272fa247728170a308e2fa17fccee3569b6367c0300cf5d43b67619fd4a7"
+  },
+  "revokedVersions": []
+}

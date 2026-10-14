@@ -104,15 +104,19 @@ export function wrapCallbacksWithTuiApp(
       app.callbacks.onIntentNote?.(intent)
       original.onIntentNote?.(intent)
     },
-    onHumanGuidanceDrain: () => {
+    onHumanGuidanceDrain: async () => {
       if (!live()) return null
-      return app.callbacks.onHumanGuidanceDrain?.() ?? original.onHumanGuidanceDrain?.() ?? null
+      const drained = await app.callbacks.onHumanGuidanceDrain?.()
+      if (!live()) return null
+      const guidance = drained ?? await original.onHumanGuidanceDrain?.()
+      return live() ? guidance ?? null : null
     },
-    onSteerDrain: () => {
+    onSteerDrain: async () => {
       if (!live()) return null
-      const drained = app.callbacks.onSteerDrain?.() ?? null
-      const originalDrained = original.onSteerDrain?.() ?? null
-      return drained ?? originalDrained
+      const drained = await app.callbacks.onSteerDrain?.()
+      if (!live()) return null
+      const guidance = drained ?? await original.onSteerDrain?.()
+      return live() ? guidance ?? null : null
     },
     onDelegationActivity: (activity) => {
       // 迟到的旧 run 委派活动 → 丢弃，避免污染新 run 的舰队读模型。

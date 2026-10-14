@@ -287,6 +287,8 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
  })
   const restoredExecution = promptEngine.getExecutionSnapshot()
   if (restoredExecution) primaryClient.restoreExecutionSnapshot?.(restoredExecution)
+  const rewindAuthorization = promptEngine.getRewindAuthorization()
+  if (rewindAuthorization) primaryClient.restoreRewindAuthorization?.(rewindAuthorization)
 
   return {
     client,

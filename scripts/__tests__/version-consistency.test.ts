@@ -18,6 +18,7 @@ import { checkWorkspaceMetadata } from '../releases/check-workspace-metadata.mjs
  *  - latest.json / catalog / control 的稳定版本、固定哈希和签名一致；
  *    package.json 可领先稳定通道，不得落后（候选版本不能提前覆盖稳定入口）；
  *  - package-lock.json ↔ package.json 版本严格相等；
+ *  - 桌面源码存在时，桌面 npm、Tauri 与 Rust 版本同运行时严格对齐；
  *  - latest.json 各平台下载资产链接与版本号对应。
  */
 describe('版本一致性守卫（issue #278）', () => {
@@ -77,6 +78,31 @@ describe('版本一致性守卫（issue #278）', () => {
         asset.url.includes(`_${version}_`),
         `平台 ${platform} 的下载文件名必须包含版本号 _${version}_`,
       )
+    }
+  })
+
+  it('桌面 npm、Tauri 和 Rust 版本与运行时严格对齐', t => {
+    const desktopRoot = join(repoRoot, 'desktop')
+    if (!existsSync(desktopRoot)) {
+      t.skip('公开 CLI 仓库不包含桌面源码')
+      return
+    }
+    const version = JSON.parse(readFileSync(pkgPath, 'utf8')).version as string
+    const json = (file: string) => JSON.parse(readFileSync(join(desktopRoot, file), 'utf8'))
+    const lock = json('package-lock.json')
+    const versions = {
+      'desktop/package.json': json('package.json').version,
+      'desktop/package-lock.json': lock.version,
+      'desktop/package-lock.json packages[""]': lock.packages?.['']?.version,
+      'desktop/src-tauri/tauri.conf.json': json('src-tauri/tauri.conf.json').version,
+      'desktop/src-tauri/Cargo.toml': readFileSync(join(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8')
+        .split(/^\[/m).find(block => block.startsWith('package]'))?.match(/^version\s*=\s*"([^"]+)"/m)?.[1],
+      'desktop/src-tauri/Cargo.lock': readFileSync(join(desktopRoot, 'src-tauri/Cargo.lock'), 'utf8')
+        .split('[[package]]').find(block => /^name = "tianshu-desktop"$/m.test(block))
+        ?.match(/^version = "([^"]+)"$/m)?.[1],
+    }
+    for (const [file, actual] of Object.entries(versions)) {
+      assert.equal(actual, version, `${file} 必须与运行时 ${version} 一致`)
     }
   })
 })

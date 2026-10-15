@@ -75,7 +75,7 @@ test('推送成功：载荷上达、回执落盘、pending 翻转', async () => 
   assert.equal(calls.length, 1)
 
   const body = JSON.parse(calls[0]!.body ?? '{}')
-  assert.equal(body.version, 1)
+  assert.equal(body.version, 2)
   assert.equal(body.totals.requests, 1)
   assert.equal(body.days[0].date, '2026-10-10')
 
@@ -360,7 +360,9 @@ test('shutdown with automatic upload disabled still aborts a stalled manual sync
   // Persistence is isolated so its timing cannot accidentally trigger the deadline branch.
   ;(svc as unknown as { store: unknown }).store = {
     refresh: async () => ({ newRows: 0, scannedFiles: 0 }),
-    snapshotWithDigest: async () => ({ digest: 'fixture-digest', snapshot: {
+    digest: () => 'fixture-digest',
+    prepareSyncBatch: async () => ({digest:'fixture-digest',nextPage:0,pageCount:1}),
+    nextSyncPage: async () => ({ index:0, snapshot: {
       version: 1, deviceId: 'fixture-device', deviceName: 'fixture-device', sentAt: new Date(T0).toISOString(), totals,
       days: [{ date: '2026-10-10', model: 'fixture-model', ...totals }],
     } }),
@@ -402,7 +404,9 @@ test('shutdown invalidates an existing rotated sync queue before its active sync
   const totals = { requests: 1, input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 0 }
   ;(svc as unknown as { store: unknown }).store = {
     refresh: async () => ({ newRows: 0, scannedFiles: 0 }),
-    snapshotWithDigest: async () => ({ digest: 'fixture-digest', snapshot: {
+    digest: () => 'fixture-digest',
+    prepareSyncBatch: async () => ({digest:'fixture-digest',nextPage:0,pageCount:1}),
+    nextSyncPage: async () => ({ index:0, snapshot: {
       version: 1, deviceId: 'fixture-device', deviceName: 'fixture-device', sentAt: new Date(T0).toISOString(), totals,
       days: [{ date: '2026-10-10', model: 'fixture-model', ...totals }],
     } }),

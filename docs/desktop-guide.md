@@ -1,6 +1,8 @@
 # 桌面端用户指南
 
-> 适用于天枢桌面端（Tauri）。CLI 命令仍为 `rivet`，桌面端经 sidecar HTTP/SSE 驱动同一 agent 内核——本指南只讲桌面端独有的 UI、配置入口与交互模型。通用概念（Provider 配置、审查纪律、沙箱权限）见对应的 CLI 用户手册。
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md) · [📚 CLI 用户手册](./user-guide.md)
+>
+> 适用于天枢桌面端（Tauri）。CLI 主命令为 `tianshu`，兼容别名 `rivet`，桌面端经 sidecar HTTP/SSE 驱动同一 agent 内核——本指南只讲桌面端独有的 UI、配置入口与交互模型。通用概念（Provider 配置、审查纪律、沙箱权限）见对应的 CLI 用户手册。
 
 ## 目录
 
@@ -61,12 +63,12 @@
 - **Settings → Routing 的 `skipAuto` 复选框**改的是**配置文件**（`~/.rivet/config.json` 的 `agent.review.skipAuto`）。**只对新会话生效**——改了之后，当前已开的会话不会变，下一次新建线程才会按新配置走。它是"全局默认"。
 - **Plus 菜单 → ⚖ 审查 → Off** 改的是**当前会话的内存状态**（`reviewGateOverride`）。**立即生效**，但只影响当前会话——会话关闭后失效，下次新会话仍按 `skipAuto` 配置走。它是"临时覆盖"。
 
-### 默认行为（v2.22+）
+### 默认行为
 
-`skipAuto` **开箱默认 `true`**——即新用户开箱即"自动审查默认关"。需要审查时：
+`skipAuto` 默认值为 **`false`**——即默认开启提交后自动审查（`deliver_task` 提交时自动触发审查）。需要跳过或手动控制时：
 
+- **关闭自动审查**：在 Settings → Routing 勾选 `skipAuto`（或配置 `"skipAuto": true`，对所有新会话生效），或在当前会话 Plus 菜单 → ⚖ 审查 切为 Off（仅当前会话）。
 - **手动触发**：Plus 菜单 → ⚖ 审查 → L1 / L2 / Max，或斜杠命令 `/review`、`/review max`。**显式触发的审查永远放行**，不受 `skipAuto` 影响。
-- **恢复自动审查**：Settings → Routing 取消勾选 `skipAuto`（全局，新会话生效），或在当前会话 Plus 菜单切回 Auto（仅当前会话）。
 
 > 核心原则：一切"关闭"只抑制**系统自动审查**；用户显式 `review_level`（手动 `/review`）永远放行。off 模式下主控的测试/验证/提交环节完全不受影响。
 
@@ -195,10 +197,10 @@ Settings → 外观 提供 26 套内置主题（含暗色/亮色各半，如 `da
 
 ### Computer Use（GUI 自动化）
 
-让 agent 操控图形界面——点击、输入、截屏识别。基于 CDP 直连系统 Chrome（无需另装浏览器）。
+让 agent 操控图形界面——点击、输入、截屏识别。基于 CDP 直连系统 Chrome（无需另装浏览器，详见 [`docs/computer-use-cdp-backend.md`](./computer-use-cdp-backend.md)）。
 
 - **macOS**：需在系统设置授权"辅助功能"权限。Settings → Integrations → 计算机控制 可 per-app 授权（"始终允许操控 X 应用"）
-- **Windows**：支持 COM 自动化（见 [`docs/computer-use-windows-com-smoke.md`](./computer-use-windows-com-smoke.md)）
+- **Windows**：支持 COM 自动化（验证说明参考内部冒烟文档 `docs/computer-use-windows-com-smoke.md`）
 - **Pro 功能**：Computer Use 是 Pro 档差异化能力（见 Basic/Pro 双层说明）
 
 > 典型场景：操作不支持 CLI 的工具、自动化图形工作流、跨应用联动。开启 `RIVET_COMPUTER_USE_AUTOMOUNT` 可让 browser-debug 自动挂载 computer-use。

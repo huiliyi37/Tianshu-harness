@@ -3,6 +3,7 @@ import type { StreamClient, StreamCallbacks } from './stream-client.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { stripOaiImageParts } from './oai-types.js'
 import { withStructuredRetry } from './retry-engine.js'
+import { ToolNameProtocolError } from './tool-call-name.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { fetchWithTimeout } from './fetch-timeout.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
@@ -542,6 +543,7 @@ export class AnthropicClient implements StreamClient {
     // incremental input_json_delta chunks. We accumulate by block index
     // and emit the complete tool_use only on content_block_stop.
     const toolUseBuffer = new Map<number, { id: string; name: string; partialJson: string }>()
+    const completedToolIds = new Set<string>()
 
     // SSE idle timeout — same pattern as OpenAIClient and CodexClient.
     // Non-thinking requests use shorter timeouts (45s/120s) for faster
@@ -642,6 +644,11 @@ export class AnthropicClient implements StreamClient {
                 const id = block.id as string
                 const name = block.name as string
                 if (id && name) {
+                  const previous = toolUseBuffer.get(index)
+                  if (previous && (previous.id !== id || previous.name !== name)) throw new ToolNameProtocolError('identity')
+                  if (completedToolIds.has(id)) break
+                  if (previous) break
+                  if ([...toolUseBuffer.values()].some(buf => buf.id === id)) throw new ToolNameProtocolError('identity')
                   toolUseBuffer.set(index, { id, name, partialJson: '' })
                 }
               }
@@ -686,6 +693,7 @@ export class AnthropicClient implements StreamClient {
                     argsTruncated = true
                   }
                   callbacks.onContentBlock({ type: 'tool_use', id: buf.id, name: buf.name, input, argsTruncated })
+                  completedToolIds.add(buf.id)
                   toolUseBuffer.delete(index)
                 }
               }

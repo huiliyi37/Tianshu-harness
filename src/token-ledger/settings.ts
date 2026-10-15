@@ -34,7 +34,7 @@ export function readTokenLedgerSettings(config: Config): TokenLedgerSettings {
       apiKeyConfigured,
       apiKeySource: apiKeyConfigured ? (environmentKey ? 'environment' : 'saved') : 'none',
       autoSync: forum?.autoSync === true,
-      intervalMinutes: forum?.intervalMinutes ?? 30,
+      intervalMinutes: forum?.intervalMinutes ?? 1,
     },
   }
 }

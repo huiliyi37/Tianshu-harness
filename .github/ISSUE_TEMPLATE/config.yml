@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: 安全漏洞 · Security Vulnerability
-    url: https://github.com/huiliyi37/Tianshu-Tui/security/advisories/new
+    url: https://github.com/huiliyi37/Tianshu-harness/security/advisories/new
     about: 安全问题请走私密报告通道,不要开公开 issue。Report security issues privately.
   - name: 使用文档 · User Guide
-    url: https://github.com/huiliyi37/Tianshu-Tui/blob/main/docs/user-guide.md
+    url: https://github.com/huiliyi37/Tianshu-harness/blob/main/docs/user-guide.md
     about: 安装、配置与常见问题先看这里。Check the user guide first.

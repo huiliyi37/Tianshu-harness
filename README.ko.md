@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="https://tianshuharness.com"><b>🌐 공식 사이트 tianshuharness.com</b></a> · 
+  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><b>🇨🇳 AtomGit 미러</b></a> · 
   🇰🇷 <b>한국어</b> · 
   <a href="README.md">🇨🇳 中文</a> · 
   <a href="README.en.md">📖 English</a> · 
@@ -54,8 +55,8 @@
 - **프리픽스 캐시 최우선** —— 동결 프리픽스 + 증분 appendix + 경계 압축으로 DeepSeek V4 장대 세션에서 실측 정상 적중률 **95–99%**를 유지하여 token 비용을 크게 낮춥니다.
 
 <p align="center">
-  <img src="docs/brand/assets/tianshu-harness-screenshot.png" alt="天枢 TUI（终端版）" width="49%">
-  <img src="docs/brand/assets/tianshu-gui-screenshot.jpg" alt="天枢桌面端 GUI" width="49%">
+  <img src="docs/brand/assets/tianshu-harness-screenshot.png" alt="天枢 TUI（터미널 버전）" width="49%">
+  <img src="docs/brand/assets/tianshu-gui-screenshot.jpg" alt="天枢 데스크톱 GUI" width="49%">
 </p>
 <p align="center">
   <sub>왼쪽: 터미널 TUI（웰컴 페이지 + GlanceBar 상태 표시줄） · 오른쪽: 데스크톱 GUI（세션 사이드바 + 星域 빠른 선택, 테마 스튜디오에서 배경화면 커스터마이즈）——동일한 에이전트 커널</sub>
@@ -66,15 +67,15 @@
 
 ## 목차
 
-- [왜 天枢인가](#왜-天枢인가)
-- [빠른 시작](#빠른-시작)
-- [핵심 기능](#핵심-기능)
-- [모델 설정](#모델-설정)
-- [권한 모드](#권한-모드)
-- [슬래시 명령어](#슬래시-명령어)
-- [개발자 가이드](#개발자-가이드)
-- [보안](#보안)
-- [주요 설정 빠른 참조](#주요-설정-빠른-참조)
+- [왜 天枢인가](#-왜-天枢인가)
+- [빠른 시작](#-빠른-시작)
+- [핵심 기능](#-핵심-기능)
+- [모델 설정](#-모델-설정)
+- [권한 모드](#-권한-모드)
+- [슬래시 명령어](#-슬래시-명령어)
+- [개발자 가이드](#-개발자-가이드)
+- [보안](#-보안)
+- [주요 설정 빠른 참조](#-주요-설정-빠른-참조)
 
 ## 💡 왜 天枢인가
 
@@ -113,10 +114,10 @@
 CVM은 모델을「더 똑똑하게」만드는 것이 아니라 4계층 방어 깊이를 제공합니다:
 
 ```
-Layer 1: 信念宪法（static prompt）      → "你应该质疑、验证、拒绝"      [A/B 已证]
-Layer 2: Courage Hook（preTurn）        → 高信心时鼓励独立判断          [A/B 已证]
-Layer 3: Sensorium（每 turn <1ms）      → 六维状态感知，驱动策略切换     [Wave 7-8 已证]
-Layer 4: RuntimeHookPipeline（75 hooks） → trap-and-emulate 拦截退化行为 [全管线运行中]
+Layer 1: 신념 헌법（static prompt）      → "의문을 제기하고, 검증하며, 거절하라" [A/B 검증됨]
+Layer 2: Courage Hook（preTurn）        → 높은 확신 시 독립적 판단 장려          [A/B 검증됨]
+Layer 3: Sensorium（매 turn <1ms）      → 6차원 상태 감지, 전략 전환 구동        [Wave 7-8 검증됨]
+Layer 4: RuntimeHookPipeline（75 hooks） → trap-and-emulate로 퇴화 행동 차단      [전체 파이프라인 가동 중]
 ```
 
 ### 독립된 인지: 星域은 롤플레이가 아니다
@@ -154,8 +155,8 @@ Layer 4: RuntimeHookPipeline（75 hooks） → trap-and-emulate 拦截退化行�
 
 ### 2. 설치（택一）
 
-**방식 A: 데스크톱 앱（설치하면 바로 사용）** —— [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest)에서 다운로드: macOS `.dmg`（Apple Silicon / Intel 이중 아키텍처）· Windows `.exe` 설치 마법사 · Linux `.AppImage`.
-> **Linux 지원 범위（3.11.2 최초 제공）**: x64 AppImage 무설치——`chmod +x Tianshu_*.AppImage` 후 바로 실행. glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 등 주요 배포판） 필요, X11 세션 권장（Wayland는 미검증）. 알려진 제한: 음성 입력은 아직 불가（whisper 커뮤니티 빌드 부재로 브라우저 음성에 자동 폴백）; 데스크톱 자동 업데이트는 Linux에서도 동작합니다.
+**방식 A: 데스크톱 앱（설치하면 바로 사용）** —— [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest)에서 다운로드: macOS `.dmg`（Apple Silicon / Intel 이중 아키텍처）· Windows `.exe` 설치 마법사 · Linux `.AppImage`（**x86_64 / aarch64 이중 아키텍처**, 3.26.0부터）.
+> **Linux 지원 범위（3.11.2 최초 제공, 3.26.0부터 이중 아키텍처 지원）**: AppImage 무설치——`chmod +x Tianshu_*.AppImage` 후 바로 실행. 아키텍처에 맞는 패키지 선택: `Tianshu_*_amd64.AppImage`（x86_64 데스크톱/노트북）· `Tianshu_*_aarch64.AppImage`（ARM64: 라즈베리 파이 64비트, ARM Linux 노트북 등）. glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 등 주요 배포판） 및 시스템 그래픽 라이브러리 `libwebkit2gtk-4.1`과 `libgtk-3`이 필요합니다（대부분의 데스크톱 배포판에는 기본 포함되며, 부족 시 webkit2gtk 4.1을 설치하고 `ldd Tianshu_*.AppImage`로 누락 항목을 확인할 수 있음）. X11 세션 권장（Wayland는 미검증）. 음성 입력도 지원됩니다（로컬 `whisper.cpp` 공식 Linux 빌드를 내장해 오프라인 인식 지원）. 데스크톱 자동 업데이트는 Linux에서도 동작합니다.
 
 > **Windows 지원 범위**: Windows 10（1809+, 22H2 권장）/ Windows 11. 화면 렌더링은 **WebView2 Runtime（≥ 120 권장）**에 의존합니다——v3.5부터의 스크롤·렌더링 최적화는 최신 런타임이 필요하며, 구버전은 세션 영역 스크롤이 끊깁니다. 3.5.3부터 설치 프로그램에 완전한 오프라인 설치 패키지가 내장됩니다（네트워크 불필요, 시스템 레벨 등록）. 기존 사용자가 자동 업데이트 후 "너무 오래됨" 안내를 받으면: 안내 바 또는 「설정 → 런타임 및 정보」에서 「복구 도구 실행」. **창이 아예 열리지 않을 때**는 시작 메뉴의 「WebView2 복구」를 사용하거나, [Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest)에서 `windows-repair` 디렉터리의 `repair-webview2.cmd`를 더블클릭하세요. 또는 [WebView2 오프라인 설치 패키지](https://go.microsoft.com/fwlink/p/?LinkId=2124703)를 수동 설치 후 재시작하세요.
 > **Win10 태블릿 모드 알려진 동작**: 태블릿 모드에서 앱 전환 시 이전 앱이 화면 밖으로 밀려납니다——computer_use 스냅샷이 가림/백그라운드 자가복구를 수행하므로（PrintWindow 렌더링）태블릿 모드를 끌 필요가 없습니다.
@@ -165,12 +166,12 @@ Layer 4: RuntimeHookPipeline（75 hooks） → trap-and-emulate 拦截退化行�
 ```bash
 # macOS / Linux（bash）
 bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.sh)
-# 只安装不启动：
+# 설치만 하고 실행하지 않음:
 bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.sh) --no-launch
 
 # Windows（PowerShell）
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.ps1 | iex"
-# 只安装不启动（克隆仓库后本地跑）：
+# 설치만 하고 실행하지 않음（저장소 클론 후 로컬 실행）:
 powershell -ExecutionPolicy Bypass -File scripts\install-tui.ps1 -NoLaunch
 ```
 
@@ -189,8 +190,8 @@ tianshu
 git clone https://github.com/huiliyi37/Tianshu-harness.git
 cd Tianshu-harness
 npm install
-npm run build      # 生成 dist/cli/entry.js
-npm start          # 或：node dist/cli/entry.js
+npm run build      # dist/cli/entry.js 생성
+npm start          # 또는: node dist/cli/entry.js
 ```
 
 ### 3. Shell 자동완성 활성화（선택）
@@ -200,7 +201,7 @@ npm start          # 或：node dist/cli/entry.js
 **bash** —— 택一:
 
 ```bash
-source /path/to/rivet.bash                                   # 追加到 ~/.bashrc
+source /path/to/rivet.bash                                   # ~/.bashrc에 추가
 cp completions/rivet.bash ~/.local/share/bash-completion/completions/rivet
 sudo cp completions/rivet.bash /usr/share/bash-completion/completions/rivet
 ```
@@ -210,7 +211,7 @@ sudo cp completions/rivet.bash /usr/share/bash-completion/completions/rivet
 ```bash
 mkdir -p ~/.zsh/completions
 cp completions/rivet.zsh ~/.zsh/completions/_rivet
-echo 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc   # 需在 compinit 之前
+echo 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc   # compinit 이전에 위치해야 함
 ```
 
 **fish**:
@@ -235,8 +236,8 @@ Add-Content $PROFILE ". C:\path\to\tianshu.ps1"
 **개발자가 소스를 받아 시작할 때**（또는 시작 전에 미리 설정하고 싶을 때）만 수동으로 진행하면 됩니다:
 
 ```bash
-tianshu config set-key deepseek sk-xxx   # 密钥写入 secrets.json（0600），config.json 只留 keyRef
-export DEEPSEEK_API_KEY=sk-xxx         # 或：环境变量（仅当前 shell 有效）
+tianshu config set-key deepseek sk-xxx   # 키는 secrets.json（0600）에 기록되며, config.json에는 keyRef만 남음
+export DEEPSEEK_API_KEY=sk-xxx         # 또는: 환경 변수（현재 셸에서만 유효）
 ```
 
 > 다른 제공자（Claude, GLM, Codex, MiniMax, MiMo）도 사용법은 동일합니다. 자세한 내용은 [모델 설정](docs/user-guide-provider-config.md)을 참조하세요.
@@ -244,7 +245,7 @@ export DEEPSEEK_API_KEY=sk-xxx         # 或：环境变量（仅当前 shell �
 ### 5. 시작
 
 ```bash
-tianshu            # 或：npm start / node dist/cli/entry.js
+tianshu            # 또는: npm start / node dist/cli/entry.js
 ```
 
 `〉` 프롬프트가 있는 TUI가 나타납니다. 요구사항을 입력하고 Enter를 누르면 됩니다.
@@ -252,10 +253,10 @@ tianshu            # 或：npm start / node dist/cli/entry.js
 ### 헤드리스 모드（스크립트 통합）
 
 ```bash
-tianshu -p "解释 src/agent/loop.ts"       # 单次提示，文本输出，无 TUI
-tianshu -p "列出所有 TODO 注释" --json    # JSON 输出，便于脚本处理
-tianshu --stream-json -p "重构这个模块"  # NDJSON 事件流：text_delta/tool_use/tool_result/turn_complete…（CI 集成首选，输出内置脱敏）
-tianshu --goal "修复所有类型错误" --budget 50   # 无头目标自主模式，最多跑 50 轮（默认 100）
+tianshu -p "src/agent/loop.ts 설명해 줘"       # 단발 프롬프트, 텍스트 출력, TUI 없음
+tianshu -p "모든 TODO 주석 나열해 줘" --json    # JSON 출력, 스크립트 처리에 편리
+tianshu --stream-json -p "이 모듈 리팩터링해 줘"  # NDJSON 이벤트 스트림: text_delta/tool_use/tool_result/turn_complete…（CI 통합에 최적, 출력에 내장 마스킹 적용）
+tianshu --goal "모든 타입 오류 수정해 줘" --budget 50   # 헤드리스 목표 자율 모드, 최대 50턴 실행（기본 100）
 ```
 
 ### CLI 인자
@@ -270,8 +271,8 @@ tianshu --goal "修复所有类型错误" --budget 50   # 无头目标自主模�
 | `--model <name>` | 이번 세션 모델 덮어쓰기 |
 | `--provider <name>` | 이번 세션 provider 덮어쓰기 |
 | `--continue` `-c` | 현재 cwd의 최근 세션 복원 |
-| `--resume <id\|前缀>` `-r <id\|前缀>` | 지정 세션 복원（짧은 접두사로 충분） |
-| `--resume` `-r`（裸） | 시작 후 세션 선택기 열기 |
+| `--resume <id\|접두사>` `-r <id\|접두사>` | 지정 세션 복원（짧은 접두사로 충분） |
+| `--resume` `-r`（인자 없음） | 시작 후 세션 선택기 열기 |
 | `--new` | 강제로 새 세션 시작 |
 | `--list` · `tianshu sessions` | 세션 목록 출력 후 종료 |
 | `--dangerously-skip-permissions` | 단발 세션 완전 자동（모든 승인 건너뜀; 샌드박스는 여전히 켜짐） |
@@ -311,9 +312,11 @@ DeepSeek은 캐시 미스에 50× 비용을 부과합니다. 天枢의 프롬프
 
 진단: ① `tianshu logs`（또는 TUI에서 `/logs`）로 이번 세션의 데이터 루트와 `cache-log.jsonl` / `sensorium.jsonl` 경로를 직접 출력; ② 세션 `.jsonl`을 열어 `cache_read_input_tokens`를 검색해 각 턴의 적중 여부 확인; ③ 전체 원격 측정이 필요하면 `RIVET_DEBUG_TELEMETRY=1`（또는 아무 비어 있지 않은 값） 설정 후 `sensorium.jsonl` 확인; ④ `npm exec -- tsx scripts/verify-cache-hit-rate.ts`로 멀티턴 대화를 시뮬레이션해 검증. 경로 개요는 아래「로그와 진단」을 참조하세요.
 
-### 선(Zen) 모드: 읽기 중심 시작, 손대면 잠금 해제
+### 선(Zen) 모드: 읽기 중심 시작, 손대면 잠금 해제（opt-in）
 
-새 세션은 기본적으로 좁혀진 읽기 전용 도구 면으로 시작합니다（`read_file` / `grep` / `glob` / `repo_map` + `zen_unlock` 선언 도구）——모델이 시작 단계에서 전체 도구 스키마와 동적 주입에 방해받지 않게 하기 위함입니다. 손댈 필요가 생기면 면 밖의 도구를 호출하거나 `zen_unlock`으로 전체 면으로 승격되며 해당 호출도 통과합니다——거부 제로, 추가 왕복 제로. worker / 서브에이전트 세션은 절대 선 모드에 들어가지 않습니다（도구 면은 위임자가 결정）.
+> **기본 꺼짐**（`enabled: false`）：첫 턴부터 프리픽스 캐시가 고정되어, 선 모드 승격으로 인한 일회성 캐시 재구성이 발생하지 않습니다. 읽기 전용으로 가볍게 시작하는 경험을 선호한다면 설정에서 수동으로 켤 수 있습니다（아래 참조）.
+
+켜면 새 세션은 좁혀진 읽기 전용 도구 면으로 시작합니다（`read_file` / `grep` / `glob` / `repo_map` + `zen_unlock` 선언 도구）——모델이 시작 단계에서 전체 도구 스키마와 동적 주입에 방해받지 않게 하기 위함입니다. 손댈 필요가 생기면 면 밖의 도구를 호출하거나 `zen_unlock`으로 전체 면으로 승격되며 해당 호출도 통과합니다——거부 제로, 추가 왕복 제로. worker / 서브에이전트 세션은 절대 선 모드에 들어가지 않습니다（도구 면은 위임자가 결정）.
 
 승격 경로（zen → full, 단방향 복귀 없음, 세션당 최대 한 번）:
 
@@ -322,11 +325,11 @@ DeepSeek은 캐시 미스에 50× 비용을 부과합니다. 天枢의 프롬프
 - **timeout** —— 선 위상이 8개 이상의 user 턴 동안 손대지 않으면 자동 승격
 - **`/fast`** —— 사용자가 수동으로 건너뛰기
 
-**프리픽스 캐시에 미치는 영향（왜 가끔 한 번「깨지나」）**: 승격 순간 요청의 `tools` 필드가 ~5개 정의에서 전체 면으로 점프합니다——이는 system prompt와 동급의 프리픽스 신원 변경이라 해당 요청에서 캐시 전체가 재구성됩니다（실측 형태: 승격 턴 적중률이 낮아졌다가 다음 턴에 즉시 99% 정상 상태로 복귀）. system prompt / 동결 프리픽스 / 메시지 이력 / 모델은 내내 변하지 않습니다. 선 위상이 동적 주입을 자르는 것（appendixLean）은 프리픽스 뒤의 appendix에서 일어나므로 캐시 손상이 제로입니다. 관측: 세션 `meta.json`에 `zenPhase` / `zenPromoteReason`이 저장되고, `cache-log.jsonl`에서 승격 턴의 `toolsUpdated` 이벤트가 곧 단절 지점입니다. triage 채널 덕분에 대부분의 사소한 세션은 이 한 번의 단절조차 나타나지 않습니다. 완전히 끄려면:
+**프리픽스 캐시에 미치는 영향（왜 기본으로 꺼져 있나）**: 승격 순간 요청의 `tools` 필드가 ~5개 정의에서 전체 면으로 점프합니다——이는 system prompt와 동급의 프리픽스 신원 변경이라 해당 요청에서 캐시 전체가 재구성됩니다（실측 형태: 승격 턴 적중률이 낮아졌다가 다음 턴에 즉시 99% 정상 상태로 복귀）. system prompt / 동결 프리픽스 / 메시지 이력 / 모델은 내내 변하지 않습니다. 선 위상이 동적 주입을 자르는 것（appendixLean）은 프리픽스 뒤의 appendix에서 일어나므로 캐시 손상이 제로입니다. 관측: 세션 `meta.json`에 `zenPhase` / `zenPromoteReason`이 저장되고, `cache-log.jsonl`에서 승격 턴의 `toolsUpdated` 이벤트가 곧 단절 지점입니다. 수동으로 켜려면:
 
 ```json
-// ~/.rivet/config.json 或项目 .rivet-config.json
-{ "tools": { "zen": { "enabled": false } } }
+// ~/.rivet/config.json 또는 프로젝트 .rivet-config.json
+{ "tools": { "zen": { "enabled": true } } }
 ```
 
 선택 구성: `faceMode: "structuredRead"`（읽기 면에 `file_info` / `related_tests` / `repo_graph` / `semantic_search` / `read_section` 추가）, `timeoutSteps`（0 = 타임아웃 승격 비활성화）, `triage.maxChars`, `appendixLean`.
@@ -357,21 +360,21 @@ DeepSeek은 캐시 미스에 50× 비용을 부과합니다. 天枢의 프롬프
 
 ### 툴셋과 프리셋
 
-天枢에는 50개 도구가 내장되어 preset별로 단계적으로 장착됩니다（해석 우선순위: `RIVET_TOOL_PRESET` 환경 변수 > 프로젝트 `.rivet-config.json`의 `tools.preset` > 프로젝트/사용자 `runtime.domains.<域>.toolPreset` 도메인 단위 덮어쓰기 > 星域 내장 기본 단계（太一 도메인→taiyi）> 기본 `frontend`）:
+天枢에는 51개 도구가 내장되어 preset별로 단계적으로 장착됩니다（해석 우선순위: `RIVET_TOOL_PRESET` 환경 변수 > 프로젝트 `.rivet-config.json`의 `tools.preset` > 프로젝트/사용자 `runtime.domains.<도메인>.toolPreset` 도메인 단위 덮어쓰기 > 星域 내장 기본 단계（太一 도메인→taiyi）> 기본 `minimal`）:
 
 | Preset | 도구 수 | 설명 |
 |--------|--------|------|
-| **minimal** | 29 | 일상 개발 전능력——읽기쓰기/검색/bash/git/테스트/위임/web/계획/todo/memory, token 절약 + prefix cache 유지 |
-| **frontend**（기본） | 30 | minimal + `browser_debug`（UI 렌더링 검증 폐루프） |
-| **full** | 50 | 전체 집합, `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 오피스 도구족 등 고급 능력 포함 |
-| **taiyi** | 16 | 최소 평가 셋——고빈도 핵심 + 인도 폐루프, 오케스트레이션/브라우저/네트워크/비주얼 등 무거운 도구 제거; 太一 星域 고정 시 자동으로 이 셋에（아래「최소 툴셋」참조） |
+| **minimal**（기본） | 30 | 일상 개발 전능력——읽기쓰기/검색/bash/git/테스트/위임/web/계획/todo/memory, token 절약 + prefix cache 유지 |
+| **frontend** | 31 | minimal + `browser_debug`（UI 렌더링 검증 폐루프） |
+| **full** | 51 | 전체 집합, `council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / 오피스 도구족 등 고급 능력 포함 |
+| **taiyi** | 14 | 최소 평가 셋——고빈도 핵심 + 인도 폐루프, 오케스트레이션/브라우저/네트워크/비주얼 등 무거운 도구 제거; 太一 星域 고정 시 자동으로 이 셋에（아래「최소 툴셋」참조） |
 
 ```bash
-RIVET_TOOL_PRESET=full tianshu          # 本次会话用 full
+RIVET_TOOL_PRESET=full tianshu          # 이번 세션은 full 사용
 ```
 
 ```json
-{ "tools": { "preset": "frontend" } }   // ~/.rivet/config.json 或项目 .rivet-config.json
+{ "tools": { "preset": "minimal" } }    // ~/.rivet/config.json 또는 프로젝트 .rivet-config.json
 ```
 
 핵심 도구 일람（minimal에 기본 포함, 특별 표기 외）: bash · read · write · edit · apply_patch · grep · glob · ast_grep · diff · todo · plan · delegate_task · delegate_batch · web_search · web_fetch · ask_user_question · memory · skill · run_tests · git · job（백그라운드 작업）; `council_convene`/`team_orchestrate`/`monitor`/`computer_use`/오피스 도구족은 full 전용입니다.
@@ -379,8 +382,8 @@ RIVET_TOOL_PRESET=full tianshu          # 本次会话用 full
 ### 목표 기반 자동 연속 실행
 
 ```
-/goal 重构认证模块，全面使用 async/await
-/cancel-goal   # 提前停止
+/goal 인증 모듈을 리팩터링해 전면 async/await 적용
+/cancel-goal   # 조기 중지
 ```
 
 GoalTracker는 턴 루프, doom-loop 감지, 인도 게이트와 통합됩니다. goal 모드에서는 doom-loop 임계값을 완화해 더 깊은 탐색을 허용합니다.
@@ -394,19 +397,19 @@ GoalTracker는 턴 루프, doom-loop 감지, 인도 게이트와 통합됩니다
 Plan Mode에 들어간 뒤 agent는 바로 코드를 수정하지 않고:
 
 1. **조사** —— 관련 코드를 읽고 기존 아키텍처와 제약을 이해합니다（`delegate_batch`로 code_scout을 병렬 파견해 각 모듈 탐색 가능）
-2. **方案 산출** —— 구조화된 계획 문서（기술 조사, 아키텍처 다이어그램, 작업 분해, 검증 방법）를 `.rivet/plans/<slug>.md`에 작성
-3. **승인 제출** —— `plan` 도구 `action=submit`으로 제출, 方案 요점과 대안 경로를 나열하고 사용자 확인을 기다림
-4. **승인 실행** —— `/plan-list`로 조회, `/plan-approve <slug>`로 승인하고 wave 실행을 시작, `/plan-reject <slug> <反馈>`으로 반려해 수정 재제출
+2. **설계안 산출** —— 구조화된 계획 문서（기술 조사, 아키텍처 다이어그램, 작업 분해, 검증 방법）를 `.rivet/plans/<slug>.md`에 작성
+3. **승인 제출** —— `plan` 도구 `action=submit`으로 제출, 설계안 요점과 대안 경로를 나열하고 사용자 확인을 기다림
+4. **승인 실행** —— `/plan-list`로 조회, `/plan-approve <slug>`로 승인하고 wave 실행을 시작, `/plan-reject <slug> <피드백>`으로 반려해 수정 재제출
 5. **종료 정리** —— `/plan-close <file> --tasks <range|all> [--preview]`로 작업 상태를 표시（`--preview`는 미리보기만 하고 기록하지 않음）
 
 ```
-/plan-mode                          # 进入/退出 Plan Mode（toggle；未批准时退出需二次确认）
-/plan <feature>                     # 生成计划草稿（writing-plans 工作流）
-/plan-list                          # 列出待审批计划
-/plan-approve <slug> [option]       # 批准并启动执行
-/plan-reject <slug> [feedback]      # 退回修改（plan mode 保持开启）
-/plan-close <file> --tasks <1-7|all> [--preview]   # 关闭已完成计划
-/plan-template                      # 管理可复用计划模板
+/plan-mode                          # Plan Mode 진입/종료（토글; 미승인 상태 종료 시 2차 확인 필요）
+/plan <feature>                     # 계획 초안 생성（writing-plans 워크플로）
+/plan-list                          # 승인 대기 계획 나열
+/plan-approve <slug> [option]       # 승인 및 실행 시작
+/plan-reject <slug> [feedback]      # 수정 반려（plan mode 유지）
+/plan-close <file> --tasks <1-7|all> [--preview]   # 완료된 계획 닫기
+/plan-template                      # 재사용 가능한 계획 템플릿 관리
 ```
 
 > 읽기 전용 **Ask Mode**도 있습니다（`/ask` 토글）: 읽기/검색/`ask_user_question`만 허용해 코드 질의응답과 요구사항 정리에 적합합니다. 쓰기나 명령 실행이 필요해지면 `/ask`로 다시 나오면 됩니다.
@@ -418,11 +421,11 @@ Plan Mode에는 星域 위임이 내장되어 있습니다——복잡한 계획
 **星域이란**: 天枢는 서로 다른 인지 자세를「星域」으로 모델링합니다——각 별은 롤플레이가 아니라 전환 가능한 인지 규율의 집합입니다. 해당 도메인에 들어가면 세 가지가 **실제로 전환**되며 이름만 바뀌는 것이 아닙니다: **시스템 프롬프트**（해당 도메인 방법론 volatile block）, **도구 화이트리스트**（worker와 도메인 `toolWhitelist`의 교집합）, **결정 임계값**（`courageThreshold`——破军 0.25가 가장 과감, 太一 0.95가 가장 신중, 瑶光 0.7은 증거 중시）. 새 세션은 기본으로 **啟明**（전체 조망, 근본 원인 추론）에 고정되며 자동 전환되지 않습니다. 기본 星域을 `auto`로 설정하면 작업 설명 키워드에 따라 자동 라우팅됩니다（풀 내는 天权/开阳/瑶光/天梁 + 커스텀 도메인; 华盖 등 특화 도메인은 수동 지정 필요）. 星域이 실제 세션에서 보여주는 행동 샘플은 [지표 관측과 실제 데이터](docs/reference/observability-harness.md)를 참조하세요.
 
 ```bash
-/domain tianliang          # 显式切换到天梁域
-/domain list               # 列出所有星域
-/domain                    # 打开星域选择面板
-实现用户注册模块            # 自动路由到天梁（执行/交付）
-审查这个方案                # 自动路由到天权（规划/审查）
+/domain tianliang          # 명시적으로 天梁 도메인으로 전환
+/domain list               # 모든 星域 나열
+/domain                    # 星域 선택 패널 열기
+사용자 등록 모듈 구현       # 자동으로 天梁（실행/인도）으로 라우팅
+이 설계안을 검토해 줘       # 자동으로 天权（계획/심사）으로 라우팅
 ```
 
 #### 🌟 새 사용자 추천
@@ -433,8 +436,8 @@ Plan Mode에는 星域 위임이 내장되어 있습니다——복잡한 계획
 |------|------|----------|
 | **啟明** `qiming` | 새벽 안내자（기본 도메인） | 범용 엔지니어링 능력 · 전체 조망——요구사항이 모호하고 방향이 불명확할 때, 먼저 전체를 보고 근본 원인을 찌른 뒤 손을 댄다 |
 | **長庚** `changgeng` | 야경꾼 | 범용 엔지니어링 능력 · 종국 완성——시각 최종 검수, 밤샘 동행, 인도 마무리, 불 끄기 전에 이정표를 남긴다 |
-| **太一** `taiyi` | 미니멀 센터 | 미니멀 경험——내장 16개 핵심 도구（taiyi 셋）, 재촉하지 않고 방해하지 않음. 조용하고 효율적인 걸 좋아하면 수동으로 `/domain taiyi` |
-| **天权** `tianquan` | 方案 심사관 | 계획과 심사에 능함——아키텍처 평가, 方案 트레이드오프, 기술 선정, 실행 가능한 계획 산출 |
+| **太一** `taiyi` | 미니멀 센터 | 미니멀 경험——내장 14개 핵심 도구（taiyi 셋）, 재촉하지 않고 방해하지 않음. 조용하고 효율적인 걸 좋아하면 수동으로 `/domain taiyi` |
+| **天权** `tianquan` | 설계 심사관 | 계획과 심사에 능함——아키텍처 평가, 설계 트레이드오프, 기술 선정, 실행 가능한 계획 산출 |
 | **瑶光** `yaoguang` | 재현 검증관 | 심사와 검수에 능함——결함 재현, 회귀 검증, 가짜 초록불 감시——초록불은 수치가 아니다 |
 
 > 이 다섯 개 밖의 일상 출구: 계획 확정 후 **정확한 인도**를 원한다면 **天梁**（인도 집행관）으로——wave 단위 착지, 배치별 검증, 인도 흔적 남김.
@@ -444,8 +447,8 @@ Plan Mode에는 星域 위임이 내장되어 있습니다——복잡한 계획
 | 시나리오 | 星域 | 별명 | 특화 공략 |
 |------|------|------|----------|
 | 계획과 심사 | 啟明 ☥ `qiming` | 새벽 안내자 | 요구사항이 모호하고 방향이 불명확——탐침 우선, 전체 조망, 근본 원인 추론（기본 도메인） |
-| 계획과 심사 | 天权 ⚖ `tianquan` | 方案 심사관 | 아키텍처 평가, 方案 트레이드오프, 기술 선정, 실행 가능한 계획 산출 |
-| 계획과 심사 | 天机 ⚝ `tianji` | 전제 의문관 | 方案의 허점 찾기, 실패 모드 추론, 아무도 말하지 않은 전제에 도전 |
+| 계획과 심사 | 天权 ⚖ `tianquan` | 설계 심사관 | 아키텍처 평가, 설계 트레이드오프, 기술 선정, 실행 가능한 계획 산출 |
+| 계획과 심사 | 天机 ⚝ `tianji` | 전제 의문관 | 설계의 허점 찾기, 실패 모드 추론, 아무도 말하지 않은 전제에 도전 |
 | 계획과 심사 | 天枢 ✵ `tianshu` | 전체 총괄관 | 모듈 간 총괄, 전체 체인 폐루프, 복잡 시스템 거버넌스（명시적으로 켜는 총괄 자리） |
 | 실행과 인도 | 天梁 ✧ `tianliang` | 인도 집행관 | 확정 계획의 정확한 착지, wave 단위 인도, 배치별 검증과 흔적 |
 | 실행과 인도 | 华盖 ☉ `huagai` | 낮 지킴이 | 장기 건설, 다중 심사 마라톤, 마지막 마일 마무리 |
@@ -472,7 +475,7 @@ Plan Mode에는 星域 위임이 내장되어 있습니다——복잡한 계획
 
 장대 세션의 컨텍스트는 커집니다. 어느 정도까지 가면 이어서 달리기보다 새 세션을 여는 게 낫습니다. 天枢는「인수인계 → 복원」폐루프로 세션 간 컨텍스트를 손실 없이 전달하고 프리픽스 캐시도 지킵니다:
 
-**인수인계 `/handoff [备注]`** —— agent가 전체 컨텍스트를 갖고 구조화된 인수인계 문서를 프로젝트 내 `.rivet/HANDOFF.md`에 작성합니다（작업 공간 내, 승인 불필요）, 턴 완료 후 세션 디렉터리에 `<id>.handoff.md`로 자동 아카이브됩니다. 문서는 **컨텍스트가 전혀 없는 새 세션**이 읽도록 쓰며, 고정 다섯 장:
+**인수인계 `/handoff [메모]`** —— agent가 전체 컨텍스트를 갖고 구조화된 인수인계 문서를 프로젝트 내 `.rivet/HANDOFF.md`에 작성합니다（작업 공간 내, 승인 불필요）, 턴 완료 후 세션 디렉터리에 `<id>.handoff.md`로 자동 아카이브됩니다. 문서는 **컨텍스트가 전혀 없는 새 세션**이 읽도록 쓰며, 고정 다섯 장:
 
 - **작업 목표** — 사용자 원문 수준의 한 문장 목표 + 명확한 비목표
 - **완료된 것** — 항목마다 증거 포함: 변경 파일（`file:line`）, 실행한 검증 명령어와 결과, 커밋 해시
@@ -491,16 +494,16 @@ Plan Mode에는 星域 위임이 내장되어 있습니다——복잡한 계획
 - **상태 복원** —— 사이드바, 대기 작업, 활성 계획을 함께 복원
 
 ```bash
-tianshu --continue                 # 恢复当前 cwd 最近会话
-tianshu --resume abc123            # 恢复指定会话（短前缀即可）
-tianshu --resume                   # 启动后打开会话选择器
+tianshu --continue                 # 현재 cwd의 최근 세션 복원
+tianshu --resume abc123            # 지정 세션 복원（짧은 접두사로 충분）
+tianshu --resume                   # 시작 후 세션 선택기 열기
 ```
 
 ### 평의회（다각도 심사）
 
 ```
-/council <目标>
-/council <目标> --rounds 2   # 启用反驳轮次
+/council <목표>
+/council <목표> --rounds 2   # 반박 라운드 활성화
 ```
 
 여러 전문가 자리를 소집해 계획이나 설계를 심사합니다. 충돌 시 선택적으로 2라운드 반박이 가능하며, 감사 가능한 Markdown 계획을 산출합니다.
@@ -510,8 +513,8 @@ tianshu --resume                   # 启动后打开会话选择器
 재사용 가능한 워크플로 대본. 기본 배포판에 `visual-acceptance`（프론트엔드/UI 변경 검수: 스크린샷 비교, 렌더링 자체 점검, 인터랙션 워크스루）가 내장됩니다. 프로젝트 레벨 skill은 `.rivet/skills/*.md`에서 로드합니다. 두 계층 점진적 공개: 이름 + 설명만 컨텍스트에 들어가고, 전체 지침은 필요 시 `skill` 도구나 `/skill`로 로드합니다.
 
 ```
-/skill visual-acceptance <你的任务>    # 加载并立即执行该 skill
-/skill off visual-acceptance           # 停止重复注入该 skill
+/skill visual-acceptance <작업 내용>    # 해당 skill을 로드하고 즉시 실행
+/skill off visual-acceptance           # 해당 skill의 반복 주입 중지
 ```
 
 `.rivet/skills/`에 YAML frontmatter（`name`, `description`, `triggers`）가 있는 `.md` 커스텀 skill을 넣을 수도 있습니다.
@@ -528,7 +531,7 @@ tianshu --resume                   # 启动后打开会话选择器
 | **명시적 회상** | `memory recall`（구조화 항목 + `knowledge/*.md` + playbook 혼합 검색）, `memory deep_recall`（과거 세션 원문을 걸러 증류, 현재 세션과 worker 세션 자동 제외） |
 | **자동 주입** | 새 세션이 현재 작업과 관련된 **거버넌스/제약/선호** 계열 메모리를 자동으로 가져감. 과거 문서와 `failure_pattern`/`finding`은 기본적으로 자동 주입하지 않고 명시적 recall로만 |
 | **주제 전환 격리** | 「해결됨 / 다른 요구」등 신호를 인식하고 의도 라우팅의 고확신 주제 전환을 겹쳐 인식. 짧은 새 질문이 더 이상 옛 작업 메모리에 납치되지 않음 |
-| **생명주기** | `/remember <内容>` 직접 쓰기; `/forget <entryId> [resolved]` 명시적 무효화（resolved=옛 문제 해결됨, forgotten=자발적 망각）; 무효화는 invalidate-don't-delete 방식으로 원문을 보존해 감사 가능 |
+| **생명주기** | `/remember <내용>` 직접 쓰기; `/forget <entryId> [resolved]` 명시적 무효화（resolved=옛 문제 해결됨, forgotten=자발적 망각）; 무효화는 invalidate-don't-delete 방식으로 원문을 보존해 감사 가능 |
 | **데이터 위치** | 세션 간 지식은 `<cwd>/.rivet/knowledge/`에, 세션 원문은 `~/.rivet/sessions/<slug>/<id>.jsonl`에, 정보 페로몬은 **세션 내부** 신호로 세션을 넘지 않음 |
 
 자주 쓰는 스위치:
@@ -546,10 +549,10 @@ tianshu --resume                   # 启动后打开会话选择器
 외부 도구 서버——문서 검색, 데이터베이스, API——를 agent의 도구 파이프라인에 직접 연결합니다. 시작 시 자동 발견되며 도구는 `mcp__<serverId>__<toolName>` 형태로 나타납니다.
 
 ```bash
-tianshu config mcp add-stdio <server-id> npx -y <package> [args...]   # 本地进程
-tianshu config mcp add-sse <server-id> http://localhost:3001/sse      # 远程/网络
-tianshu config mcp add-preset context7                               # 常用预设
-tianshu config mcp list                                              # 列出 + 状态
+tianshu config mcp add-stdio <server-id> npx -y <package> [args...]   # 로컬 프로세스
+tianshu config mcp add-sse <server-id> http://localhost:3001/sse      # 원격/네트워크
+tianshu config mcp add-preset context7                               # 자주 쓰는 프리셋
+tianshu config mcp list                                              # 목록 + 상태
 ```
 
 세션 내에서: `/mcp`（상태）, `/debug mcp`（진단）. MCP 도구와 내장 도구는 동일한 승인 모드를 따릅니다.
@@ -649,27 +652,28 @@ TUI는 CLI의 기본 표면입니다. 데스크톱 앱（Tauri）과 VS Code/Cur
 
 ### 🎙️ 음성 입력（데스크톱）
 
-입력 박스의 마이크 버튼으로 음성 입력을 지원하며, **macOS와 Windows 공통**입니다. 인식은 **로컬 whisper.cpp 엔진**이 담당합니다——오프라인, 프라이버시 보호（녹음이 어떤 서버에도 올라가지 않음）, 중영어 혼용 시나리오에서 시스템 기본 인식보다 정확합니다.
+입력 박스의 마이크 버튼으로 음성 입력을 지원하며, **macOS, Windows, Linux 공통**입니다. 인식은 **로컬 whisper.cpp 엔진**이 담당합니다——오프라인, 프라이버시 보호（녹음이 어떤 서버에도 올라가지 않음）, 중영어 혼용 시나리오에서 시스템 기본 인식보다 정확합니다.
 
 **첫 사용 안내**
 
 - 첫 클릭 시 인식 모델이 자동 다운로드됩니다（tiny 약 75MB, 국내는 미러 가속）. 다운로드가 끝나지 않은 상태에서 클릭하면「음성 인식 실패（whisper-unavailable）」라고 표시되며, 잠시 후 재시도하면 됩니다.
 - macOS 첫 사용 시 마이크 권한을 요청합니다: 「허용」을 클릭하면 됩니다. 실수로 거절했다면「시스템 설정 → 프라이버시 및 보안 → 마이크」에서 본 앱을 켜세요.
 - Windows에서 권한 거절 메시지가 뜨면「시스템 설정 → 프라이버시 → 마이크」에서 본 앱을 허용하세요.
+- Linux（`x86_64` / `aarch64` AppImage에 `whisper-cli` 내장）는 WebKitGTK / PipeWire（또는 PulseAudio / ALSA）로 마이크에 접근하므로 시스템 오디오 입력 장치가 정상인지 확인하세요.
 
 **주의사항**
 
 - 인식은 전 과정이 로컬에서 일어나며, 녹음은 기기를 떠나지 않습니다.
 - 한 번 클릭하면 녹음이 시작되고, 다시 클릭하면 종료 후 인식합니다.
-- 로컬 엔진을 쓸 수 없을 때（모델 미다운로드 등）macOS는 시스템 음성 인식으로 자동 폴백하고, Windows는 모델이 준비되지 않았다고 안내합니다.
+- 로컬 엔진을 쓸 수 없을 때（모델 미다운로드 등）macOS는 시스템 음성 인식으로 자동 폴백하고, Windows / Linux는 모델이 준비되지 않았다고 안내합니다.
 - 더 높은 정확도를 원한다면 base 모델（약 244MB）로 교체하세요: `desktop/scripts/fetch-whisper-runtime.js --with-base`로 미리 다운로드.
-- 네트워크 제한 환경에서는 `RIVET_WHISPER_PROXY=http://代理:端口`로 모델 다운로드를 가속할 수 있습니다.
+- 네트워크 제한 환경에서는 `RIVET_WHISPER_PROXY=http://프록시:포트`로 모델 다운로드를 가속할 수 있습니다.
 
 ### ⚡ Lean 리소스 단계（저메모리 / 저디스크）
 
 메모리나 디스크가 빠듯할 때 Lean 단계를 사용합니다: 도구 세트와 프롬프트를 정리하고, embeddings를 끄고, 세션 풀을 타이트하게 유지（4세션 / 10분 TTL / 10MB 이벤트 로그）. 저사양 머신이나 장시간 다중 세션 실행에 적합합니다.
 
-**켜는 방법**（택一）:
+**켜는 방법**（택일）:
 
 - 환경 변수: `RIVET_LEAN=1` 전역 켜기; `RIVET_LEAN_ASPECT=tools,prompt,embeddings,meridian,pool`로 필요한 하위 항목만 켜기（`RIVET_LEAN=0`으로 명시적 끄기 가능）
 - TUI: `/config` → Basics → Lean 리소스 단계（스위치 + 세 가지 임계값）
@@ -679,7 +683,7 @@ TUI는 CLI의 기본 표면입니다. 데스크톱 앱（Tauri）과 VS Code/Cur
 
 **임계값 기본값**: Lean 4세션 / 600000ms（10분）/ 10MB, 정상 16 / 1800000ms（30분）/ 50MB. 이벤트 로그 디스크 하한은 1,000,000바이트.
 
-**최소 툴셋（taiyi 셋）**: `RIVET_TOOL_PRESET=taiyi`（또는 프로젝트 설정 `tools.preset: "taiyi"`）는 고빈도 핵심 도구만 장착합니다（읽기쓰기/검색/bash/git/테스트/인도/계획 등 16개）, 오케스트레이션/브라우저/네트워크/비주얼 등 무거운 도구는 제거——「핵심 도구만 남겨도 충분한가」를 평가하기에 적합합니다. `full` 셋으로 원클릭 전체 복귀. **太一 星域은 이 셋을 내장**: `defaultDomain`을 `taiyi`로 고정하면 설정 없이 자동으로 taiyi 셋에 해당합니다（명시적 셋 지정은 항상 우선해 덮어쓸 수 있음）. 원클릭 조합은 아래「최소 셋과 星域 바인딩」을 참조하세요.
+**최소 툴셋（taiyi 셋）**: `RIVET_TOOL_PRESET=taiyi`（또는 프로젝트 설정 `tools.preset: "taiyi"`）는 고빈도 핵심 도구만 장착합니다（읽기쓰기/검색/bash/git/테스트/인도/계획 등 14개）, 오케스트레이션/브라우저/네트워크/비주얼 등 무거운 도구는 제거——「핵심 도구만 남겨도 충분한가」를 평가하기에 적합합니다. `full` 셋으로 원클릭 전체 복귀. **太一 星域은 이 셋을 내장**: `defaultDomain`을 `taiyi`로 고정하면 설정 없이 자동으로 taiyi 셋에 해당합니다（명시적 셋 지정은 항상 우선해 덮어쓸 수 있음）. 원클릭 조합은 아래「최소 셋과 星域 바인딩」을 참조하세요.
 
 **星域 단위 덮어쓰기（runtime.domains）**: `defaultDomain`이 어떤 星域으로 고정되면 그 星域의 lean/임계값/도구 셋이 전역 구성을 덮어씁니다（다른 星域은 영향 없음）:
 
@@ -724,18 +728,20 @@ OpenAI 형식의 텍스트→이미지 엔드포인트（SiliconFlow, OpenAI Ima
 | DeepSeek Spark（Pro 전용） | API key（`DEEPSEEK_SPARK_API_KEY`） | deepseek-v4-flash（경량 추론 + 앵커 캐시 채널） |
 | Claude | API key（`cc-switch` 프록시 경유） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（지푸） | API key | glm-5.3 (1M ctx), glm-5.3-flash（비전）, glm-5.2 |
-| Codex (GPT-5.6) | OAuth PKCE（ChatGPT 구독） | gpt-5.6-sol |
+| Codex (GPT-6.1 / 5.6) | OAuth PKCE（ChatGPT 구독） | gpt-6.1-sol（기본）, gpt-5.6-sol |
+| Grok (xAI) | API key（`XAI_API_KEY`） | grok-4.6（500K ctx, 비전, 추론 effort low/medium/high/xhigh） |
 | MiniMax | API key | MiniMax-M3（비전）, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro（기존 V2.5 프리셋; V2.6 Flash / Pro는 모델 목록에서 추가 가능） |
+| MiMo | API key | mimo-v2.6-pro / mimo-v2.6-flash（1M ctx, 멀티모달 비전）, mimo-v2.5-pro, mimo-v2.5（2026-10-21 공식 종료） |
+| Gemini (Google) | API key（`GEMINI_API_KEY`） | gemini-3.8-flash（1M ctx）, gemini-3.5-flash, gemini-3.1-pro-preview |
 | Kimi Code | API key | k3（1M ctx, 비전）, k3-256k, kimi-for-coding |
 
 세션 안에서 `/model <name>`으로 언제든 제공자를 전환할 수 있습니다.
 
 ```bash
-tianshu                                 # 启动 TUI；首次缺 key 时自动打开 /connect
-tianshu config                          # 查看配置命令帮助
-tianshu config setup codex --default    # Codex 走 OAuth（首次浏览器登录）
-tianshu config show                     # 查看完整配置
+tianshu                                 # TUI 시작; 첫 실행 시 키가 없으면 자동으로 /connect 열기
+tianshu config                          # 설정 명령어 도움말 보기
+tianshu config setup codex --default    # Codex는 OAuth 사용（첫 실행 시 브라우저 로그인）
+tianshu config show                     # 전체 설정 보기
 ```
 
 config.json을 직접 편집할 수도 있습니다（덮어써야 할 필드만 작성하면 기본값이 깊이 병합됨）. 파일 위치: CLI는 `~/.rivet/config.json`（Windows는 `%LOCALAPPDATA%\.rivet`）; 데스크톱 앱은 Settings → 저장 위치 기준이며, 포터블 버전은 exe 옆 `TianshuData\.rivet`에 있습니다——자세한 내용은 [먼저 데이터 루트 찾기](#먼저-데이터-루트-찾기)를 참조하세요:
@@ -794,22 +800,22 @@ config.json을 직접 편집할 수도 있습니다（덮어써야 할 필드만
 | 단계 | 명령 | 행동 |
 |------|------|------|
 | **감독** | `/permission supervise`（별칭 `manual`） | 모든 고위험 도구에 확인 팝업, 최대 통제 |
-| **자동**（기본） | `/permission auto [轮次]`（별칭 `default`） | 저/무위험 도구는 자동 실행, 고위험은 여전히 확인; 매 N라운드 체크포인트 설정 가능 |
+| **자동**（기본） | `/permission auto [라운드]`（별칭 `default`） | 저/무위험 도구는 자동 실행, 고위험은 여전히 확인; 매 N라운드 체크포인트 설정 가능 |
 | **완전 자동** | `/permission unattended confirm` · `/yes` · `/yolo` | 승인 없이 실행; 쓰기 경계는 유지（자동으로 샌드박스 켜짐）, 롤백 폴백 |
 
 빠른 조작:
 
 ```bash
-/permission                 # 交互式选择三档
-/permission status          # 当前模式 + 规则
-/permission allow/deny      # 工具白名单/黑名单
-/permission bash allow/deny # bash 前缀白名单/黑名单
-/yes [off] · /yolo [off]    # 一键全自动 / 回到自动（持久化为默认）
+/permission                 # 대화형으로 3단계 선택
+/permission status          # 현재 모드 + 규칙
+/permission allow/deny      # 도구 화이트리스트/블랙리스트
+/permission bash allow/deny # bash 접두사 화이트리스트/블랙리스트
+/yes [off] · /yolo [off]    # 원클릭 완전 자동 / 자동으로 복귀（기본값으로 영구 저장）
 ```
 
 ```bash
-tianshu --dangerously-skip-permissions      # 单次会话全自动
-tianshu config set-approval auto-safe       # 持久化默认档位
+tianshu --dangerously-skip-permissions      # 단발 세션 완전 자동
+tianshu config set-approval auto-safe       # 기본 단계 영구 저장
 ```
 
 - 규칙은 `[config]`（영구）와 `[session]`（이번 세션）두 층으로 나뉘며, `deny`가 항상 우선합니다.
@@ -829,12 +835,12 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/help` | 사용 가능한 명령어 표시 |
 | `/sessions` `/resume <n>` | 저장된 세션 나열/복원（사이드바, 대기 작업, 활성 계획 복원 포함） |
 | `/fork` | 현재 세션 분기（특정 메시지부터 선택 가능） |
-| `/handoff [备注]` | 구조화 인수인계 문서 작성（다섯 장）, 아카이브 후 새 세션에 자동 주입 |
+| `/handoff [메모]` | 구조화 인수인계 문서 작성（다섯 장）, 아카이브 후 새 세션에 자동 주입 |
 | `/init` | 대화형 프로젝트 초기화: verify 선언 / skills / hooks 스캐폴드 |
 | `/doctor` | 환경 건강 점검 + bash 도구가 쓰는 셸 확인 |
 | `/logs [open [desktop]]` | 이번 세션 로그 위치（세션 / 캐시 / 6차원 / 데스크톱 sidecar）, 쓰기 게이트와 회수 설명 포함; `open`은 파일 관리자에서 열기 |
 | `/connect` | 모델 제공자 연결 마법사（내장 또는 커스텀 선택, API 키 입력） |
-| `/config` `/settings` `/setup` | 설정 패널: 서브에이전트 라우팅 / 검토 스위치（`审查 → 关闭提交后自动审查`） / 이미지 인식 모델 / 도구 단계·승인·기본 星域·기본 모델 / 미러·프록시·검색 백엔드. `Tab` 탭 전환, `Enter` 편집, `S` 저장, 항목마다 즉시 또는 다음 세션 적용 표시 |
+| `/config` `/settings` `/setup` | 설정 패널: 서브에이전트 라우팅 / 검토 스위치（`검토 → 제출 후 자동 검토 끄기`） / 이미지 인식 모델 / 도구 단계·승인·기본 星域·기본 모델 / 미러·프록시·검색 백엔드. `Tab` 탭 전환, `Enter` 편집, `S` 저장, 항목마다 즉시 또는 다음 세션 적용 표시 |
 | `/cd <path>` | 세션 중간에 작업 디렉터리 전환（프리픽스 캐시 유지, 세션 소속은 새 프로젝트로 이동） |
 | `/trust` | 프로젝트 신뢰 관리——신뢰하지 않은 프로젝트는 hooks / 프로젝트 MCP를 로드하지 않고, 프로젝트 설정 안전 키를 제거 |
 | `/exit` `/quit` | 세션 저장 후 종료 |
@@ -865,14 +871,14 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/ask` | Ask Mode 진입/종료（읽기 전용 질의응답, 토글） |
 | `/council <text>` | 멀티모델 평의회 소집 심사（天权/天府/天璇 세 자리） |
 | `/team <plan.md>` | 팀 모드: 다중 agent 병렬 계획 실행 |
-| `/scout <目标> [--dims 前端,后端,集成]` | 순천 정찰 비행대: 병렬 읽기 전용 진단, 증거가 있는 실측 대조 체크리스트 + runbook 인도（파일 작성 없음. 선별 요령——계획 자산을 남기려면 /team, 이번 한 번만 병렬 가속이면 /scout） |
+| `/scout <목표> [--dims 프론트엔드,백엔드,통합]` | 순천 정찰 비행대: 병렬 읽기 전용 진단, 증거가 있는 실측 대조 체크리스트 + runbook 인도（파일 작성 없음. 선별 요령——계획 자산을 남기려면 /team, 이번 한 번만 병렬 가속이면 /scout） |
 
 **검토 모드**
 
 `deliver_task`로 코드를 제출할 때마다 天枢는 자동으로 제출 후 검토를 실행합니다. 검토는 두 단계로 나뉩니다: 문서/설정 등 기계적 변경은 자동으로 건너뛰고（L1 nudge）, 핵심 코드 변경은 L2 배선 검사（wiring inspector）를 유발합니다. 검토 결과는 인도 리포트에 나타나며 제출을 막지는 않습니다（advisory）.
 
-- **CLI（TUI）**: 기본 켜짐. 설정 패널 → `审查` → `关闭提交后自动审查`로 수동 종료 가능（체크하면 검토 건너뜀）. `RIVET_REVIEW_DISCIPLINE=0` 환경 변수로 전역 종료할 수도 있습니다.
-- **데스크톱 앱（desktop）**: 표준 DeepSeek 세션은 기본 켜짐, Spark 세션은 기본 켜짐 + 검토 서브에이전트가 spark-flash 사용. `设置 → Routing → 审查子代理`에서 두 개의 독립 스위치를 찾을 수 있습니다: `SkipAuto`（표준 세션）, `SkipAutoSpark`（Spark 세션）.
+- **CLI（TUI）**: 기본 켜짐. 설정 패널 → `검토` → `제출 후 자동 검토 끄기`로 수동 종료 가능（체크하면 검토 건너뜀）. `RIVET_REVIEW_DISCIPLINE=0` 환경 변수로 전역 종료할 수도 있습니다.
+- **데스크톱 앱（desktop）**: 표준 DeepSeek 세션은 기본 켜짐, Spark 세션은 기본 켜짐 + 검토 서브에이전트가 spark-flash 사용. `설정 → Routing → 검토 서브에이전트`에서 두 개의 독립 스위치를 찾을 수 있습니다: `SkipAuto`（표준 세션）, `SkipAutoSpark`（Spark 세션）.
 - 수동 검토: 언제든 `/review`（L2 대항 검토）나 `/review max`（L3 다섯 자리 검토 squad）로 현재 변경에 대한 심층 검토를 실행할 수 있습니다. 이것은 명시적 요청이라 스위치의 영향을 받지 않습니다.
 
 **서브에이전트와 백그라운드 작업**
@@ -890,10 +896,10 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/compact` | 컨텍스트 즉시 압축 |
 | `/context` | 컨텍스트 장부 표시: 건강도, tokens, 턴, 선언 |
 | `/evidence` | 증거 요약 표시（읽기/수정한 파일, 테스트） |
-| `/memory` | 메모리 개요; `/memory add <内容>`으로 프로젝트 지식 기록, `/memory search <关键词>`로 검색 |
-| `/remember <内容>` | 사용자가 프로젝트 장기 메모리에 직접 기록（인자 없으면 최근 항목 보기） |
+| `/memory` | 메모리 개요; `/memory add <내용>`으로 프로젝트 지식 기록, `/memory search <키워드>`로 검색 |
+| `/remember <내용>` | 사용자가 프로젝트 장기 메모리에 직접 기록（인자 없으면 최근 항목 보기） |
 | `/forget <entryId> [resolved]` | 메모리 하나를 명시적 무효화: `resolved`는 옛 문제가 해결됨, 기본은 자발적 망각（인자 없으면 최근 무효화 가능 항목 나열） |
-| `/btw <问题>` | 곁다리 질문——현재 세션에 대해 한 번만 물어보고 답은 플로팅 레이어에 표시, 대화 이력에 들어가지 않음 |
+| `/btw <질문>` | 곁다리 질문——현재 세션에 대해 한 번만 물어보고 답은 플로팅 레이어에 표시, 대화 이력에 들어가지 않음 |
 | `/debug [prompt\|cache\|mcp]` | prompt, 캐시 통계 또는 MCP 디버그 |
 | `/mcp` | MCP 서버 연결 상태 |
 | `/verbose` | 상세 도구 출력 전환（on은 200줄 / off는 20줄 표시） |
@@ -923,11 +929,11 @@ Node.js 24 · TypeScript strict（`noUncheckedIndexedAccess`）· T9 ANSI 렌더
 ### 빌드와 테스트
 
 ```bash
-npm run typecheck                                    # 类型检查
-npm test                                             # 所有测试（19,000+ 用例）
-npm run build                                        # tsup 打包 + 原生/wasm 载荷落位
-node dist/cli/entry.js                               # 启动 TUI
-node dist/cli/entry.js -p "fix the typo"             # 无界面模式
+npm run typecheck                                    # 타입 검사
+npm test                                             # 전체 테스트（19,000+ 케이스）
+npm run build                                        # tsup 번들링 + 네이티브/wasm 페이로드 배치
+node dist/cli/entry.js                               # TUI 시작
+node dist/cli/entry.js -p "fix the typo"             # 헤드리스 모드
 ```
 
 ### 확장
@@ -942,19 +948,19 @@ node dist/cli/entry.js -p "fix the typo"             # 无界面模式
 
 ```
 src/
-├── agent/     核心循环：turn-orchestrator、tool pipeline、coordinator、
-│              advisory-bus、goal-tracker、sensorium、免疫系统
-├── api/       流式 API 客户端 —— DeepSeek、GLM、Codex OAuth、多提供商路由
-├── prompt/    提示词引擎 —— 冻结前缀 + 增量附录 + 易变上下文层
-├── tools/     工具 —— bash、edit、read/write、grep、glob、run_tests、git、delegate…
-├── tui/       终端 UI（T9 ANSI 引擎：scrollback、输入控制、覆盖层、流式渲染）
-├── compact/   三层语义修剪 + 微压缩 + 请求时坍缩
-├── context/   上下文账本、渐进式压缩、声明系统、锚点注册表
-├── config/    Zod 验证配置：默认值 → ~/.rivet → 项目覆盖
-├── server/    桌面端 sidecar：会话管理、REST 路由、SSE 流
-├── mcp/       Model Context Protocol 客户端（stdio + SSE）
-├── lsp/       Language Server Protocol 集成
-└── search/    语义搜索（BM25 + embedding RRF 融合）
+├── agent/     핵심 루프: turn-orchestrator, tool pipeline, coordinator,
+│              advisory-bus, goal-tracker, sensorium, 면역 시스템
+├── api/       스트리밍 API 클라이언트 —— DeepSeek, GLM, Codex OAuth, 다중 제공자 라우팅
+├── prompt/    프롬프트 엔진 —— 동결 프리픽스 + 증분 appendix + 가변 컨텍스트 계층
+├── tools/     도구 —— bash, edit, read/write, grep, glob, run_tests, git, delegate…
+├── tui/       터미널 UI（T9 ANSI 엔진: scrollback, 입력 제어, 오버레이, 스트리밍 렌더링）
+├── compact/   3계층 의미 가지치기 + 마이크로 압축 + 요청 시점 붕괴
+├── context/   컨텍스트 장부, 점진적 압축, 선언 시스템, 앵커 레지스트리
+├── config/    Zod 검증 설정: 기본값 → ~/.rivet → 프로젝트 덮어쓰기
+├── server/    데스크톱 sidecar: 세션 관리, REST 라우트, SSE 스트림
+├── mcp/       Model Context Protocol 클라이언트（stdio + SSE）
+├── lsp/       Language Server Protocol 통합
+└── search/    의미 검색（BM25 + embedding RRF 융합）
 ```
 
 ### 세션 데이터와 로그 진단
@@ -974,12 +980,12 @@ src/
 #### 경로를 외울 필요 없다: 세 가지 진입점
 
 ```bash
-# 终端（TUI 起不来也能用——不初始化 agent、不读配置、不联网）
-tianshu logs                         # 列出本项目最近主会话的全部落点 + 是否已产生 + 门控说明
-tianshu logs --session <id>          # 指定会话
-tianshu logs --json                  # 结构化输出，可贴进 issue
-tianshu logs open                    # 在文件管理器中打开会话目录
-tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不来时第一现场）
+# 터미널（TUI가 뜨지 않아도 사용 가능——agent 초기화 없음, 설정 읽기 없음, 네트워크 연결 없음）
+tianshu logs                         # 이 프로젝트 최근 메인 세션의 모든 로그 위치 + 생성 여부 + 게이트 설명 나열
+tianshu logs --session <id>          # 세션 지정
+tianshu logs --json                  # 구조화 출력, issue에 바로 붙여넣기 가능
+tianshu logs open                    # 파일 관리자에서 세션 디렉터리 열기
+tianshu logs open desktop            # sidecar 로그 디렉터리 열기（GUI가 뜨지 않을 때 일차 확인 지점）
 ```
 
 - **TUI**: `/logs`（위와 같은 목록）; `/logs open` / `/logs open desktop`으로 디렉터리를 직접 열기
@@ -1044,7 +1050,7 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek API 키 |
 | `DEEPSEEK_SPARK_API_KEY` | DeepSeek Spark（Pro 전용 프리셋）API 키 |
-| `RIVET_TOOL_PRESET` | 도구 셋 단계: `minimal` / `frontend`（기본）/ `full` / `taiyi` |
+| `RIVET_TOOL_PRESET` | 도구 셋 단계: `minimal`（기본）/ `frontend` / `full` / `taiyi` |
 | `RIVET_EMBEDDING_MODEL` / `RIVET_EMBEDDING_BASE_URL` / `RIVET_EMBEDDING_API_KEY` | 의미 검색 임베딩 모델 라우팅（기본 `text-embedding-3-small`） |
 | `RIVET_NO_EMBEDDINGS=1` | 임베딩 인덱스 끄기 |
 | `RIVET_SANDBOX` / `RIVET_SANDBOX_WRITABLE` | 쓰기 가능한 샌드박스 루트 / 쓰기 디렉터리 목록 추가 |
@@ -1093,23 +1099,23 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 ```jsonc
 {
   "agent": {
-    "maxTurns": 200,              // 单次会话最大回合数
+    "maxTurns": 200,              // 단일 세션 최대 턴 수
     "approval": "auto-safe",      // manual | auto-safe | dangerously-skip-permissions
-    "crossSessionEnabled": true,  // 跨会话知识共享
-    "checkpointEveryTurns": 0,    // Auto 模式检查点间隔（0 = 关）
-    "defaultDomain": "qiming",    // 默认星域（qiming/auto/显式域名）
-    "visionModel": {              // 识图桥：主控模型不支持看图时，先转成文字描述
-      "provider": "minimax",      // 需已配好 key，且该模型声明 supportsVision
+    "crossSessionEnabled": true,  // 세션 간 지식 공유
+    "checkpointEveryTurns": 0,    // Auto 모드 체크포인트 간격（0 = 끔）
+    "defaultDomain": "qiming",    // 기본 星域（qiming/auto/명시적 도메인 이름）
+    "visionModel": {              // 비전 브리지: 메인 컨트롤 모델이 이미지를 못 볼 때 먼저 텍스트 설명으로 변환
+      "provider": "minimax",      // 키가 설정되어 있고 해당 모델이 supportsVision을 선언해야 함
       "model": "MiniMax-M3"
     },
-    "visionAutoBridge": false,    // 未配 visionModel 时自动挑一个可用视觉模型（默认关）
+    "visionAutoBridge": false,    // visionModel 미설정 시 사용 가능한 비전 모델 자동 선택（기본 끔）
     "imageGenModel": {            // 이미지 생성 슬롯: 엔드포인트 등록 후 generate_image로 이미지 생성
       "provider": "siliconflow-image",  // 별도 등록 프로바이더 — provider.default는 그대로
       "model": "black-forest-labs/FLUX.2-pro",
       "size": "1024x1024",        // 기본 크기(선택)
       "sizeField": "image_size"   // OpenAI는 size, SiliconFlow는 image_size(선택)
     },
-    "permissions": {              // 权限规则（对应 /permission 命令）
+    "permissions": {              // 권한 규칙（/permission 명령에 대응）
       "allow": [{ "tool": "read" }],
       "deny":  [{ "tool": "bash", "params": { "command": "rm -rf" } }],
       "bash": { "allowlist": ["git status"], "denylist": ["git push"] }
@@ -1117,33 +1123,33 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
   },
   "compact": {
     "enabled": true,
-    "autoThreshold": 800000       // 触发自动压缩的 token 阈值
+    "autoThreshold": 800000       // 자동 압축을 유발하는 token 임계값
   },
   "tools": {
-    "preset": "frontend"          // minimal | frontend（默认）| full | taiyi
+    "preset": "minimal"           // minimal（기본）| frontend | full | taiyi
   },
   "workers": {
-    "profiles": {                 // 自定义 worker 模型档位
+    "profiles": {                 // 커스텀 worker 모델 단계
       "capable": { "provider": "deepseek", "model": "deepseek-v4-pro" },
       "cheap":   { "provider": "minimax",  "model": "MiniMax-M2.7" }
     },
     "routing": { "code_edit": "capable", "repo_summarization": "cheap" },
-    "patcherTier": "cheap"        // 天梁执行 worker 默认档位：cheap | balanced | strong
+    "patcherTier": "cheap"        // 天梁 실행 worker 기본 단계: cheap | balanced | strong
   },
   "search": {
-    "backends": ["bing", "duckduckgo"],  // web_search 后端链（首个有结果即停）
-    "braveApiKeyEnv": "BRAVE_API_KEY",   // 用 Brave 时填 env 变量名
-    "tavilyApiKeyEnv": "TAVILY_API_KEY", // Tavily（需 key，offshore）
-    "bochaApiKeyEnv": "BOCHA_API_KEY"    // 博查（国内直连 AI 搜索，Tavily 国内替代，需 key）
+    "backends": ["bing", "duckduckgo"],  // web_search 백엔드 체인（첫 결과가 나오면 중지）
+    "braveApiKeyEnv": "BRAVE_API_KEY",   // Brave 사용 시 환경 변수 이름 입력
+    "tavilyApiKeyEnv": "TAVILY_API_KEY", // Tavily（키 필요, 해외）
+    "bochaApiKeyEnv": "BOCHA_API_KEY"    // Bocha（중국 내 직결 AI 검색, Tavily 대안, 키 필요）
   },
   "ui": {
-    "theme": "auto",              // 内置名 | auto（OSC 11 探测）| custom:<name>
-    "reducedMotion": true,        // 无障碍：冻结 spinner/徽章动画
-    "screenReader": true,         // 无障碍：读屏模式（同 --screen-reader）
-    "glanceDensity": "compact"    // GlanceBar 密度：compact | full
+    "theme": "auto",              // 내장 이름 | auto（OSC 11 감지）| custom:<name>
+    "reducedMotion": true,        // 접근성: spinner/배지 애니메이션 정지
+    "screenReader": true,         // 접근성: 스크린 리더 모드（--screen-reader와 동일）
+    "glanceDensity": "compact"    // GlanceBar 밀도: compact | full
   },
-  "mirrors": { "enabled": true, "preset": "china" },  // npm/github 等镜像加速
-  "env": { "extraPath": ["/usr/local/bin"] }           // 注入 PATH（Windows git-bash 等）
+  "mirrors": { "enabled": true, "preset": "china" },  // npm/github 등 미러 가속
+  "env": { "extraPath": ["/usr/local/bin"] }           // PATH 주입（Windows git-bash 등）
 }
 ```
 
@@ -1178,6 +1184,10 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 
 > 참고: 먼저 저장소 관리자가 `Settings → General → Discussions`에서 Discussions 기능을 켜 두어야 합니다.
 
+## 🌐 공식 웹사이트 개발
+
+- [@jiangsx496](https://github.com/jiangsx496) — 天枢 공식 웹사이트 디자인 및 개발（[jiangsx496/Tianshu-Official-Website](https://jiangsx496.github.io/Tianshu-Official-Website/)）
+
 ## ✨ 기여자
 
 天枢에 기여해 주신 분들께 감사드립니다（최초 기여 시간순）:
@@ -1186,10 +1196,10 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 |--------|----------|
 | [@huiliyi37](https://github.com/huiliyi37) | 프로젝트 창시자 · 핵심 개발 |
 
-전체 목록（외부 기여자 22명 / 145 PR）→ CONTRIBUTORS.md
+전체 목록（외부 기여자 31명 / 268개 PR）→ [CONTRIBUTORS.md](CONTRIBUTORS.md)
 
 외부 PR은「이식(收编)」절차로 병합되며, 저자 서명은 `Co-authored-by`로 기여자 그래프에
-반영됩니다（scripts/credit-contributors.sh 가 자동 기록）——기여자 월（전체 목록은 CONTRIBUTORS.md）:
+반영됩니다（`scripts/credit-contributors.sh`가 자동 기록）——기여자 월（전체 목록은 [CONTRIBUTORS.md](CONTRIBUTORS.md)）:
 
 <p>
 <a href="https://github.com/HarriethWiKk"><img src="https://github.com/HarriethWiKk.png?size=100" width="50" height="50" alt="HarriethWiKk" title="HarriethWiKk" /></a>
@@ -1212,11 +1222,20 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 <a href="https://github.com/lei454577-web"><img src="https://github.com/lei454577-web.png?size=100" width="50" height="50" alt="lei454577-web" title="lei454577-web" /></a>
 <a href="https://github.com/jian-in"><img src="https://github.com/jian-in.png?size=100" width="50" height="50" alt="jian-in" title="jian-in" /></a>
 <a href="https://github.com/sky-mirrors"><img src="https://github.com/sky-mirrors.png?size=100" width="50" height="50" alt="sky-mirrors" title="sky-mirrors" /></a>
-<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
 <a href="https://github.com/EarthxxRhythm"><img src="https://github.com/EarthxxRhythm.png?size=100" width="50" height="50" alt="EarthxxRhythm" title="EarthxxRhythm" /></a>
+<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
+<a href="https://github.com/elysia395"><img src="https://github.com/elysia395.png?size=100" width="50" height="50" alt="elysia395" title="elysia395" /></a>
+<a href="https://github.com/JakcyLin"><img src="https://github.com/JakcyLin.png?size=100" width="50" height="50" alt="JakcyLin" title="JakcyLin" /></a>
+<a href="https://github.com/googio"><img src="https://github.com/googio.png?size=100" width="50" height="50" alt="googio" title="googio" /></a>
+<a href="https://github.com/lanlan0811"><img src="https://github.com/lanlan0811.png?size=100" width="50" height="50" alt="lanlan0811" title="lanlan0811" /></a>
+<a href="https://github.com/KhalilYamber"><img src="https://github.com/KhalilYamber.png?size=100" width="50" height="50" alt="KhalilYamber" title="KhalilYamber" /></a>
+<a href="https://github.com/Ver-zhzh"><img src="https://github.com/Ver-zhzh.png?size=100" width="50" height="50" alt="Ver-zhzh" title="Ver-zhzh" /></a>
+<a href="https://github.com/Lin-Dongg"><img src="https://github.com/Lin-Dongg.png?size=100" width="50" height="50" alt="Lin-Dongg" title="Lin-Dongg" /></a>
+<a href="https://github.com/Eternal-dream-MAX"><img src="https://github.com/Eternal-dream-MAX.png?size=100" width="50" height="50" alt="Eternal-dream-MAX" title="Eternal-dream-MAX" /></a>
+<a href="https://github.com/y521188"><img src="https://github.com/y521188.png?size=100" width="50" height="50" alt="y521188" title="y521188" /></a>
 </p>
 
-> PR을 통한 코드 기여를 환영합니다. 자세한 내용은 CONTRIBUTING.md를 참조하세요.
+> PR을 통한 코드 기여를 환영합니다. 자세한 내용은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참조하세요.
 
 ## ⭐ 스타 히스토리
 
@@ -1232,12 +1251,15 @@ tianshu logs open desktop            # 打开 sidecar 日志目录（GUI 起不�
 
 天枢가 유용했다면 기분 내키는 대로 후원해 주셔도 좋습니다——이것은 한 잔의 커피일 뿐, 계약이 아닙니다. 후원이 issue 우선순위를 바꾸거나 기능 일정에 영향을 주지는 않습니다.
 
-<img src="docs/brand/assets/wechat-donate.png" width="240" alt="微信支付">
+<img src="docs/brand/assets/wechat-donate.png" width="240" alt="WeChat Pay">
 
 ## 라이선스
 
 본 프로젝트는 [Apache License, Version 2.0](LICENSE) 오픈소스 라이선스로 배포됩니다. Copyright 2025-2026 Tianshu Contributors.
 
+- **논문 및 학술 원고 예외**: [`docs/reference/cvm-cognitive-runtime.md`](docs/reference/cvm-cognitive-runtime.md)와 [`docs/CVM运行时对Agent模型的实证影响.md`](docs/CVM运行时对Agent模型的实证影响.md)는 [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/)（저작자표시-비영리-변경금지）라이선스를 따릅니다——원저작자 및 출처 표기 하에 전문 비영리 재배포가 허용되며, 상업적 이용 및 개작은 금지됩니다（코드 구현은 여전히 Apache-2.0을 따름）.
+
 ## 감사의 말
 
 - 데스크톱 앱의 "사용자 지정 배경화면과 영역별 유리" 기능 **디자인**은 <a href="https://github.com/elysia395/dsh-wallpaper-engine">dsh-wallpaper-engine</a>(MIT License)을 참고했습니다. 구현은 천수가 독자적으로 작성한 것이며 상류 코드를 포함하지 않습니다. 참고 범위와 라이선스 전문은 <a href="THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>를 참조하세요.
+- dsh-wallpaper-engine의 작성자와 핵심 개발자 —<a href="https://github.com/elysia395">@elysia395</a>, <a href="https://github.com/YV3507">@YV3507</a>, <a href="https://github.com/yuxilao">@yuxilao</a>, <a href="https://github.com/oneincase">@oneincase</a>— 네 분께 특별히 감사드립니다. **배경화면 엔진 렌더링 기술 고문**으로서 배경화면 합성과 영역별 유리 재질의 설계·구현에 지도를 해주셨습니다.

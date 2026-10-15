@@ -27,11 +27,15 @@ import {
 } from '../cache/usage-aggregator.js'
 import { StoreLock } from '../server/store-lock.js'
 import { computeUsageCost } from '../utils/pricing.js'
+import {foldHour,hourRecordsOf,safeCounter,withinLifetime,provenHistoricalRows} from './hours.js'
+import {snapshotPages} from './snapshot-pages.js'
 import type {
   TokenDayModelRecord,
   TokenLedgerState,
   TokenLedgerTotals,
   TokenUsageSnapshot,
+  TokenHourModelRecord,
+  TokenHourlyCoverage,
 } from './types.js'
 
 const CACHE_LOG_NAME = 'cache-log.jsonl'
@@ -88,6 +92,16 @@ function stableStringify(value: unknown): string {
 
 export function ledgerDigest(days: TokenLedgerState['days']): string {
   return createHash('sha256').update(stableStringify(days)).digest('hex')
+}
+
+function usageDigest(state:TokenLedgerState):string {
+  return createHash('sha256').update(stableStringify({version:2,days:state.days,hours:state.hours||{}})).digest('hex')
+}
+
+function nextSentAt(state:TokenLedgerState,now:number):string {
+  const previous=Date.parse(state.lastSnapshotAt||'')
+  state.lastSnapshotAt=new Date(Math.max(now,Number.isFinite(previous)?previous+1:0)).toISOString()
+  return state.lastSnapshotAt
 }
 
 function emptyTotals(): TokenLedgerTotals {
@@ -154,7 +168,55 @@ export class TokenLedgerStore {
 
   /** 当前台账内容摘要；与 lastPushedDigest 不同即存在未推送变更。 */
   digest(): string {
-    return ledgerDigest(this.load().days)
+    return usageDigest(this.load())
+  }
+
+  syncProgress():{nextPage:number;pageCount:number}|null {
+    const batch=this.load().syncBatch
+    return batch?{nextPage:batch.nextPage,pageCount:batch.pages.length}:null
+  }
+
+  prepareSyncBatch(deviceName:string,targetHash:string):Promise<{digest:string;nextPage:number;pageCount:number;lastConfirmedAt?:string}> {
+    return this.transaction(async state=>{
+      const digest=usageDigest(state)
+      if(!state.syncBatch||state.syncBatch.targetHash!==targetHash||state.syncBatch.nextPage===state.syncBatch.pages.length){
+        const snapshot:TokenUsageSnapshot={version:2,deviceId:state.deviceId,deviceName,sentAt:new Date(this.now()).toISOString(),totals:this.totals(),days:this.records(),hours:this.hourRecords()}
+        if(!withinLifetime(state))throw new RangeError('Hourly usage exceeds preserved lifetime')
+        state.syncBatch={digest,targetHash,pages:snapshotPages(snapshot),nextPage:0}
+      }
+      return {digest:state.syncBatch.digest,nextPage:state.syncBatch.nextPage,pageCount:state.syncBatch.pages.length,lastConfirmedAt:state.syncBatch.lastConfirmedAt}
+    })
+  }
+
+  nextSyncPage(digest:string,targetHash:string):Promise<{snapshot:TokenUsageSnapshot;index:number}|null> {
+    return this.transaction(async state=>{
+      const batch=state.syncBatch
+      if(!batch||batch.digest!==digest||batch.targetHash!==targetHash)throw new Error('Usage batch changed; retry sync')
+      if(batch.nextPage>=batch.pages.length)return null
+      return {snapshot:{...batch.pages[batch.nextPage]!,sentAt:nextSentAt(state,this.now())},index:batch.nextPage}
+    })
+  }
+
+  confirmSyncPage(digest:string,targetHash:string,index:number,sentAt:string):Promise<boolean> {
+    return this.transaction(async state=>{
+      const batch=state.syncBatch
+      if(!batch||batch.digest!==digest||batch.targetHash!==targetHash)return false
+      if(batch.nextPage!==index)return false
+      batch.nextPage++;batch.lastConfirmedAt=sentAt
+      return true
+    })
+  }
+
+  hourRecords(): TokenHourModelRecord[] {
+    return hourRecordsOf(this.load())
+  }
+
+  hourlyCoverage(): TokenHourlyCoverage {
+    const state=this.load(),records=hourRecordsOf(state),totals=this.totals()
+    let input=0,output=0
+    for(const record of records){input=safeCounter(input+record.input);output=safeCounter(output+record.output)}
+    const missingFiles=Object.values(state.hourlyMigration?.files||{}).filter(file=>file.partial).length
+    return {state:missingFiles||input!==totals.input||output!==totals.output?'partial':'complete',from:records[0]?.hour||null,through:records.length?new Date(Date.parse(records.at(-1)!.hour)+3600000).toISOString():null,missingFiles}
   }
 
   totals(): TokenLedgerTotals {
@@ -196,10 +258,10 @@ export class TokenLedgerStore {
       state.lastSnapshotAt = sentAt
       this.state = state
       const snapshot: TokenUsageSnapshot = {
-        version: 1, deviceId: state.deviceId, deviceName, sentAt,
-        totals: this.totals(), days: this.records(),
+        version: 2, deviceId: state.deviceId, deviceName, sentAt,
+        totals: this.totals(), days: this.records(),hours:this.hourRecords(),
       }
-      return { snapshot, digest: ledgerDigest(state.days) }
+      return { snapshot, digest: usageDigest(state) }
     })
   }
 
@@ -226,8 +288,9 @@ export class TokenLedgerStore {
       const at = new Date(this.now()).toISOString()
       if (result.ok) {
         state.lastPushAt = at
-        state.lastPushedDigest = digest ?? ledgerDigest(state.days)
+        state.lastPushedDigest = digest ?? usageDigest(state)
         state.lastPushedTargetHash = targetHash
+        if(state.syncBatch?.digest===state.lastPushedDigest&&state.syncBatch.targetHash===targetHash&&state.syncBatch.nextPage===state.syncBatch.pages.length)delete state.syncBatch
       }
       if (sentAt) state.lastPushSnapshotAt = sentAt
       state.lastPushResult = { ...result, at }
@@ -254,6 +317,8 @@ export class TokenLedgerStore {
     const state: TokenLedgerState = validState(parsed) ? parsed : {
       version: 1, deviceId: deviceId ?? this.state?.deviceId ?? randomUUID(), offsets: {}, days: {},
     }
+    hourRecordsOf(state)
+    if(state.hourlyMigration&&(state.hourlyMigration.version!==1||!object(state.hourlyMigration.files)||Object.values(state.hourlyMigration.files).some(file=>!file||!Number.isSafeInteger(file.offset)||file.offset<0||typeof file.partial!=='boolean')))throw new Error('Invalid stored hourly migration')
     const identityTimestamp = identity?.lastSnapshotAt
     if (identityTimestamp && (!state.lastSnapshotAt || identityTimestamp > state.lastSnapshotAt)) {
       state.lastSnapshotAt = identityTimestamp
@@ -303,12 +368,34 @@ export class TokenLedgerStore {
   private refreshImpl(): Promise<LedgerRefreshResult> {
     return this.transaction(async state => {
       const files = await findCacheLogFiles(this.sessionsRoot)
+      const migration=state.hourlyMigration??={version:1,files:{}}
+      state.hours??={}
+      const present=new Set(files.map(file=>relative(this.sessionsRoot,file).split(sep).join('/')))
+      for(const name of Object.keys(state.offsets))if(!present.has(name))migration.files[name]={offset:state.offsets[name]!,partial:true}
       let newRows = 0
       for (const file of files) {
         const rel = relative(this.sessionsRoot, file).split(sep).join('/')
         const prevOffset = state.offsets[rel] ?? 0
         let size: number
         try { size = (await stat(file)).size } catch { continue }
+        let migrated=migration.files[rel]
+        if(!migrated){
+          migrated={offset:prevOffset,partial:size<prevOffset};migration.files[rel]=migrated
+          if(prevOffset>0&&size>=prevOffset){
+            const consumed=await readFromOffset(file,0,prevOffset)
+            if(consumed.length!==prevOffset)migrated.partial=true
+            else{
+              const historical:TokenLedgerState={version:1,deviceId:state.deviceId,offsets:{},days:{},hours:{}}
+              try{
+                const proven=provenHistoricalRows(consumed.toString('utf8')),history=proven.rows
+                if(proven.ambiguous)migrated.partial=true
+                for(const row of history)foldHour(historical,row)
+                if(!withinLifetime(state,hourRecordsOf(historical)))migrated.partial=true
+                else{for(const row of history)foldHour(state,row);migrated.evidence=createHash('sha256').update(consumed).digest('hex')}
+              }catch(error){if(!(error instanceof RangeError))throw error;migrated.partial=true}
+            }
+          }
+        }
         const attempts = state.attempts ??= {}
         if (prevOffset > 0 && attempts[rel] === undefined) {
           // Migrate consumed v1 history once, collecting ids without replaying any usage.
@@ -323,6 +410,7 @@ export class TokenLedgerStore {
         if (size < prevOffset) {
           // Preserve conservative truncation behavior; never replay previously consumed bytes.
           state.offsets[rel] = size
+          migrated.partial=true;migrated.offset=size
           continue
         }
         if (size === prevOffset) continue
@@ -342,10 +430,11 @@ export class TokenLedgerStore {
           accepted.push(line)
         }
         const rows = parseUsageRows(accepted.reverse().join('\n'))
-        for (const row of rows) this.fold(state, row)
+        for (const row of rows) { this.fold(state, row);foldHour(state,row) }
         attempts[rel] = [...seen]
         newRows += rows.length
         state.offsets[rel] = prevOffset + content.length
+        migrated.offset=state.offsets[rel]!
       }
       return { newRows, scannedFiles: files.length }
     })

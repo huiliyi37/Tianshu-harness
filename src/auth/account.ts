@@ -171,7 +171,7 @@ export async function requestDeviceCode(opts: RequestDeviceCodeOpts = {}): Promi
         tuiVersion: opts.tuiVersion ?? null,
         deviceName: opts.deviceName ?? null,
         deviceFingerprint: opts.deviceFingerprint ?? null,
-        purpose: 'account-login',
+        purpose: 'client-login',
       }),
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     })

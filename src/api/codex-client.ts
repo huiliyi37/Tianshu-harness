@@ -254,8 +254,7 @@ export class CodexClient implements StreamClient {
     let stopReason: string | null = null
     let usage: { input_tokens?: number; output_tokens?: number; reasoning_tokens?: number; cacheRead?: number; cacheWrite?: number } | undefined
 
-    // Track function calls by index
-    const functionCalls = new Map<number, { id: string; name: string; arguments: string }>()
+    const emittedCallIds = new Set<string>()
 
     // Reasoning-before-text ordering buffer.
     // DeepSeek Codex API may emit output_item.done (message) before
@@ -421,14 +420,14 @@ export class CodexClient implements StreamClient {
             case 'response.output_item.done': {
               const item = parsed.item as Record<string, unknown> | undefined
               if (item?.type === 'function_call') {
-                const callId = (item.call_id as string) ?? `call_${functionCalls.size}`
+                const callId = (item.call_id as string) ?? (item.id as string) ?? `call_${crypto.randomUUID()}`
+                if (emittedCallIds.has(callId)) break
                 const name = item.name as string ?? ''
                 const args = item.arguments as string ?? ''
-                functionCalls.set(functionCalls.size, { id: callId, name, arguments: args })
-                try {
-                  const input = JSON.parse(args)
-                  callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
-                } catch {}
+                let input: Record<string, unknown>
+                try { input = JSON.parse(args) } catch { break }
+                emittedCallIds.add(callId)
+                callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
               } else if (item?.type === 'reasoning') {
                 // Reasoning item — emit BEFORE text so TUI captures thinking first.
                 // The summary array contains sanitized reasoning content.

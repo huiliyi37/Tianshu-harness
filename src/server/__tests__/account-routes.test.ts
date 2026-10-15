@@ -36,6 +36,8 @@ import {
 } from '../../auth/account.js'
 import type { ActivateAccountLicenseCode } from '../../auth/account-license.js'
 
+import { readNativeDeviceFingerprint } from '../../auth/account-device.js'
+
 const TOKEN = 'tok'
 const AUTH = { authorization: `Bearer ${TOKEN}` }
 
@@ -105,6 +107,53 @@ function stubApi(over: Partial<AccountApi> = {}): AccountApi {
 function routerFor(home: string, over: Partial<AccountApi> = {}) {
   return createRouter(buildAccountRoutes({ apiToken: TOKEN, account: stubApi(over), rivetHome: home }))
 }
+
+test('账号资料修改用已登录凭据写远端并刷新缓存，响应不泄露凭据', async () => {
+  const { home, cleanup } = makeHome()
+  try {
+    const credential=`fixture.${Buffer.from(JSON.stringify({sub:'owner'})).toString('base64url')}.fixture`
+    new TokenStore(home, 'account').save({ accessToken: credential, expiresAt: Date.now() + 3600000 })
+    let changed = false
+    const router = routerFor(home, { updateAccountProfile: async (access, input) => {
+      assert.equal(access, credential); assert.equal(input.name, '新昵称'); changed = true; return { ok: true }
+    }, fetchAccountProfile: async () => ({ userId: 'owner', email: null, displayName: '新昵称' }) })
+    const response = await router('POST', '/account/profile', { name: '新昵称', avatar: null,expectedUserId:'owner' }, AUTH)
+    assert.equal(response.status, 200); assert.equal(changed, true)
+    assert.equal(JSON.stringify(response.body).includes(credential), false)
+    assert.equal(cachedAccountProfile(new TokenStore(home, 'account').load())?.account?.displayName, '新昵称')
+  } finally { cleanup() }
+})
+
+test('旧窗口的账号 A 资料不能写入后台已经切换的账号 B',async()=>{
+ const {home,cleanup}=makeHome()
+ try {
+  const credential=`fixture.${Buffer.from(JSON.stringify({sub:'owner-B'})).toString('base64url')}.fixture`
+  new TokenStore(home,'account').save({accessToken:credential,expiresAt:Date.now()+3600000})
+  let writes=0
+  const router=routerFor(home,{updateAccountProfile:async()=>{writes++;return {ok:true}}})
+  const response=await router('POST','/account/profile',{name:'账号A的草稿',expectedUserId:'owner-A'},AUTH)
+  assert.equal(response.status,409)
+  assert.equal(writes,0)
+  assert.equal(new TokenStore(home,'account').load()?.accessToken,credential)
+ }finally{cleanup()}
+})
+
+test('登出期间完成的资料保存不恢复旧账号缓存', async () => {
+  const { home, cleanup } = makeHome()
+  try {
+    const credential=`fixture.${Buffer.from(JSON.stringify({sub:'uid-1'})).toString('base64url')}.fixture`
+    new TokenStore(home, 'account').save({ accessToken: credential, expiresAt: Date.now() + 3600000 })
+    let release!: (value: { ok: boolean }) => void
+    const pending = new Promise<{ ok: boolean }>(resolve => { release = resolve })
+    const router = routerFor(home, { updateAccountProfile: async () => pending })
+    const updating = router('POST', '/account/profile', { name: '新昵称', avatar: null,expectedUserId:'uid-1' }, AUTH)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    await router('POST', '/account/logout', undefined, AUTH)
+    release({ ok: true })
+    assert.equal((await updating).status, 409)
+    assert.equal(new TokenStore(home, 'account').load(), null)
+  } finally { cleanup() }
+})
 
 test('所有账号路由都要 Bearer token——缺 token 一律 401', async () => {
   const { home, cleanup } = makeHome()
@@ -954,10 +1003,11 @@ test('desktop fingerprint survives the actual sidecar device request and repeate
   const { home, cleanup } = makeHome()
   const sent: string[] = []
   try {
+    const native = readNativeDeviceFingerprint() ?? 'native-device-001'
     const router = routerFor(home, { requestDeviceCode: async opts => { sent.push(opts.deviceFingerprint ?? ''); return DEVICE } })
-    assert.equal((await router('POST', '/account/device', { deviceFingerprint: 'native-device-001' }, AUTH)).status, 200)
+    assert.equal((await router('POST', '/account/device', { deviceFingerprint: native }, AUTH)).status, 200)
     assert.equal((await router('POST', '/account/device', {}, AUTH)).status, 200)
-    assert.deepEqual(sent, ['native-device-001', 'native-device-001'])
+    assert.equal(sent.length,2);assert.equal(sent.every(value=>value===native),true)
     assert.equal((await router('POST', '/account/device', { deviceFingerprint: '../bad' }, AUTH)).status, 400)
   } finally { cleanup() }
 })

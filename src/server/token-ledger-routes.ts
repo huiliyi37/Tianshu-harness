@@ -98,6 +98,8 @@ export function buildTokenLedgerRoutes(deps: TokenLedgerRoutesDeps): Record<stri
             days: windowDays,
             pending: status.pending,
             lastPushAt: status.lastPushAt,
+            hourlyCoverage: status.hourlyCoverage,
+            syncProgress: status.syncProgress,
           },
         }
       } catch (err) {

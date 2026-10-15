@@ -203,6 +203,15 @@ test('requestDeviceCode 返回的 verifyUrl 可直接打开（已含 code）', a
   assert.equal(created.userCode, '483920')
 })
 
+test('客户端登录请求明确要求持久设备绑定，不复用论坛免绑定用途', async () => {
+  let purpose: unknown
+  await requestDeviceCode({ deviceFingerprint: 'hardware-fixture', fetchImpl: async (_url, init) => {
+    purpose = JSON.parse(String(init?.body)).purpose
+    return new Response(JSON.stringify({ deviceCode: 'fixture', userCode: '123456', verifyUrl: 'https://tianshuharness.com/auth/device' }))
+  } })
+  assert.equal(purpose, 'client-login')
+})
+
 // ── 星籍（stellar identity）──────────────────────────────────────────────
 
 /** 造一个形状正确的 access token（只填 sub，够 jwtSubject 用）。 */

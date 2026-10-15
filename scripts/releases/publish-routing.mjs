@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { validateCatalog, assertCatalogUpdate, CATALOG_URLS } from './catalog.mjs'
 import { validateReleaseNotes } from './release-notes.mjs'
 import { guardStablePublication } from './guard-stable-publication.mjs'
+import { readRemote } from './publish-update-control.mjs'
 
 const publish = process.argv.includes('--publish')
 const catalog = validateCatalog(JSON.parse(readFileSync('release-catalog.json','utf8')))
@@ -18,10 +19,9 @@ if (process.argv.includes('--enable-legacy-atomgit')) {
   if (windows.signature !== manifest.platforms['windows-x86_64']?.signature) throw new Error('Legacy signature differs from catalog')
 }
 async function existingCatalog(url) {
-  const r = await fetch(url,{signal:AbortSignal.timeout(15000)})
-  if (r.status === 404) return
-  if (!r.ok) throw new Error(`Cannot check existing catalog: HTTP ${r.status}`)
-  const old = validateCatalog(await r.json())
+  const body = await readRemote(url)
+  if (body === undefined) return
+  const old = validateCatalog(JSON.parse(body))
   assertCatalogUpdate(old,catalog)
 }
 const github = `https://github.com/huiliyi37/Tianshu-harness/releases/download/v${catalog.version}/release-catalog.json`
@@ -37,10 +37,9 @@ if (!publish) {
       if (!process.argv.includes('--release-notes-reviewed')) throw new Error('Release notes require publisher review before upload')
       const notes = validateReleaseNotes(JSON.parse(readFileSync(`docs/releases/summaries/${catalog.version}.json`,'utf8')),catalog.version)
       const file = join(work,'release-notes.json'); writeFileSync(file,JSON.stringify(notes,null,2)+'\n')
-      const existing = await fetch(catalog.releaseNotesUrl,{signal:AbortSignal.timeout(15000)})
-      if (existing.ok && JSON.stringify(validateReleaseNotes(await existing.json(),catalog.version)) !== JSON.stringify(notes)) throw new Error('Immutable release notes changed')
-      if (!existing.ok && existing.status !== 404) throw new Error('Cannot verify release notes')
-      if (existing.status === 404) run('gh',['release','upload',`v${catalog.version}`,file,'--repo','huiliyi37/Tianshu-harness'])
+      const existing = await readRemote(catalog.releaseNotesUrl)
+      if (existing !== undefined && JSON.stringify(validateReleaseNotes(JSON.parse(existing),catalog.version)) !== JSON.stringify(notes)) throw new Error('Immutable release notes changed')
+      if (existing === undefined) run('gh',['release','upload',`v${catalog.version}`,file,'--repo','huiliyi37/Tianshu-harness'])
       run(process.env.OSSUTIL_BIN ?? 'ossutil',['cp',file,`oss://tianshu-update/tianshu/v${catalog.version}/release-notes.json`,'-f'])
     }
     // Only tiny metadata is overwritten. Installer bytes are uploaded by their dedicated immutable publisher.

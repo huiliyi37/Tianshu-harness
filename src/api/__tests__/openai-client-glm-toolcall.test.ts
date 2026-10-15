@@ -109,15 +109,11 @@ describe('GLM-5.2 tool-call streaming — grep empty pattern regression', () => 
     assert.equal(tools[0].input.pattern, 'switchAgentRuntime')
   })
 
-  it('REGRESSION: two tool calls collide on index 0 — no empty-pattern block', async () => {
-    const tools = await collectToolUses(new OpenAIClient(GLM_CONFIG), [
+  it('REGRESSION: colliding call IDs cannot graft one call onto another', async () => {
+    await assert.rejects(collectToolUses(new OpenAIClient(GLM_CONFIG), [
       frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'grep', arguments: '{"path":"a","pattern":"foo"}' } }] }, finish_reason: null }] }),
       frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_b', type: 'function', function: { name: 'grep', arguments: '{"path":"b","pattern":"bar"}' } }] }, finish_reason: 'tool_calls' }] }),
-    ])
-    for (const t of tools) {
-      assert.equal(typeof t.input.pattern, 'string', `block ${t.id} input must keep a string pattern, got ${JSON.stringify(t.input)}`)
-      assert.ok((t.input.pattern as string).length > 0, `block ${t.id} pattern must be non-empty`)
-    }
+    ]), { name: 'ToolNameProtocolError', reason: 'identity' })
   })
 
   it('genuine no-argument tool call still emits an empty-object input', async () => {

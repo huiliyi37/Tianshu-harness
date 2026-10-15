@@ -1,5 +1,7 @@
 # 天枢沙箱与权限模型
 
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md) · [📚 CLI 用户手册](./user-guide.md)
+
 天枢的权限设计遵循**默认最小权限 + 按操作动态授权**的原则。它通过两层机制保护你的工作区与系统：
 
 1. **内核级命令沙箱** —— 限制 shell 命令的文件系统写范围
@@ -304,7 +306,7 @@ rivet config set-approval auto-safe
 
 | 限制 | 说明 |
 |------|------|
-| `maxTurns` | 默认 50 回合，防止无限循环 |
+| `maxTurns` | 默认 200 回合，防止无限循环 |
 | SSRF 保护 | 逐跳 DNS + 私有 IP 拦截，作用于每次重定向 |
 | 敏感文件拒绝 | `.env`、`credentials.*`、`*key*`、`*token*` 禁止读取/提交 |
 | 符号链接环保护 | `realpath` + 访问集，防止循环软链接 |

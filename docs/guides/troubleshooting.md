@@ -3,13 +3,16 @@ title: 排障与 FAQ（高频现场速查）
 type: guide
 status: active
 date: 2026-08-28
+updated: 2026-10-14
 tags: [troubleshooting, faq]
 related: [../reference/observability-harness.md, ../user-guide-sandbox-permissions.md]
 ---
 
 # 排障与 FAQ（高频现场速查）
 
-> 按「你看到的现象 → 先看什么 → 怎么修 / 为什么」组织。文中命令均真实存在（TUI 斜杠命令或 `rivet` CLI 子命令）；涉及内部指标的深挖指引给链接，不在这里展开。
+> [🏠 返回主文档](../../README.md) · [🌐 English Guide](../../README.en.md) · [📚 用户手册](../user-guide.md)
+>
+> 按「你看到的现象 → 先看什么 → 怎么修 / 为什么」组织。文中命令均真实存在（TUI 斜杠命令或 `tianshu` / `rivet` CLI 子命令）；涉及内部指标的深挖指引给链接，不在这里展开。
 
 ## 1. Agent 不回话 / 卡住
 
@@ -68,7 +71,7 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 
 **怎么修**：确认项目可信后执行 `/trust` 授信（仅对本机生效、不写回仓库；安全键自下次会话起生效，需重启）。授信后仍连不上，按 `/debug mcp` 的 error 文案修 server 配置本身。
 
-> 完整配置字段（`env` / `timeoutMs` / 代理注入 / 远程型 / `-32000` 排查）见 mcp-servers.md。
+> 完整配置字段（`env` / `timeoutMs` / 代理注入 / 远程型 / `-32000` 排查）见 [用户手册 — MCP](../user-guide.md#mcpmodel-context-protocol)。
 
 
 ## 5. 权限弹窗太频繁
@@ -144,7 +147,7 @@ related: [../reference/observability-harness.md, ../user-guide-sandbox-permissio
 
 天枢的 Windows 安装包内嵌 Node 运行时、PortableGit 等可执行文件，安装器又要结束残留进程才能覆盖 `node.exe`——这些形状会被杀毒软件的主防（行为拦截）盯上；HTTPS 还可能被「加密连接扫描」中间人。三类现象的处置各不相同：
 
-**现象 A：安装包被 SmartScreen / 杀毒软件拦下，提示"未知发布者"。** Windows 安装包正在接入 Authenticode 代码签名（见 [`desktop/DISTRIBUTION.md`](../../desktop/DISTRIBUTION.md)「Windows」）；**未签名的版本**只能手动放行一次：
+**现象 A：安装包被 SmartScreen / 杀毒软件拦下，提示"未知发布者"。** Windows 安装包正在接入 Authenticode 代码签名（见 [安装与平台说明](installation.md)）；**未签名的版本**只能手动放行一次：
 
 - SmartScreen：点「更多信息」→「仍要运行」。企业策略禁止时需管理员放行。
 - 卡巴斯基：「更多」→「添加到排除项」，或在 设置 → 安全 → 威胁与排除 → 管理排除项 里把安装包所在目录加进去；装好后在 设置 → 安全 → [受信任应用程序](https://support.kaspersky.cn/ksv-light-agent/5.2/65921) 里放行 `tianshu-desktop.exe` **和** 安装目录下 `node-runtime\win-x64\tianshu-runtime.exe`（子进程有独立规则；旧安装包宿主名为 `node.exe`）。

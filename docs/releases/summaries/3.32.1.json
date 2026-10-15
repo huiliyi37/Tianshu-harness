@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "version": "3.32.1",
+  "date": "2026-10-15",
+  "fullNotesUrl": "https://github.com/huiliyi37/Tianshu-harness/releases/tag/v3.32.1",
+  "locales": {
+    "zh": {
+      "title": "工作过程自动收起，桌面交互更稳定（3.32.0 重发）",
+      "highlights": [
+        "会话工作过程按区间自动收起，交付正文、环境验证续轮和追加交付分别保留；阅读、选择文本及手动展开时延迟自动调整。",
+        "修复输入框横向滚动条、右栏文件树叠层及第 4 张图片无法加入；改进消息操作提示、会话总览已读状态、更新路由和账户设备额度。",
+        "修复 worker 恢复及重试缓存前缀，增加精确小时用量同步，并加固受保护路径、VS Code 运行时发现与 Linux 容器构建。"
+      ],
+      "notice": "与 v3.32.0 内容一致；v3.32.0 因灰度平台范围配置错误已在控制面撤销，未进入稳定通道。沿用现有会话、主题及折叠设置，无需迁移。已装 3.32.0 的用户直接更新即可。"
+    },
+    "en": {
+      "title": "Collapsible work intervals and a steadier desktop (3.32.0 reissue)",
+      "highlights": [
+        "Conversation work collapses by interval while original deliveries, runtime verification and additional deliveries stay separate. Automatic changes wait while you read, select text or keep work expanded.",
+        "Fixes composer scrollbars, overlapping right-panel file trees and missing fourth-image slots. Improves message hints, overview read state, update routing and account/device quotas.",
+        "Fixes worker resume and retry cache prefixes, adds precise hourly usage sync, and hardens protected paths, VS Code runtime discovery and Linux container builds."
+      ],
+      "notice": "Identical in content to v3.32.0, which was revoked in update control over a rollout platform-scope misconfiguration and never reached the stable channel. Existing sessions, themes and collapse settings require no migration; if you installed 3.32.0, simply take this update."
+    }
+  }
+}

@@ -1,32 +1,40 @@
-# 天枢 Architecture Overview
+# 天枢架构总览 · Architecture Overview
 
-> v3.27.0 · Node.js 24+ / TypeScript strict / 纯 ANSI TUI（`src/tui/engine/`）+ Tauri 桌面端 / node:test / ESM
+> [🏠 返回主文档](../README.md) · [🌐 English README](../README.en.md) · [📊 工程质量指标](./engineering-metrics.md) · [📚 用户手册](./user-guide.md)
 >
-> 规模：CLI 源码约 1,256 文件 / 30 万行，测试约 1,592 文件 / 31 万行（19,462 用例静态声明），75 个 hook 模块。
-> 逐期数据与迭代里程碑见 [`engineering-metrics.md`](./engineering-metrics.md)（数据截至 2026-09-30）。
+> **v3.31.0** · Node.js 24+ / TypeScript strict / 纯 ANSI TUI（`src/tui/engine/`）+ Tauri 桌面端 / node:test / ESM
 >
-> 开发代号曾用 **Rivet**；CLI 命令仍为 `rivet`。Agent 导航索引见根目录 [`AGENTS.md`](../AGENTS.md)。
+> 规模：CLI 源码约 1,475 文件 / 29.5 万行，测试约 1,875 文件 / 31.9 万行（21,514 用例静态声明），75 个运行时 hook 模块，16 个内置星域。
+> 逐期数据与迭代里程碑见 [`engineering-metrics.md`](./engineering-metrics.md)。
+>
+> 开发代号曾用 **Rivet**；CLI 主命令为 `tianshu`（兼容别名 `rivet`）。Agent 导航索引见根目录 [`AGENTS.md`](../AGENTS.md)。
+
+> **🌐 Executive Summary (English)**
+> **Tianshu Harness** is a six-layer agentic coding runtime built around three core engineering commitments:
+> 1. **Cognitive Virtual Machine (CVM)** — Every agent turn flows through a 5-phase `RuntimeHookPipeline` (`preTurn → afterPerception → postTool → postTurn → postSession`, conditionally assembling from **75 runtime hook modules**) paired with a `CognitiveLedger` and `AdvisoryBus` to detect and correct verification debt, hollow completions, and doom loops before side effects land.
+> 2. **Prefix-Cache-First Prompt Engine** — System prompts (`static.ts` frozen base + volatile domain block) and tool schemas are frozen at session start; dynamic context is injected via byte-stable cross-turn `appendixDelta` blocks, and history compaction rewrites only at user boundaries (`turn === 0`), sustaining **95–99%** steady-state prefix-cache hit rates.
+> 3. **16 Star Domains (`STAR_DOMAINS`)** — Switchable cognitive disciplines that configure methodology prompts, tool whitelists, and decision/courage thresholds (`courageThreshold`), shared across all surfaces (**Layer 0**: pure-ANSI TUI, Tauri Desktop, VS Code/Cursor extension, Headless CLI `tianshu -p`, and HTTP/SSE Sidecar `src/server/`).
 
 ## 项目定位
 
-天枢是针对 DeepSeek V4 前缀缓存深度优化的全功能编程智能体运行时。差异化不在「多几个工具」，而在：
+天枢是针对前缀缓存与认知控制流深度优化的全功能编程智能体运行时。差异化不在「多几个工具」，而在：
 
 - **CVM（认知虚拟机）** — 模型动作经五阶段 RuntimeHookPipeline 过滤与纠正，再落到物理工具
 - **Prefix-cache-first** — 冻结前缀、字节稳定 appendix、仅用户边界压缩，把命中率做成一级成本指标
-- **星域纪律** — 11 套可切换认知姿态（提示词 / 决策阈值 / 勇气阈值），而非角色扮演皮肤
+- **星域纪律** — 16 套可切换认知姿态（提示词 / 决策阈值 / 勇气阈值），而非角色扮演皮肤
 
-## 六层架构
+## 六层架构 · Six-Layer Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Layer 0: Surfaces                                                  │
 │  TUI: src/tui/engine/（纯 ANSI） · Desktop: desktop/（Tauri/React） │
 │  VS Code/Cursor 插件: vscode-extension/（sidecar 客户端 + E4 委托）  │
-│  Headless: rivet -p · Sidecar HTTP/SSE: src/server/                 │
+│  Headless: tianshu -p · Sidecar HTTP/SSE: src/server/               │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 1: Agent Loop (src/agent/)                                   │
 │  loop.ts → turn orchestration → tool-execution → completion         │
-│  RuntimeHookPipeline（5 phases，条件装配 60+ hook 模块）            │
+│  RuntimeHookPipeline（5 phases，条件装配 75 个运行时 hook 模块）     │
 │  Coordinator / WorkerSession / Plan·Team·Council / DeliveryGate     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 2: Context & Cognition (src/context/ + memory/)              │
@@ -67,7 +75,7 @@
 5 phases: `preTurn → afterPerception → postTool → postTurn → postSession`
 
 - 装配入口：`createDefaultRuntimeHooks()`（`create-runtime-hooks.ts`）
-- **不是**固定 9 个 hook。模块约 60+，按 deps / 环境变量门控；默认会话实际激活约 18+
+- **不是**固定 9 个 hook。内置 **75 个运行时 hook 模块**，按 deps / 环境变量门控；默认会话实际激活约 18+
 - 常驻基线含：perception、signal-consumer、kick、vigor、theta、stigmergy、radio
 - Advisory 类（self-verify、edit-tool-advisory、spec-verify-gate、context-pressure…）经 `AdvisoryBus` 注入 system-reminder，**不重写** `frozenBase` / `volatileBlock`
 - 改 hook 行为前先看 gate 条件，勿假设某 hook 一定在跑
@@ -95,7 +103,7 @@ System = static.ts（会话内冻结） + volatile（动态区） + appendixDelt
 | 装配注入 | delegate_task/batch、team_orchestrate、council_convene、deliver_task、memory/recall、repo_graph、semantic_search、browser_debug… |
 | EXTENDED（默认关） | 办公套件（docx/xlsx/pptx/pdf/image）、browser、computer_use（Pro 门控） |
 
-星域 `toolWhitelist` 是真实交集过滤器；内置 11 域当前白名单为全集 → 交集退化为恒等，但拼错 authority 会 fail-closed 返回 `[]`。
+星域 `toolWhitelist` 是真实交集过滤器；内置 16 星域当前白名单为全集 → 交集退化为恒等（太一域另通过默认 `toolPreset: "taiyi"` 装配 14 件核心工具），但拼错 authority 会 fail-closed 返回 `[]`。
 
 ### 星域 · Plan · Team · Council
 
@@ -128,7 +136,7 @@ WorkerProfile + WorkOrder → 独立无头会话；按任务类型自适应路�
 | TUI | `src/tui/` | 纯 ANSI 引擎；SteerBuffer 承接流式中输入 |
 | Desktop | `desktop/` | Tauri；经 `src/server/` 会话池与 SSE |
 | VS Code/Cursor 插件 | `vscode-extension/` | 同 sidecar 通道；E4 客户端工具委托（原生 diff/可见终端）+ 自包含运行时自举。见 `docs/VSCODE-EXTENSION-RELEASE.md` |
-| Headless | `rivet -p` | 脚本 / CI |
+| Headless | `tianshu -p` | 脚本 / CI（兼容 `rivet -p`） |
 | MCP | `src/mcp/` | 外部工具以 `mcp__*` 进入同一审批链 |
 
 ## 关键设计决策

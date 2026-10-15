@@ -80,6 +80,7 @@ describe('/token-ledger routes', () => {
     assert.equal(body.days.length, 1)
     assert.equal(body.days[0]!.model, 'deepseek-flash')
     assert.equal(body.pending, true) // 从未推送过
+    assert.equal((res.body as {hourlyCoverage:{state:string}}).hourlyCoverage.state,'complete')
   })
 
   it('GET /summary?days=0 拒绝；days 夹上限', async () => {

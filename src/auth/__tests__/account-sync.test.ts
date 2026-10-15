@@ -6,6 +6,14 @@ const snapshot = (): AccountSnapshot => ({ version: 1, userId: 'me',
   profile: { status: 'ok', fetchedAt: 1, data: { avatarUrl: null, founding: null, fetchedAt: 1, account: { userId: 'me', email: null, displayName: 'Website' } } },
   identity: { status: 'empty', data: null, fetchedAt: 1 }, entitlements: { status: 'ok', data: [], fetchedAt: 1 },
 })
+
+test('当前设备绑定来自服务端快照，缓存不凭旧身份猜绑定', () => {
+  const raw = { ...snapshot(), deviceBinding: { state: 'bound', licenseId: 'license-fixture' } }
+  const parsed = parseAccountSnapshot(raw, 'me')
+  assert.deepEqual(parsed?.deviceBinding, raw.deviceBinding)
+  assert.deepEqual(mergeAccountSnapshot(undefined, { code: 'ok', snapshot: parsed!, elapsedMs: 0 }).snapshot?.deviceBinding, raw.deviceBinding)
+  assert.equal(parseAccountSnapshot({ ...raw, deviceBinding: { state: 'bound', licenseId: null } }, 'me'), null)
+})
 for (const [status, code] of [[401, 'auth_required'], [403, 'forbidden'], [404, 'endpoint_unavailable'], [503, 'service_error']] as const) {
   test(`snapshot classifies HTTP ${status} as ${code}`, async () => {
     const result = await fetchAccountSnapshot('fixture', 'https://example.test', {}, 'me', { fetchImpl: async () => new Response('{}', { status }) })
@@ -103,10 +111,10 @@ test('invalid nested profile fields fail closed and failed category bodies are d
 })
 
 
-test('the actual desktop login request explicitly selects account-only approval', async()=>{
+test('the actual desktop login request explicitly selects counted client approval', async()=>{
  const {requestDeviceCode}=await import('../account.js')
  await requestDeviceCode({deviceFingerprint:'fixture-device',fetchImpl:async(_url,init)=>{
-  assert.equal(JSON.parse(String(init?.body)).purpose,'account-login')
+  assert.equal(JSON.parse(String(init?.body)).purpose,'client-login')
   return Response.json({deviceCode:'fixture',userCode:'fixture',verifyUrl:'https://example.test/auth/device',expiresIn:300,pollInterval:5})
  }})
 })

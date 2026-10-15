@@ -24,7 +24,10 @@ esac
 PLATFORM="linux/$ARCH"
 VOL="tianshu-build-$ARCH"
 OUT="out/linux-$ARCH"
-IMG="ubuntu:22.04"
+# 镜像源可覆盖：Docker Hub 间歇性阻断时用 IMG=docker.m.daocloud.io/library/ubuntu:22.04
+# 等国内 mirror。注意 OrbStack 复用同 tag 本地镜像会无视 --platform——按 digest
+# 拉取后本地 tag 成固定名（如 ubuntu-amd64:22.04）再传 IMG 更稳。
+IMG="${IMG:-ubuntu:22.04}"
 
 if [ -z "${RIVET_RELEASE_KEY_PKCS8:-}" ] && [ -f "$HOME/.tianshu/release.key" ]; then
   RIVET_RELEASE_KEY_PKCS8="$(cat "$HOME/.tianshu/release.key")"
@@ -47,16 +50,46 @@ if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   exit 1
 fi
 
-echo "=== 拉镜像 $IMG ($PLATFORM) ==="
-docker pull --platform "$PLATFORM" "$IMG"
+echo "=== 准备镜像 $IMG ($PLATFORM) ==="
+IMAGE_ID=""
+IMAGE_PLATFORM=""
+inspect_build_image() {
+  local info
+  IMAGE_ID=""
+  IMAGE_PLATFORM=""
+  # 新 Docker 可直接选择多架构本地缓存；旧引擎回落到元数据校验，仍禁止架构不符。
+  info="$(docker image inspect --platform "$PLATFORM" "$IMG" --format '{{.Id}} {{.Os}}/{{.Architecture}}' 2>/dev/null)" ||
+    info="$(docker image inspect "$IMG" --format '{{.Id}} {{.Os}}/{{.Architecture}}' 2>/dev/null)" || return 1
+  read -r IMAGE_ID IMAGE_PLATFORM <<< "$info"
+  [[ "$IMAGE_ID" =~ ^sha256:[[:xdigit:]]{64}$ ]] && [[ "$IMAGE_PLATFORM" == "$PLATFORM" ]]
+}
+# 只有目标平台已缓存时才跳过网络；存在同名的另一架构镜像不能视为命中。
+if inspect_build_image; then
+  echo "  本地已有 ${IMG}（${IMAGE_PLATFORM}），跳过 pull"
+else
+  docker pull --platform "$PLATFORM" "$IMG"
+  if ! inspect_build_image; then
+    echo "✗ 镜像元数据无效或平台不符：需要 ${PLATFORM}，实际 ${IMAGE_PLATFORM:-未知}；停止构建" >&2
+    exit 1
+  fi
+fi
 
 docker volume rm -f "$VOL" >/dev/null 2>&1 || true
 docker volume create "$VOL" >/dev/null
-RUN_ARGS=(-d --platform "$PLATFORM" -v "$VOL":/work \
+RUN_ARGS=(-d --pull=never --platform "$PLATFORM" -v "$VOL":/work \
   -e RIVET_RELEASE_KEY_PKCS8="$RIVET_RELEASE_KEY_PKCS8" \
   -e TAURI_SIGNING_PRIVATE_KEY \
   -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
-CID="$(docker run "${RUN_ARGS[@]}" "$IMG" sleep infinity)"
+# 容器内下载代理（可选）：nodejs.org/rustup 直连被掐时，
+# CONTAINER_PROXY=http://host.docker.internal:7890 走宿主代理（OrbStack 内置该域名）。
+if [ -n "${CONTAINER_PROXY:-}" ]; then
+  DOWNLOAD_NO_PROXY="localhost,127.0.0.1,mirrors.aliyun.com,docker.m.daocloud.io"
+  RUN_ARGS+=(-e HTTP_PROXY="$CONTAINER_PROXY" -e HTTPS_PROXY="$CONTAINER_PROXY"
+    -e http_proxy="$CONTAINER_PROXY" -e https_proxy="$CONTAINER_PROXY"
+    -e NO_PROXY="$DOWNLOAD_NO_PROXY" -e no_proxy="$DOWNLOAD_NO_PROXY")
+fi
+# 使用刚校验过的不可变 ID，避免 tag 在检查后被另一次构建切换架构。
+CID="$(docker run "${RUN_ARGS[@]}" "$IMAGE_ID" sleep infinity)"
 cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 

@@ -18,9 +18,9 @@ import type { PricingResolver } from '../cache/usage-aggregator.js'
 import { pushTokenUsageSnapshot, type FetchLike, type ForumPushResult } from './forum-sync.js'
 import { DEFAULT_FORUM_ENDPOINT } from './settings.js'
 import { TokenLedgerStore, type LedgerRefreshResult } from './store.js'
-import type { TokenDayModelRecord, TokenLedgerTotals } from './types.js'
+import type { TokenDayModelRecord, TokenLedgerTotals,TokenHourlyCoverage } from './types.js'
 
-const DEFAULT_SYNC_INTERVAL_MINUTES = 30
+const DEFAULT_SYNC_INTERVAL_MINUTES = 1
 
 export interface TokenLedgerServiceDeps {
   statePath?: string
@@ -39,6 +39,8 @@ export interface TokenLedgerSyncOutcome {
 }
 
 export interface TokenLedgerStatus {
+  hourlyCoverage: TokenHourlyCoverage
+  syncProgress: {nextPage:number;pageCount:number}|null
   enabled: boolean
   endpointConfigured: boolean
   autoSync: boolean
@@ -135,6 +137,8 @@ export class TokenLedgerService {
       lastPushAt: this.store.lastPushAt,
       lastPushResult: this.store.lastPushResult ? { ...this.store.lastPushResult, error: undefined } : undefined,
       statePath: this.store.filePath,
+      hourlyCoverage:this.store.hourlyCoverage(),
+      syncProgress:this.store.syncProgress(),
     }
   }
 
@@ -198,24 +202,35 @@ export class TokenLedgerService {
     const apiKey = this.apiKey
     if (!apiKey?.trim()) return { ok: false, skipped: 'no_key', newRows }
     const targetHash = this.targetHash
-    const { snapshot, digest } = await this.store.snapshotWithDigest(this.deviceName)
+    const digest=this.store.digest()
     // 台账没有 2xx 确认之外的变更时不重复推送（论坛端是累计 upsert，重推无信息量）。
     if (digest === this.store.lastPushedDigest && targetHash === this.store.lastPushedTargetHash && newRows === 0) {
       return { ok: true, skipped: 'unchanged', newRows, digest }
     }
 
-    const push = await pushTokenUsageSnapshot(snapshot, {
-      endpoint,
-      apiKey,
-      signal,
-      fetchImpl: this.fetchImpl,
-    })
-    await this.store.markPushed(push.ok ? { ok: true, status: push.status } : {
-      ok: false,
-      status: 'status' in push ? push.status : undefined,
-      code: 'code' in push ? push.code : undefined,
-      error: 'error' in push ? push.error : undefined,
-    }, digest, targetHash, snapshot.sentAt)
-    return { ok: push.ok, push, newRows, digest }
+    const batch=await this.store.prepareSyncBatch(this.deviceName,targetHash)
+    const generation=this.configGeneration
+    let lastSentAt=batch.lastConfirmedAt,push:ForumPushResult={ok:true,status:200}
+    const cancelled=async()=>{
+      if(lastSentAt)await this.store.markPushed({ok:false,code:'timeout'},batch.digest,targetHash,lastSentAt)
+      return {ok:false,newRows,digest:batch.digest}
+    }
+    while(!signal.aborted&&generation===this.configGeneration&&targetHash===this.targetHash){
+      const page=await this.store.nextSyncPage(batch.digest,targetHash)
+      if(!page)break
+      for(let attempt=0;attempt<2;attempt++){
+        const current=attempt?await this.store.nextSyncPage(batch.digest,targetHash):page
+        if(!current||current.index!==page.index||signal.aborted||generation!==this.configGeneration||targetHash!==this.targetHash)return cancelled()
+        lastSentAt=current.snapshot.sentAt
+        push=await pushTokenUsageSnapshot(current.snapshot,{endpoint,apiKey,signal,fetchImpl:this.fetchImpl,retries:0})
+        if(push.ok||('status' in push&&push.status!==undefined&&push.status>=400&&push.status<500&&push.status!==429))break
+      }
+      if(signal.aborted||generation!==this.configGeneration||targetHash!==this.targetHash)return cancelled()
+      if(!push.ok){await this.store.markPushed({ok:false,status:push.status,code:push.code},batch.digest,targetHash,lastSentAt);return {ok:false,push,newRows,digest:batch.digest}}
+      if(!await this.store.confirmSyncPage(batch.digest,targetHash,page.index,lastSentAt!))return {ok:false,newRows,digest:batch.digest}
+    }
+    if(signal.aborted||generation!==this.configGeneration||targetHash!==this.targetHash)return cancelled()
+    await this.store.markPushed({ok:true,status:push.status},batch.digest,targetHash,lastSentAt)
+    return {ok:true,push,newRows,digest:batch.digest}
   }
 }

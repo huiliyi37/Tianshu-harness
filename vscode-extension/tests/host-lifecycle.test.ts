@@ -759,6 +759,32 @@ test('unknown complex rivet cmd is rejected even beside an installed npm entry',
   assert.throws(() => resolveCliCommand('C:\\npm\\rivet.cmd', ['serve'], 'C:\\work'), /无法安全解析/)
 })
 
+test('Windows local npm bin shim resolves the selected harness and preserves literal argv', () => {
+  const shim = 'C:\\中文 space\\project\\node_modules\\.bin\\rivet.cmd'
+  const node = 'C:\\node\\node.exe'
+  const entry = 'C:\\中文 space\\project\\node_modules\\tianshu-harness\\dist\\cli\\entry.js'
+  const source = npmCmdShim.replace('%dp0%\\node_modules\\tianshu-harness', '%dp0%\\..\\tianshu-harness')
+  const { resolveCliCommand } = load('src/sidecar/cli-command.ts', {
+    'node:path': win32,
+    'node:fs': { existsSync: (file: string) => [shim, node, entry].includes(file), readFileSync: () => source },
+  }, { process: { platform: 'win32', execPath: 'C:\\editor\\Code.exe', env: { PATH: 'C:\\node' } } })
+  const args = ['-p', '"quoted" & echo\n%PATH%', '--json']
+  const result = resolveCliCommand(shim, args, 'C:\\work')
+  assert.equal(result.command, node)
+  assert.deepEqual(JSON.parse(JSON.stringify(result.args)), [entry, ...args])
+})
+
+test('local npm bin support still rejects wrapper side effects and missing Node', () => {
+  const source = npmCmdShim.replace('%dp0%\\node_modules\\tianshu-harness', '%dp0%\\..\\tianshu-harness')
+  for (const [body, nodePresent] of [[source + '\r\necho custom-wrapper', true], [source, false]] as const) {
+    const { resolveCliCommand } = load('src/sidecar/cli-command.ts', {
+      'node:path': win32,
+      'node:fs': { existsSync: (file: string) => !file.endsWith('node.exe') || nodePresent, readFileSync: () => body },
+    }, { process: { platform: 'win32', execPath: 'C:\\editor\\Code.exe', env: { PATH: 'C:\\node' } } })
+    assert.throws(() => resolveCliCommand('C:\\project\\node_modules\\.bin\\rivet.cmd', ['serve'], 'C:\\work'), /无法安全解析/)
+  }
+})
+
 test('Windows bare npm CLI launches with three shims and Electron-like execPath', { skip: process.platform !== 'win32' }, async () => {
   const files = windowsRuntimeFixture(true)
   const pkg = join(files.dir, 'node_modules', 'tianshu-harness')

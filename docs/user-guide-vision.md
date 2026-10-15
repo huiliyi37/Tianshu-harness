@@ -1,5 +1,7 @@
 # 识图能力用户手册（视觉通道）
 
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md) · [📚 CLI 用户手册](./user-guide.md)
+>
 > 天枢什么时候能真的「看见」图片、看不见时会怎样、桌面端与 TUI 分别怎么配。
 
 ---
@@ -128,7 +130,7 @@ ask_image { question: "逐字念出红色报错那一行", imageId: "img_2" }
 
 `browser_debug` 需要 chromium（约 150MB，不随包分发）。两条入口都能装，各自独立可用：
 
-- **CLI**：`rivet browser status` 查状态、`rivet browser install` 一键装（自动带国内镜像，`--no-mirror` 走官方源）。含 `browser_debug` 的 preset 下启动还会自动体检，缺失时在首屏给出安装入口。
+- **CLI**：`tianshu browser status` 查状态、`tianshu browser install` 一键装（自动带国内镜像，`--no-mirror` 走官方源）。含 `browser_debug` 的 preset 下启动还会自动体检，缺失时在首屏给出安装入口。
 - **桌面端**：Settings → 集成 → **浏览器（截图）**——就绪状态、一键安装（镜像 / 官方源两个按钮）、实时安装日志都在这张卡里。只装桌面端的用户不需要终端。
 
 `playwright-core` 模块本身缺失时（打包残缺）两边都不会给安装按钮：那不是"浏览器没下载"，装浏览器解决不了。

@@ -23,7 +23,8 @@ async function run(client: StreamClient) {
     },
   })
   const result = await controller.streamTurn({
-    request: { model: 'fixture', max_tokens: 4096, messages: [{ role: 'user', content: 'fixture' }] },
+    request: { model: 'fixture', max_tokens: 4096, messages: [{ role: 'user', content: 'fixture' }],
+      tools: [{ type: 'function', function: { name: 'write_file', description: 'fixture', parameters: { type: 'object', properties: {} } } }] },
     turn: 1, lastTurnTextFingerprint: '',
     callbacks: { onTextDelta() {}, onThinkingDelta() {}, onToolUse: id => { notifiedTools.push(id) }, onError() {} },
   })

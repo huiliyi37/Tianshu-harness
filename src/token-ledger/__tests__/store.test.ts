@@ -192,7 +192,7 @@ test('snapshot 形状：version/deviceId/sentAt/totals/days 齐全且为累计�
   const store = fx.makeStore()
   await store.refresh()
   const snap = await store.snapshot('test-machine')
-  assert.equal(snap.version, 1)
+  assert.equal(snap.version, 2)
   assert.equal(snap.deviceId, store.deviceId)
   assert.equal(snap.deviceName, 'test-machine')
   assert.equal(snap.sentAt, new Date(T0 + 86_400_000).toISOString())

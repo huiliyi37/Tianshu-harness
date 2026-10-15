@@ -1,6 +1,8 @@
 # Provider 配置用户手册
 
-> 本文档面向最终用户，解释如何使用 Rivet（天枢）配置模型 Provider。
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md) · [📚 CLI 用户手册](./user-guide.md)
+>
+> 本文档面向最终用户，解释如何使用天枢（CLI 主命令 `tianshu`，兼容别名 `rivet`）配置模型 Provider。
 
 ---
 
@@ -18,14 +20,10 @@ Provider 是「模型接入点」——你告诉天枢从哪里调用模型、�
 | `glm` | 智谱 GLM-5.3 / GLM-5.3-Flash / GLM-5.2 | OpenAI-compatible | API Key | 1M tokens | 支持 thinking |
 | `mimo` | 小米 MiMo V2.6 Pro / V2.6 Flash（全模态）、V2.5 系 | OpenAI-compatible | API Key | 1M tokens | 支持 thinking，prefix cache |
 | `minimax` | MiniMax M3 / M2.7 | OpenAI-compatible | API Key | 1M (M3) / 204.8K (M2.7) | 需过滤 `top_k/metadata/cache_control` 参数 |
-| `codex` | GPT-5.6 (ChatGPT 订阅) | Codex Responses | OAuth PKCE | 1M tokens | 使用 ChatGPT 订阅（非 API 计费），自动 token 刷新 |
+| `codex` | GPT-6.1-sol / GPT-5.6-sol (ChatGPT 订阅) | Codex Responses | OAuth PKCE | 1M tokens | 使用 ChatGPT Plus/Pro 订阅（非 API 计费），自动 token 刷新 |
 
 > 本表描述本仓内置预设，不是供应商最新完整模型目录。可用型号以各端点的模型列表为准；
 > OpenAI 当前系列见[官方模型文档](https://developers.openai.com/api/docs/models)，本次文档更新不更改内置默认型号。
-
-> 📌 上表 `codex` 行为**预设默认**（直连 ChatGPT OAuth）。本机实际已把 codex 改走本地
-> **cliproxy 账号池**（GPT-5.5 / `claude-opus-4-5`）——配置、排障、账号池维护与自动刷新
-> 见 [`docs/codex-cliproxy-account-pool.md`](./codex-cliproxy-account-pool.md)。
 
 ---
 
@@ -36,12 +34,12 @@ Provider 是「模型接入点」——你告诉天枢从哪里调用模型、�
 运行：
 
 ```bash
-rivet
+tianshu
 ```
 
 首次没有可用 API Key 时，天枢先显示主界面，再自动打开 `/connect`。在该界面选择内置 Provider 或自定义 OpenAI-compatible 服务，按步骤完成认证和模型选择；配置成功后会直接切换到可用会话。
 
-之后随时在 TUI 输入 `/connect` 添加或更新 Provider。`rivet config` 只显示脚本化配置命令帮助，不再启动 readline 交互向导。
+之后随时在 TUI 输入 `/connect` 添加或更新 Provider。`tianshu config`（或 `rivet config`）只显示脚本化配置命令帮助，不再启动 readline 交互向导。
 
 ### 方式二：命令行脚本化配置
 
@@ -880,7 +878,7 @@ rivet config providers  # 应该只显示内置 Provider
 
 - **`profiles`**：按 worker profile 名指定 `{ provider, model }`，命中**所有携带该 profile 的子代理**（不止提交后审查——见下文「council / team 覆盖」）。提交后自动审查（`deliver_task` commit）实际用的是 **`reviewer`** 这个 profile，所以只想让提交审查走 Flash，配 `reviewer` 一项即可；要把对抗验证（L2）、补丁建议也一并下放就把 `adversarial_verifier` / `verifier` / `patcher` 也配上。
   - **键名不做注册表校验**：profile 名是自由字符串，写错（如把 `reviewer` 拼成 `reviewr`）**不会报错，也不会回退**——只是永远匹配不到任何 worker，等于**静默失效**。常用的有效 profile：`reviewer` / `adversarial_verifier` / `verifier` / `patcher` / `council_expert` / `code_scout` / `doc_scout`。配 `RIVET_DEBUG=1` 可在日志看 `[review-override] active` / `[worker-model] review-override` 确认是否真的命中。
-- **`skipAuto`**（默认 `true`）：关闭 `deliver_task` 的提交后自动审查（等价于环境变量 `RIVET_REVIEW_DISCIPLINE=0`，但限本配置文件）。**开箱默认即关闭**——审查靠用户手动 `/review [max]` 或外部会话；想恢复自动审查设为 `false`。
+- **`skipAuto`**（schema 默认 `false`，即默认开启自动审查）：设为 `true` 时关闭 `deliver_task` 的提交后自动审查（等价于环境变量 `RIVET_REVIEW_DISCIPLINE=0`，但限本配置文件）。跳过后审查靠用户手动 `/review [max]` 或外部会话触发；恢复自动审查设为 `false`（或在设置面板取消勾选）。
 - **`mechanicalFastPath`**（默认 `true`）：纯文档 / 纯重命名变更跳过审查 worker 和未验证 RED 闸门。
 
 ### `workers` —— 通用子代理能力路由
@@ -965,7 +963,7 @@ rivet config providers  # 应该只显示内置 Provider
 - **`provider` 与 `model` 必须成对**——只写一个视为未配置,该席位走默认路由。
 - **优先级最高**:`agent.council.seats[].provider/model` > `agent.review.profiles["council_expert"]` > `workers.routing["code_edit"]` > 内置启发式。所以一旦给席位配了 provider/model,上面那套全席统一的 `council_expert` 覆盖对该席位不再生效。
 - **席位数即并行 worker 数**:配 3 个席位就并发派 3 个子代理,各自独立 provider/model/缓存。
-- **`authority` 必须是星域 id**(内置 10 个:`tianshu` / `pojun` / `tianfu` / `tianliang` / `tianquan` / `tianji` / `tianxuan` / `fu` / `wenqu` / `yaoguang`,或已加载的自定义域)。非星域 authority 会让该席位**无工具(fail-closed)且无认知注入**,席位形同失明——务必从建议列表里选。
+- **`authority` 必须是星域 id**(内置 16 个星域 id，如 `tianshu` / `pojun` / `tianfu` / `tianliang` / `tianquan` / `tianji` / `tianxuan` / `fu` / `wenqu` / `yaoguang` / `qiming` / `changgeng` / `kaiyang` / `huagai` / `qisha` / `taiyi`，或已加载的自定义域)。非星域 authority 会让该席位**无工具(fail-closed)且无认知注入**,席位形同失明——务必从建议列表里选。
 - **每席 `authority` 不可重复**。议事会按 authority 绑定结果,重复会导致丢席 + 重复计票,`council_convene` 会直接报错拒绝(fail-loud)。要「同一视角对比两个模型」目前不支持,请用不同星域。
 
 ### 上下文压缩走廉价模型（`compact.provider` + `compact.model`）
@@ -1024,13 +1022,13 @@ rivet config providers  # 应该只显示内置 Provider
 查看完整配置：
 
 ```bash
-rivet config show | jq
+tianshu config show | jq
 ```
 
 查看 Provider 详情：
 
 ```bash
-rivet config providers
+tianshu config providers
 ```
 
 测试 Provider 连接（用 curl）：
@@ -1049,8 +1047,7 @@ curl https://open.bigmodel.cn/api/coding/paas/v4/models \
 
 ## 参考链接
 
-- 实现计划：[Provider 配置模式优化实现计划](./plans/2026-05-28-设计一下我们模型接入的provider的模式配置优化-比如初始化的时候-输入-r.md)
-- Provider 预设源码：src/config/provider-presets.ts
-- 配置管理器：src/config/manager.ts
-- TUI Provider 接入流程：src/tui/connect-flow.ts
-- Provider 探测：src/api/provider-probe.ts
+- Provider 预设源码：`src/config/provider-presets.ts`
+- 配置管理器：`src/config/manager.ts`
+- TUI Provider 接入流程：`src/tui/connect-flow.ts`
+- Provider 探测：`src/api/provider-probe.ts`

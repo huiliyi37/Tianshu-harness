@@ -36,9 +36,25 @@ export interface TokenLedgerTotals {
   cost: number
 }
 
+export interface TokenHourModelRecord {
+  hour: string
+  model: string
+  provider: string
+  input: number
+  output: number
+}
+
+export interface TokenHourlyCoverage {
+  state: 'complete' | 'partial'
+  from: string | null
+  through: string | null
+  missingFiles: number
+}
+
 /** 推送论坛的快照载荷（POST body）。累计快照，论坛端按 deviceId upsert。 */
 export interface TokenUsageSnapshot {
-  version: 1
+  version: 1 | 2
+  hours?: TokenHourModelRecord[]
   /** 安装级匿名 id（首次生成后独立持久化，并兼容旧台账身份迁移） */
   deviceId: string
   /** 展示用设备名（config tokenLedger.deviceName，缺省 os.hostname()） */
@@ -59,6 +75,9 @@ export interface TokenUsageSnapshot {
 export interface TokenLedgerState {
   version: 1
   deviceId: string
+  hours?: Record<string, Record<string, TokenHourModelRecord>>
+  hourlyMigration?: { version: 1; files: Record<string, { offset: number; partial: boolean; evidence?: string }> }
+  syncBatch?: {digest:string;targetHash:string;pages:TokenUsageSnapshot[];nextPage:number;lastConfirmedAt?:string}
   /** cache-log 相对 sessionsRoot 的路径 → 已消费字节偏移（日志 append-only） */
   offsets: Record<string, number>
   /** date → bucketKey(provider\0model 或裸 model) → 累计记录 */

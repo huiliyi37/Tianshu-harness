@@ -7,13 +7,36 @@ import { CONTROL_URLS, CONTROL_LIMIT, digest, canonical, validateControl, choose
 
 const REPO = 'huiliyi37/Tianshu-harness'
 const catalogURL = version => `https://github.com/${REPO}/releases/download/v${version}/release-catalog.json`
+const FETCH_TIMEOUT_MS = Number(process.env.RELEASE_FETCH_TIMEOUT_MS ?? 15000)
+// Node fetch 对 github.com 下载域在部分代理/直连链路上偶发 UND_ERR_CONNECT_TIMEOUT，
+// curl 走系统网络栈（含 env 代理）常能通。仅网络层失败时回落；HTTP 错误语义不变。
+function curlReadRemote(url) {
+  const max = String(Math.ceil(FETCH_TIMEOUT_MS / 1000))
+  try {
+    const buf = execFileSync('curl', ['-sS', '-L', '--fail', '--max-time', max, '-H', 'Cache-Control: no-store', url], { encoding: 'buffer', maxBuffer: CONTROL_LIMIT * 4 })
+    if (buf.length > CONTROL_LIMIT) throw new Error('Metadata exceeds 256 KiB')
+    return buf
+  } catch (error) {
+    if (error?.status === 22) {
+      const code = execFileSync('curl', ['-sS', '-L', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', max, url], { encoding: 'utf8' }).trim()
+      if (code === '404') return undefined
+      throw new Error(`Cannot read ${url}: HTTP ${code}`)
+    }
+    throw error
+  }
+}
 export async function readRemote(url, fetcher = fetch) {
-  const r = await fetcher(url, { signal: AbortSignal.timeout(15000), cache: 'no-store' })
-  if (r.status === 404) return undefined
-  if (!r.ok) throw new Error(`Cannot read ${url}: HTTP ${r.status}`)
-  const chunks = []; let size = 0
-  for await (const chunk of r.body) { size += chunk.length; if (size > CONTROL_LIMIT) throw new Error('Metadata exceeds 256 KiB'); chunks.push(chunk) }
-  return Buffer.concat(chunks)
+  try {
+    const r = await fetcher(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store' })
+    if (r.status === 404) return undefined
+    if (!r.ok) throw new Error(`Cannot read ${url}: HTTP ${r.status}`)
+    const chunks = []; let size = 0
+    for await (const chunk of r.body) { size += chunk.length; if (size > CONTROL_LIMIT) throw new Error('Metadata exceeds 256 KiB'); chunks.push(chunk) }
+    return Buffer.concat(chunks)
+  } catch (error) {
+    if (error?.name === 'TimeoutError' || error?.cause?.code || String(error?.message).includes('fetch failed')) return curlReadRemote(url)
+    throw error
+  }
 }
 export async function publishTransaction(transaction, io) {
   // A saved transaction is retried verbatim; no new revision is allocated on retry.
@@ -42,7 +65,7 @@ async function releaseInfo(version) {
   // api.github.com 匿名额度按出口 IP 计，共享 IP 极易 403——有 token 就带上
   // （CI 的 GITHUB_TOKEN / 本地 gh auth token 均可）；release 资产读取仍匿名。
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
-  const r = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'tianshu-update-control', ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
+  const r = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/v${version}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { 'User-Agent': 'tianshu-update-control', ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
   if (!r.ok) throw new Error(`GitHub release metadata unavailable (HTTP ${r.status}${token ? '' : '，无 token——匿名额度按出口 IP 计，可用 GH_TOKEN 环境变量提供'}${r.status === 403 ? '；403 多为匿名限额' : ''})`)
   return r.json()
 }

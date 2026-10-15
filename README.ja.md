@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="https://tianshuharness.com"><b>🌐 公式サイト tianshuharness.com</b></a> · 
+  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><b>🇨🇳 AtomGit ミラー</b></a> · 
   🇯🇵 <b>日本語</b> · 
   <a href="README.md">🇨🇳 中文</a> · 
   <a href="README.en.md">📖 English</a> · 
@@ -66,15 +67,15 @@
 
 ## 目次
 
-- [なぜ天枢か](#なぜ天枢か)
-- [クイックスタート](#クイックスタート)
-- [コア機能](#コア機能)
-- [モデル設定](#モデル設定)
-- [権限モード](#権限モード)
-- [スラッシュコマンド](#スラッシュコマンド)
-- [開発者向け](#開発者向け)
-- [セキュリティ](#セキュリティ)
-- [主要設定クイックリファレンス](#主要設定クイックリファレンス)
+- [なぜ天枢か](#-なぜ天枢か)
+- [クイックスタート](#-クイックスタート)
+- [コア機能](#-コア機能)
+- [モデル設定](#-モデル設定)
+- [権限モード](#-権限モード)
+- [スラッシュコマンド](#-スラッシュコマンド)
+- [開発者向け](#-開発者向け)
+- [セキュリティ](#-セキュリティ)
+- [主要設定クイックリファレンス](#-主要設定クイックリファレンス)
 
 ## 💡 なぜ天枢か
 
@@ -154,8 +155,8 @@ Layer 4: RuntimeHookPipeline（75 hooks）→ trap-and-emulate で退化行動�
 
 ### 2. インストール（いずれかを選択）
 
-**方法 A：デスクトップ版（すぐ使える）** —— [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) からダウンロード：macOS `.dmg`（Apple Silicon / Intel 両アーキテクチャ）· Windows `.exe` インストールウィザード · Linux `.AppImage`。
-> **Linux サポート範囲（3.11.2 初出）**：x64 AppImage はインストール不要——`chmod +x Tianshu_*.AppImage` で直接実行。glibc ≥ 2.35 が必要（Ubuntu 22.04+ / Debian 12+ など主要ディストリビューション）。X11 セッション推奨（Wayland は未検証）。既知の制限：音声入力は当面利用不可（whisper コミュニティビルドが無いため、ブラウザ音声に自動フォールバック）。デスクトップの自動更新は Linux でも有効。
+**方法 A：デスクトップ版（すぐ使える）** —— [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) からダウンロード：macOS `.dmg`（Apple Silicon / Intel 両アーキテクチャ）· Windows `.exe` インストールウィザード · Linux `.AppImage`（**x86_64 / aarch64 両アーキテクチャ**、3.26.0 以降）。
+> **Linux サポート範囲（3.11.2 初出、3.26.0 以降両アーキテクチャ対応）**：AppImage はインストール不要——`chmod +x Tianshu_*.AppImage` で直接実行。アーキテクチャに応じてパッケージを選択：`Tianshu_*_amd64.AppImage`（x86_64 デスクトップ/ノート PC）· `Tianshu_*_aarch64.AppImage`（ARM64：Raspberry Pi 64-bit、ARM Linux ノート PC など）。glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ など主要ディストリビューション）およびシステムグラフィックライブラリ `libwebkit2gtk-4.1` と `libgtk-3` が必要です（多くのデスクトップディストリビューションには標準搭載。不足時は webkit2gtk 4.1 をインストールし、`ldd Tianshu_*.AppImage` で確認可能）。X11 セッション推奨（Wayland は未検証）。音声入力もサポート済み（ローカル `whisper.cpp` 公式 Linux ビルドを同梱しオフライン認識に対応）。デスクトップの自動更新は Linux でも有効です。
 
 > **Windows サポート範囲**：Windows 10（1809+、22H2 推奨）/ Windows 11。画面描画は **WebView2 Runtime（推奨 ≥ 120）** に依存——v3.5 以降のスクロール・描画最適化には新しいランタイムが必要で、古いとセッション領域のスクロールがカクつきます。3.5.3 以降インストーラーは完全なオフラインインストールパッケージを同梱（ネット不要・システムレベル登録）。既存ユーザーが自動更新で古すぎる旨の表示が出た場合：通知バーまたは「設定 → ランタイムとバージョン情報」で「修復ツールを実行」。**ウィンドウが完全に開かない**場合は、スタートメニューの「WebView2 を修復」、または [Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) の `windows-repair` ディレクトリから `repair-webview2.cmd` をダブルクリック。[WebView2 オフラインインストールパッケージ](https://go.microsoft.com/fwlink/p/?LinkId=2124703) を手動インストールして再起動しても構いません。
 > **Win10 タブレットモードの既知動作**：タブレットモードでアプリを切り替えると前のアプリが画面外へスライドします——computer_use のスナップショットは遮へい／バックグラウンド自己修復（PrintWindow 描画）済みで、タブレットモードを切る必要はありません。
@@ -313,7 +314,7 @@ DeepSeek はキャッシュミスに 50× の料金を課します。天枢の�
 
 ### 禅モード（Zen Mode）：読みに集中する開始、手を動かせば解除
 
-新規セッションはデフォルトで狭められた読み取り専用ツール面で開始します（`read_file` / `grep` / `glob` / `repo_map` ＋ `zen_unlock` 宣言ツール）——モデルは開始時に全量ツール schema と動的注入に干渉されません。手を動かす必要が出たとき、面の外のツールを呼ぶか `zen_unlock` を実行すると全量面に昇格してその呼び出しを許可します。ゼロ拒否・ゼロ追加往復。worker / サブエージェントセッションは禅に入りません（ツール面は委譲側が決定）。
+禅モードは**明示的な opt-in（デフォルトでオフ、`enabled: false`）**です——新規セッションはデフォルトで全量ツール面で開始し、キャッシュ断絶はゼロです。読みに集中する開始にしたい場合は設定で有効化します（下記参照）。有効化すると、新規セッションは狭められた読み取り専用ツール面で開始します（`read_file` / `grep` / `glob` / `repo_map` ＋ `zen_unlock` 宣言ツール）——モデルは開始時に全量ツール schema と動的注入に干渉されません。手を動かす必要が出たとき、面の外のツールを呼ぶか `zen_unlock` を実行すると全量面に昇格してその呼び出しを許可します。ゼロ拒否・ゼロ追加往復。worker / サブエージェントセッションは禅に入りません（ツール面は委譲側が決定）。
 
 昇格チャネル（zen → full、一方通行・戻りなし、セッションごとに最大 1 回）：
 
@@ -322,11 +323,11 @@ DeepSeek はキャッシュミスに 50× の料金を課します。天枢の�
 - **timeout** —— 禅フェーズが 8 ターン以上続いて手を動かさない場合、自動昇格
 - **`/fast`** —— ユーザーが手動スキップ
 
-**プレフィックスキャッシュへの影響（なぜたまに「1 回砕ける」のか）**：昇格の瞬間のリクエストで `tools` フィールドが約 5 定義から全量面に戻る——これは system prompt と同格のプレフィックス同一性の変更で、当該リクエストのキャッシュは全体を再構築（実測の形状：昇格ターンのヒット率が下がり、次のターンで即 99% 定常に復帰）。system prompt / フリーズドプレフィックス / メッセージ履歴 / モデルは全ターン動きません。禅フェーズ中の動的注入の剪定（appendixLean）はプレフィックスより後ろの appendix で発生するためキャッシュ損傷ゼロ。観測：セッション `meta.json` に `zenPhase` / `zenPromoteReason` が記録され、`cache-log.jsonl` の昇格ターンの `toolsUpdated` イベントが断絶位置。triage チャネルにより大半の些細なセッションではこの 1 回の断絶すら起きません。完全にオフにするには：
+**プレフィックスキャッシュへの影響（なぜたまに「1 回砕ける」のか）**：昇格の瞬間のリクエストで `tools` フィールドが約 5 定義から全量面に戻る——これは system prompt と同格のプレフィックス同一性の変更で、当該リクエストのキャッシュは全体を再構築（実測の形状：昇格ターンのヒット率が下がり、次のターンで即 99% 定常に復帰）。system prompt / フリーズドプレフィックス / メッセージ履歴 / モデルは全ターン動きません。禅フェーズ中の動的注入の剪定（appendixLean）はプレフィックスより後ろの appendix で発生するためキャッシュ損傷ゼロ。観測：セッション `meta.json` に `zenPhase` / `zenPromoteReason` が記録され、`cache-log.jsonl` の昇格ターンの `toolsUpdated` イベントが断絶位置。triage チャネルにより大半の些細なセッションではこの 1 回の断絶すら起きません。有効化するには（デフォルトはオフ `enabled: false`、新規セッションから反映）：
 
 ```json
 // ~/.rivet/config.json またはプロジェクト .rivet-config.json
-{ "tools": { "zen": { "enabled": false } } }
+{ "tools": { "zen": { "enabled": true } } }
 ```
 
 任意設定：`faceMode: "structuredRead"`（読面に `file_info` / `related_tests` / `repo_graph` / `semantic_search` / `read_section` を追加）、`timeoutSteps`（0 = タイムアウト昇格を無効化）、`triage.maxChars`、`appendixLean`。
@@ -357,14 +358,14 @@ DeepSeek はキャッシュミスに 50× の料金を課します。天枢の�
 
 ### ツールセットと preset
 
-天枢には 50 個のツールが内蔵され、preset ごとに段階的に組み込まれます（解決優先度：`RIVET_TOOL_PRESET` 環境変数 > プロジェクト `.rivet-config.json` の `tools.preset` > プロジェクト／ユーザー `runtime.domains.<ドメイン>.toolPreset` ドメイン単位上書き > 星域内蔵デフォルト（太一ドメイン→taiyi）> デフォルト `frontend`）：
+天枢には 51 個のツールが内蔵され（full セット基準）、preset ごとに段階的に組み込まれます（解決優先度：`RIVET_TOOL_PRESET` 環境変数 > プロジェクト `.rivet-config.json` の `tools.preset` > プロジェクト／ユーザー `runtime.domains.<ドメイン>.toolPreset` ドメイン単位上書き > 星域内蔵デフォルト（太一ドメイン→taiyi）> デフォルト `minimal`）：
 
 | Preset | ツール数 | 説明 |
 |--------|--------|------|
-| **minimal** | 29 | 日常開発の全能力——読み書き/検索/bash/git/テスト/委譲/web/計画/todo/memory。token 節約、prefix cache 維持 |
-| **frontend**（デフォルト） | 30 | minimal ＋ `browser_debug`（UI 描画検証のクローズドループ） |
-| **full** | 50 | 全セット。`council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / オフィスツール群などの上級能力 |
-| **taiyi** | 16 | 最小評価セット——高頻度コア＋納品クローズドループ。オーケストレーション/ブラウザ/ネットワーク/ビジュアル等の重いツールを除去。太一星域が固定されると自動でこのセットに（後述「最小ツールセット」） |
+| **minimal**（デフォルト） | 30 | 日常開発の全能力——読み書き/検索/bash/git（`git_scout` 含む）/テスト/委譲/web/計画/todo/memory。token 節約、prefix cache 維持 |
+| **frontend** | 31 | minimal ＋ `browser_debug`（UI 描画検証のクローズドループ） |
+| **full** | 51 | 全セット。`council_convene` / `team_orchestrate` / `attack_case` / `semantic_search` / `repo_graph` / `monitor` / `computer_use` / `capability` / `cli_discover` / オフィスツール群などの上級能力 |
+| **taiyi** | 14 | 最小評価セット——高頻度コア＋納品クローズドループ。オーケストレーション/ブラウザ/ネットワーク/ビジュアル等の重いツールを除去。太一星域が固定されると自動でこのセットに（後述「最小ツールセット」） |
 
 ```bash
 RIVET_TOOL_PRESET=full tianshu          # このセッションだけ full
@@ -432,7 +433,7 @@ Plan Mode には星域委譲が内蔵——複雑な計画は自動で `delegate
 |------|------|----------|
 | **啓明** `qiming` | 朝光の案内人（デフォルトドメイン） | 汎用エンジニアリング能力 · 全景洞察——要件が曖昧、方向が不明なときは、まず全体を見て根本原因を突いてから手を動かす |
 | **長庚** `changgeng` | 夜警 | 汎用エンジニアリング能力 · 終局の完遂——ビジュアル最終検証、長夜の伴走、引継ぎの後始末。灯を消す前に道標を残す |
-| **太一** `taiyi` | ミニマルセンター | ミニマル体験——内蔵 16 のコアツール（taiyi セット）、急かさず邪魔しない。静かで効率的が好みなら手動で `/domain taiyi` |
+| **太一** `taiyi` | ミニマルセンター | ミニマル体験——内蔵 14 のコアツール（taiyi セット）、急かさず邪魔しない。静かで効率的が好みなら手動で `/domain taiyi` |
 | **天权** `tianquan` | 方案審査官 | 計画と審査が得意——アーキテクチャ評価、方案のトレードオフ、技術選定、実行可能な計画を産出 |
 | **瑶光** `yaoguang` | 再現検証官 | 審査と検収が得意——欠陥の再現、回帰検証、偽のグリーンを監視——グリーンは数に入れない |
 
@@ -648,7 +649,7 @@ TUI は CLI のデフォルトサーフェスです。デスクトップ版（Ta
 
 ### 🎙️ 音声入力（デスクトップ版）
 
-入力ボックスのマイクボタンで音声入力が可能で、**macOS と Windows 共通**。認識は**ローカルの whisper.cpp エンジン**が実行——オフライン、プライバシー保護（録音はどのサーバーにもアップロードされません）。中英混在シーンの精度はシステム標準認識より高くなっています。
+入力ボックスのマイクボタンで音声入力が可能で、**macOS、Windows、Linux 共通**。認識は**ローカルの whisper.cpp エンジン**が実行——オフライン、プライバシー保護（録音はどのサーバーにもアップロードされません）。中英混在シーンの精度はシステム標準認識より高くなっています。
 
 **初回使用ガイド**
 
@@ -660,7 +661,7 @@ TUI は CLI のデフォルトサーフェスです。デスクトップ版（Ta
 
 - 認識はすべてローカルで完了し、録音がデバイスを離れることはありません。
 - 1 回クリックで録音開始、もう 1 回クリックで終了して認識。
-- ローカルエンジンが使えないとき（モデル未ダウンロード等）は、macOS はシステム音声認識に自動フォールバック。Windows はモデル未準備の旨を通知。
+- ローカルエンジンが使えないとき（モデル未ダウンロード等）は、macOS はシステム音声認識に自動フォールバック。Windows と Linux はモデル未準備の旨を通知。
 - より高精度を求めるなら base モデル（約 244MB）に変更可：`desktop/scripts/fetch-whisper-runtime.js --with-base` で事前ダウンロード。
 - ネットワーク制限環境では `RIVET_WHISPER_PROXY=http://プロキシ:ポート` でモデルダウンロードを加速。
 
@@ -678,7 +679,7 @@ TUI は CLI のデフォルトサーフェスです。デスクトップ版（Ta
 
 **閾値デフォルト**：Lean 4 セッション / 600000ms（10 分）/ 10MB、通常 16 / 1800000ms（30 分）/ 50MB。イベントログのディスク下限 1,000,000 バイト。
 
-**最小ツールセット（taiyi セット）**：`RIVET_TOOL_PRESET=taiyi`（またはプロジェクト設定 `tools.preset: "taiyi"`）は高頻度コアツール（読み書き/検索/bash/git/テスト/納品/計画など 16 個）のみを組み込み、オーケストレーション/ブラウザ/ネットワーク/ビジュアルなどの重いツールを除去——「主要ツールだけ残して足りるか」の評価に最適。`full` セットでワンクリック全量復帰。**太一星域はこのセットを内蔵**：`defaultDomain` を `taiyi` に固定すると設定不要で自動的に taiyi セットに（明示指定は常に優先して上書き可）。ワンクリック組合せは下記「最小セットと星域バインド」。
+**最小ツールセット（taiyi セット）**：`RIVET_TOOL_PRESET=taiyi`（またはプロジェクト設定 `tools.preset: "taiyi"`）は高頻度コアツール（読み書き/検索/bash/git/テスト/納品/計画など 14 個）のみを組み込み、オーケストレーション/ブラウザ/ネットワーク/ビジュアルなどの重いツールを除去——「主要ツールだけ残して足りるか」の評価に最適。`full` セットでワンクリック全量復帰。**太一星域はこのセットを内蔵**：`defaultDomain` を `taiyi` に固定すると設定不要で自動的に taiyi セットに（明示指定は常に優先して上書き可）。ワンクリック組合せは下記「最小セットと星域バインド」。
 
 **ドメイン単位の上書き（runtime.domains）**：`defaultDomain` でドメインを固定すると、そのドメインの lean/閾値/ツールセットがグローバル設定を上書き（他のドメインには影響なし）：
 
@@ -724,10 +725,12 @@ OpenAI 形式のテキスト→画像エンドポイント（SiliconFlow / OpenA
 | DeepSeek Spark（Pro 専用） | API key（`DEEPSEEK_SPARK_API_KEY`） | deepseek-v4-flash（軽量推論＋アンカーキャッシュチャネル） |
 | Claude | API key（`cc-switch` プロキシ経由） | claude-opus-4-8, claude-sonnet-4-5 |
 | GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（ビジュアル）, glm-5.2 |
-| Codex (GPT-5.6) | OAuth PKCE（ChatGPT サブスクリプション） | gpt-5.6-sol |
+| Codex | OAuth PKCE（ChatGPT サブスクリプション） | gpt-6.1-sol (デフォルト), gpt-5.6-sol |
+| Grok (xAI) | API key | grok-4.6 (500K ctx, ビジョン, 推論 effort low/medium/high/xhigh) |
 | MiniMax | API key | MiniMax-M3（ビジュアル）, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.5-pro（プリセット 2.5；ビジュアル対応の最新 MiMo V2.6 Flash / Pro も検出・追加可能） |
+| MiMo | API key | mimo-v2.6-pro / mimo-v2.6-flash (1M ctx, マルチモーダルビジョン), mimo-v2.5-pro, mimo-v2.5 (2026-10-21 公式提供終了) |
 | Kimi Code | API key | k3（1M ctx、ビジュアル）, k3-256k, kimi-for-coding |
+| Gemini (Google) | API key (ネイティブプロトコル直結) | gemini-3.8-flash (1M ctx), gemini-3.5-flash, gemini-3.1-pro-preview |
 
 セッション内では `/model <name>` でいつでもプロバイダーを切替。
 
@@ -738,7 +741,7 @@ tianshu config setup codex --default    # Codex は OAuth（初回ブラウザ�
 tianshu config show                     # 完全な設定を表示
 ```
 
-config.json を直接編集することも可能（上書きしたいフィールドだけを書き、デフォルト値は深くマージされます）。ファイル位置：CLI は `~/.rivet/config.json`（Windows は `%LOCALAPPDATA%\.rivet`）。デスクトップ版は Settings → ストレージ位置に従い、ポータブル版は exe 横の `TianshuData\.rivet`——詳細は[データルートを先に特定](#データルートを先に特定する)：
+config.json を直接編集することも可能（上書きしたいフィールドだけを書き、デフォルト値は深くマージされます）。ファイル位置：CLI は `~/.rivet/config.json`（Windows は `%LOCALAPPDATA%\.rivet`）。デスクトップ版は Settings → ストレージ位置に従い、ポータブル版は exe 横の `TianshuData\.rivet`——詳細は[まずデータルートを特定する](#まずデータルートを特定する)：
 
 ```json
 {
@@ -1041,7 +1044,7 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek API キー |
 | `DEEPSEEK_SPARK_API_KEY` | DeepSeek Spark（Pro 専用プリセット）API キー |
-| `RIVET_TOOL_PRESET` | ツールセット：`minimal` / `frontend`（デフォルト）/ `full` / `taiyi` |
+| `RIVET_TOOL_PRESET` | ツールセット：`minimal`（デフォルト）/ `frontend` / `full` / `taiyi` |
 | `RIVET_EMBEDDING_MODEL` / `RIVET_EMBEDDING_BASE_URL` / `RIVET_EMBEDDING_API_KEY` | セマンティック検索の embedding モデルルーティング（デフォルト `text-embedding-3-small`） |
 | `RIVET_NO_EMBEDDINGS=1` | embedding インデックスをオフ |
 | `RIVET_SANDBOX` / `RIVET_SANDBOX_WRITABLE` | 書き込み可能なサンドボックスルートを追加 / 書き込み可能ディレクトリ一覧 |
@@ -1116,7 +1119,7 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
     "autoThreshold": 800000       // 自動圧縮をトリガーする token 閾値
   },
   "tools": {
-    "preset": "frontend"          // minimal | frontend（デフォルト）| full | taiyi
+    "preset": "minimal"           // minimal（デフォルト）| frontend | full | taiyi
   },
   "workers": {
     "profiles": {                 // カスタム worker モデルセット
@@ -1176,6 +1179,10 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 
 > ヒント：リポジトリメンテナーが先に `Settings → General → Discussions` で Discussions 機能を有効化する必要があります。
 
+## 🌐 公式サイト開発
+
+天枢エコシステム公式サイト [jiangsx496/Tianshu-Official-Website](https://jiangsx496.github.io/Tianshu-Official-Website/) は [@jiangsx496](https://github.com/jiangsx496) により独自開発され、データベース、フロントエンド、および初版バックエンドをカバーしています。
+
 ## ✨ コントリビューター
 
 以下は天枢に貢献してくださったコントリビューターの皆様（初回貢献の時系列順）：
@@ -1184,11 +1191,11 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 |--------|----------|
 | [@huiliyi37](https://github.com/huiliyi37) | プロジェクト創設者 · コア開発 |
 
-完全なリスト（外部コントリビューター 22 名 / 145 PR）→ CONTRIBUTORS.md。
+完全なリスト（31 名の外部コントリビューター / 268 PR）→ [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 外部 PR は「取り込み（收编）」フローでマージされ、著者署名は `Co-authored-by` で
 コントリビューターグラフに計上されます（scripts/credit-contributors.sh が自動記録）——
-コントリビューターウォール（完全なリストは CONTRIBUTORS.md）：
+コントリビューターウォール（完全なリストは [CONTRIBUTORS.md](CONTRIBUTORS.md)）：
 
 <p>
 <a href="https://github.com/HarriethWiKk"><img src="https://github.com/HarriethWiKk.png?size=100" width="50" height="50" alt="HarriethWiKk" title="HarriethWiKk" /></a>
@@ -1211,8 +1218,17 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 <a href="https://github.com/lei454577-web"><img src="https://github.com/lei454577-web.png?size=100" width="50" height="50" alt="lei454577-web" title="lei454577-web" /></a>
 <a href="https://github.com/jian-in"><img src="https://github.com/jian-in.png?size=100" width="50" height="50" alt="jian-in" title="jian-in" /></a>
 <a href="https://github.com/sky-mirrors"><img src="https://github.com/sky-mirrors.png?size=100" width="50" height="50" alt="sky-mirrors" title="sky-mirrors" /></a>
-<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
 <a href="https://github.com/EarthxxRhythm"><img src="https://github.com/EarthxxRhythm.png?size=100" width="50" height="50" alt="EarthxxRhythm" title="EarthxxRhythm" /></a>
+<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
+<a href="https://github.com/elysia395"><img src="https://github.com/elysia395.png?size=100" width="50" height="50" alt="elysia395" title="elysia395" /></a>
+<a href="https://github.com/JakcyLin"><img src="https://github.com/JakcyLin.png?size=100" width="50" height="50" alt="JakcyLin" title="JakcyLin" /></a>
+<a href="https://github.com/googio"><img src="https://github.com/googio.png?size=100" width="50" height="50" alt="googio" title="googio" /></a>
+<a href="https://github.com/lanlan0811"><img src="https://github.com/lanlan0811.png?size=100" width="50" height="50" alt="lanlan0811" title="lanlan0811" /></a>
+<a href="https://github.com/KhalilYamber"><img src="https://github.com/KhalilYamber.png?size=100" width="50" height="50" alt="KhalilYamber" title="KhalilYamber" /></a>
+<a href="https://github.com/Ver-zhzh"><img src="https://github.com/Ver-zhzh.png?size=100" width="50" height="50" alt="Ver-zhzh" title="Ver-zhzh" /></a>
+<a href="https://github.com/Lin-Dongg"><img src="https://github.com/Lin-Dongg.png?size=100" width="50" height="50" alt="Lin-Dongg" title="Lin-Dongg" /></a>
+<a href="https://github.com/Eternal-dream-MAX"><img src="https://github.com/Eternal-dream-MAX.png?size=100" width="50" height="50" alt="Eternal-dream-MAX" title="Eternal-dream-MAX" /></a>
+<a href="https://github.com/y521188"><img src="https://github.com/y521188.png?size=100" width="50" height="50" alt="y521188" title="y521188" /></a>
 </p>
 
 > PR でのコントリビュート歓迎。詳細は CONTRIBUTING.md を参照。
@@ -1237,6 +1253,12 @@ tianshu logs open desktop            # sidecar ログディレクトリを開く
 
 本プロジェクトは [Apache License, Version 2.0](LICENSE) で公開されています。Copyright 2025-2026 Tianshu Contributors.
 
+**例外（ドキュメントライセンス）**：以下の理論・実証ドキュメントは [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/deed.ja)（表示—非営利—改変禁止）を採用しており、Apache 2.0 は**適用されません**——著者名を表示した上での原文リンク転載は可能ですが、改変・抜粋編纂・盗用・商用利用は禁止されています：
+
+- [CVM：Transformer の共有退化から認知ランタイムへ](docs/reference/cvm-cognitive-runtime.md)
+- [CVM ランタイムとエコシステムが Agent モデルに与える実証的影響レポート](docs/CVM运行时对Agent模型的实证影响.md)
+
 ## 謝辞
 
 - デスクトップ版「カスタム壁紙と領域別ガラス」機能の**デザイン**は <a href="https://github.com/elysia395/dsh-wallpaper-engine">dsh-wallpaper-engine</a>（MIT License）を参考にしています。実装は天枢による独自実装で、上流のコードは含みません。参考範囲とライセンス全文は <a href="THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a> を参照してください。
+- dsh-wallpaper-engine の作者とコア開発者——<a href="https://github.com/elysia395">@elysia395</a>、<a href="https://github.com/YV3507">@YV3507</a>、<a href="https://github.com/yuxilao">@yuxilao</a>、<a href="https://github.com/oneincase">@oneincase</a> の四名に特に感謝します。**壁紙エンジンレンダリングの技術顧問**として、壁紙の合成と領域別ガラスマテリアルの設計・実装にご指導いただきました。

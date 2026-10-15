@@ -11,6 +11,7 @@ export interface AccountEntitlement {
 }
 export interface AccountSnapshot {
   version: 1; userId: string
+  deviceBinding?: { state: 'bound' | 'unbound' | 'unconfirmed'; licenseId: string | null }
   profile: AccountPart<AccountProfileSnapshot & { account: AccountProfile }>
   identity: AccountPart<StellarIdentity | null>
   entitlements: AccountPart<AccountEntitlement[]>
@@ -28,6 +29,7 @@ export function parseAccountSnapshot(raw: unknown, expectedUserId: string | null
   if (!raw || typeof raw !== 'object') return null
   const value = raw as AccountSnapshot
   if (value.version !== 1 || typeof value.userId !== 'string' || !value.userId || (expectedUserId && value.userId !== expectedUserId)) return null
+  if (value.deviceBinding && (!['bound','unbound','unconfirmed'].includes(value.deviceBinding.state) || !(value.deviceBinding.licenseId === null || typeof value.deviceBinding.licenseId === 'string') || (value.deviceBinding.state === 'bound' && !value.deviceBinding.licenseId))) return null
   for (const key of ['profile', 'identity', 'entitlements'] as const) {
     const part = value[key]
     if (!part || !CODES.includes(part.status)) return null
@@ -44,6 +46,7 @@ export function parseAccountSnapshot(raw: unknown, expectedUserId: string | null
   // Whitelist fields: unexpected server fields must never enter the desktop cache.
   return {
     version: 1, userId: value.userId,
+    ...(value.deviceBinding ? { deviceBinding: { state: value.deviceBinding.state, licenseId: value.deviceBinding.licenseId } } : {}),
     profile: { status: value.profile.status, fetchedAt: value.profile.fetchedAt, ...(profile ? { data: {
       avatarUrl: profile.avatarUrl, founding: profile.founding ? { badgeCode: profile.founding.badgeCode, rank: profile.founding.rank, tier: profile.founding.tier, total: profile.founding.total, limit: profile.founding.limit } : null, fetchedAt: value.profile.fetchedAt!,
       account: { userId: value.userId, email: profile.account.email, username: profile.account.username, displayName: profile.account.displayName, joinedAt: profile.account.joinedAt },
@@ -107,5 +110,6 @@ export function mergeAccountSnapshot(previous: AccountSyncCache | undefined, res
   const merge = <T>(part: AccountPart<T>, cached?: AccountPart<T>): AccountPart<T> => confirmedAccountPart(part) ? part : { ...part, data: cached?.data, fetchedAt: cached?.fetchedAt }
   return { code: result.code, checkedAt: Date.now(), httpStatus: result.httpStatus, snapshot: {
     version: 1, userId: incoming.userId, profile: merge(incoming.profile, old?.profile), identity: merge(incoming.identity, old?.identity), entitlements: mergeEntitlements(incoming.entitlements, old?.entitlements),
+    deviceBinding: incoming.deviceBinding,
   } }
 }

@@ -6,8 +6,14 @@ set -euo pipefail
 cd /work
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+# apt 走直连（国内 archive 直连快且稳）；代理 env 只服务 nodejs.org/rustup 等
+# 被掐域名——apt 读 http_proxy 会经代理 502（2026-10-14 amd64 构建实证）。
+apt_get() {
+  http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
+    apt-get -o Acquire::http::Proxy=DIRECT -o Acquire::https::Proxy=DIRECT "$@"
+}
+apt_get update
+apt_get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
   xdg-utils
 

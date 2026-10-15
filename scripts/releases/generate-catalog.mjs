@@ -49,7 +49,8 @@ export async function generateCatalog({ manifest, assets, revision = 1, githubAs
 export async function main() {
   const value = flag => { const i = process.argv.indexOf(flag); return i < 0 ? undefined : process.argv[i + 1] }
   const manifest = JSON.parse(readFileSync(value('--manifest') ?? 'latest.json', 'utf8'))
-  const response = await fetch(`https://api.github.com/repos/huiliyi37/Tianshu-harness/releases/tags/v${manifest.version}`, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'tianshu-release-catalog' } })
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
+  const response = await fetch(`https://api.github.com/repos/huiliyi37/Tianshu-harness/releases/tags/v${manifest.version}`, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'tianshu-release-catalog', ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
   if (!response.ok) throw new Error(`GitHub release metadata unavailable: ${response.status}`)
   const release = await response.json()
   const evidence = value('--evidence') ? JSON.parse(readFileSync(value('--evidence'), 'utf8')) : {}

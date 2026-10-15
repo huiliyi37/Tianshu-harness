@@ -3,14 +3,17 @@ title: 安装与平台说明
 type: guide
 status: active
 date: 2026-09-17
+updated: 2026-10-14
 tags: [install, platform]
 related: [../user-guide.md, troubleshooting.md]
 ---
 
 # 安装与平台说明
 
+> [🏠 返回主文档](../../README.md) · [🌐 English Quick Start](../../README.en.md#-quick-start) · [📚 用户手册](../user-guide.md)
+>
 > 天枢全部安装路径与各平台注意事项。装完后的使用引导见 [用户手册](../user-guide.md)；装不上、起不来见 [排障与 FAQ](troubleshooting.md)。
-> 本项目最初的开发代号为 **Rivet**；为保持向后兼容，已安装的 CLI 命令名仍为 `rivet`。
+> 本项目最初的开发代号为 **Rivet**；CLI 主命令现为 `tianshu`，`rivet` 保留为向后兼容别名（同一入口）。
 
 ## 环境要求
 
@@ -27,23 +30,23 @@ related: [../user-guide.md, troubleshooting.md]
 > ```
 > 应用内自动更新不受此影响。
 
-> **Linux 支持范围（3.11.2 首发，3.26.0 起双架构）**：AppImage 免安装——`chmod +x Tianshu_*.AppImage` 后直接运行。按架构选包：`Tianshu_*_amd64.AppImage`（x86_64 台式机/笔记本）· `Tianshu_*_aarch64.AppImage`（ARM 设备：树莓派 64 位、ARM Linux 笔记本等）。要求 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 等主流发行版）与**系统图形栈** `libwebkit2gtk-4.1.so.0` + `libgtk-3.so.0`——AppImage 不再自带图形库（自带旧 GLib 与宿主新 pango 混用，会在 Arch/Fedora 一类滚动发行版上启动即崩），多数桌面发行版默认已有这套库，精简/服务器版需按发行版安装 webkit2gtk 4.1；缺库时应用起不来，可用 `ldd Tianshu_*.AppImage` 自查缺失项。推荐 X11 会话（Wayland 未验证）。语音输入自下一个版本起可用（随包自带 whisper.cpp 官方 Linux 构建、本地离线识别；3.26.0 及更早版本该能力缺位，语音会降级到浏览器识别）；桌面自动更新对 Linux 同样生效。
+> **Linux 支持范围（3.11.2 首发，3.26.0 起双架构）**：AppImage 免安装——`chmod +x Tianshu_*.AppImage` 后直接运行。按架构选包：`Tianshu_*_amd64.AppImage`（x86_64 台式机/笔记本）· `Tianshu_*_aarch64.AppImage`（ARM 设备：树莓派 64 位、ARM Linux 笔记本等）。要求 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+ 等主流发行版）与**系统图形栈** `libwebkit2gtk-4.1.so.0` + `libgtk-3.so.0`——AppImage 不再自带图形库（自带旧 GLib 与宿主新 pango 混用，会在 Arch/Fedora 一类滚动发行版上启动即崩），多数桌面发行版默认已有这套库，精简/服务器版需按发行版安装 webkit2gtk 4.1；缺库时应用起不来，可用 `ldd Tianshu_*.AppImage` 自查缺失项。推荐 X11 会话（Wayland 未验证）。语音输入已支持（随包自带 whisper.cpp 官方 Linux 构建、本地离线识别；3.26.0 及更早版本该能力缺位，语音会降级到浏览器识别）；桌面自动更新对 Linux 同样生效。
 
 > **Windows 支持范围**：Windows 10（1809+，建议 22H2）/ Windows 11。界面渲染依赖 **WebView2 Runtime（建议 ≥ 120）**——v3.5 起的滚动与渲染优化需要较新运行时，旧版会导致会话区滚动卡顿。自 3.5.3 起安装器内嵌完整离线安装包（无需联网、系统级注册）。存量用户经自动更新升级后若提示过旧：在提示条或「设置 → 运行时与关于」里点「运行修复工具」。**窗口完全打不开**时，用开始菜单「修复 WebView2」，或从 [Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) 下载 `windows-repair` 目录双击 `repair-webview2.cmd`。也可手动安装 [WebView2 离线安装包](https://go.microsoft.com/fwlink/p/?LinkId=2124703) 后重启。
 > **Win10 平板模式已知行为**：平板模式下切换应用会把上一个应用滑出屏幕——computer_use 的快照已做遮挡/后台自愈（PrintWindow 渲染），无需关闭平板模式。
 
 ## 方式 B：一键安装脚本（推荐）
 
-校验 Node ≥ 24 → 全局安装 `tianshu-harness`（默认 npmmirror 镜像加速，`NPM_CONFIG_REGISTRY` 可覆盖）→ 启动 `rivet`；幂等可重复执行：
+校验 Node ≥ 24 → 全局安装 `tianshu-harness`（默认 npmmirror 镜像加速，`NPM_CONFIG_REGISTRY` 可覆盖）→ 启动 `tianshu`；幂等可重复执行：
 
 ```bash
 # macOS / Linux（bash）
-bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-Tui/main/scripts/install-tui.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.sh)
 # 只安装不启动：
-bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-Tui/main/scripts/install-tui.sh) --no-launch
+bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.sh) --no-launch
 
 # Windows（PowerShell）
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/huiliyi37/Tianshu-Tui/main/scripts/install-tui.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.ps1 | iex"
 # 只安装不启动（克隆仓库后本地跑）：
 powershell -ExecutionPolicy Bypass -File scripts\install-tui.ps1 -NoLaunch
 ```
@@ -54,12 +57,12 @@ powershell -ExecutionPolicy Bypass -File scripts\install-tui.ps1 -NoLaunch
 
 ```bash
 npm install -g tianshu-harness
-rivet
+tianshu
 ```
 
-> **从旧包 `tianshu-tui` 迁移**：旧包（v3.23.1 前）占着 `rivet` 命令链接，直接装新包会报 `EEXIST: file already exists`——先卸再装：`npm uninstall -g tianshu-tui && npm install -g tianshu-harness`。命令名 `rivet` 不变，另新增 `tianshu` 别名。一键安装脚本已内置该迁移。
+> **从旧包 `tianshu-tui` 迁移**：旧包（v3.23.1 前）占着 `rivet` 命令链接，直接装新包会报 `EEXIST: file already exists`——先卸再装：`npm uninstall -g tianshu-tui && npm install -g tianshu-harness`。主命令为 `tianshu`，`rivet` 保留为兼容别名（同一入口）。一键安装脚本已内置该迁移。
 
-> **Windows 提示**：装完提示 `rivet 无法识别` 时——先**新开一个终端**（装 Node 时开着的窗口拿的是旧 PATH）；仍不行，把 `npm prefix -g` 输出的目录加进用户 PATH 再开新终端。官方安装器装的 Node 默认无此问题，nvm/fnm/scoop 安装的需手动加一次。
+> **Windows 提示**：装完提示 `tianshu`（或 `rivet`）无法识别时——先**新开一个终端**（装 Node 时开着的窗口拿的是旧 PATH）；仍不行，把 `npm prefix -g` 输出的目录加进用户 PATH 再开新终端。官方安装器装的 Node 默认无此问题，nvm/fnm/scoop 安装的需手动加一次。
 
 ## Android（Termux）
 
@@ -72,10 +75,10 @@ pkg install proot-distro && proot-distro install ubuntu && proot-distro login ub
 apt update && apt install -y curl ripgrep git
 # 3. 安装天枢 CLI
 npm install -g tianshu-harness
-rivet
+tianshu
 ```
 
-> 手机端能力说明：沙箱自动降级为无沙箱（走正常审批流）、`better-sqlite3` 拿不到预编译时退化为内存库、LSP/语音等按缺失静默降级——核心对话与编码工具链完整可用。`rivet -p "..."` 无头模式同样可跑。实验性强行安装可设 `RIVET_ALLOW_MOBILE_INSTALL=1`（自担风险）。
+> 手机端能力说明：沙箱自动降级为无沙箱（走正常审批流）、`better-sqlite3` 拿不到预编译时退化为内存库、LSP/语音等按缺失静默降级——核心对话与编码工具链完整可用。`tianshu -p "..."` 无头模式同样可跑。实验性强行安装可设 `RIVET_ALLOW_MOBILE_INSTALL=1`（自担风险）。
 
 **手机端使用技巧**：
 
@@ -86,8 +89,8 @@ rivet
 ## 方式 D：从源码构建
 
 ```bash
-git clone https://github.com/huiliyi37/Tianshu-Tui.git
-cd Tianshu-Tui
+git clone https://github.com/huiliyi37/Tianshu-harness.git
+cd Tianshu-harness
 npm install
 npm run build      # 生成 dist/cli/entry.js
 npm start          # 或：node dist/cli/entry.js
@@ -126,17 +129,17 @@ cp completions/rivet.fish ~/.config/fish/completions/rivet.fish
 Add-Content $PROFILE ". C:\path\to\rivet.ps1"
 ```
 
-> 补全内容与 CLI 保持一致：顶层命令（`config` / `serve` / `sessions` / `browser` / `logs`）、全局 flags、`config` 全部子命令，以及从 `~/.rivet/config.json` 动态读取的 provider 名。
+> 补全内容与 CLI 保持一致：顶层命令（`config` / `provider` / `skills` / `serve` / `sessions` / `browser` / `logs` / `web`）、全局 flags、`config` 全部子命令，以及从 `~/.rivet/config.json` 动态读取的 provider 名。
 
 ## 配置 API Key（首次必做）
 
-**直接安装的用户无需手动配置**——首次运行 `rivet` 会先进入主界面，再自动打开 `/connect`；在那里选择服务商并完成认证。之后随时输入 `/connect` 添加或调整 Provider；桌面端也可在 Settings → Provider 管理配置。
+**直接安装的用户无需手动配置**——首次运行 `tianshu` 会先进入主界面，再自动打开 `/connect`；在那里选择服务商并完成认证。之后随时输入 `/connect` 添加或调整 Provider；桌面端也可在 Settings → Provider 管理配置。
 
 **开发者拉源码启动**（或想在启动前预先配好）才需要手动来：
 
 ```bash
-rivet config set-key deepseek sk-xxx   # 密钥写入 secrets.json（0600），config.json 只留 keyRef
-export DEEPSEEK_API_KEY=sk-xxx         # 或：环境变量（仅当前 shell 有效）
+tianshu config set-key deepseek sk-xxx   # 密钥写入 secrets.json（0600），config.json 只留 keyRef
+export DEEPSEEK_API_KEY=sk-xxx           # 或：环境变量（仅当前 shell 有效）
 ```
 
 > 其他提供商（Claude、GLM、Codex、MiniMax、MiMo）用法相同，详见 [模型配置](../user-guide-provider-config.md)。
@@ -144,7 +147,7 @@ export DEEPSEEK_API_KEY=sk-xxx         # 或：环境变量（仅当前 shell �
 ## 启动
 
 ```bash
-rivet            # 或：npm start / node dist/cli/entry.js
+tianshu          # 或兼容别名 rivet，源码目录可用 npm start / node dist/cli/entry.js
 ```
 
 你会看到带有 `〉` 提示符的 TUI。输入需求后按回车即可。

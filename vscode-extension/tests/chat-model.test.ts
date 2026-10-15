@@ -81,7 +81,7 @@ test('mapProviderModels：空目录 → 空列表；缺省字段保守兜底、�
         name: 'kimi',
         label: 'Kimi',
         isDefault: false,
-        keyStatus: { source: 'none', ref: '' },
+        keyStatus: { source: 'inline', ref: '***fixture' },
         isPreset: false,
         models: [{ id: 'k3' }, { id: '' }, { id: 'k3' }],
       },
@@ -95,4 +95,46 @@ test('mapProviderModels：空目录 → 空列表；缺省字段保守兜底、�
   assert.equal(sparse[0]?.maxInputTokens, 128_000)
   assert.equal(sparse[0]?.maxOutputTokens, 8_192)
   assert.equal(sparse[0]?.detail, 'Kimi')
+})
+
+test('model picker hides unconfigured providers and retains inline, env, OAuth and keyless models', () => {
+  const provider = (name: string, extra: object = {}) => ({
+    name, label: name, isDefault: false, isPreset: true,
+    keyStatus: { source: 'none' as const, ref: '' }, models: [{ id: name }], ...extra,
+  })
+  const mapped = mapProviderModels({ providers: [
+    provider('unconfigured'),
+    provider('inline', { keyStatus: { source: 'inline', ref: '***fixture' } }),
+    provider('env', { keyStatus: { source: 'env', ref: 'FIXTURE_KEY' } }),
+    provider('oauth', { authType: 'oauth', oauthAuthenticated: true }),
+    provider('logged-out', { authType: 'oauth', oauthAuthenticated: false }),
+    provider('keyless', { keyless: true }),
+  ] as ProviderConfigList['providers'], unconfigured: [] })
+  assert.deepEqual(mapped.map(model => model.id), ['inline', 'env', 'oauth', 'keyless'])
+})
+
+test('model picker checks each model owner instead of the provider default key', () => {
+  const mapped = mapProviderModels({ providers: [{
+    name: 'deepseek', label: 'fixture', isDefault: false, isPreset: true,
+    keyStatus: { source: 'none', ref: '' },
+    models: [{ id: 'unconfigured' }, { id: 'secondary' }, { id: 'duplicate' }, { id: 'unowned' }],
+    keys: [
+      { id: 'default', keyStatus: { source: 'none', ref: '' }, models: [{ id: 'unconfigured' }, { id: 'duplicate' }] },
+      { id: 'secondary', keyStatus: { source: 'inline', ref: '***fixture' }, models: [{ id: 'secondary' }, { id: 'duplicate' }] },
+    ],
+  }] as ProviderConfigList['providers'], unconfigured: [] })
+  assert.deepEqual(mapped.map(model => model.id), ['secondary'], 'duplicate ids retain the kernel first-owner rule')
+})
+
+test('a ready provider default key cannot expose a model owned by an unconfigured key', () => {
+  const mapped = mapProviderModels({ providers: [{
+    name: 'deepseek', label: 'fixture', isDefault: false, isPreset: true,
+    keyStatus: { source: 'inline', ref: '***fixture' },
+    models: [{ id: 'primary' }, { id: 'empty-secondary' }],
+    keys: [
+      { id: 'default', keyStatus: { source: 'inline', ref: '***fixture' }, models: [{ id: 'primary' }] },
+      { id: 'secondary', keyStatus: { source: 'none', ref: '' }, models: [{ id: 'empty-secondary' }] },
+    ],
+  }] as ProviderConfigList['providers'], unconfigured: [] })
+  assert.deepEqual(mapped.map(model => model.id), ['primary'])
 })

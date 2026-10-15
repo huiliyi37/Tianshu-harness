@@ -322,7 +322,7 @@ export class ResponsesClient implements StreamClient {
     } | null = null
     let seenReasoningItem = false
     let seenTextDelta = false
-    /** output_item.done 已消费的 call_id——response.completed 的兜底解析据此去重。 */
+    /** Only successfully parsed calls count as emitted, across both event forms. */
     const emittedCallIds = new Set<string>()
     /** message 的 output_item.done 是否到过（含仍被缓冲的）——兜底解析不重复出文本。 */
     let sawMessageItemDone = false
@@ -459,12 +459,15 @@ export class ResponsesClient implements StreamClient {
               const item = parsed.item as Record<string, unknown> | undefined
               if (item?.type === 'function_call') {
                 sawToolCall = true
-                const callId = (item.call_id as string) ?? `call_${Date.now()}`
+                const callId = (item.call_id as string) ?? (item.id as string) ?? `call_${crypto.randomUUID()}`
+                if (emittedCallIds.has(callId)) break
                 const name = (item.name as string) ?? ''
                 const args = (item.arguments as string) ?? ''
-                emittedCallIds.add(callId)
                 const input = parseToolArguments(args)
-                if (input) callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
+                if (input) {
+                  emittedCallIds.add(callId)
+                  callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
+                }
               } else if (item?.type === 'reasoning') {
                 // Emit reasoning BEFORE text so the TUI captures thinking first.
                 seenReasoningItem = true
@@ -505,13 +508,15 @@ export class ResponsesClient implements StreamClient {
               // output_item.done。按 call_id / message 标志去重，已发过的不重发。
               for (const item of (resp?.output as Array<Record<string, unknown>> | undefined) ?? []) {
                 if (item.type === 'function_call') {
-                  const callId = (item.call_id as string) ?? `call_${Date.now()}`
+                  const callId = (item.call_id as string) ?? (item.id as string) ?? `call_${crypto.randomUUID()}`
                   if (emittedCallIds.has(callId)) continue
-                  emittedCallIds.add(callId)
                   sawToolCall = true
                   const name = (item.name as string) ?? ''
                   const input = parseToolArguments((item.arguments as string) ?? '')
-                  if (input) callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
+                  if (input) {
+                    emittedCallIds.add(callId)
+                    callbacks.onContentBlock({ type: 'tool_use', id: callId, name, input })
+                  }
                 } else if (item.type === 'message' && !seenTextDelta && !pendingMessageItem && !sawMessageItemDone) {
                   for (const part of (item.content as Array<Record<string, unknown>> | undefined) ?? []) {
                     if (part.type === 'output_text' && typeof part.text === 'string') {

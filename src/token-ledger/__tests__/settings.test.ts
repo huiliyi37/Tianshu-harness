@@ -16,7 +16,7 @@ test('defaults to local only with a formal endpoint offered and no key echoed', 
   assert.equal(dto.enabled, true)
   assert.equal(dto.forum.endpoint, 'https://tianshuharness.com/token/v1/token-usage')
   assert.equal(dto.forum.autoSync, false)
-  assert.equal(dto.forum.intervalMinutes, 30)
+  assert.equal(dto.forum.intervalMinutes, 1)
   assert.equal(dto.forum.apiKeyConfigured, false)
   assert.equal(fx.writes(), 0)
 })

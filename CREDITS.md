@@ -454,3 +454,5 @@ contributions for this graph`；`including commit co-authors` 仅 GHES 版本成
 - #474 fix: 修复会话回退事件遗漏与课程文件误判（CLOSED）
 - #476 fix(platform): 消除 protectPrivatePath 的符号链接 TOCTOU 竞态（OPEN）
 - #478 fix: 修复前缀证明污染与回退持久化，补齐全量验收（OPEN）
+- #477 feat(windows): auto-detect local entry.js, support generic npm shims and integrate visual-builder（OPEN）
+- #480 docs: 完善中英双语文档体系、对齐 README 认知运行时结构与 v3.31.0 基线（CLOSED）

@@ -33,6 +33,7 @@ import { serverLogger } from './logger.js'
 import { accountDeviceFingerprint, isValidDeviceFingerprint } from '../auth/account-device.js'
 import * as accountModule from '../auth/account.js'
 import { activateAccountLicense } from '../auth/account-license.js'
+import { updateAccountProfile, type AccountProfileUpdate } from '../auth/account-profile-update.js'
 import type {
   AccountProfile,
   AccountProfileSnapshot,
@@ -52,6 +53,7 @@ import type { TokenStore, TokenData } from '../auth/token-store.js'
  * 「凭据进文件、不进响应体」这条不变量只有真实磁盘能证。
  */
 export interface AccountApi {
+  updateAccountProfile?(accessToken: string, input: AccountProfileUpdate, opts?: FetchInjection): Promise<{ ok: boolean; error?: string }>
   fetchAccountSnapshot?(accessToken: string, opts?: FetchInjection): Promise<AccountSyncResult>
   cancelDeviceCode?(deviceCode: string, opts?: FetchInjection): Promise<boolean>
   revokeAccountSession?(accessToken: string, opts?: FetchInjection): Promise<boolean>
@@ -100,6 +102,7 @@ export interface AccountRoutesDeps {
 
 function defaultAccountApi(): AccountApi {
   return {
+    updateAccountProfile,
     fetchAccountSnapshot: accountModule.fetchAccountSnapshot,
     requestDeviceCode: accountModule.requestDeviceCode,
     cancelDeviceCode: accountModule.cancelDeviceCode,
@@ -292,6 +295,25 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
   }
 
   return {
+    'POST /account/profile': guard(async body => {
+      const input = (body ?? {}) as AccountProfileUpdate & { expectedUserId?: unknown }
+      if (typeof input.expectedUserId !== 'string' || !input.expectedUserId || input.expectedUserId.length>128 || typeof input.name !== 'string' || input.name.trim().length > 24 || (input.avatar !== undefined && input.avatar !== null && (typeof input.avatar !== 'string' || input.avatar.length > 192 * 1024))) return { status: 400, body: { error: 'invalid_profile' } }
+      const store = api.accountStore(deps.rivetHome)
+      const initial=store.load()?.accessToken
+      if (!initial) return { status: 401, body: { error: 'auth_required' } }
+      if (accountModule.jwtSubject(initial)!==input.expectedUserId) return {status:409,body:{error:'account_changed'}}
+      const started = generation
+      await refreshAccount(store, initial)
+      const credential = store.load()?.accessToken
+      if (started !== generation || !credential || accountModule.jwtSubject(credential)!==input.expectedUserId) return { status: 409, body: { error: 'account_changed' } }
+      const result = await api.updateAccountProfile?.(credential, {name:input.name,...(input.avatar !== undefined ? {avatar:input.avatar} : {})}, { fetchImpl })
+      if (started !== generation || store.load()?.accessToken !== credential) return { status: 409, body: { error: 'account_changed' } }
+      if (!result?.ok) return { status: 502, body: { error: result?.error || 'profile_update_unavailable' } }
+      lastRefresh = undefined
+      await refreshAccount(store, credential, true)
+      if (started !== generation || store.load()?.accessToken !== credential) return { status: 409, body: { error: 'account_changed' } }
+      return { status: 200, body: { ok: true } }
+    }),
     'POST /account/device': guard(async body => {
       const started = ++generation
       polls.clear()
@@ -354,6 +376,7 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
         syncCode: accountSync?.code,
         syncParts: accountSync?.snapshot ? { profile: accountSync.snapshot.profile.status, identity: accountSync.snapshot.identity.status, entitlements: accountSync.snapshot.entitlements.status } : undefined,
         entitlements: accountSync?.snapshot?.entitlements.data,
+        deviceBinding: accountSync?.snapshot?.deviceBinding,
         entitlementsFetchedAt: accountSync?.snapshot?.entitlements.fetchedAt,
         loggedIn: true, email: profile?.account?.email ?? null, userId: accountModule.jwtSubject(token.accessToken) ?? profile?.account?.userId ?? null,
         username: profile?.account?.username ?? null,

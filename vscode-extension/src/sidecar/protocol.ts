@@ -155,6 +155,14 @@ export interface ProviderListItem {
   baseUrl?: string
   isDefault: boolean
   keyStatus: { source: 'inline' | 'env' | 'none'; ref: string }
+  authType?: 'oauth'
+  oauthAuthenticated?: boolean
+  keyless?: boolean
+  keys?: {
+    id: string
+    keyStatus: ProviderListItem['keyStatus']
+    models: ProviderListItem['models']
+  }[]
   /** models 的 description/contextWindow/maxTokens 为 server contractModels 投影（config-routes）。 */
   models: {
     id: string

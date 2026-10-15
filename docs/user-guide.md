@@ -3,12 +3,15 @@ title: 天枢用户手册
 type: guide
 status: active
 date: 2026-09-17
+updated: 2026-10-14
 tags: [user-guide, cli, tui]
 related: [guides/installation.md, user-guide-provider-config.md, user-guide-sandbox-permissions.md, user-guide-vision.md, desktop-guide.md, reference/cvm-cognitive-runtime.md]
 ---
 
 # 天枢（Tianshu Harness）用户手册
 
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md)
+>
 > 面向用户的完整使用手册：命令、配置、特性细节与排查。安装与各平台注意事项见 [安装与平台说明](guides/installation.md)；理念与架构见 [CVM 理念文档](reference/cvm-cognitive-runtime.md) 与 [架构总览](architecture-overview.md)。
 > 本项目最初的开发代号为 **Rivet**；主命令现为 `tianshu`，`rivet` 保留为兼容别名（同一入口）。数据目录（`~/.rivet`）与环境变量前缀（`RIVET_*`）沿用历史名，未随命令更名。
 
@@ -55,17 +58,20 @@ tianshu --goal "修复所有类型错误" --budget 50   # 无头目标自主模�
 | `--budget <N>` | goal 模式回合预算（默认 100） |
 | `--model <name>` | 本次会话覆盖模型 |
 | `--provider <name>` | 本次会话覆盖 provider |
+| `--profile <name>` | 使用命名配置档启动（读取 `RIVET_HOME/profiles/<name>.json` 或内置 `lean` 档） |
 | `--continue` `-c` | 恢复当前 cwd 的最近会话 |
 | `--resume <id\|前缀>` `-r <id\|前缀>` | 恢复指定会话（短前缀即可） |
 | `--resume` `-r`（裸） | 启动后打开会话选择器 |
 | `--new` | 强制开新会话 |
 | `--list` · `tianshu sessions` | 打印会话列表后退出 |
 | `--dangerously-skip-permissions` | 单次会话全自动（跳过所有审批；沙箱仍开） |
+| `--trust` / `--untrust` | 启动前将当前工作目录标记为授信 / 取消授信 |
+| `--terminal-mode <auto\|captured-pty\|native>` | 终端界面模式（受限/远控终端可用 `captured-pty` 纯文本行式界面） |
 | `--screen-reader` | 读屏模式（动态段整体不渲染、周期重绘停转） |
 | `--skip-welcome` | 跳过欢迎屏 |
 | `--stream-events <path>` | 把本次 run 镜像为 NDJSON `SessionEvent` 写入文件（TUI 与 `-p`/`--goal` 均支持；无头下与 `--stream-json` 同源、同一份脱敏口径。事件按行追加，可 `tail -f` / `jq` 消费；run 期间实时增长） |
 
-子命令：`tianshu config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`tianshu serve`（启动 sidecar HTTP/SSE）、`tianshu sessions`（列会话）、`tianshu logs`（日志落点）、`tianshu browser status` / `tianshu browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）。
+子命令：`tianshu config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`tianshu provider`（Provider 与模型管理：`add | list | models | probe | remove`）、`tianshu skills`（技能管理：`list | inspect | add | mode | update | remove | doctor | drafts | approve | reject | generate`）、`tianshu serve`（启动 sidecar HTTP/SSE）、`tianshu sessions`（列会话）、`tianshu logs`（日志落点）、`tianshu browser status` / `tianshu browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）、`tianshu web`（命令行搜索与抓取：`search | fetch | status`）。
 
 ### 事件流文件（`--stream-events`）
 
@@ -216,7 +222,7 @@ tail -f run.jsonl | jq -c 'select(.type == "tool_use") | .data.name'
 | **taiyi** | 14 | 最小评测档——高频核心 + 交付闭环，去编排/浏览器/网络/视觉等重工具；太一星域钉定时自动落此档 |
 
 ```bash
-RIVET_TOOL_PRESET=full rivet          # 本次会话用 full
+RIVET_TOOL_PRESET=full tianshu        # 本次会话用 full
 ```
 
 ```json
@@ -278,7 +284,7 @@ Plan Mode 内置星域委派——复杂计划自动调用 `delegate_task` 从�
 - **下一步** — 按优先级排列、每条是可立即执行的动作
 - **坑** — 绝对不要再踩的坑，每条一句话说清后果
 
-> 上下文占用 ≥60% 时，resume 首屏与会话中各提醒一次「先 `/handoff` 再开新会话」——交接文档会自动注入新会话，比整段回连省前缀重建成本。退出时也会备注缓存成本（TTL 内继承锚点 ≈ 只读缓存价；过期则全量重建一次前缀）。桌面端 plus 面板有「交接」入口。
+> 上下文占用 ≥60% 时，resume 首屏与会话中各提醒一次「先 `/handoff` 再开新会话」——交接文档写入 `.rivet/HANDOFF.md` 并归档到 `<id>.handoff.md`，新会话可直接读取（`<prev-session-handoff>` 自动注入默认关闭以保障并行会话安全，设 `RIVET_PREV_HANDOFF=1` 可开启自动注入），比整段回连省前缀重建成本。退出时也会备注缓存成本（TTL 内继承锚点 ≈ 只读缓存价；过期则全量重建一次前缀）。桌面端 plus 面板有「交接」入口。
 
 **恢复 `--continue` / `--resume` / `/resume`** —— 恢复已有会话时：
 
@@ -529,10 +535,11 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/help` | 显示可用命令 |
 | `/sessions` `/resume <n>` | 列出/恢复已保存会话（恢复侧栏、待办、活动计划） |
 | `/fork` | 分叉当前会话（可选从某条消息起） |
-| `/handoff [备注]` | 写结构化交接文档（五章节），归档后自动注入新会话 |
+| `/handoff [备注]` | 写结构化交接文档（五章节）到 `.rivet/HANDOFF.md` 并归档至 `<id>.handoff.md`（`<prev-session-handoff>` 自动注入新会话默认关闭，可通过 `RIVET_PREV_HANDOFF=1` 开启） |
 | `/init` | 交互式项目初始化：verify 声明 / skills / hooks 脚手架 |
 | `/doctor` | 环境健康检查 + bash 工具用的哪个 shell |
 | `/logs [open [desktop]]` | 本会话日志落点（会话 / 缓存 / 六维 / 桌面 sidecar），含写入门控与回收说明；`open` 在文件管理器中打开 |
+| `/usage` `/token-ledger [status\|sync\|auto on\|auto off\|connect\|disconnect]` | 本地 Token 消耗累计台账与论坛同步设置 |
 | `/connect` | 连接模型服务商向导（选内置或自定义，填 API 密钥） |
 | `/config` `/settings` `/setup` | 设置面板：子代理路由 / 审查开关（`审查 → 关闭提交后自动审查`） / 识图模型 / 工具档位·审批·默认星域·默认模型 / 镜像·代理·搜索后端。`Tab` 切栏、`Enter` 编辑、`S` 保存，每项标注即时或下次会话生效 |
 | `/cd <path>` | 会话中途切换工作目录（保前缀缓存，会话归属迁往新项目） |
@@ -547,6 +554,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/effort [off\|low\|medium\|high\|max\|auto]` | 控制推理深度（无参数弹出选择面板）。默认均为 `high`（Pro / Flash），例行轮自动降档；手动设 `max` 永不被降级 |
 | `/permission [supervise\|auto\|unattended\|manual\|yolo\|allow\|deny\|bash\|remove\|reset\|test]` | 权限模式：监督 / 自动 / 全自动 |
 | `/yes [off]` `/yolo [off]` | 一键全自动，两者同语义（`off` 回到自动）—— 持久化为默认，重启后仍生效 |
+| `/approve` `/reject` | 纯文本/受限终端模式（`captured-pty`）下批准或拒绝当前待审批工具 |
 | `/domain [list\|<name>\|auto\|off]` | 查看或切换星域人格 |
 
 **规划与编排**
@@ -555,6 +563,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 |------|------|
 | `/goal <text>` | 设置自主目标，运行到完成 |
 | `/cancel-goal` | 停止目标执行 |
+| `/steer <text>` | 运行中显式以 `now` 优先级插话（等价于 `Alt+Enter`，下一工具边界立即注入） |
 | `/plan <feature>` | 生成计划草稿（writing-plans 工作流） |
 | `/plan-mode` | 进入/退出 Plan Mode（toggle；未批准退出需二次确认） |
 | `/plan-list` | 列出待审批计划 |
@@ -594,6 +603,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/remember <内容>` | 用户直写项目长期记忆（无参查看最近条目） |
 | `/forget <entryId> [resolved]` | 显式失效一条记忆：`resolved` 表示旧问题已解决，缺省为主动遗忘（无参列出最近可失效条目） |
 | `/btw <问题>` | 侧问——就当前会话问一句，回答显示在浮层，不进对话历史 |
+| `/cvm [off\|intercept\|warn\|all]` | 切换主屏 CVM 实时拦截提示级别（config 键 `ui.cvmNotices`，默认 `intercept`） |
 | `/debug [prompt\|cache\|mcp]` | 调试 prompt、缓存统计或 MCP |
 | `/mcp` | MCP 服务器连接状态 |
 | `/verbose` | 切换详细工具输出（on 显 200 行 / off 显 20 行） |

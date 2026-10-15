@@ -1,14 +1,16 @@
 # Remote Access（远程访问指南）
 
-> P1 Mobile Remote（2026-09-05）：让 `rivet serve` 可以从局域网/手机访问。
+> [🏠 返回主文档](../README.md) · [🌐 English Guide (README.en.md)](../README.en.md) · [📱 手机端操作手册](guides/mobile-guide.md)
+>
+> P1 Mobile Remote（2026-09-05）：让 `tianshu serve`（兼容别名 `rivet serve`）可以从局域网/手机访问。
 > **LAN Direct（2026-10-08，Issue #402）**：同一 Wi-Fi 下桌面端开关 + 手机扫码即连，
 > 免装 Tailscale、免账号、数据不出局域网——**手机连接的第一优先路径**；Tailscale 隧道
 > 保留为「不在同一网络」的进阶方案。设计依据
-> [`docs/design/2026-10-08-issue402-lan-direct-connect.md`](design/2026-10-08-issue402-lan-direct-connect.md)。
+> `docs/design/2026-10-08-issue402-lan-direct-connect.md`（内部设计稿）。
 > 配套调研：`docs/research/mobile-remote-2026-09.md`（本地归档）。
 > 面向使用者的逐步操作手册见 [手机端操作手册](guides/mobile-guide.md)——含直连扫码、HTTPS 隧道与常见问题。
 
-`rivet serve` 默认只监听 `127.0.0.1`（本机回环），Token 门控；桌面内置 sidecar 默认同样固定为回环。手机连接按网络环境二选一：
+`tianshu serve`（或 `rivet serve`）默认只监听 `127.0.0.1`（本机回环），Token 门控；桌面内置 sidecar 默认同样固定为回环。手机连接按网络环境二选一：
 
 1. **同一 Wi-Fi 直连（LAN Direct，推荐）**——设置页开启开关，手机扫码即连。零安装、零账号、数据不出局域网；代价是局域网内明文 HTTP（知情取舍，见下文安全边界）。
 2. **HTTPS 隧道（Tailscale Serve 等，进阶）**——手机不在同一网络时用。桌面保持回环，远程访问由带可信证书的 HTTPS 隧道承接。

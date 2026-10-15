@@ -75,16 +75,18 @@ Application / TUI / IDE / Desktop
 
 ## 目录
 
-- [快速开始](#快速开始)
-- [为什么是认知运行时](#为什么是认知运行时)
+- [快速开始](#-快速开始)
+- [为什么是认知运行时](#-为什么是认知运行时)
 - [星域](#星域)
-- [核心特性](#核心特性)
-- [权限模式](#权限模式)
-- [支持的模型](#支持的模型)
-- [文档导航](#文档导航)
-- [面向开发者](#面向开发者)
-- [社区与支持](#社区与支持)
+- [核心特性](#-核心特性)
+- [权限模式](#-权限模式)
+- [支持的模型](#-支持的模型)
+- [文档导航](#-文档导航)
+- [面向开发者](#-面向开发者)
+- [安全](#-安全)
+- [社区与支持](#-社区与支持)
 
+<a id="快速开始"></a>
 ## 🚀 快速开始
 
 两条路。桌面端下载安装包，打开就能用，不需要先装 Node。终端 CLI 要求 **Node.js ≥ 24**。
@@ -162,7 +164,7 @@ tianshu            # 看到 〉 提示符即就绪
 修复这个项目里第一个失败的测试，并说明根因
 ```
 
-接下来它会自己 grep、读文件、改代码、跑测试——每一步都有对应的工具调用，不是"说完就结束"。默认权限档是**自动**：低风险动作直接执行，高风险动作会停下来问你（档位与会话内切换见下方 [权限模式](#权限模式)）。
+接下来它会自己 grep、读文件、改代码、跑测试——每一步都有对应的工具调用，不是"说完就结束"。默认权限档是**自动**：低风险动作直接执行，高风险动作会停下来问你（档位与会话内切换见下方 [权限模式](#-权限模式)）。
 
 ### 做完之后看三处
 
@@ -196,9 +198,10 @@ tianshu --stream-json -p "重构这个模块"       # NDJSON 事件流，输出�
 tianshu --goal "修复所有类型错误" --budget 50  # 无头目标自主模式
 ```
 
-> 全部安装路径（Windows WebView2 / Linux AppImage / Android Termux / 源码构建 / Shell 补全 / 自动更新）与平台注意事项见 [安装与平台说明](docs/guides/installation.md)；CLI 参数全表见 [用户手册](docs/user-guide.md#命令行参数)。
+> 全部安装路径（Windows WebView2 / Linux AppImage / Android Termux / 源码构建 / Shell 补全 / 自动更新）与平台注意事项见 [安装与平台说明](docs/guides/installation.md)；CLI 参数全表与子命令（`config` / `provider` / `skills` / `serve` / `sessions` / `browser` / `logs` / `web`）见 [用户手册](docs/user-guide.md#命令行参数)。
 
 
+<a id="为什么是认知运行时"></a>
 ## 💡 为什么是认知运行时
 
 ### 问题：能力上限 ≠ 运行行为
@@ -245,15 +248,15 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 
 ### 工程质量
 
-截至 **2026-09-30** 的量级快照（行数每天都在动，差几百行正常）：
+截至 **2026-09-30** 的里程碑快照（及 **v3.31.0** 最新规模，行数每天都在动，差几百行正常）：
 
 | 部分 | 规模 |
 |------|------|
-| `src/` 源码 | 约 1,256 文件 / 30 万行（最大的 `agent/` 有 483 个文件） |
-| `src/` 测试 | 约 1,592 文件 / 31 万行（node:test，与源码约 1:1） |
+| `src/` 源码 | 约 1,256 文件 / 30 万行（v3.31.0 已达 1,475 文件，最大的 `agent/` 有 539 个源码文件） |
+| `src/` 测试 | 约 1,592 文件 / 31 万行（v3.31.0 已达 1,875 文件 / 32 万行 / 21,500+ 用例，node:test，与源码约 1:1） |
 | `desktop/src` | 约 450 文件 / 9.6 万行（React），另有约 1.1 万行 Rust |
-| `vscode-extension/src` | 17 文件 / 约 2,700 行 |
-| 仓库 | 2026-05-15 创建，至今约 4 个半月，共 8,008 个提交，近 30 天 1,769 个 |
+| `vscode-extension/src` | 32 文件 / 约 4,500 行（2026-09-30 快照为 17 文件 / 约 2,700 行） |
+| 仓库 | 2026-05-15 创建，累计 8,000+ 个提交 |
 
 `tsc` strict + `noUncheckedIndexedAccess`，事故修复必带回归测试。完整口径、里程碑与复现命令见 [工程质量指标](docs/engineering-metrics.md)。
 
@@ -280,25 +283,27 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 - **辅**：不发自己的光。把已经发生过的经验收成能看清的方法。
 - **太一**：先停一下。这一手收束好了，再起下一手。
 
-各星更完整的信念见 [星域碑文](docs/stars/genesis-stele.md)。
+各星更完整的信念见 [星域碑文（中文）](docs/stars/genesis-stele.md) · [Star Domain Stele (English)](docs/stars/genesis-stele.en.md)。
 
+<a id="核心特性"></a>
 ## ✨ 核心特性
 
 - **证据驱动的交付门禁** —— 完成声明必须带测试 / diff / 验证命令等运行时证据；`deliver_task` 交付门禁 + 提交后审查两级兜底，机械变更自动跳过。[理念](docs/reference/cvm-cognitive-runtime.md)
 - **前缀缓存引擎** —— 冻结前缀 + 增量附录 + Read-ref 去重 + resume 缓存继承，全模型适用；`/debug cache` 诊断命中率与碎裂原因。[细节](docs/user-guide.md#前缀缓存引擎)
 - **多代理编排** —— 从轻量的 `/scout` 只读侦察、并行 `/team` 施工，到 `/council` 多席会诊与 `/galaxy` 多维攻坚；类型化 work order、读写 worker 隔离、自适应模型路由，复杂任务按波次执行、逐波验收。[细节](docs/user-guide.md#子代理编排)
 - **统一项目记忆** —— 项目知识写入 `.rivet/knowledge/memory.jsonl`；自动注入只带治理/约束类记忆，旧问题走显式 recall，不劫持新任务。[细节](docs/user-guide.md#跨会话记忆)
-- **禅模式（Zen Mode）** —— 可选的读专注开局：收窄只读工具面，动手即晋升全量，缓存零断点分诊。[细节](docs/user-guide.md#禅模式zen-mode读专注开局动手即解锁)
-- **API 成本控制** —— reasoning effort 自动降档路由、compact 走 flash 侧路、峰谷计价提醒。[细节](docs/user-guide.md#api-成本控制)
+- **禅模式（Zen Mode）** —— 可选的读专注开局（opt-in，默认关闭）：收窄只读工具面，动手即晋升全量，缓存零断点分诊。[细节](docs/user-guide.md#禅模式zen-mode读专注开局动手即解锁)
+- **API 成本控制与 Token 账本** —— reasoning effort 自动降档路由、compact 走 flash 侧路、峰谷计价提醒；内置 `/usage`（`/token-ledger`）本地 Token 消耗累计台账与可选同步。[细节](docs/user-guide.md#api-成本控制)
 - **Plan Mode 与 Goal 自治** —— 先计划后执行的审批工作流；`/goal` 目标驱动自主续跑。[细节](docs/user-guide.md#plan-mode计划模式)
-- **会话交接与倒带** —— `/handoff` 结构化交接自动注入新会话；双击 ESC 倒带到任一历史点。[细节](docs/user-guide.md#会话交接与恢复handoff--resume)
+- **会话交接与倒带** —— `/handoff` 生成五章节结构化交接文档并归档（设 `RIVET_PREV_HANDOFF=1` 可自动注入新会话）；双击 ESC 倒带到任一历史点。[细节](docs/user-guide.md#会话交接与恢复handoff--resume)
 - **LSP 深度集成** —— 自研 JSON-RPC 客户端接入语言服务器（TypeScript / Python / Go / Rust / C / C++ / Java / C# / Kotlin / Swift / PHP / Ruby / Lua / Dart / Zig / Scala / Shell / Terraform / Vue / Svelte 等 20+ 种，本机装了才启用、缺失静默降级）：跳转定义与查找引用成为 agent 工具，编辑后诊断自动注入回环——改出类型错误模型立刻看见。
-- **MCP 与 Skills** —— 外部工具服务器接入 + 可复用工作流剧本，渐进披露。[细节](docs/user-guide.md#mcpmodel-context-protocol)
-- **T9 自研 TUI** —— 纯 ANSI 零依赖：GlanceBar 状态栏、流式中打断、命令面板、Cockpit 驾驶舱、内联图片。[细节](docs/user-guide.md#终端-uitui)
-- **桌面端增强** —— 集成终端、主题工作室、语音输入（本地 whisper）、手机遥控审批、多会话并发。[桌面端指南](docs/desktop-guide.md)
+- **MCP 与 Skills** —— 外部工具服务器接入 + 可复用工作流剧本（会话级快照隔离、CLI `tianshu skills` 统一管理），渐进披露。[细节](docs/user-guide.md#mcpmodel-context-protocol)
+- **T9 自研 TUI** —— 纯 ANSI 零依赖：GlanceBar 状态栏（含余额与 CVM 拦截计数 `⛨ N`）、`/steer` 流式中打断、`/cvm` 实时拦截提示、命令面板、Cockpit 驾驶舱、内联图片，以及远控/受限终端纯文本模式（`--terminal-mode captured-pty`）。[细节](docs/user-guide.md#终端-uitui)
+- **桌面端增强** —— 集成终端、主题工作室（自定义壁纸与分区玻璃）、本地离线语音输入（macOS / Windows / Linux 全平台 whisper.cpp）、手机遥控审批、多会话并发。[桌面端指南](docs/desktop-guide.md)
 - **WSL 连接式运行时**（Windows）—— 一键连上 WSL 内的运行时，会话、文件读写与命令执行都在 Linux 侧进行；断开自动清理，两侧版本独立升级互不影响。[细节](docs/desktop-guide.md#wsl-连接式运行时windows)
 - **Lean 资源档** —— 低内存/低磁盘场景的精简工具集与会话池收紧，可按星域覆盖。[细节](docs/user-guide.md#lean-资源档低内存--低磁盘)
 
+<a id="权限模式"></a>
 ## 🔐 权限模式
 
 对外只有三档，会话内统一用 `/permission` 管理：
@@ -309,8 +314,9 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 | **自动**（默认） | `/permission auto` | 低/无风险工具自动执行，高风险仍确认 |
 | **全自动** | `/yes` · `/yolo` | 免审批执行；写边界仍在（自动开启沙箱），回滚兜底 |
 
-跳过提示不会关闭工具校验、路径安全、证据追踪、检查点与交付门禁；未授信项目不加载 hooks 与项目 MCP（`/trust` 管理）。完整规则见 [权限与沙箱指南](docs/user-guide-sandbox-permissions.md)。
+跳过提示不会关闭工具校验、路径安全、证据追踪、检查点与交付门禁；未授信项目不加载 hooks、项目 MCP 与项目级记忆/技能（`/trust` 或 `--trust` 管理）。完整规则见 [权限与沙箱指南](docs/user-guide-sandbox-permissions.md)。
 
+<a id="支持的模型"></a>
 ## ⚙️ 支持的模型
 
 | 提供商 | 认证方式 | 接入模型示例 |
@@ -318,17 +324,20 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 | DeepSeek | API key | deepseek-flash（1M ctx，DeepSeek-V4.1-Flash，原生多模态视觉）, deepseek-v4-pro（1M ctx，DeepSeek-V4-Pro-0813，旗舰推理） |
 | DeepSeek Spark（Pro 专属） | API key | deepseek-v4-flash（轻量推理 + 锚点缓存通道） |
 | Claude | API key（通过 `cc-switch` 代理） | claude-opus-4-8, claude-sonnet-4-5 |
-| GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（视觉）, glm-5.2 |
-| Codex (GPT-5.6) | OAuth PKCE（ChatGPT 订阅） | gpt-5.6-sol |
+| GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（视觉）, glm-5.2（视觉） |
+| Codex (GPT-6.1 / GPT-5.6) | OAuth PKCE（ChatGPT 订阅） | gpt-6.1-sol（默认，1.05M ctx，视觉）, gpt-5.6-sol |
 | Grok (xAI) | API key | grok-4.6 (500K ctx, 视觉, 推理档 low/medium/high/xhigh) |
-| MiniMax | API key | MiniMax-M3（视觉）, MiniMax-M2.7 |
+| MiniMax | API key | MiniMax-M3（1M ctx，视觉）, MiniMax-M2.7 |
 | MiMo | API key | mimo-v2.6-pro / mimo-v2.6-flash（1M ctx，全模态视觉）, mimo-v2.5-pro, mimo-v2.5（官方 2026-10-21 下线） |
-| Kimi Code | API key | k3（1M ctx，视觉）, k3-256k, kimi-for-coding |
+| Kimi Code | API key | k3（1M ctx，视觉）, k3-256k, kimi-for-coding（K2.8 Preview）, kimi-for-coding-highspeed |
 | Gemini (Google) | API key（原生协议直连） | gemini-3.8-flash (1M ctx), gemini-3.5-flash, gemini-3.1-pro-preview |
 
-另支持任意 OpenAI 兼容自定义端点（Ollama / vLLM 等）。会话内 `/model` 随时切换；识图桥、生图端点、子代理分模型路由等见 [Provider 配置手册](docs/user-guide-provider-config.md) 与 [识图能力手册](docs/user-guide-vision.md)。
+另内置火山方舟豆包 / Agent Plan（`doubao-seed-2.1-pro`、`ark-code-latest`）、阿里云百炼 DashScope（`qwen3.8-max`）、阶跃星辰 StepFun（`step-5-preview`）、OpenAI（`gpt-5.6-sol`）、LongCat（`LongCat-2.0`）、Agnes AI（`agnes-3.0-flash`）、SiliconFlow、OpenRouter、OpenCode Go 等 25 项预设，并支持任意 OpenAI 兼容自定义端点（Ollama / vLLM 等）。会话内 `/model` 随时切换；识图桥、生图端点、子代理分模型路由等见 [Provider 配置手册](docs/user-guide-provider-config.md) 与 [识图能力手册](docs/user-guide-vision.md)。
 
+<a id="文档导航"></a>
 ## 📚 文档导航
+
+> 🌐 **中英双语导航 · Bilingual Navigation**：英文版完整指南与参考速查表见 [English README & Reference Guide](README.en.md)；星域碑文英文版见 [Star Domain Stele](docs/stars/genesis-stele.en.md)；文档中心与规范见 [docs/README.md](docs/README.md)。
 
 **使用**
 
@@ -343,6 +352,7 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 | [远程访问指南](docs/remote-access.md) | 手机/平板遥控审批的启用与安全边界 |
 | [手机端操作手册](docs/guides/mobile-guide.md) | 手机/平板连接的完整步骤、能力清单、外网（Tailscale）与常见问题 |
 | [排障与 FAQ](docs/guides/troubleshooting.md) | 高频现场速查：卡住、429、缓存异常 |
+| [求助与支持指南](SUPPORT.md) | 自助诊断命令、社区交流渠道与 Issue 提报规范（中英双语） |
 
 **理念与架构**
 
@@ -352,37 +362,40 @@ CVM 不改权重、不让模型变成确定性程序，而是在概率认知之�
 | [CVM 实证报告](docs/CVM运行时对Agent模型的实证影响.md) | A/B 对照数据与逐任务对比 |
 | [指标观测 harness](docs/reference/observability-harness.md) | 缓存 / CVM 真实会话数据样本与复算命令 |
 | [架构总览](docs/architecture-overview.md) | 系统分层与模块职责 |
-| [工程质量指标](docs/engineering-metrics.md) | 规模、测试与迭代里程碑 |
-| [星域碑文](docs/stars/genesis-stele.md) | 16 星域的创始记忆与核心信念 |
+| [工程质量指标](docs/engineering-metrics.md) | 规模、测试与迭代里程碑（中英双语） |
+| [星域碑文](docs/stars/genesis-stele.md) · [English](docs/stars/genesis-stele.en.md) | 16 星域的创始记忆与核心信念（中英双语） |
 | [创世纪 · 天枢 3.0 公开声明](docs/releases/manifesto-v3.0.0.md) | 项目宣言 |
 
+<a id="面向开发者"></a>
 ## 🛠️ 面向开发者
 
 Node.js 24 · TypeScript strict（`noUncheckedIndexedAccess`）· T9 ANSI 渲染引擎 · tsup 打包 · node:test。
 
 ```bash
 npm run typecheck    # 类型检查
-npm test             # 所有测试（19,000+ 用例）
+npm test             # 所有测试（21,000+ 用例）
 npm run build        # tsup 打包 + 原生/wasm 载荷落位
 node dist/cli/entry.js
 ```
 
-- **添加工具** —— 在 `src/tools/` 实现 `ToolDefinition` + executor 并注册，配套 `src/tools/__tests__/` 测试
+- **添加工具** —— 在 `src/tools/` 实现 `ToolDefinition` + executor 并在 `src/tools/default-registry.ts` 注册，配套 `src/tools/__tests__/` 测试
 - **添加 skill / 命令 / hook** —— `.rivet/skills/*.md`（frontmatter）、`.rivet/commands/*.md`（`$ARGUMENTS` 插值）、`HookRegistry` 处理器
 - **项目指令** —— 项目根放 `.rivet.md`，内容自动注入为项目上下文
-- 架构地图见根目录 `AGENTS.md` 与 [架构总览](docs/architecture-overview.md)
+- 架构地图见根目录 `AGENTS.md` 与 [架构总览](docs/architecture-overview.md)；贡献规范见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [EXTERNAL-PRS.md](EXTERNAL-PRS.md)（中英双语）
 
+<a id="安全"></a>
 ## 🔒 安全
 
 - **路径边界强制** —— glob/grep/diff 拒绝 `..` 穿越；`validatePath` 阻止逃逸
-- **项目信任门** —— 未授信项目不加载 hooks / 项目 MCP，配置安全键剥离
+- **项目信任门** —— 未授信项目不加载 hooks / 项目 MCP / 项目记忆与技能，配置安全键剥离
 - **SSRF 保护** —— 逐跳 DNS + 私有 IP 拦截，作用于每次重定向
 - **敏感文件拒绝** —— `.env`、`credentials.*`、`*key*`、`*token*` 禁止读/commit；密钥落盘走 AES-256-GCM 信封
 - **破坏性命令门禁** —— `rm -rf`、force push、`DROP/TRUNCATE` 需显式确认
 - **检查点 + 文件级撤销** —— 每回合首次修改前创建 Git 检查点；每次写/编辑前版本化备份
 
-安全漏洞请走 [私密报告](https://github.com/huiliyi37/Tianshu-harness/security/advisories/new)，不要开公开 issue。
+安全漏洞请走 [私密报告](https://github.com/huiliyi37/Tianshu-harness/security/advisories/new)（详见 [SECURITY.md](SECURITY.md)），不要开公开 issue。
 
+<a id="社区与支持"></a>
 ## 🤝 社区与支持
 
 - **使用问题 / 讨论** → [GitHub Discussions](https://github.com/huiliyi37/Tianshu-harness/discussions)
@@ -399,7 +412,7 @@ node dist/cli/entry.js
 
 ## ✨ 贡献者
 
-感谢所有贡献者——项目创建者与核心开发 [@huiliyi37](https://github.com/huiliyi37)；完整名单（22 位外部贡献者 / 145 个 PR）见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。外部 PR 经「收编」流程合入后，作者署名以 `Co-authored-by` 计入贡献者图谱（`scripts/credit-contributors.sh` 自动落账）：
+感谢所有贡献者——项目创建者与核心开发 [@huiliyi37](https://github.com/huiliyi37)；完整名单（31 位外部贡献者 / 268 个 PR）见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。外部 PR 经「收编」流程合入后，作者署名以 `Co-authored-by` 计入贡献者图谱（`scripts/credit-contributors.sh` 自动落账）：
 
 <p>
 <a href="https://github.com/HarriethWiKk"><img src="https://github.com/HarriethWiKk.png?size=100" width="50" height="50" alt="HarriethWiKk" title="HarriethWiKk" /></a>
@@ -422,8 +435,17 @@ node dist/cli/entry.js
 <a href="https://github.com/lei454577-web"><img src="https://github.com/lei454577-web.png?size=100" width="50" height="50" alt="lei454577-web" title="lei454577-web" /></a>
 <a href="https://github.com/jian-in"><img src="https://github.com/jian-in.png?size=100" width="50" height="50" alt="jian-in" title="jian-in" /></a>
 <a href="https://github.com/sky-mirrors"><img src="https://github.com/sky-mirrors.png?size=100" width="50" height="50" alt="sky-mirrors" title="sky-mirrors" /></a>
-<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
 <a href="https://github.com/EarthxxRhythm"><img src="https://github.com/EarthxxRhythm.png?size=100" width="50" height="50" alt="EarthxxRhythm" title="EarthxxRhythm" /></a>
+<a href="https://github.com/moyan3691"><img src="https://github.com/moyan3691.png?size=100" width="50" height="50" alt="moyan3691" title="moyan3691" /></a>
+<a href="https://github.com/elysia395"><img src="https://github.com/elysia395.png?size=100" width="50" height="50" alt="elysia395" title="elysia395" /></a>
+<a href="https://github.com/JakcyLin"><img src="https://github.com/JakcyLin.png?size=100" width="50" height="50" alt="JakcyLin" title="JakcyLin" /></a>
+<a href="https://github.com/googio"><img src="https://github.com/googio.png?size=100" width="50" height="50" alt="googio" title="googio" /></a>
+<a href="https://github.com/lanlan0811"><img src="https://github.com/lanlan0811.png?size=100" width="50" height="50" alt="lanlan0811" title="lanlan0811" /></a>
+<a href="https://github.com/KhalilYamber"><img src="https://github.com/KhalilYamber.png?size=100" width="50" height="50" alt="KhalilYamber" title="KhalilYamber" /></a>
+<a href="https://github.com/Ver-zhzh"><img src="https://github.com/Ver-zhzh.png?size=100" width="50" height="50" alt="Ver-zhzh" title="Ver-zhzh" /></a>
+<a href="https://github.com/Lin-Dongg"><img src="https://github.com/Lin-Dongg.png?size=100" width="50" height="50" alt="Lin-Dongg" title="Lin-Dongg" /></a>
+<a href="https://github.com/Eternal-dream-MAX"><img src="https://github.com/Eternal-dream-MAX.png?size=100" width="50" height="50" alt="Eternal-dream-MAX" title="Eternal-dream-MAX" /></a>
+<a href="https://github.com/y521188"><img src="https://github.com/y521188.png?size=100" width="50" height="50" alt="y521188" title="y521188" /></a>
 </p>
 
 ## ⭐ Star History
@@ -454,3 +476,4 @@ node dist/cli/entry.js
 ## 致谢
 
 - 桌面端「自定义壁纸与分区玻璃」功能的**设计**参考了 <a href="https://github.com/elysia395/dsh-wallpaper-engine">dsh-wallpaper-engine</a>（MIT License）；该功能为天枢独立实现，未引入上游代码，参考范围与许可全文见 <a href="THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>。
+- 特别致谢 dsh-wallpaper-engine 的作者与核心开发——<a href="https://github.com/elysia395">@elysia395</a>、<a href="https://github.com/YV3507">@YV3507</a>、<a href="https://github.com/yuxilao">@yuxilao</a>、<a href="https://github.com/oneincase">@oneincase</a>：四位作为**壁纸引擎渲染的技术顾问**，在壁纸合成与分区玻璃材质的设计、实现过程中提供了指导。

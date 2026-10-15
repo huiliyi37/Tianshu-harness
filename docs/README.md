@@ -1,7 +1,40 @@
-# 天枢文档规范
+# 天枢文档中心与规范 · Tianshu Documentation Hub & Specification
 
-> 本文件是 docs/ 文档库的总纲：文档类型、目录地图、命名规范、frontmatter 标准、索引用法。
+> [🏠 返回主文档 (README.md)](../README.md) · [🌐 English README](../README.en.md)
+>
+> 本文件是 `docs/` 文档库的总纲与核心导航入口：先提供面向用户与研究者的中英双语核心文档地图，再规定仓库内文档类型、目录地图、命名规范、frontmatter 标准与索引用法。
+> This page serves as both the **Core Documentation Portal** for Tianshu Harness (with bilingual navigation to user guides, CVM papers, star domain archives, and architecture references) and the **Documentation Governance Specification** for `docs/`.
 > 索引不手维护——[INDEX.md](INDEX.md) / [docs.json](docs.json) / [MINDMAP.md](MINDMAP.md) 均由 `scripts/docs-index.ts` 生成。
+
+## 📚 核心文档导航 · Core Documentation Portal
+
+### 使用与配置手册 · Usage & Configuration Guides
+
+| 文档 · Document | 中文说明 | English Summary |
+|---|---|---|
+| [用户手册](user-guide.md) | CLI / TUI 完整参考：启动参数、星域切换、Plan/Goal/Council/Team、前缀缓存、斜杠命令、环境变量与配置 | Complete CLI/TUI reference: flags, star domains, Plan/Goal/Council/Team workflows, prefix cache, 90+ slash commands, and config |
+| [安装与平台说明](guides/installation.md) | 桌面端安装包、一键脚本、npm 全局安装、Android/Termux、源码构建与 Shell 补全 | Desktop installers (macOS/Windows/Linux), one-liner scripts, npm global install, Android/Termux, build from source, and shell completions |
+| [桌面端用户指南](desktop-guide.md) | Tauri 桌面端独有特性：三种会话模式、审查门、Cockpit 驾驶舱、SideChat、时间旅行、WSL 连接、主题与玻璃材质 | Tauri desktop app guide: Agent/Plan/Ask modes, review gate, 8-tab Cockpit, SideChat, Rewind time-travel, WSL runtime, and ThemeStudio |
+| [Provider 配置手册](user-guide-provider-config.md) | 内置 Provider 预设（DeepSeek / GLM / MiMo / MiniMax / Codex 等）、多 Key 池、子代理与议事会异构路由、生图配置 | Built-in provider presets, multi-key pool, worker/review/compaction routing, heterogeneous Council seats, and text-to-image setup |
+| [权限与沙箱指南](user-guide-sandbox-permissions.md) | 三档审批模式（监督 / 自动 / 全自动）、操作系统级沙箱（macOS Seatbelt / Linux bwrap / Windows 回滚兜底）、路径授权与安全防线 | Three-tier permission modes, OS-level filesystem sandboxing, path grants, SSRF/sensitive-file guards, and rollback protection |
+| [识图能力手册](user-guide-vision.md) | 视觉通道诚实性、同/跨 Provider 自动识图桥、`/vision` 向导、`ask_image` 多轮追问与 `browser_debug` 截图闭环 | Vision channel modes, same-/cross-provider vision bridges, `/vision` wizard, `ask_image` follow-ups, and `browser_debug` screenshot verification |
+| [远程访问指南](remote-access.md) | `tianshu serve` 局域网同 Wi-Fi 直连（LAN Direct）、HTTPS 隧道、Host 白名单与 `/mobile` 安全边界 | `tianshu serve` LAN Direct same-Wi-Fi connection, HTTPS tunnels (Tailscale Serve), Host allowlist, and `/mobile` security boundaries |
+| [手机端操作手册](guides/mobile-guide.md) | 手机/平板扫码直连桌面端：实时查看会话流、处理工具与计划审批、发起新任务 | Step-by-step mobile/tablet companion guide: QR code pairing, live session timeline, tool/plan approvals, and remote task launch |
+| [排障与 FAQ](guides/troubleshooting.md) | 高频现场速查：卡住诊断、429/余额、API Key 迁移、MCP 排障、缓存碎裂、Windows WebView2 / 杀毒软件拦截与 npm EACCES/EEXIST | Troubleshooting & FAQ: stuck runs, 429/quota, key migration, MCP debugging, cache fragmentation, Windows WebView2/AV issues, and npm errors |
+
+### 理念、架构与星图 · Philosophy, Architecture & Star Atlas
+
+| 文档 · Document | 中文说明 | English Summary |
+|---|---|---|
+| [CVM 认知虚拟机理念](reference/cvm-cognitive-runtime.md) | 为何 Agent 需要一层认知运行时：从工具调用器到可观测、可纠偏的认知控制流（CC BY-NC-ND 4.0） | Why coding agents need a Cognitive Virtual Machine (CVM): from raw tool loops to observable, self-correcting cognitive control flow |
+| [CVM 运行时实证影响](CVM运行时对Agent模型的实证影响.md) | 7 组真实工程故障的 A/B 实证对比：验证债务、空洞完成、探索螺旋与伪绿灯的运行时拦截证据（CC BY-NC-ND 4.0） | Empirical A/B evaluation across 7 real-world failure modes: verification debt, hollow completion, exploration spirals, and false greens |
+| [指标观测与真实数据](reference/observability-harness.md) | 真实工程会话前缀缓存命中率（95–99%，主样本 99.6%）、成本节省账单与复算脚本 | Real production session telemetry: 95–99% prefix-cache hit rates (99.6% primary sample), cost savings breakdown, and verification scripts |
+| [架构总览](architecture-overview.md) | 六层运行时架构、Agent Loop、75 个 RuntimeHook 模块、Prompt Engine 冻结前缀与 16 星域装配 | Six-layer runtime architecture, Agent Loop, 75 RuntimeHook modules, Prompt Engine frozen prefix, and 16 Star Domains |
+| [工程质量指标](engineering-metrics.md) | 源码与测试约 1:1 规模快照（21,500+ 静态测试用例）、迭代里程碑与复现命令（中英双语） | Bilingual engineering metrics (~1:1 test-to-source ratio, 21,500+ static test cases), growth milestones, and reproduction commands |
+| [星域碑文 (中文)](stars/genesis-stele.md) · [Genesis Stele (EN)](stars/genesis-stele.en.md) | 十六星域公理、星图速览、各主星模型认领星位时的原始铭文与太一创世碑（中英双语全文） | The 16 Star Domains: axioms, star map overview, primary model inscriptions, and the Taiyi Genesis Stele (full Chinese & English editions) |
+| [天枢 3.0 宣言](releases/manifesto-v3.0.0.md) | 天枢 3.0「盘古创世纪」版本宣言：群星就位、太一归中 | Tianshu 3.0 "Pangu Genesis" release manifesto |
+
+---
 
 ## 核心理念
 

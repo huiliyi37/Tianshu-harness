@@ -1,5 +1,7 @@
 # Security Policy · 安全策略
 
+> 🇨🇳 **中文** · 📖 **English** | [🏠 主文档 (README.md)](README.md) · [🌐 English README](README.en.md)
+
 ## 报告漏洞 · Reporting a Vulnerability
 
 请**不要**通过公开 issue 报告安全漏洞。
@@ -10,18 +12,24 @@ Use GitHub's private vulnerability reporting (Security tab → Report a vulnerab
 
 ## 受支持版本 · Supported Versions
 
-只有最新的 minor 版本接收安全修复(npm `tianshu-tui@latest` 与桌面端最新 Release)。
-Only the latest minor release receives security fixes (npm `tianshu-tui@latest` and the latest desktop release).
+只有最新的 minor 版本接收安全修复(npm `tianshu-harness@latest` 与桌面端最新 Release)。
+Only the latest minor release receives security fixes (npm `tianshu-harness@latest` and the latest desktop release).
 
 ## 安全模型要点 · Security Model
 
 天枢作为本地运行的编码 agent,内置以下防线(详见 [沙箱与权限](docs/user-guide-sandbox-permissions.md)):
+As a locally running coding agent, Tianshu ships with the following built-in defense lines (see [Sandbox & Permissions](docs/user-guide-sandbox-permissions.md)):
 
-- **路径边界**:所有文件工具经 `validatePath` 强制项目目录边界,拒绝 `..` 穿越与符号链接逃逸;插件工具的路径参数同样经过 `validatePathSafe` 校验。
-- **敏感文件拒绝**:`.env`、`credentials.*`、`*key*`、`*token*` 等禁止读取与提交。
-- **破坏性命令门禁**:`rm -rf`、force push、`DROP/TRUNCATE` 等需显式确认;三档权限模式(监督 / 自动 / 全自动)统一管理。
-- **插件安全**:插件安装强制 `npm install --ignore-scripts`(禁止 postinstall 任意代码);manifest entry 路径禁止逃逸插件目录;插件工具不得静默覆盖内置工具;安装前展示权限声明。
-- **网络防护**:web 工具**直连路径**为强保证——逐跳 DNS 解析 + 私有 IP 拦截 + socket 钉死(SSRF 防护,作用于每次重定向);**配置代理时降级为请求前一次性预检**(代理解析目标,客户端无 post-CONNECT 校验点——详见 `src/tools/net/http-fetch.ts` 的 `dispatcherConnectOptions` 注释)。
+- **路径边界 · Path Boundary**:所有文件工具经 `validatePath` 强制项目目录边界,拒绝 `..` 穿越与符号链接逃逸;插件工具的路径参数同样经过 `validatePathSafe` 校验。
+  All file tools enforce project directory boundaries via `validatePath`, rejecting `..` traversal and symlink escape; plugin tool path arguments are likewise validated via `validatePathSafe`.
+- **敏感文件拒绝 · Sensitive File Rejection**:`.env`、`credentials.*`、`*key*`、`*token*` 等禁止读取与提交。
+  Reading or committing sensitive files such as `.env`, `credentials.*`, `*key*`, and `*token*` is blocked by default.
+- **破坏性命令门禁 · Destructive Command Gate**:`rm -rf`、force push、`DROP/TRUNCATE` 等需显式确认;三档权限模式(监督 / 自动 / 全自动)统一管理。
+  Destructive actions (`rm -rf`, force push, `DROP/TRUNCATE`, etc.) require explicit confirmation, governed uniformly across three approval modes (Supervise / Auto / Unattended).
+- **插件安全 · Plugin Security**:插件安装强制 `npm install --ignore-scripts`(禁止 postinstall 任意代码);manifest entry 路径禁止逃逸插件目录;插件工具不得静默覆盖内置工具;安装前展示权限声明。
+  Plugin installation enforces `npm install --ignore-scripts` (blocking arbitrary `postinstall` scripts); manifest entry paths cannot escape the plugin directory; plugin tools cannot silently shadow built-in tools; permission declarations are shown before installation.
+- **网络防护 · Network & SSRF Protection**:web 工具**直连路径**为强保证——逐跳 DNS 解析 + 私有 IP 拦截 + socket 钉死(SSRF 防护,作用于每次重定向);**配置代理时降级为请求前一次性预检**(代理解析目标,客户端无 post-CONNECT 校验点——详见 `src/tools/net/http-fetch.ts` 的 `dispatcherConnectOptions` 注释)。
+  Direct web tool connections enforce per-hop DNS resolution + private IP blocking + socket pinning (SSRF protection across every redirect); when a proxy is configured, checks degrade to a pre-request check because target DNS resolution happens on the proxy side (see `dispatcherConnectOptions` comments in `src/tools/net/http-fetch.ts`).
 
 ## 信任边界 · Trust Boundary
 

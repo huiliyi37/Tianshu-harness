@@ -45,7 +45,7 @@ https://tianshu-update-mirror.<account-subdomain>.workers.dev
 ```json
 "endpoints": [
   "https://tianshu-update-mirror.<account-subdomain>.workers.dev/tianshu/latest.json",
-  "https://github.com/huiliyi37/Tianshu-Tui/releases/latest/download/latest.json"
+  "https://github.com/huiliyi37/Tianshu-harness/releases/latest/download/latest.json"
 ]
 ```
 

@@ -32,7 +32,7 @@ VS Code / Cursor
 | 版本 | 事实源 | 用途 |
 |------|--------|------|
 | 扩展版本（0.x.y） | `vscode-extension/package.json` | vsix / 市场版本号 |
-| 内核版本（2.x.y） | 根仓 `package.json` | runtime 产物名 + Release tag |
+| 内核版本（3.x.y） | 根仓 `package.json` | runtime 产物名 + Release tag |
 | `RUNTIME_VERSION` 常量 | esbuild 构建时注入**根仓** version | runtime-downloader 拼下载 URL |
 
 `esbuild.mjs` 读 `../package.json` 注入（公开仓构建同样成立，读不到 fail-fast）。
@@ -79,7 +79,7 @@ RIVET_HOME=$(mktemp -d)/rivet node --import tsx tests/smoke.e2e.mts
 - 下载端点（`runtime-downloader.ts` 顺序尝试）：
   1. `https://update.plotstudio.cn/tianshu/releases/download`（CF Worker 镜像，
      白名单见 `scripts/cloudflare-update-worker/src/worker.js`）
-  2. `https://github.com/huiliyi37/Tianshu-Tui/releases/download`
+  2. `https://github.com/huiliyi37/Tianshu-harness/releases/download`
 - 插件侧三级 CLI 探测：settings `tianshu.cliPath` → PATH 上的 `rivet` →
   globalStorage 缓存的运行时（缺则带进度下载 + sha256 校验 + 解压）
 

@@ -7,6 +7,7 @@ import {
   detectSensitiveFile,
   detectSensitiveFileOnDisk,
   detectSensitiveGitAdd,
+  parseGitIndexCommits,
   AGGREGATE_ADD_MARKER,
 } from '../sensitive-file-detector.js'
 
@@ -304,6 +305,39 @@ describe('sensitive-file-detector', () => {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
+    })
+  })
+
+  describe('parseGitIndexCommits', () => {
+    it('bare / -m commit commits the whole index', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit'), [{ files: [], commitsIndex: true, stagesAllTracked: false }])
+      assert.deepEqual(parseGitIndexCommits('git commit -m "wip"'), [{ files: [], commitsIndex: true, stagesAllTracked: false }])
+    })
+
+    it('detects -a/--all (incl. combined -am) and skips the message value', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit -a -m "wip"'), [{ files: [], commitsIndex: true, stagesAllTracked: true }])
+      assert.deepEqual(parseGitIndexCommits('git commit -am "wip"'), [{ files: [], commitsIndex: true, stagesAllTracked: true }])
+      assert.deepEqual(parseGitIndexCommits('git commit --all'), [{ files: [], commitsIndex: true, stagesAllTracked: true }])
+    })
+
+    it('does not mistake `-m .env` message for a file operand', () => {
+      // `git commit -m .env` 的 .env 是 message；按名检查会多一次审批但不漏判
+      assert.deepEqual(parseGitIndexCommits('git commit -m .env'), [{ files: [], commitsIndex: true, stagesAllTracked: false }])
+    })
+
+    it('collects explicit pathspec/--only operands', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit --only -- .env'), [{ files: ['.env'], commitsIndex: false, stagesAllTracked: false }])
+      assert.deepEqual(parseGitIndexCommits('git commit -m msg -- src/a.ts "src/b.ts"'), [{ files: ['src/a.ts', 'src/b.ts'], commitsIndex: false, stagesAllTracked: false }])
+    })
+
+    it('handles git global opts and stops at shell separators', () => {
+      assert.deepEqual(parseGitIndexCommits('git -C sub commit -m x'), [{ files: [], commitsIndex: true, stagesAllTracked: false }])
+      assert.deepEqual(parseGitIndexCommits('git add -A && git commit -m "wip"'), [{ files: [], commitsIndex: true, stagesAllTracked: false }])
+      assert.equal(parseGitIndexCommits('echo hi').length, 0)
+    })
+
+    it('does not match obfuscated `git${IFS}commit` in the raw view (dual-view job)', () => {
+      assert.equal(parseGitIndexCommits('git${IFS}commit -m x').length, 0)
     })
   })
 })

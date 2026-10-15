@@ -5,7 +5,7 @@ import { execFileSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { INJECTION_PATTERNS, matchesDangerousBash, testBoth } from '../agent/approval-risk.js'
+import { INJECTION_PATTERNS, matchesDangerousBash, normalizeBashCommand, testBoth } from '../agent/approval-risk.js'
 import {
   DEFAULT_INTERRUPT_HINT_MS,
   executionYieldMessage,
@@ -18,7 +18,7 @@ import {
   startYieldWatch,
 } from './bash-yield.js'
 import { probeUserIdleMs, resolveYieldMs, type UserIdleMs } from '../system/user-idle.js'
-import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
+import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER, detectSensitiveFile, parseGitIndexCommits } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
 import { killProcessTreeAsync, killProcessTree, spawnShell } from './process-kill.js'
@@ -1057,6 +1057,55 @@ async function executeBashMaybeSerialized(params: ToolCallParams): Promise<BashE
   }
 }
 
+/**
+ * bash `git commit` 的暂存区敏感文件硬门（requiresApproval 用）。
+ *
+ * 三种提交形态：
+ * 1. 显式文件操作数（`git commit -- <path>` / `--only`）：按名静态检查；
+ * 2. 提交整个暂存区（bare / -m / --amend）：读 `git diff --cached --name-only`
+ *    查已暂存的敏感文件——前序聚合 add、用户预暂存都落在这里；
+ * 3. 同命令内还有聚合暂存（`git add -A`）或 -a/--all：静态无法核验将暂存什么 →
+ *    查工作区脏文件（-a 只收已跟踪改动；add -A 还收未跟踪），命中敏感即拦。
+ * 干净仓库的常规流（`git add -A && git commit`）不受影响——检查全部落空才放行。
+ * git 调用失败（非仓库等）按无命中处理：commit 本来也会失败，无凭据入库风险。
+ */
+function gitCommitStagesSensitive(cwd: string | undefined, command: string): boolean {
+  const commits = parseGitIndexCommits(command)
+  if (commits.length === 0) return false
+  const dir = typeof cwd === 'string' && cwd ? cwd : process.cwd()
+  const gitList = (args: string[]): string[] => {
+    try {
+      return execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+        .toString()
+        .split('\0')
+        .map(s => s.trim())
+        .filter(s => s.length > 0)
+    } catch {
+      return []
+    }
+  }
+  const hasSensitive = (files: string[]): boolean =>
+    files.some(f => detectSensitiveFile(f).sensitive)
+  // 同命令内的聚合暂存形态（-A / . / --all）：静态无法核验将暂存什么
+  const hasAggregateAdd = detectSensitiveGitAdd(command).includes(AGGREGATE_ADD_MARKER)
+  for (const c of commits) {
+    if (c.files.length > 0) {
+      if (hasSensitive(c.files)) return true
+      continue
+    }
+    if (hasSensitive(gitList(['diff', '--cached', '--name-only', '-z']))) return true
+    if (c.stagesAllTracked || hasAggregateAdd) {
+      // -a/--all：已跟踪改动先暂存再提交；add -A：未跟踪也收
+      const dirty = gitList(['diff', '--name-only', '-z'])
+      const untracked = hasAggregateAdd
+        ? gitList(['ls-files', '--others', '--exclude-standard', '-z'])
+        : []
+      if (hasSensitive(dirty) || hasSensitive(untracked)) return true
+    }
+  }
+  return false
+}
+
 export const BASH_TOOL: Tool = {
   definition: {
     name: 'bash',
@@ -1149,8 +1198,17 @@ export const BASH_TOOL: Tool = {
     // 凭据/密钥文件 → 需审批。聚合形态（. / -A / --all）只返回哨兵项，不在此
     // 收审批（`git add -A && git commit` 属常规流）；哨兵由 assessToolRisk 消费
     // 为 medium 风险理由。检测器 fail-closed 且不抛——不可解析的命令最多漏报。
-    return detectSensitiveGitAdd(rawCommand).some(h => h !== AGGREGATE_ADD_MARKER)
-      || detectSensitiveGitAdd(rewrittenCommand).some(h => h !== AGGREGATE_ADD_MARKER)
+    if (detectSensitiveGitAdd(rawCommand).some(h => h !== AGGREGATE_ADD_MARKER)
+      || detectSensitiveGitAdd(rewrittenCommand).some(h => h !== AGGREGATE_ADD_MARKER)) {
+      return true
+    }
+    // git commit 敏感文件硬门：bash 里的 `git commit` 此前没有任何等价于 git 工具
+    // commit 动作的暂存区检查——暂存区已有敏感文件（前序聚合 add、用户预暂存）时，
+    // `git commit -m` 在 auto-safe 档静默执行（medium），凭据直接入库。
+    // 归一化双视图并检：`git${IFS}commit` 这类混淆不能把本门降级。
+    const commitHit = (c: string): boolean =>
+      gitCommitStagesSensitive(params.cwd, c) || gitCommitStagesSensitive(params.cwd, normalizeBashCommand(c))
+    return commitHit(rawCommand) || commitHit(rewrittenCommand)
   },
 
   isConcurrencySafe: () => false,

@@ -231,3 +231,87 @@ export function detectSensitiveGitAdd(command: string): string[] {
   if (sawAggregate) sensitiveFiles.push(AGGREGATE_ADD_MARKER)
   return sensitiveFiles
 }
+
+/**
+ * `git commit` 的提交目标解析——bash 侧 commit 硬门的前置。
+ *
+ * 背景：git 工具的 commit 动作自带敏感文件门（查将要暂存 + 已暂存），但 bash 里
+ * 的 `git commit` 没有任何等价检查：`git add -A`（聚合形态免审批）之后或
+ * 暂存区本就有敏感文件时，`git commit -m` 在 auto-safe 档静默执行（medium 风险），
+ * 凭据直接入库。本解析器把 commit 命令分类，供调用方决定做哪种检查：
+ *   - 显式文件操作数（pathspec / --only）：按名静态检查即可；
+ *   - 无操作数：提交整个暂存区 → 调用方需查 `git diff --cached --name-only`；
+ *   - 带 -a/--all：先把已跟踪改动全部暂存 → 另需查工作区脏文件。
+ * 与 detectSensitiveGitAdd 同口径：`git -C <dir> commit` 等全局选项形态同样捕获；
+ * 混淆形态（`git${IFS}commit`）由调用方做归一化双视图并检。
+ */
+export interface GitIndexCommit {
+  /** 显式文件操作数（pathspec / --only 目标），已剥引号 */
+  files: string[]
+  /** 无操作数：提交整个暂存区（bare / -m / --amend 等） */
+  commitsIndex: boolean
+  /** -a/--all：提交前先把已跟踪改动全部暂存 */
+  stagesAllTracked: boolean
+}
+
+/** 取值型 flag：下一个 token 是它的值，不是文件操作数（`git commit -m .env` 的
+ *  `.env` 是 message，不是路径——误判只会多一次审批，不漏判）。 */
+const COMMIT_VALUE_FLAGS = new Set(['-m', '-F', '-C', '-c', '--message', '--file', '--reuse-message', '--reedit-message'])
+
+function splitCommitArgs(s: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    if (quote) {
+      if (c === quote) quote = null
+      else cur += c
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === '\\' && i + 1 < s.length) { cur += s[i + 1]!; i++; continue }
+    // shell 连接符处截断：后面的已是另一条命令
+    if (c === ';' || c === '&' || c === '|' || c === '(' || c === ')' || c === '<' || c === '>' || c === '\n' || c === '`') break
+    if (c === '$' && s[i + 1] === '(') break
+    if (/\s/.test(c)) {
+      if (cur) { out.push(cur); cur = '' }
+      continue
+    }
+    cur += c
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+export function parseGitIndexCommits(command: string): GitIndexCommit[] {
+  const re = new RegExp(String.raw`\bgit${GIT_GLOBAL_OPTS_SRC}\s+commit\b`, 'gi')
+  const out: GitIndexCommit[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(command)) !== null) {
+    const args = splitCommitArgs(command.slice(match.index + match[0].length))
+    const files: string[] = []
+    let stagesAllTracked = false
+    let seenDashDash = false
+    let skipNext = false
+    for (const a of args) {
+      if (skipNext) { skipNext = false; continue }
+      if (seenDashDash) { files.push(stripQuotes(a)); continue }
+      if (a === '--') { seenDashDash = true; continue }
+      if (COMMIT_VALUE_FLAGS.has(a)) { skipNext = true; continue }
+      if (a === '-a' || a === '--all') { stagesAllTracked = true; continue }
+      // 合写短旗标（-am / -ca）：含 a 即 stagesAllTracked；含 m/F/C/c 时下一个
+      // token 是它的值（`git commit -am "msg"` 的 "msg" 不是文件操作数）
+      if (/^-[a-zA-Z]+$/.test(a)) {
+        const letters = a.slice(1)
+        if (letters.includes('a')) stagesAllTracked = true
+        if (/[mFCc]/.test(letters)) skipNext = true
+        continue
+      }
+      if (a.startsWith('-')) continue
+      files.push(stripQuotes(a))
+    }
+    out.push({ files, commitsIndex: files.length === 0, stagesAllTracked })
+  }
+  return out
+}

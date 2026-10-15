@@ -143,6 +143,37 @@ describe('GIT_CLEAR_RE 共享正则(迁移回归)', () => {
       assert.equal(GIT_CLEAR_RE.test(cmd), false, `should NOT match: ${cmd}`)
     }
   })
+
+  // git clean 强制旗标位置任意：组合短旗标(-fd/-fdx)、分开写(-d -f)、长旗标
+  // (--force) 语义等价且同样不可逆。旧式 `clean\s+-[a-z]*f` 只认紧跟子命令的
+  // 组合短旗标，分开写与长旗标全部漏判——而 approval-risk.ts 的 clean 分支早已
+  // 全部命中，两门判据分歧即绕过口（与 PR #485 的 checkout -f 同类）。
+  test('git clean 强制旗标形态（分开写/长旗标）同口径', () => {
+    for (const cmd of [
+      'git clean -fd',
+      'git clean -fdx',
+      'git clean -xdf',
+      'git clean -d -f',
+      'git clean -f -d',
+      'git clean --force',
+      'git clean -d --force',
+      'git clean --force -d',
+      'git clean -q -d -f',
+      'cd x;git clean -d -f',
+      'git -C repo clean --force',
+    ]) {
+      assert.equal(GIT_CLEAR_RE.test(cmd), true, `should match: ${cmd}`)
+    }
+    for (const cmd of [
+      'git clean -dn',
+      'git clean -d',
+      'git clean -n',
+      'git clean --dry-run',
+      'git clean -e "*.log" -d',
+    ]) {
+      assert.equal(GIT_CLEAR_RE.test(cmd), false, `should NOT match: ${cmd}`)
+    }
+  })
 })
 
 // ─── T4 getVirtueCredit 选项 ──────────────────────────────────────

@@ -42,8 +42,11 @@ const CMD_START = String.raw`(?:^|[\s;&|(])`
  *   `git reset --hard` / `git reset --mixed`
  *   `git checkout -- .`
  *   `git restore .`
- *   `git clean -fd`
- * 以上任意形态前置全局参数(`git -C <dir> reset --hard` / `git --no-pager stash`)同样命中。
+ *   `git clean -fd` / `git clean -fdx`（组合短旗标）
+ *   `git clean -d -f`（分开写）/ `git clean --force`（长旗标）/ `git clean -d --force`
+ *     （强制旗标位置任意——与 approval-risk.ts DANGEROUS_BASH_PATTERNS 的
+ *      clean 分支同口径；旧式 `clean\s+-[a-z]*f` 只认紧跟子命令的组合短旗标，
+ *      分开写与长旗标形态全部漏判，而审批门早已全部命中，两门判据分歧即绕过口）
  *
  * 排除(只读/恢复类):
  *   `git stash list` / `git stash pop` / `git stash show` / `git stash apply`
@@ -53,5 +56,5 @@ export const GIT_CLEAR_RE = new RegExp(
   CMD_START +
     String.raw`git` +
     GIT_GLOBAL_OPTS_SRC +
-    String.raw`\s+(?:stash(?!\s+(?:pop|list|show|apply|drop|branch))|reset\s+(?:--hard|--mixed)|checkout\s+--|restore\s+\S|clean\s+-[a-z]*f)`,
+    String.raw`\s+(?:stash(?!\s+(?:pop|list|show|apply|drop|branch))|reset\s+(?:--hard|--mixed)|checkout\s+--|restore\s+\S|clean\b[^\n;&|]*\s(?:-[a-zA-Z]*f|--force\b))`,
 )

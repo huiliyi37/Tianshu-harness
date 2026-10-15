@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { BingBackend, parseBingResults } from '../bing.js'
+import { SearchHttpError } from '../errors.js'
 
 /**
  * RED→GREEN: Bing parser against real cn.bing.com HTML.
@@ -108,5 +109,67 @@ describe('BingBackend request parameters', () => {
     const { backend, seen } = captureSearch()
     await backend.search('杭州西湖 门票预约', 10, new AbortController().signal)
     assert.equal(seen.headers['Accept-Language'], 'zh-CN,zh;q=0.9,en;q=0.5')
+  })
+})
+
+/**
+ * issue #484 问题 2：cn.bing.com 对**海外出口**返回 301 → www.bing.com。
+ * 旧实现在 redirect:'manual' 下把这个 301 一律当失败，链上只有 bing 时直接
+ * 「搜索失败（bing: HTTP 301）」。修复须区分「Bing 自己的区域跳转」与
+ * 「跳向未校验主机」——前者跟随，后者仍然 fail-closed。
+ */
+describe('BingBackend cross-region redirect (issue #484)', () => {
+  const REDIRECT_HTML = `<li class="b_algo">
+    <h2><a href="https://www.python.org/">Welcome to Python.org</a></h2>
+    <div class="b_caption"><p class="b_lineclamp2">The official home of the Python Programming Language.</p></div>
+  </li>`
+
+  it('follows a 301 to www.bing.com instead of failing', async () => {
+    const calls: Array<{ url: string; redirect: string | undefined }> = []
+    const backend = new BingBackend(async (url, init) => {
+      calls.push({ url, redirect: (init as RequestInit | undefined)?.redirect as string | undefined })
+      if (url.startsWith('https://cn.bing.com/')) {
+        return new Response('', { status: 301, headers: { location: 'https://www.bing.com/search?q=python&mkt=zh-CN' } })
+      }
+      return new Response(REDIRECT_HTML, { status: 200 })
+    })
+
+    const results = await backend.search('python', 10, new AbortController().signal)
+
+    assert.equal(results.length, 1)
+    assert.equal(results[0]!.title, 'Welcome to Python.org')
+    assert.equal(calls.length, 2, '必须跟随跳转发起第二次请求')
+    assert.match(calls[1]!.url, /^https:\/\/www\.bing\.com\/search\?q=python/)
+  })
+
+  it('still fails on a redirect to an unvalidated host', async () => {
+    const backend = new BingBackend(async () =>
+      new Response('', { status: 301, headers: { location: 'https://evil.example/phish' } }))
+    await assert.rejects(
+      backend.search('python', 10, new AbortController().signal),
+      (err: unknown) => err instanceof SearchHttpError && err.status === 301,
+      '非 Bing 主机的 http 301 也不得被静默跟随',
+    )
+  })
+
+  it('still fails on a redirect with no Location header', async () => {
+    const backend = new BingBackend(async () => new Response('', { status: 301 }))
+    await assert.rejects(
+      backend.search('python', 10, new AbortController().signal),
+      (err: unknown) => err instanceof SearchHttpError && err.status === 301,
+    )
+  })
+
+  it('still fails when the followed international Bing page is itself an error', async () => {
+    const backend = new BingBackend(async (url) => {
+      if (url.startsWith('https://cn.bing.com/')) {
+        return new Response('', { status: 301, headers: { location: 'https://www.bing.com/search?q=python' } })
+      }
+      return new Response('', { status: 503 })
+    })
+    await assert.rejects(
+      backend.search('python', 10, new AbortController().signal),
+      (err: unknown) => err instanceof SearchHttpError && err.status === 503,
+    )
   })
 })

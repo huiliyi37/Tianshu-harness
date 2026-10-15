@@ -12,11 +12,19 @@ const MAX_RESULTS = 20
 const DEFAULT_TIMEOUT_MS = 15_000
 
 /**
- * 低置信兜底的用户可见标注：结果只覆盖查询中的个别词时（判据见 relevance.ts），
- * 必须让模型/用户明白这批结果不能直接采信——它们多半是搜索后端降级返回的宽泛匹配。
+ * 低置信兜底的用户可见标注。判跑题的批次（判据见 relevance.ts）只能作为
+ * 「后端确实返回过内容」的信号保留，绝不能冒充答案——标注必须显式声明
+ * 「已判定不相关」，与正常路径的「…的网页搜索结果（经 …）」形态区分开，
+ * 否则模型会把泛结果当成正常结果直接采信（issue #484 问题 1）。
  */
-const LOW_CONFIDENCE_NOTICE =
-  '⚠ 相关性提示：以下结果只覆盖了查询中的个别词，可能不是你要找的内容。请勿直接采信为答案——建议换用更具体的查询词，或与其他来源交叉验证。'
+const OFF_TOPIC_NOTICE =
+  '⚠ 已判定不相关：搜索后端未返回覆盖查询要点的结果，以下仅为后端降级返回的宽泛匹配，不能作为答案采信——建议换用更具体的查询词，或改用其他来源。'
+
+/**
+ * 低置信兜底最多回灌的结果条数：全量回灌会放大噪声，且让兜底与正常结果更难区分。
+ * 超出部分截断并显式标注。
+ */
+const OFF_TOPIC_MAX_RESULTS = 3
 
 /** 结果渲染（正常路径与低置信兜底共用同一份实现，避免双实现漂移）。 */
 function formatResults(results: readonly SearchResult[]): string {
@@ -119,14 +127,20 @@ export function createWebSearchTool(deps: WebSearchDeps = {}): Tool {
             errorKind: combineSearchFailures(hardErrors.map(e => e.errorKind ?? 'unknown')),
           }
         }
-        // 判跑题的批次降级返回而非静默丢弃：单后端配置下，「后端降级返回泛结果」
-        // 若变成「未找到结果」，用户丢掉的是唯一可得的信息。标注低相关把采信
-        // 判断权交回使用者，同时不让泛结果冒充答案。
+        // 判跑题的批次不静默丢弃也不冒充答案：单后端配置下，「后端降级返回泛结果」
+        // 若变成「未找到结果」，用户丢掉的是唯一可得的信息。此处保留但用**非正常
+        // 结果**的形态降级返回——独立标题、显式「已判定不相关」、截断展示，把采信
+        // 判断权交回使用者，同时杜绝泛结果与正常结果同构（issue #484 问题 1）。
         if (offTopicFallback) {
+          const shown = offTopicFallback.results.slice(0, OFF_TOPIC_MAX_RESULTS)
+          const truncated = offTopicFallback.results.length > shown.length
           return {
-            content: `「${query}」的网页搜索结果（经 ${offTopicFallback.backend}，低相关）：\n\n`
-              + `${LOW_CONFIDENCE_NOTICE}\n\n`
-              + formatResults(offTopicFallback.results),
+            content: `「${query}」：未找到直接相关的搜索结果（后端 ${offTopicFallback.backend} 降级返回）\n\n`
+              + `${OFF_TOPIC_NOTICE}\n\n`
+              + formatResults(shown)
+              + (truncated
+                ? `\n\n（已截断：另有 ${offTopicFallback.results.length - shown.length} 条同类低相关结果未展示）`
+                : ''),
           }
         }
         return { content: `未找到与「${query}」相关的搜索结果` }

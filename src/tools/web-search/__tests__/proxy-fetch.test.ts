@@ -131,8 +131,7 @@ describe('createProxyAwareFetch', () => {
     assert.equal(hasDispatcher, true, 'should add dispatcher when host does NOT match noProxy')
   })
 
-  it('empty proxy opts behave same as undefined', async () => {
-    await withoutProxyEnv(async () => {
+  it('empty proxy opts behave same as undefined', async () => {    await withoutProxyEnv(async () => {
       const spy = spyFetch()
       // noProxy:'*' 显式绕过宿主机 OS 系统代理（开发机 macOS 可能正开着
       // Clash/V2Ray，scutil --proxy 会读到它）——本用例只验证「无 proxyUrl

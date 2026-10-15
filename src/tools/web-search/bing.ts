@@ -167,21 +167,59 @@ export class BingBackend implements SearchBackend {
     // English marker returned off-topic. `relevance.ts` guards the chain as a
     // second line of defence — do not reintroduce a language marker here.
     const url = `${BING_ENDPOINT}?q=${encodeURIComponent(query)}`
+    const headers = {
+      'User-Agent': BING_UA,
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.5',
+    }
     // `redirect:'manual'` mirrors the DDG backend: a 3xx to an unvalidated
     // host surfaces as a non-ok status and the chain falls through, rather
-    // than silently following a redirect.
-    const response = await this.fetchImpl(url, {
-      signal,
-      headers: {
-        'User-Agent': BING_UA,
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.5',
-      },
-      redirect: 'manual',
-    })
+    // than silently following a redirect. One exception (issue #484 问题 2):
+    // cn.bing.com 对**海外出口**返回 301 → www.bing.com（Bing 自己的区域跳转）。
+    // 旧实现把这个 301 一律当失败，开启系统代理（海外出口）时链上只有 bing 就
+    // 直接「搜索失败（bing: HTTP 301）」。这里只跟随 Location 指向 **Bing 主机**
+    // 的跳转（单跳），指向其他主机或缺失 Location 时仍 fail-closed。
+    let response = await this.fetchImpl(url, { signal, headers, redirect: 'manual' })
     if (!response.ok) {
-      throw new SearchHttpError(response.status)
+      const followed = followBingRegionRedirect(response, url)
+      if (followed) {
+        response = await this.fetchImpl(followed, { signal, headers, redirect: 'manual' })
+      }
+      if (!response.ok) {
+        throw new SearchHttpError(response.status)
+      }
     }
     const html = await response.text()
     return parseBingResults(html, count)
+  }
+}
+
+/** 3xx 跳转状态码——`redirect:'manual'` 下它们不会自动跟随。 */
+function isRedirectStatus(status: number): boolean {
+  return status >= 300 && status < 400
+}
+
+/** 主机是否属于 Bing（`bing.com` 本身或 `*.bing.com`）——只放行 Bing 自家区域跳转。 */
+function isBingHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return host === 'bing.com' || host.endsWith('.bing.com')
+}
+
+/**
+ * 从 `redirect:'manual'` 得到的 3xx 响应里解析出「是否应跟随的区域跳转」。
+ *
+ * 仅当状态是 3xx、Location 存在、且解析后的主机属于 Bing 时返回绝对 URL；
+ * 其余情况返回 undefined——调用方据此回落为硬失败（fail-closed）。
+ * Location 可能是相对路径，按发起请求的 URL 解析。
+ */
+function followBingRegionRedirect(response: Response, requestUrl: string): string | undefined {
+  if (!isRedirectStatus(response.status)) return undefined
+  const location = response.headers.get('location')
+  if (!location) return undefined
+  try {
+    const target = new URL(location, requestUrl)
+    if (target.protocol !== 'https:' && target.protocol !== 'http:') return undefined
+    return isBingHost(target.hostname) ? target.toString() : undefined
+  } catch {
+    return undefined
   }
 }

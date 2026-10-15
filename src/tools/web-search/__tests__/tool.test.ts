@@ -42,22 +42,38 @@ describe('createWebSearchTool', () => {
     assert.match(out.content, /未找到与「nothing here」相关的搜索结果/)
   })
 
-  it('labels an all-off-topic result set as low-confidence fallback', async () => {
-    // 2026-09 cn.bing.com 故障形态：结构完好但无关/降级的 SERP。用户可见结果是
-    // 「带低相关标注的兜底结果」——结果保留（单后端配置下不至于什么都搜不到），
-    // 标注必须让模型/用户明白不能把它当答案采信。
+  it('renders the low-confidence fallback as an explicitly off-topic, non-answer outcome', async () => {
+    // issue #484 问题 1：兜底不得与正常路径同构。判跑题的批次只能作为「后端确实
+    // 返回过内容」的信号保留，输出必须显式标注「已判定不相关」，且不得复用普通
+    // 结果的标题形态——否则模型会把泛结果当成答案。
     const tool = createWebSearchTool({
       backends: [backend('bing', async () => [
-        { title: '西南交通大学研究生院（党委研究生工作部）', url: 'https://gsnews.swjtu.edu.cn/', snippet: '与查询无关。' },
-        { title: '国家科学评论 (National Science Review)', url: 'https://www.nsreviewgroup.com/', snippet: '与查询无关。' },
+        { title: '魔兽世界数据库NPC', url: 'https://x/1', snippet: '无关。' },
+        { title: '知乎ChatGPT问答', url: 'https://x/2', snippet: '无关。' },
       ])],
     })
-    const out = await tool.execute(params({ query: '杭州西湖 门票预约' }))
+    const out = await tool.execute(params({ query: '如何解决 npm install 报错 EACCES permission denied' }))
     assert.equal(out.isError, undefined)
-    assert.match(out.content, /低相关/)
-    assert.match(out.content, /只覆盖了查询中的个别词/)
-    assert.match(out.content, /请勿直接采信/)
-    assert.match(out.content, /西南交通大学/, '兜底结果随标注一并给出')
+    assert.match(out.content, /已判定不相关/)
+    assert.ok(
+      !out.content.includes('的网页搜索结果（经'),
+      '兜底标题不得复用正常路径的「…的网页搜索结果（经 …）」形态',
+    )
+  })
+
+  it('truncates the low-confidence fallback instead of dumping every off-topic hit', async () => {
+    // issue #484 问题 1：兜底结果必须截断——全量回灌会放大噪声、且与正常结果更难区分。
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      title: `无关条目${i}`, url: `https://example.com/${i}`, snippet: '与查询无关。',
+    }))
+    const tool = createWebSearchTool({ backends: [backend('bing', async () => rows)] })
+    const out = await tool.execute(params({ query: '如何解决 npm install 报错 EACCES permission denied' }))
+    assert.equal(out.isError, undefined)
+    assert.match(out.content, /https:\/\/example\.com\/0/)
+    assert.match(out.content, /https:\/\/example\.com\/2/)
+    assert.ok(!out.content.includes('https://example.com/3'), '超过展示上限的兜底结果不得出现')
+    assert.ok(!out.content.includes('https://example.com/4'))
+    assert.match(out.content, /已截断/)
   })
 
   it('keeps a relevant result set unlabelled', async () => {

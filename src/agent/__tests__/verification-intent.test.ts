@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { classifyVerificationIntent, nativeVerificationStartIntent } from '../verification-intent.js'
 
 const CWD = mkdtempSync(join(tmpdir(), 'verification-intent-'))
@@ -132,7 +132,7 @@ describe('VerificationExecutionIntent — 管道非白名单：真实验证执�
 describe('VerificationExecutionIntent — unresolved package scripts', () => {
   it('literal cwd survives, named test script has purpose but cannot earn waiting credit without its body', () => {
     const i = run('cd /nonexistent-proj-dir && npm run test:unit', '/some/other/dir')
-    assert.equal(i.cwd, '/nonexistent-proj-dir')
+    assert.equal(i.cwd, resolve('/nonexistent-proj-dir'))
     assert.equal(i.purpose, 'test')
     assert.equal(i.source, 'unattributable')
     assert.equal(i.waitingEligible, false)
@@ -142,7 +142,7 @@ describe('VerificationExecutionIntent — unresolved package scripts', () => {
 describe('VerificationExecutionIntent — 规范化字段', () => {
   it('剥离 cd 包装并解析出真实 cwd 与入口', () => {
     const i = run('cd /tmp/proj && npm test')
-    assert.equal(i.cwd, '/tmp/proj')
+    assert.equal(i.cwd, resolve('/tmp/proj'))
     assert.equal(i.lifetime, 'unknown', '未读取到脚本不能凭名称授予等待资格')
   })
 
@@ -173,7 +173,7 @@ it('package bodies and actual cwd determine lifetime, never the script name', ()
     assert.equal(run('npm run opaque', dir).waitingEligible, false)
     assert.equal(run('npm run loop', dir).waitingEligible, false)
     assert.equal(run('npm test', '/nonexistent-dir').waitingEligible, false)
-    const filtered = run(`cd '${dir}' && node --import tsx scripts/run-node-tests.ts src/agent 2>&1 | tail -14`)
+    const filtered = run(`cd '${dir.replaceAll('\\', '/')}' && node --import tsx scripts/run-node-tests.ts src/agent 2>&1 | tail -14`)
     assert.equal(filtered.waitingEligible, true, '事故中的 cd 包装与单过滤器必须同时支持')
     assert.equal(filtered.allowsCompletionEvidence, false)
     assert.equal(filtered.cwd, dir)

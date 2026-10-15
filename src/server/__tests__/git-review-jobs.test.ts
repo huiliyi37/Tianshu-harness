@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, delimiter } from 'node:path'
 import { createRouter } from '../index.js'
@@ -47,7 +47,19 @@ if (args[0] === 'pr' && args[1] === 'view') {
 process.stderr.write('unexpected gh call: ' + args.join(' '))
 process.exit(1)
 `)
-    chmodSync(fakeGh, 0o755)
+    if (process.platform === 'win32') {
+      const response = Buffer.from(JSON.stringify({ number: 1, state: 'OPEN', headRefName: 'feature', headRefOid: sha, baseRefName: '--upload-pack=x', baseRefOid: sha })).toString('base64')
+      const source = join(bin, 'gh.cs')
+      writeFileSync(source, `using System; using System.Text;
+class Program { static int Main(string[] args) {
+  if (args.Length < 2 || args[0] != "pr" || args[1] != "view") return 1;
+  Console.Write(Encoding.UTF8.GetString(Convert.FromBase64String("${response}"))); return 0;
+} }`)
+      const windows = process.env.SystemRoot ?? 'C:/Windows'
+      const compiler = ['Framework64', 'Framework'].map(arch => join(windows, 'Microsoft.NET', arch, 'v4.0.30319', 'csc.exe')).find(existsSync)
+      assert.ok(compiler, 'Windows gh fixture requires the .NET Framework compiler')
+      execFileSync(compiler, ['/nologo', `/out:${join(bin, 'gh.exe')}`, source], { windowsHide: true, timeout: 10_000 })
+    } else chmodSync(fakeGh, 0o755)
     process.env.PATH = bin + delimiter + previousPath
     process.env.FAKE_HEAD_SHA = sha
     const before = await repositorySnapshot(cwd)

@@ -30,8 +30,8 @@ $sidType = [Security.Principal.SecurityIdentifier]
 function Get-RuleFingerprint($rules) {
   @($rules | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f $_.IdentityReference.Value, $_.AccessControlType, $_.FileSystemRights, $_.InheritanceFlags, $_.PropagationFlags } | Sort-Object)
 }
-$currentRules = Get-RuleFingerprint $current.GetAccessRules($true, $false, $sidType)
-$targetRules = Get-RuleFingerprint $acl.GetAccessRules($true, $false, $sidType)
+$currentRules = @(Get-RuleFingerprint $current.GetAccessRules($true, $false, $sidType))
+$targetRules = @(Get-RuleFingerprint $acl.GetAccessRules($true, $false, $sidType))
 $diff = @(Compare-Object -ReferenceObject $currentRules -DifferenceObject $targetRules)
 if (-not $current.AreAccessRulesProtected -or $diff.Count -gt 0) {
   if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName, $acl) }

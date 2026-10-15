@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { canonical, digest, bucket, validateControl, chooseControl, selectRelease, transition } from './update-control.mjs'
@@ -126,7 +126,16 @@ test('old publishers cannot expose a candidate or replace a pinned stable catalo
   const c=fixture(), fetcher=async () => new Response(JSON.stringify(c))
   await guardStablePublication('3.29.2',undefined,fetcher)
   await assert.rejects(guardStablePublication('3.30.0',undefined,fetcher),/controlled stable/)
-  const shell=readFileSync(new URL('../upload-update-to-oss.sh',import.meta.url),'utf8')
-  assert.ok(shell.indexOf('guard-stable-publication.mjs') < shell.indexOf('"$OSSUTIL" cp'))
-  assert.ok(shell.indexOf('候选资产上传完成') < shell.indexOf('cp "$WORK/latest-oss.json"'))
+  await assert.rejects(guardStablePublication('3.29.2',Buffer.from('{}'),fetcher),/Invalid release catalog/)
+})
+
+const legacyPublisher = new URL('../upload-update-to-oss.sh', import.meta.url)
+test('private OSS publisher guards metadata before its first write', {
+  skip: !existsSync(legacyPublisher) && 'Private OSS publisher is not included in this public source checkout',
+}, () => {
+  const shell=readFileSync(legacyPublisher,'utf8')
+  const guard = shell.indexOf('guard-stable-publication.mjs'), upload = shell.indexOf('"$OSSUTIL" cp')
+  const assetsDone = shell.indexOf('候选资产上传完成'), latestWrite = shell.indexOf('cp "$WORK/latest-oss.json"')
+  assert.ok(guard >= 0 && guard < upload)
+  assert.ok(assetsDone >= 0 && assetsDone < latestWrite)
 })

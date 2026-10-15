@@ -143,10 +143,10 @@ test('tilde and surrounding whitespace normalize external export and open operan
 test('symlinked workspace ancestors remain local while symlink escapes require grants', context => {
   const { root, workspace, external } = fixture(context)
   const alias = join(root, 'workspace-alias')
-  symlinkSync(workspace, alias, 'dir')
+  symlinkSync(workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
   assert.equal(outOfWorkspaceFilePaths(alias, 'read_file', { file_path: 'local.txt' }), null)
   const escape = join(workspace, 'external-link')
-  symlinkSync(external, escape, 'dir')
+  symlinkSync(external, escape, process.platform === 'win32' ? 'junction' : 'dir')
   const escapedFile = join(escape, 'outside.txt')
   assert.deepEqual(outOfWorkspaceFilePaths(workspace, 'read_file', { file_path: escapedFile }), {
     mode: 'read', paths: [escapedFile],

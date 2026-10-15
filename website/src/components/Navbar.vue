@@ -43,7 +43,7 @@ function toggleLocale() {
   >
     <nav class="mx-auto flex h-20 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
       <!-- Logo -->
-      <a href="#" class="flex items-center gap-3 text-2xl font-bold tracking-tight text-white">
+      <a href="#" class="flex shrink-0 items-center gap-3 text-2xl font-bold tracking-tight text-white">
         <div class="flex h-12 w-12 items-center justify-center overflow-hidden shadow-lg shadow-accent/20">
           <img src="/app-icon.png" alt="天枢" class="h-12 w-12 object-cover" />
         </div>
@@ -52,12 +52,12 @@ function toggleLocale() {
       </a>
 
       <!-- Center glass pill nav -->
-      <div class="hidden md:block">
+      <div class="hidden 2xl:block">
         <ul class="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-2 backdrop-blur-xl">
           <li v-for="link in navLinks" :key="link.href">
             <a
               :href="link.href"
-              class="rounded-full px-6 py-2.5 text-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+              class="rounded-full px-3 py-2.5 text-lg text-white/70 transition-colors hover:bg-white/10 hover:text-white"
             >
               {{ link.label }}
             </a>
@@ -66,7 +66,7 @@ function toggleLocale() {
       </div>
 
       <!-- Right actions -->
-      <div class="hidden items-center gap-3 md:flex">
+      <div class="hidden items-center gap-3 2xl:flex">
         <Button
           variant="ghost"
           size="lg"
@@ -100,8 +100,10 @@ function toggleLocale() {
       </div>
 
       <button
-        class="md:hidden text-white/70 hover:text-white"
+        class="2xl:hidden text-white/70 hover:text-white"
         @click="mobileOpen = !mobileOpen"
+        :aria-expanded="mobileOpen"
+        aria-controls="mobile-navigation"
         aria-label="切换菜单"
       >
         <X v-if="mobileOpen" class="h-8 w-8" />
@@ -111,7 +113,8 @@ function toggleLocale() {
 
     <div
       v-if="mobileOpen"
-      class="border-t border-white/10 bg-bg-secondary/95 px-4 sm:px-6 py-4 md:hidden backdrop-blur-xl"
+      id="mobile-navigation"
+      class="border-t border-white/10 bg-bg-secondary/95 px-4 sm:px-6 py-4 2xl:hidden backdrop-blur-xl"
     >
       <ul class="flex flex-col gap-4">
         <li v-for="link in navLinks" :key="link.href">

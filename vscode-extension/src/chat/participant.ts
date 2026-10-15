@@ -115,6 +115,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
       return
     }
     if (event === undefined || turn === undefined) return
+    if (this.pendingApprovals.size === 0) turn.timeout.arm()
     if (event.kind === 'delta') {
       turn.sawText = true
       turn.stream.markdown(event.text)
@@ -238,6 +239,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
     try {
       client = await this.getClient()
     } catch (error) {
+      if (!current()) return
       const message = error instanceof Error ? error.message : String(error)
       stream.markdown(`天枢内核未就绪：${message}`)
       return
@@ -251,6 +253,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
     try {
       sessionId = await this.resolveSession(client, context, current)
     } catch (error) {
+      if (!current()) return
       const message = error instanceof Error ? error.message : String(error)
       this.log(`[chat] session resolve failed: ${message}`)
       stream.markdown(`无法准备天枢会话：${message}`)
@@ -262,6 +265,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
     try {
       await this.syncPermissionLevel(client, sessionId, request.permissionLevel)
     } catch (error) {
+      if (!current()) return
       stream.markdown(`权限同步失败，消息尚未发送：${error instanceof Error ? error.message : String(error)}`)
       return { metadata: { tianshuSessionId: sessionId } }
     }
@@ -273,7 +277,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
 
     // 订阅管理：单例 + 代际（见 subscription-gate.ts——subscribe 的取消不中止
     // 在途投递，per-turn 订阅会留下继续投递的连接，同一事件成倍重复）。
-    const acquired = this.gate.acquire(sessionId)
+    const acquired = this.gate.acquire(sessionId, client)
     if (!acquired.reuse || !this.unsubscribeCurrent) {
       this.unsubscribeCurrent?.()
       this.unsubscribeCurrent = undefined
@@ -282,6 +286,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
       try {
         since = (await client.getSession(sessionId)).lastSeq
       } catch (error) {
+        if (!current()) return
         const message = error instanceof Error ? error.message : String(error)
         stream.markdown(`无法读取天枢会话状态：${message}`)
         return
@@ -331,9 +336,11 @@ export class TianshuChatParticipant implements vscode.Disposable {
       if (queued === 'idle') {
         await client.prompt(sessionId, request.prompt)
       }
+      if (!current()) return { metadata: { tianshuSessionId: sessionId } }
       this.log(`[chat] prompt accepted session=${sessionId}`)
 
       const settled = await Promise.race([outcome, timedOut])
+      if (!current()) return { metadata: { tianshuSessionId: sessionId } }
       if (settled.kind === 'error') {
         stream.markdown(`\n\n> ${settled.message}`)
       } else if (settled.kind === 'end' && settled.reason !== 'completed') {
@@ -344,6 +351,7 @@ export class TianshuChatParticipant implements vscode.Disposable {
         stream.markdown('（本轮没有回复内容；任务可能仍在「天枢 Sidecar」中继续。）')
       }
     } catch (error) {
+      if (!current()) return { metadata: { tianshuSessionId: sessionId } }
       const message = error instanceof Error ? error.message : String(error)
       this.log(`[chat] prompt failed: ${message}`)
       stream.markdown(`发送失败：${message}`)

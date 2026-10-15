@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -16,7 +16,8 @@ for (const [name, before, after, filename = 'update-control.mjs'] of mutations) 
   try {
     for (const file of ['update-control.mjs','catalog.mjs','update-control.test.mjs','publish-update-control.mjs','report-routing.mjs','guard-stable-publication.mjs']) copyFileSync(new URL(file,import.meta.url),join(folder,file))
     const shellName=join(folder,'upload-update-to-oss.sh')
-    copyFileSync(new URL('../upload-update-to-oss.sh',import.meta.url),shellName)
+    const legacyPublisher = new URL('../upload-update-to-oss.sh',import.meta.url)
+    if (existsSync(legacyPublisher)) copyFileSync(legacyPublisher,shellName)
     const testPath=join(folder,'update-control.test.mjs')
     writeFileSync(testPath,readFileSync(testPath,'utf8').replace("../upload-update-to-oss.sh","./upload-update-to-oss.sh"))
     const file=join(folder,filename), source=readFileSync(file,'utf8')

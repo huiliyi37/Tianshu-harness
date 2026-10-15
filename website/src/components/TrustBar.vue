@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { Github, Scale, TestTube, GitBranch, Shield } from 'lucide-vue-next'
 import { useI18n } from '@/composables/useI18n'
+import { version } from '../../../package.json'
+import { computed } from 'vue'
 
 const { t } = useI18n()
 
-const stats = [
+const stats = computed(() => [
   { icon: Github, label: t('trust.prefix_cache'), value: '95-99%', href: 'https://github.com/huiliyi37/Tianshu-Tui' },
   { icon: Scale, label: t('trust.opensource'), value: 'Apache-2.0' },
   { icon: TestTube, label: t('trust.tools'), value: '20+' },
-  { icon: GitBranch, label: 'Version', value: 'v2.17.4' },
+  { icon: GitBranch, label: 'Version', value: `v${version}` },
   { icon: Shield, label: t('trust.models'), value: '6+' },
-]
+])
 </script>
 
 <template>

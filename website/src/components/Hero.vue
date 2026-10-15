@@ -1,21 +1,29 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
 import { Check, Copy, Download, Terminal, Github } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { useI18n } from '@/composables/useI18n'
 import Galaxy from '@/components/Galaxy.vue'
 
-const installCommand = 'npm install -g tianshu-tui && rivet'
+const installCommand = 'npm install -g tianshu-harness && rivet'
 const copied = ref(false)
+const copyFailed = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
 const { t } = useI18n()
 
 async function copyInstall() {
-  await navigator.clipboard.writeText(installCommand)
-  copied.value = true
-  setTimeout(() => {
+  copyFailed.value = false
+  try {
+    await navigator.clipboard.writeText(installCommand)
+    copied.value = true
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copied.value = false }, 2000)
+  } catch {
     copied.value = false
-  }, 2000)
+    copyFailed.value = true
+  }
 }
+onUnmounted(() => clearTimeout(copyTimer))
 </script>
 
 <template>
@@ -128,6 +136,9 @@ async function copyInstall() {
             {{ t('hero.cta_download') }}
           </Button>
         </div>
+        <p v-if="copyFailed" role="status" class="mt-3 text-sm text-text-secondary">
+          {{ t('clipboard.failed') }}
+        </p>
         <p class="mt-3 text-sm text-white/40">
           {{ t('hero.install_hint') }}
           <a href="#download" class="text-white/70 hover:text-white hover:underline">

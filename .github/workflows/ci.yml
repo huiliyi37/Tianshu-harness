@@ -33,6 +33,9 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Build
+        run: npm run build
+
       - name: Test
         run: npm test
 
@@ -45,9 +48,6 @@ jobs:
         run: npm run contributors:check
         env:
           GH_TOKEN: ${{ github.token }}
-
-      - name: Build
-        run: npm run build
 
   windows-smoke:
     # Real-execution smoke for the Windows command path (Git Bash on the runner).

@@ -20,6 +20,106 @@ async function load(relative: string, mocks: Record<string, any> = {}, globals: 
 }
 const tick = () => new Promise<void>(r => setImmediate(r))
 
+test('native chat replaces the subscription when a restarted sidecar keeps the same session id', async () => {
+  let handler: any, client: any
+  const subscriptions: any[] = [], messages: string[] = []
+  const { TianshuChatParticipant } = await load('src/chat/participant.ts', { vscode: {
+    chat: { createChatParticipant: (_id: string, callback: any) => { handler = callback; return { dispose() {} } } },
+  } })
+  const makeClient = (name: string) => ({
+    getSession: async () => ({ lastSeq: 0 }),
+    subscribe: (_id: string, _seq: number, callback: any) => {
+      const subscription = { name, callback, stopped: false }
+      subscriptions.push(subscription)
+      return () => { subscription.stopped = true }
+    },
+    queue: async () => 'idle', prompt: async () => {}, abort: async () => {},
+  })
+  client = makeClient('old')
+  const participant = new TianshuChatParticipant(async () => client, () => {}, {})
+  const context = { history: [{ participant: 'tianshu.default', result: { metadata: { tianshuSessionId: 'A' } } }] }
+  const token = { onCancellationRequested: () => ({ dispose() {} }) }
+  let first: any, second: any
+  try {
+    first = handler({ prompt: 'first' }, context, { progress() {}, markdown() {} }, token)
+    for (let n = 0; n < 20 && !participant.activeTurn; n++) await tick()
+    subscriptions[0].callback({ seq: 1, ts: 1, type: 'done', data: { status: 'completed' } })
+    await first
+    client = makeClient('fresh')
+    second = handler({ prompt: 'second' }, context, { progress() {}, markdown: (text: string) => messages.push(text) }, token)
+    for (let n = 0; n < 20 && !participant.activeTurn; n++) await tick()
+    assert.deepEqual(subscriptions.map(s => s.name), ['old', 'fresh'])
+    assert.equal(subscriptions[0].stopped, true)
+    subscriptions[0].callback({ seq: 2, ts: 2, type: 'text_delta', data: { text: 'OLD' } })
+    subscriptions[1].callback({ seq: 2, ts: 2, type: 'text_delta', data: { text: 'FRESH' } })
+    subscriptions[1].callback({ seq: 3, ts: 3, type: 'done', data: { status: 'completed' } })
+    await second
+    assert.deepEqual(messages, ['FRESH'])
+  } finally { participant.dispose(); await Promise.allSettled([first, second]) }
+})
+
+test('native chat times out on silence rather than an active long response and keeps approval waits exempt', async () => {
+  let handler: any, callback: any, now = 0, timerId = 0
+  const timers = new Map<number, { at: number; run: () => void }>()
+  const { TianshuChatParticipant } = await load('src/chat/participant.ts', { vscode: {
+    chat: { createChatParticipant: (_id: string, fn: any) => { handler = fn; return { dispose() {} } } },
+  } }, { setTimeout: (run: () => void, delay: number) => { timers.set(++timerId, { at: now + delay, run }); return timerId }, clearTimeout: (id: number) => timers.delete(id) })
+  const advance = (minutes: number) => {
+    now += minutes * 60_000
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.run() }
+  }
+  const client = { getSession: async () => ({ lastSeq: 0 }), subscribe: (_id: string, _seq: number, fn: any) => { callback = fn; return () => {} },
+    queue: async () => 'idle', prompt: async () => {}, abort: async () => {} }
+  const participant = new TianshuChatParticipant(async () => client, () => {}, { handleApproval() {} })
+  const pending = handler({ prompt: 'task' }, { history: [{ participant: 'tianshu.default', result: { metadata: { tianshuSessionId: 'A' } } }] },
+    { progress() {}, markdown() {}, thinkingProgress() {} }, { onCancellationRequested: () => ({ dispose() {} }) })
+  try {
+    for (let n = 0; n < 20 && !participant.activeTurn; n++) await tick()
+    advance(9)
+    callback({ seq: 1, ts: 1, type: 'text_delta', data: { text: 'still working' } })
+    advance(2); await tick()
+    assert.ok(participant.activeTurn, 'active output must start a new silence window')
+    callback({ seq: 2, ts: 2, type: 'approval_required', data: { requestId: 'approval', toolName: 'write_file' } })
+    callback({ seq: 3, ts: 3, type: 'thinking_delta', data: { text: 'waiting for approval' } })
+    advance(20); await tick()
+    assert.ok(participant.activeTurn, 'activity must not remove the approval exemption')
+    callback({ seq: 4, ts: 4, type: 'approval_resolved', data: { requestId: 'approval' } })
+    advance(11); await pending
+    assert.equal(participant.activeTurn, undefined, 'a genuinely silent response must still expire')
+  } finally { participant.dispose(); await pending }
+})
+
+for (const phase of ['client', 'create', 'session', 'permission', 'prompt']) {
+  test(`native chat ignores a late ${phase} rejection after cancellation`, async () => {
+    let handler: any, cancel: any, rejectPending: any
+    const messages: string[] = []
+    const pending = new Promise((_resolve, reject) => { rejectPending = reject })
+    const { TianshuChatParticipant } = await load('src/chat/participant.ts', { vscode: {
+      chat: { createChatParticipant: (_id: string, callback: any) => { handler = callback; return { dispose() {} } } },
+      workspace: { workspaceFolders: [{ uri: { fsPath: '/fixture' } }] },
+    } })
+    const client = {
+      createSession: async () => phase === 'create' ? await pending : { id: 'A' },
+      getSession: async () => phase === 'session' ? await pending : { lastSeq: 0, approvalMode: 'manual' },
+      setApprovalMode: async () => { if (phase === 'permission') await pending },
+      subscribe: () => () => {}, queue: async () => 'idle',
+      prompt: async () => { if (phase === 'prompt') await pending }, abort: async () => {},
+    }
+    const participant = new TianshuChatParticipant(async () => phase === 'client' ? await pending : client, () => {}, {})
+    const context = { history: phase === 'create' ? [] : [{ participant: 'tianshu.default', result: { metadata: { tianshuSessionId: 'A' } } }] }
+    try {
+      const request = handler({ prompt: 'task', permissionLevel: phase === 'permission' ? 'autopilot' : undefined }, context,
+        { progress() {}, markdown: (text: string) => messages.push(text) },
+        { onCancellationRequested: (fn: any) => { cancel = fn; return { dispose() {} } } })
+      for (let n = 0; n < 10; n++) await tick()
+      cancel(); await request
+      rejectPending(Error('late offline'))
+      for (let n = 0; n < 10; n++) await tick()
+      assert.deepEqual(messages, [])
+    } finally { participant.dispose() }
+  })
+}
+
 test('native chat restores pending approval snapshots once, including frames before the turn is armed', async () => {
   let handler: any, callback: any, cancel: any
   const shown: string[] = []
@@ -358,6 +458,25 @@ async function webviewFixture() {
 function nodes(node: any): any[] { if (node == null || typeof node !== 'object') return []; if (Array.isArray(node)) return node.flatMap(nodes); return [node, ...nodes(node.props?.children)] }
 const find = (tree: any, name: string) => nodes(tree).find(n => typeof n.type === 'function' && n.type.name === name)
 const composerProps = { running: false, disabled: false, fileHits: [], onQueryFiles() {}, onClearFiles() {}, onSubmit() {}, onAbort() {}, onResume() {}, canResume: false, history: [], sessionKey: 'A' }
+
+test('composer leaves IME navigation and command confirmation to the input method', async () => {
+  const f = await webviewFixture(), submitted: string[] = []
+  const composer = f.runner(f.Composer)
+  const props = { ...composerProps, history: ['previous task'], onSubmit: (value: string) => submitted.push(value) }
+  try {
+    let textarea = nodes(composer.render(props)).find(n => n.type === 'textarea')
+    textarea.props.onChange({ target: { value: '/' } })
+    for (const key of ['ArrowDown', 'ArrowUp', 'Tab', 'Enter']) {
+      textarea = nodes(composer.render(props)).find(n => n.type === 'textarea')
+      let prevented = false
+      textarea.props.onKeyDown({ key, shiftKey: false, nativeEvent: { isComposing: true },
+        currentTarget: { value: '/', selectionStart: 1, selectionEnd: 1 }, preventDefault() { prevented = true } })
+      assert.equal(prevented, false, `${key} belongs to the active input method`)
+      assert.equal(nodes(composer.render(props)).find(n => n.type === 'textarea').props.value, '/')
+    }
+    assert.deepEqual(submitted, [])
+  } finally { composer.unmount() }
+})
 function paste(tree: any) { nodes(tree).find(n => n.type === 'textarea').props.onPaste({ clipboardData: { items: [{ type: 'image/png', getAsFile: () => ({}) }] }, preventDefault() {} }) }
 
 test('resubmission invalidates plan decisions/body and same-slug sessions remain isolated', async () => {

@@ -23,6 +23,7 @@ export class TianshuSourceControl implements vscode.Disposable {
   private readonly group: vscode.SourceControlResourceGroup
   private sessionId: string | undefined
   private refreshTimer: ReturnType<typeof setTimeout> | undefined
+  private refreshGeneration = 0
 
   constructor(
     private readonly getClient: () => Promise<SidecarClient>,
@@ -40,6 +41,8 @@ export class TianshuSourceControl implements vscode.Disposable {
 
   /** 座舱切会话时调用；资源列表跟随活跃会话（与树 setSession 同拍）。 */
   setSession(sessionId: string | undefined): void {
+    if (this.sessionId !== sessionId) this.group.resourceStates = []
+    this.refreshGeneration++
     this.sessionId = sessionId
     this.scheduleRefresh()
   }
@@ -51,6 +54,7 @@ export class TianshuSourceControl implements vscode.Disposable {
   }
 
   async refresh(): Promise<void> {
+    const generation = ++this.refreshGeneration
     const sessionId = this.sessionId
     if (!sessionId) {
       this.group.resourceStates = []
@@ -64,8 +68,8 @@ export class TianshuSourceControl implements vscode.Disposable {
     } catch {
       files = []
     }
-    // 拉取期间会话已切换 → 丢弃陈旧结果，等新会话的刷新落盘
-    if (this.sessionId !== sessionId) return
+    // 会话已切换或已有更新的刷新 → 丢弃陈旧结果。
+    if (generation !== this.refreshGeneration) return
     this.group.resourceStates = files.map((file) => this.toResource(sessionId, file))
   }
 
@@ -87,6 +91,7 @@ export class TianshuSourceControl implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.refreshGeneration++
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
     this.refreshTimer = undefined
     this.sourceControl.dispose()

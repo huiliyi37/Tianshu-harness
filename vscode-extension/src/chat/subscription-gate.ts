@@ -10,19 +10,22 @@
 export class SubscriptionGate {
   private generation = 0
   private sessionId: string | undefined
+  private source: unknown
 
   /**
    * 请求对 sessionId 的订阅权。
    * @param sessionId - 目标 sidecar 会话。
+   * @param source - 当前 sidecar 客户端；重启后同一会话也必须重建订阅。
    * @returns `generation` 为本次订阅应携带的代号；`reuse=true` 表示可复用现有
    *   订阅（同会话），`false` 表示需要重建（首次或换会话——重建前应 unsubscribe
    *   旧订阅，且旧回调凭 `isCurrent` 丢弃）。
    */
-  acquire(sessionId: string): { generation: number; reuse: boolean } {
-    if (this.sessionId === sessionId && this.generation > 0) {
+  acquire(sessionId: string, source?: unknown): { generation: number; reuse: boolean } {
+    if (this.sessionId === sessionId && this.source === source && this.generation > 0) {
       return { generation: this.generation, reuse: true }
     }
     this.sessionId = sessionId
+    this.source = source
     return { generation: ++this.generation, reuse: false }
   }
 

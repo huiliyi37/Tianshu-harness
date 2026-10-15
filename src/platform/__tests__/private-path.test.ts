@@ -75,7 +75,7 @@ test('startup hardening degrades to warn on win32 but stays fatal elsewhere', ()
 test('startup hardening never degrades symlink rejection on any platform', () => {
   const root = mkdtempSync(join(tmpdir(), 'private-path-symlink-'))
   const link = join(root, 'data-link')
-  symlinkSync(root, link)
+  symlinkSync(root, link, process.platform === 'win32' ? 'junction' : 'dir')
   const warnings: string[] = []
   try {
     assert.throws(() => ensurePrivateDirectoryForStartup(link, 'win32', (msg) => { warnings.push(msg) }), /symbolic link/)
@@ -119,13 +119,24 @@ test('POSIX private directory and file modes remain restrictive', { skip: proces
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-for (const kind of ['directory', 'file']) {
-  test(`Windows private ${kind} replaces unsafe grants without SeSecurityPrivilege`, { skip: process.platform !== 'win32' }, () => {
+for (const kind of ['directory', 'file']) for (const inheritedOnly of [false, true]) {
+  test(`Windows private ${kind} replaces ${inheritedOnly ? 'inherited-only' : 'unsafe'} grants without SeSecurityPrivilege`, { skip: process.platform !== 'win32' }, () => {
     const root = mkdtempSync(join(tmpdir(), 'private-path-native-'))
     const path = kind === 'file' ? join(root, 'fixture.txt') : root
     if (kind === 'file') writeFileSync(path, 'fixture')
     try {
-      const fixture = unsafeAclFixture + withoutAuditPrivilege(`
+      const initialAcl = inheritedOnly ? `
+        $ErrorActionPreference = 'Stop'
+        $item = Get-Item -LiteralPath $env:ACL_TEST_ROOT
+        $fixtureAcl = $item.GetAccessControl()
+        $fixtureAcl.SetAccessRuleProtection($false, $false)
+        foreach ($rule in $fixtureAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) { $fixtureAcl.RemoveAccessRuleSpecific($rule) }
+        if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName, $fixtureAcl) }
+        else { [IO.File]::SetAccessControl($item.FullName, $fixtureAcl) }
+        $before = $item.GetAccessControl()
+        if (@($before.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count -ne 0) { throw 'Fixture must have no explicit ACEs' }
+      ` : unsafeAclFixture
+      const fixture = initialAcl + withoutAuditPrivilege(`
         ${PRIVATE_PATH_ACL_SCRIPT}
         ${privateAclAssertions}
         ${PRIVATE_PATH_ACL_SCRIPT}

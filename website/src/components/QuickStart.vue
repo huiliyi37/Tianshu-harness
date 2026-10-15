@@ -1,36 +1,44 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
 import { Check, Copy } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { useScrollAnimation } from '@/composables/useScrollAnimation'
 import { useI18n } from '@/composables/useI18n'
 
 const copiedIndex = ref<number | null>(null)
+const copyFailed = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
 const { ref: scrollRef, isVisible } = useScrollAnimation(0.1)
 const { t } = useI18n()
 
 const installSteps = [
   {
     title: 'quickstart.step1_title',
-    code: 'git clone https://github.com/huiliyi37/Tianshu-Tui.git\ncd Tianshu-Tui\nnpm install && npm run build',
+    code: 'git clone https://github.com/huiliyi37/Tianshu-harness.git\ncd Tianshu-harness\nnpm install && npm run build',
   },
   {
     title: 'quickstart.step2_title',
-    code: 'export DEEPSEEK_API_KEY=sk-xxx\n# 或使用交互式配置：rivet config',
+    code: 'node dist/cli/entry.js\n# 首次启动按引导配置模型和 API Key',
   },
   {
     title: 'quickstart.step3_title',
-    code: 'npm start\n# 或：rivet -p "解释 src/agent/loop.ts"',
+    code: 'npm start\n# 或：node dist/cli/entry.js -p "解释 src/agent/loop.ts"',
   },
 ]
 
 async function copy(code: string, index: number) {
-  await navigator.clipboard.writeText(code)
-  copiedIndex.value = index
-  setTimeout(() => {
+  copyFailed.value = false
+  try {
+    await navigator.clipboard.writeText(code)
+    copiedIndex.value = index
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copiedIndex.value = null }, 2000)
+  } catch {
     copiedIndex.value = null
-  }, 2000)
+    copyFailed.value = true
+  }
 }
+onUnmounted(() => clearTimeout(copyTimer))
 </script>
 
 <template>
@@ -63,7 +71,7 @@ async function copy(code: string, index: number) {
             <Button
               variant="ghost"
               size="icon"
-              class="absolute top-2 right-2 sm:top-3 sm:right-3 opacity-0 transition-opacity group-hover:opacity-100"
+              class="absolute top-2 right-2 sm:top-3 sm:right-3 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
               @click="copy(step.code, index)"
               aria-label="复制"
             >
@@ -74,6 +82,9 @@ async function copy(code: string, index: number) {
         </div>
       </div>
 
+      <p v-if="copyFailed" role="status" class="mt-3 text-sm text-text-secondary">
+        {{ t('clipboard.failed') }}
+      </p>
       <div class="mt-8 sm:mt-10 text-center">
         <p class="text-xs sm:text-sm text-text-secondary">
           {{ t('quickstart.docs_hint') }}

@@ -1949,6 +1949,7 @@ export class TuiApp {
     // 入口先规范化图片数组，后续气泡/渲染/回调看到的是同一份。
     images = normalizeSubmitImages(images)
     let trimmed = text.trim()
+    if (trimmed || images?.length) this.inputHandoffGeneration++
     if (/^\/(?:token-ledger|usage)(?:\s|$)/.test(trimmed) && this.slashRegistry.has(trimmed.split(/\s+/)[0]!)) {
       this.inputLine.clearAll(); await this.tryDispatchSlash(trimmed); return
     }
@@ -5948,6 +5949,10 @@ export class TuiApp {
   private async handleCtrlV(): Promise<void> {
     const generation = this.inputHandoffGeneration
     if (!this.canApplyPaste(generation)) return
+    if (this.inputController.ctrlCPendingSince > 0) {
+      this.inputController.clearExitConfirm()
+      this.renderLive()
+    }
     // 非 input 模式不处理（overlay / approval 等）
     if (this.input.getMode() !== 'input') return
 

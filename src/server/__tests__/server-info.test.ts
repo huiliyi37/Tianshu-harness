@@ -16,7 +16,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { startServer } from '../index.js'
 import {
@@ -158,7 +158,7 @@ test('isServerInfoAlive：错误 token（401）/ probe 抛异常 → false', { t
 })
 
 function dirnameOf(p: string): string {
-  return p.slice(0, p.lastIndexOf('/'))
+  return dirname(p)
 }
 
 // ── 握手语义（resolveAttachHandshake / printSpawnedHandshake）────────

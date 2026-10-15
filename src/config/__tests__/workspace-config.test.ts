@@ -91,7 +91,7 @@ test('defaultDir 经 symlink 指向系统保护目录必须被拒（审查 M1）
     const dir = mkdtempSync(join(homedir(), 'tianshu-audit-link-'))
     const link = join(dir, 'mylink')
     try {
-      symlinkSync('/etc', link)
+      symlinkSync(process.platform === 'win32' ? 'C:\\Windows' : '/etc', link, process.platform === 'win32' ? 'junction' : 'dir')
       assert.throws(() => setWorkspaceConfig({ defaultDir: link }), /defaultDir/i)
     } finally {
       rmSync(dir, { recursive: true, force: true })

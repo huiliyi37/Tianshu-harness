@@ -46,6 +46,73 @@ for (const stage of ['focus-text', 'image', 'fallback-text'] as const) {
   }
 }
 
+for (const stage of ['focus-text', 'image', 'fallback-text'] as const) {
+  test(`pending ${stage} paste cannot change the next draft after submitting`, async () => {
+    const { app, stdin } = makeApp()
+    let release!: (value: any) => void
+    const pendingRead = new Promise<any>(resolve => { release = resolve })
+    let started = false
+    const submitted: string[] = []
+    app.onSubmit(text => { submitted.push(text) })
+    setClipboardReader({
+      readImage: async () => stage === 'image' ? (started = true, pendingRead) : null,
+      readText: async () => { started = true; return pendingRead },
+    })
+    ;(app as any).lastInputFocusAt = stage === 'focus-text' ? Date.now() : Date.now() - 2000
+    try {
+      const pending = (app as any).handleCtrlV() as Promise<void>
+      await tick()
+      assert.equal(started, true, 'the paste must still be awaiting its result')
+      stdin.dataHandler!('\r')
+      await tick()
+      assert.deepEqual(submitted, ['original'])
+      app.setInput('next draft')
+      release(stage === 'image' ? image : 'late text')
+      await pending
+      assert.equal(app.getInputValue(), 'next draft')
+      assert.equal(app.getInputImagesCount(), 0, 'an old paste must not attach to the next message')
+    } finally { release(null); setClipboardReader(null); app.dispose() }
+  })
+}
+
+test('an empty Enter does not cancel a paste for the current draft', async () => {
+  const { app, stdin } = makeApp()
+  let release!: (text: string | null) => void
+  const read = new Promise<string | null>(resolve => { release = resolve })
+  setClipboardReader({ readImage: async () => null, readText: async () => read })
+  ;(app as any).lastInputFocusAt = Date.now()
+  try {
+    app.setInput('')
+    const pending = (app as any).handleCtrlV() as Promise<void>
+    await tick()
+    stdin.dataHandler!('\r')
+    await tick()
+    release('current paste')
+    await pending
+    assert.equal(app.getInputValue(), 'current paste')
+  } finally { release(null); setClipboardReader(null); app.dispose() }
+})
+
+test('Ctrl+V cancels exit confirmation before waiting for the clipboard', async () => {
+  const { app, stdin } = makeApp()
+  let release!: (text: string | null) => void
+  const read = new Promise<string | null>(resolve => { release = resolve })
+  setClipboardReader({ readImage: async () => null, readText: async () => read })
+  ;(app as any).lastInputFocusAt = Date.now()
+  try {
+    app.setInput('')
+    stdin.dataHandler!('\x03')
+    assert.ok((app as any).inputController.ctrlCPendingSince > 0)
+    const pending = (app as any).handleCtrlV() as Promise<void>
+    await tick()
+    assert.equal((app as any).inputController.ctrlCPendingSince, 0, 'continuing to paste must restore the input immediately')
+    assert.equal((app as any).inputController.ctrlCExitTimer, null)
+    release('visible paste')
+    await pending
+    assert.equal(app.getInputValue(), 'visible paste')
+  } finally { release(null); setClipboardReader(null); app.dispose() }
+})
+
 test('pending binary paste cannot attach an image after terminal restoration', async () => {
   const { app, stdin } = makeApp()
   let release!: (value: typeof image | null) => void

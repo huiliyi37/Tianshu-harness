@@ -262,7 +262,7 @@ test('removing a directory symlink never traverses into the target', () => {
     fs.mkdirSync(target)
     fs.writeFileSync(join(target, 'owner.json'), 'keep')
     const path = join(root, 'sidecar.lock')
-    fs.symlinkSync(target, path, 'dir')
+    fs.symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir')
     removeLockFile(path)
     assert.equal(fs.readFileSync(join(target, 'owner.json'), 'utf8'), 'keep')
   } finally { fs.rmSync(root, { recursive: true, force: true }) }

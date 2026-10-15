@@ -15,18 +15,22 @@ export function formatGitStatus(branch: string, status: string): string | undefi
 }
 
 async function loadGitStatus(cwd: string): Promise<string | undefined> {
+  const probes = [
+    execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
+    execFileP('git', ['status', '--short'], { cwd, timeout: 5000, windowsHide: true }),
+    execFileP('git', ['log', '--oneline', '-5'], { cwd, timeout: 5000, windowsHide: true }).catch(() => ({ stdout: '' })),
+  ] as const
   try {
-    const [branchResult, statusResult, logResult] = await Promise.all([
-      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
-      execFileP('git', ['status', '--short'], { cwd, timeout: 5000, windowsHide: true }),
-      execFileP('git', ['log', '--oneline', '-5'], { cwd, timeout: 5000, windowsHide: true }).catch(() => ({ stdout: '' })),
-    ])
+    const [branchResult, statusResult, logResult] = await Promise.all(probes)
     const base = formatGitStatus(branchResult.stdout.trim(), statusResult.stdout.trim())
     const log = logResult.stdout.trim()
     if (!base && !log) return undefined
     return log ? `${base ?? ''}\nRecent commits:\n${log}` : base
   } catch {
     return undefined
+  } finally {
+    // A failed probe must not leave its siblings holding cwd on Windows.
+    await Promise.allSettled(probes)
   }
 }
 
@@ -122,16 +126,19 @@ export interface GitInjectedContext {
 }
 
 export async function getGitInjectedContext(cwd: string): Promise<GitInjectedContext | undefined> {
+  const probes = [
+    execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
+    execFileP('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, windowsHide: true }),
+  ] as const
   try {
-    const [branchResult, headResult] = await Promise.all([
-      execFileP('git', ['branch', '--show-current'], { cwd, timeout: 5000, windowsHide: true }),
-      execFileP('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, windowsHide: true }),
-    ])
+    const [branchResult, headResult] = await Promise.all(probes)
     const branch = branchResult.stdout.trim() || undefined
     const head = headResult.stdout.trim() || undefined
     if (!branch && !head) return undefined
     return { branch, head }
   } catch {
     return undefined
+  } finally {
+    await Promise.allSettled(probes)
   }
 }

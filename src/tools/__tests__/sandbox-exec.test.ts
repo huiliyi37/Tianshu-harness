@@ -49,13 +49,14 @@ describe('sandboxExec', () => {
   })
 
   it('cleans up the temp script file after execution', async () => {
-    const { readdirSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
-    const before = readdirSync(tmpdir()).filter(f => f.startsWith('rivet-sandbox-')).length
-    await sandboxExec('console.log("done")')
-    // Allow async unlink to settle
-    await new Promise(r => setTimeout(r, 100))
-    const after = readdirSync(tmpdir()).filter(f => f.startsWith('rivet-sandbox-')).length
-    assert.equal(after, before, 'temp file should be cleaned up')
+    const { existsSync } = await import('node:fs')
+    const { basename } = await import('node:path')
+    const result = await sandboxExec('console.log(__filename)')
+    assert.equal(result.exitCode, 0)
+    const script = result.stdout.trim()
+    assert.match(basename(script), /^rivet-sandbox-[a-f0-9]{8}\.cjs$/)
+    const deadline = Date.now() + 2000
+    while (existsSync(script) && Date.now() < deadline) await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(existsSync(script), false, 'this invocation must remove its own temp script')
   })
 })

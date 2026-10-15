@@ -59,6 +59,7 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<ChangeItem> 
   private sessionId: string | undefined
   private files: WorkingTreeFile[] = []
   private refreshTimer: ReturnType<typeof setTimeout> | undefined
+  private refreshGeneration = 0
 
   constructor(
     private readonly getClient: () => Promise<SidecarClient>,
@@ -67,6 +68,11 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<ChangeItem> 
 
   /** 座舱切会话时调用；变更列表跟随活跃会话。 */
   setSession(sessionId: string | undefined): void {
+    if (this.sessionId !== sessionId) {
+      this.files = []
+      this.changeEmitter.fire()
+    }
+    this.refreshGeneration++
     this.sessionId = sessionId
     this.scheduleRefresh()
   }
@@ -82,18 +88,23 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<ChangeItem> 
   }
 
   async refresh(): Promise<void> {
-    if (!this.sessionId) {
+    const generation = ++this.refreshGeneration
+    const sessionId = this.sessionId
+    if (!sessionId) {
       this.files = []
       this.changeEmitter.fire()
       return
     }
+    let files: WorkingTreeFile[] = []
     try {
       const client = await this.getClient()
-      const result = await client.sessionWorkingTree(this.sessionId)
-      this.files = result.isRepo ? result.files : []
+      const result = await client.sessionWorkingTree(sessionId)
+      files = result.isRepo ? result.files : []
     } catch {
-      this.files = []
+      files = []
     }
+    if (generation !== this.refreshGeneration) return
+    this.files = files
     this.changeEmitter.fire()
   }
 

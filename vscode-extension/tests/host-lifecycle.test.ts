@@ -388,6 +388,32 @@ test('rewind list awaiting the client cannot restart an obsolete A request after
   assert.deepEqual(requested, ['B', 'A'])
 })
 
+for (const type of ['loadEarlier', 'listPickers', 'getCockpit', 'readPlan']) {
+  for (const outcome of ['success', 'failure']) {
+    test(`${type} discards ${outcome} from a retired A-B-A attachment`, async () => {
+      const messages: any[] = []
+      let resolveRead!: (value: any) => void, rejectRead!: (error: Error) => void
+      const pending = new Promise((resolve, reject) => { resolveRead = resolve; rejectRead = reject })
+      const client = {
+        subscribe: () => () => {}, listRewindPoints: async () => ({ points: [] }),
+        getHistoryPage: () => pending, listModels: () => pending, listDomains: async () => [],
+        getCockpit: () => pending, readPlan: () => pending,
+      }
+      const { CockpitProvider } = load('src/views/cockpit-provider.ts', { vscode: {} })
+      const provider = new CockpitProvider({}, async () => client, root)
+      Object.assign(provider, { client, activeSessionId: 'A', panel: { webview: { postMessage: (msg: any) => messages.push(msg) } } })
+      const reading = provider.onMessage({ type, sessionId: 'A', before: 50, slug: 'plan' })
+      await tick()
+      provider.attachSession('B'); provider.attachSession('A')
+      await tick(); messages.length = 0
+      if (outcome === 'success') resolveRead({ events: [], firstSeq: 1, slug: 'plan' })
+      else rejectRead(Error('retired read failed'))
+      await reading
+      assert.deepEqual(messages, [])
+    })
+  }
+}
+
 test('rewind refresh after a delayed operation cannot overwrite a reattached session', async () => {
   const requested: string[] = []
   let release!: () => void
@@ -458,6 +484,55 @@ test('closing history ownership invalidates rewind responses even when the sessi
   await loading
   assert.deepEqual(messages, [])
 })
+
+for (const surface of ['scm', 'tree']) {
+  test(`${surface} clears the old session files before exposing the next session`, async () => {
+    const group = { resourceStates: [] }
+    const vscode = {
+      EventEmitter: class { event() {} fire() {} }, TreeItem: class {}, TreeItemCollapsibleState: { None: 0 },
+      Uri: { file: (fsPath: string) => ({ fsPath }) }, ThemeIcon: class {},
+      scm: { createSourceControl: () => ({ createResourceGroup: () => group, inputBox: {}, dispose() {} }) },
+    }
+    const module = load(surface === 'scm' ? 'src/scm/source-control.ts' : 'src/views/changes-view.ts', { vscode })
+    const Provider = surface === 'scm' ? module.TianshuSourceControl : module.ChangesTreeProvider
+    const provider = new Provider(async () => ({ sessionWorkingTree: async () => ({ isRepo: true,
+      files: [{ path: 'A.ts', status: 'modified', additions: 1, deletions: 0 }] }) }), root)
+    provider.scheduleRefresh = () => {}
+    provider.setSession('A'); await provider.refresh()
+    provider.setSession('B')
+    assert.equal((surface === 'scm' ? group.resourceStates : provider.getChildren()).length, 0)
+  })
+  for (const transition of ['A-B', 'A-B-A', 'overlap']) {
+    for (const outcome of ['success', 'failure']) {
+      test(`${surface} changes ignore ${outcome} from the older ${transition} refresh`, async () => {
+        const pending: any[] = []
+        const group = { resourceStates: [] }
+        const vscode = {
+          EventEmitter: class { event() {} fire() {} }, TreeItem: class {}, TreeItemCollapsibleState: { None: 0 },
+          Uri: { file: (fsPath: string) => ({ fsPath }) }, ThemeIcon: class {},
+          scm: { createSourceControl: () => ({ createResourceGroup: () => group, inputBox: {}, dispose() {} }) },
+        }
+        const source = surface === 'scm' ? 'src/scm/source-control.ts' : 'src/views/changes-view.ts'
+        const module = load(source, { vscode })
+        const Provider = surface === 'scm' ? module.TianshuSourceControl : module.ChangesTreeProvider
+        const provider = new Provider(async () => ({ sessionWorkingTree: (id: string) => new Promise((resolve, reject) => pending.push({ id, resolve, reject })) }), root)
+        provider.scheduleRefresh = () => {}
+        provider.setSession('A')
+        const first = provider.refresh(); await tick()
+        if (transition !== 'overlap') provider.setSession('B')
+        if (transition === 'A-B-A') provider.setSession('A')
+        const next = provider.refresh(); await tick()
+        const files = [{ path: 'fresh.ts', status: 'modified', additions: 1, deletions: 0 }]
+        pending[1].resolve({ isRepo: true, files }); await next
+        if (outcome === 'success') pending[0].resolve({ isRepo: true, files: [{ ...files[0], path: 'retired.ts' }] })
+        else pending[0].reject(Error('retired read failed'))
+        await first
+        const displayed = surface === 'scm' ? group.resourceStates : provider.getChildren()
+        assert.deepEqual(displayed.map((entry: any) => entry.command.arguments[1].path), ['fresh.ts'])
+      })
+    }
+  }
+}
 
 test('webview rejects old session events even before React renders the new active id', () => {
   let listener!: (msg: any) => void

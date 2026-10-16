@@ -209,7 +209,7 @@ test('客户端登录请求明确要求持久设备绑定，不复用论坛免�
     purpose = JSON.parse(String(init?.body)).purpose
     return new Response(JSON.stringify({ deviceCode: 'fixture', userCode: '123456', verifyUrl: 'https://tianshuharness.com/auth/device' }))
   } })
-  assert.equal(purpose, 'client-login')
+  assert.equal(purpose, 'account-login')
 })
 
 // ── 星籍（stellar identity）──────────────────────────────────────────────

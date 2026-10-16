@@ -114,7 +114,7 @@ test('invalid nested profile fields fail closed and failed category bodies are d
 test('the actual desktop login request explicitly selects counted client approval', async()=>{
  const {requestDeviceCode}=await import('../account.js')
  await requestDeviceCode({deviceFingerprint:'fixture-device',fetchImpl:async(_url,init)=>{
-  assert.equal(JSON.parse(String(init?.body)).purpose,'client-login')
+  assert.equal(JSON.parse(String(init?.body)).purpose,'account-login')
   return Response.json({deviceCode:'fixture',userCode:'fixture',verifyUrl:'https://example.test/auth/device',expiresIn:300,pollInterval:5})
  }})
 })

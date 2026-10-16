@@ -3,6 +3,7 @@ import { build } from 'esbuild'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -101,5 +102,5 @@ test('renamed runtime performs a real production npx MCP handshake and lists too
     `)
     const { stdout } = await promisify(execFile)(executable, [script], { timeout: 15000 })
     assert.match(stdout, /handshake OK/)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally { await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 }) }
 })

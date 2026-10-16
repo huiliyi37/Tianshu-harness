@@ -60,12 +60,15 @@ function writePooledConfig(home: string) {
 describe('account queries are key-aware (issue #392)', () => {
   const prevHome = process.env.RIVET_HOME
   const prevFetch = globalThis.fetch
+  const prevDeepseek = process.env.DEEPSEEK_API_KEY
   let home: string
   let routes: Record<string, RouteHandler>
   let captured: Array<{ url: string; auth?: string }>
 
   before(() => {
+    delete process.env.DEEPSEEK_API_KEY
     home = mkdtempSync(join(tmpdir(), 'rivet-account-credential-'))
+    writeFileSync(join(home, 'config.json'), '{}')
     process.env.RIVET_HOME = home
     writeSecret('deepseek:default', 'sk-main')
     writeSecret('deepseek:k2', 'sk-second')
@@ -80,6 +83,8 @@ describe('account queries are key-aware (issue #392)', () => {
   after(() => {
     if (prevHome === undefined) delete process.env.RIVET_HOME
     else process.env.RIVET_HOME = prevHome
+    if (prevDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY
+    else process.env.DEEPSEEK_API_KEY = prevDeepseek
     rmSync(home, { recursive: true, force: true })
   })
 

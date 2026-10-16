@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import stringWidth from 'string-width'
-import { displayWidth, truncateToDisplayWidth, ambiguousWideEnabled, ambiguousWidthMode } from '../width.js'
+import { displayWidth, truncateToDisplayWidth, ambiguousWideEnabled, ambiguousWidthMode, resetWidthModeCache } from '../width.js'
 
 test('narrow 模式与 string-width 完全一致（零回归）', () => {
   const samples = ['hello', '天枢 main', '— … ↑↓ · ◧', '╭──┬──╮', '⚡ 99%', '混合 mixed テスト']
@@ -21,9 +21,18 @@ test('wide 模式仅对非 box/block 的 ambiguous 符号 +1', () => {
 })
 
 test('box-drawing / block elements 在 wide 模式下仍按 1 列（关键护栏）', () => {
-  // ─ │ ╭ ╰ █ ▓ ░ 都在 U+2500–259F，终端按 1 列渲染，绝不能被算成双宽
-  for (const ch of ['─', '│', '╭', '╰', '╯', '╮', '┬', '█', '▓', '░']) {
-    assert.equal(displayWidth(ch, { ambiguousAsWide: true }), 1, `${ch} 在 wide 模式应为 1 列`)
+  const prev = process.env.RIVET_AMBIGUOUS_WIDTH
+  try {
+    process.env.RIVET_AMBIGUOUS_WIDTH = 'wide'
+    resetWidthModeCache()
+    // ─ │ ╭ ╰ █ ▓ ░ 都在 U+2500–259F，终端按 1 列渲染，绝不能被算成双宽
+    for (const ch of ['─', '│', '╭', '╰', '╯', '╮', '┬', '█', '▓', '░']) {
+      assert.equal(displayWidth(ch, { ambiguousAsWide: true }), 1, `${ch} 在 wide 模式应为 1 列`)
+    }
+  } finally {
+    if (prev === undefined) delete process.env.RIVET_AMBIGUOUS_WIDTH
+    else process.env.RIVET_AMBIGUOUS_WIDTH = prev
+    resetWidthModeCache()
   }
 })
 
@@ -62,11 +71,13 @@ test('truncateToDisplayWidth：max<=0 返回空', () => {
   assert.equal(truncateToDisplayWidth('abc', 0), '')
 })
 
-test('ambiguousWideEnabled 读取 RIVET_AMBIGUOUS_WIDTH（默认 narrow）', () => {
+test('ambiguousWideEnabled 读取 RIVET_AMBIGUOUS_WIDTH（默认 narrow / legacy CJK conhost 默认 full）', () => {
   const prev = process.env.RIVET_AMBIGUOUS_WIDTH
   try {
     delete process.env.RIVET_AMBIGUOUS_WIDTH
-    assert.equal(ambiguousWideEnabled(), false)
+    resetWidthModeCache()
+    const expectedDefault = ambiguousWidthMode() !== 'narrow'
+    assert.equal(ambiguousWideEnabled(), expectedDefault)
     process.env.RIVET_AMBIGUOUS_WIDTH = 'wide'
     assert.equal(ambiguousWideEnabled(), true)
     process.env.RIVET_AMBIGUOUS_WIDTH = 'WIDE'
@@ -76,6 +87,7 @@ test('ambiguousWideEnabled 读取 RIVET_AMBIGUOUS_WIDTH（默认 narrow）', () 
   } finally {
     if (prev === undefined) delete process.env.RIVET_AMBIGUOUS_WIDTH
     else process.env.RIVET_AMBIGUOUS_WIDTH = prev
+    resetWidthModeCache()
   }
 })
 

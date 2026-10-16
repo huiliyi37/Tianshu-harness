@@ -230,10 +230,10 @@ describe('native-resolver 自愈（fetch-native-sqlite 失败标记 + 启动补�
     // 整包复制 wrapper 但剥离其自带二进制——即「npm 装了 wrapper、原生件缺失」的降级布局
     const wrapperSrc = join(process.cwd(), 'node_modules', 'better-sqlite3')
     const wrapperDst = join(root, 'node_modules', 'better-sqlite3')
-    cpSync(wrapperSrc, wrapperDst, { recursive: true, filter: (src) => !src.includes(`${join(wrapperSrc, 'build')}`) })
+    cpSync(wrapperSrc, wrapperDst, { recursive: true, dereference: true, filter: (src) => !src.includes(`${join(wrapperSrc, 'build')}`) })
     // wrapper require 期无条件加载 bindings（真实 npm 布局平铺在顶层 node_modules）
     for (const dep of ['bindings', 'file-uri-to-path']) {
-      cpSync(join(process.cwd(), 'node_modules', dep), join(root, 'node_modules', dep), { recursive: true })
+      cpSync(join(process.cwd(), 'node_modules', dep), join(root, 'node_modules', dep), { recursive: true, dereference: true })
     }
     mkdirSync(join(root, 'dist'), { recursive: true })
     writeFileSync(join(root, 'dist', 'chunk.js'), '')

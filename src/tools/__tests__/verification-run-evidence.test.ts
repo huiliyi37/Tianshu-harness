@@ -32,7 +32,7 @@ it('multi-batch totals survive compressed output, output clipping and repeated f
   try {
     const loader = pathToFileURL(join(repo, 'node_modules/tsx/dist/loader.mjs')).href
     const script = ['node', '--import', loader, join(repo, 'scripts/run-node-tests.ts')]
-      .map(word => process.platform === 'win32' ? word : shellWord(word)).join(' ')
+      .map(word => process.platform === 'win32' ? (word.includes(' ') ? `"${word}"` : word) : shellWord(word)).join(' ')
     writeFileSync(join(f.cwd, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: script } }))
     for (let i = 0; i < 55; i++) {
       const directory = join(f.cwd, 'src', ...Array.from({ length: 4 }, (_, j) => `${j}-${'a'.repeat(150)}`), String(i))

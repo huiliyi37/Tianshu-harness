@@ -1,9 +1,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+
+function resolveBash(): string {
+  if (process.platform !== 'win32') return 'bash'
+  const gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+  if (existsSync(gitBash)) return gitBash
+  const localBash = path.join(process.env.LOCALAPPDATA || '', 'Programs\\Git\\bin\\bash.exe')
+  if (existsSync(localBash)) return localBash
+  return 'bash'
+}
+const BASH = resolveBash()
 
 const root = path.resolve(import.meta.dirname, '../..')
 const hostSource = await readFile(path.join(root, 'scripts/build-linux-container.sh'), 'utf8')
@@ -44,7 +55,7 @@ if (args[0] === 'volume') process.exit(0)
 if (args[0] === 'run') process.exit(73)
 process.exit(99)
 `, { mode: 0o755 })
-  const result = spawnSync('bash', [path.join(dir, 'scripts/build.sh'), config.arch ?? 'amd64'], {
+  const result = spawnSync(BASH, [path.join(dir, 'scripts/build.sh'), config.arch ?? 'amd64'], {
     cwd: dir, encoding: 'utf8', timeout: 10000,
     env: { ...process.env, PATH: path.join(dir, 'bin') + path.delimiter + process.env.PATH,
       IMG: config.image ?? '', CONTAINER_PROXY: config.proxy ?? '',
@@ -157,7 +168,7 @@ if (args.includes('update') && process.env.APT_TEST_FAIL === '1') process.exit(6
   assert.ok(prefix.includes('apt_get update') && prefix.includes('apt_get install'))
   await writeFile(path.join(dir, 'apt-fixture.sh'), prefix.replace('cd /work', 'cd "$APT_TEST_WORK"') + '\nprintf "%s" "$HTTP_PROXY"\n')
   const proxy = 'http://proxy.fixture:7890'
-  const result = spawnSync('bash', [path.join(dir, 'apt-fixture.sh')], { encoding: 'utf8', timeout: 10000,
+  const result = spawnSync(BASH, [path.join(dir, 'apt-fixture.sh')], { encoding: 'utf8', timeout: 10000,
     env: { ...process.env, PATH: path.join(dir, 'bin') + path.delimiter + process.env.PATH,
       APT_TEST_WORK: dir, APT_TEST_LOG: path.join(dir, 'calls.jsonl'), APT_TEST_FAIL: failUpdate ? '1' : '0',
       http_proxy: proxy, https_proxy: proxy, HTTP_PROXY: proxy, HTTPS_PROXY: proxy, all_proxy: proxy, ALL_PROXY: proxy,

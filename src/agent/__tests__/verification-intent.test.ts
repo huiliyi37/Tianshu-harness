@@ -142,7 +142,7 @@ describe('VerificationExecutionIntent — unresolved package scripts', () => {
 describe('VerificationExecutionIntent — 规范化字段', () => {
   it('剥离 cd 包装并解析出真实 cwd 与入口', () => {
     const i = run('cd /tmp/proj && npm test')
-    assert.equal(i.cwd, resolve('/tmp/proj'))
+    assert.equal(i.cwd, resolve(CWD, '/tmp/proj'))
     assert.equal(i.lifetime, 'unknown', '未读取到脚本不能凭名称授予等待资格')
   })
 

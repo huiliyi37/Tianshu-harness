@@ -106,6 +106,10 @@ const testEnv: NodeJS.ProcessEnv = {
   // from walking up out of it into the real repo (test fixtures created via
   // mkdtemp expect "not a git repo"). Harmless for the OS temp dir case.
   GIT_CEILING_DIRECTORIES: PROJECT_TMP,
+  // 非交互测试子进程在 Windows CJK 环境下默认可能被 isLegacyCjkConsole 误判为 full 宽与 ASCII 字形降级，
+  // 钉 narrow 与 RIVET_ASCII_UI=0，与 macOS/Linux CI 断言口径统一。
+  RIVET_AMBIGUOUS_WIDTH: process.env.RIVET_AMBIGUOUS_WIDTH ?? 'narrow',
+  RIVET_ASCII_UI: process.env.RIVET_ASCII_UI ?? '0',
 }
 // An inherited session override would bypass the isolated home and mix runs.
 delete testEnv.RIVET_SESSION_DIR

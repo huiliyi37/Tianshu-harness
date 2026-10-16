@@ -55,6 +55,12 @@ export function resolveAccountCredential(
       ? { provider, apiKey: resolve(provider) }
       : { error: `provider "${name}" has no key pool (keyId "${keyId}")` }
   }
+  // A′ 迁移形态（keys 池非空且顶层槽位未显式配置）：回退 defaultKeyOf(provider)
+  // 必须先于顶层空槽的 `<NAME>_API_KEY` 环境回退，避免宿主环境遗留的未关联 key 劫持用户显式配置的池主 key。
+  if (provider.keys?.length && !provider.keyRef && !provider.apiKey && !provider.apiKeyEnv) {
+    const fallback = defaultKeyOf(provider)
+    if (fallback) return { provider, apiKey: resolve(fallback), keyId: fallback.id, ...(fallback.label ? { label: fallback.label } : {}) }
+  }
   const topLevel = resolve(provider)
   if (topLevel) return { provider, apiKey: topLevel }
   const fallback = defaultKeyOf(provider)

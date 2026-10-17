@@ -307,10 +307,11 @@ export function stripUntrustedProjectKeys(raw: Record<string, unknown>): Record<
  * 项目配置层**永久**不得设置的安全档位（与信任无关）——点路径相对项目层配置根。
  *
  * 与 `UNTRUSTED_NESTED_KEYS`（信任门：未授信才剥离）不同，这组键是**用户本人的
- * 安全决定**（审批档 / 沙箱豁免 / 授权规则），不是「项目内容配置」。因此仓库内容
- * （含**已授信**项目）都不得设置它们——授信只应信任项目的编码内容，不应顺带授权
- * 「是否禁用审批」。参照 deepseek-harness：approval policy 无外部 config store，
- * 工作目录文件对它零路径；天枢等价 = 这三个键不进 project config 层。
+ * 安全决定**（审批档 / 沙箱豁免 / 授权规则；`agent.userInstructions` 亦属此类——
+ * 它决定「是否接受一份用户指名的文件作为常驻指令」），不是「项目内容配置」。因此
+ * 仓库内容（含**已授信**项目）都不得设置它们——授信只应信任项目的编码内容，不应
+ * 顺带授权「是否禁用审批」。参照 deepseek-harness：approval policy 无外部 config
+ * store，工作目录文件对它零路径；天枢等价 = 这些键不进 project config 层。
  *
  * 合法来源保留：内置默认 / 用户全局 config / profile / CLI flag / 运行时切换。
  */
@@ -318,6 +319,7 @@ const PROJECT_FORBIDDEN_SAFETY_NESTED_KEYS: ReadonlyArray<readonly [string, stri
   ['agent', 'approval'],
   ['agent', 'unsandboxed'],
   ['agent', 'permissions'],
+  ['agent', 'userInstructions'],
   // Global usage and credential upload require a user decision, even in trusted repositories.
   ['tokenLedger', 'forum'],
 ]

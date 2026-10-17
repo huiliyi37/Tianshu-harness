@@ -411,6 +411,14 @@ export const agentSchema = z.object({
   /** 关写沙箱——完全权限档（approval 仍为 dangerously-skip-permissions 但
    *  写边界不做限制）。默认 false；桌面端选「完全权限」时写入 true。 */
   unsandboxed: z.boolean().default(false),
+  /**
+   * 用户级全局指令：仅由用户全局 config 显式指名本地文件，默认关闭。
+   * 项目配置永久不得设置本键，见 project-trust 的永久门。
+   */
+  userInstructions: z.object({
+    enabled: z.boolean().optional(),
+    path: z.string().optional(),
+  }).optional(),
   // 长任务远端兜底。runaway 由 wedged-loop/convergence/watchdog/context-pressure
   // 先行拦截，此值对标 Claude Code/Codex 的"无硬上限"取宽松 4 倍余量（50→200，
   // 会话 5158719d 证明 50 轮迫使用户在正常长任务中反复手动「继续」）。

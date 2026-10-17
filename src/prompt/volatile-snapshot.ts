@@ -11,6 +11,7 @@ import { detectCwdRelation } from './self-recognition.js'
 import type { VolatileContext } from './volatile.js'
 import { standardPromptBlocks, type PromptBlockPolicy } from './block-policy.js'
 import { projectInstructionsAllowed, projectStateAllowed } from '../config/project-trust.js'
+import { loadUserInstructionsBlock } from '../config/user-instructions.js'
 
 export interface SnapshotInput {
   cwd: string
@@ -19,6 +20,7 @@ export interface SnapshotInput {
   blockPolicy?: PromptBlockPolicy
   getGitStatus?: () => string | undefined
   rivetMd?: string
+  globalInstructionsBlock?: string
   sessionMemoryBlock?: string
   workingSet?: string[]
   activeDomain?: VolatileContext['activeDomain']
@@ -59,6 +61,7 @@ export function createVolatileSnapshot(input: SnapshotInput): VolatileContext {
   const gitStatus = rawGit ? summarizeGitStatus(rawGit) : undefined
 
   const rivetMd = input.rivetMd ?? readRivetMdOnce(input.cwd)
+  const globalInstructionsBlock = input.globalInstructionsBlock ?? loadUserInstructionsBlock()
 
   const workingSet = input.workingSet
     ? Object.freeze([...input.workingSet])
@@ -107,6 +110,7 @@ export function createVolatileSnapshot(input: SnapshotInput): VolatileContext {
     blockToggles: policy.blocks,
     cwdRelation: detectCwdRelation(input.cwd),
     rivetMd,
+    globalInstructionsBlock,
     gitStatus,
     workingSet,
     activeDomain: input.activeDomain ?? undefined,

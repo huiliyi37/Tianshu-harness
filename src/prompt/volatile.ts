@@ -17,6 +17,7 @@ import { detectRuntimeEnvBlock, windowsShellNote } from './runtime-env.js'
 import { FROZEN_BLOCK_CAPS, type FrozenBlockCaps, type PromptBlockToggles } from './block-policy.js'
 import { selectProjectInstructions } from './project-instructions.js'
 import { projectInstructionsAllowed } from '../config/project-trust.js'
+import { notifyUserInstructionsDropped } from '../config/user-instructions.js'
 
 export { FROZEN_BLOCK_CAPS, type FrozenBlockCaps }
 
@@ -283,6 +284,10 @@ export interface VolatileContext {
    *  world's project (emissary). Session-constant → safe in FROZEN base (same
    *  class as rivetMd; never per-turn). Computed by detectCwdRelation. */
   cwdRelation?: import('./self-recognition.js').CwdRelation
+  /** 会话常量：createVolatileSnapshot 读一次后冻结，允许进 FROZEN 前缀，
+   *  与 rivetMd 同类；不得并入 rivetMd（engine.ts:331 / :943 把 rivetMd
+   *  当纯项目段消费）。 */
+  globalInstructionsBlock?: string
   rivetMd?: string
   gitStatus?: string
   workingSet?: string[]
@@ -1092,6 +1097,42 @@ function buildVolatileBlockInternal(ctx: VolatileContext): string {
   // 直接构造 ctx 的路径）与历史输出逐字节一致。
   const caps = { ...FROZEN_BLOCK_CAPS, ...ctx.blockCaps }
 
+  let globalCost = 0
+  if (ctx.globalInstructionsBlock !== undefined) {
+    const globalInstructions = ctx.globalInstructionsBlock
+    const globalOverhead = '<global-instructions>\n\n</global-instructions>'.length
+    let globalBody = globalInstructions
+    let truncationComment = ''
+    const fullEscaped = escapeXml(globalInstructions)
+
+    if (fullEscaped.length + globalOverhead > caps.projectInstructions) {
+      let low = 0
+      let high = globalInstructions.length
+      while (low < high) {
+        const candidate = Math.ceil((low + high) / 2)
+        const comment = `<!-- global-instructions truncated: ${globalInstructions.length} → ${candidate} chars -->`
+        const candidateCost =
+          escapeXml(globalInstructions.slice(0, candidate)).length
+          + globalOverhead
+          + comment.length
+          + 1
+        if (candidateCost <= caps.projectInstructions) {
+          low = candidate
+        } else {
+          high = candidate - 1
+        }
+      }
+      globalBody = globalInstructions.slice(0, low)
+      truncationComment = `<!-- global-instructions truncated: ${globalInstructions.length} → ${globalBody.length} chars -->`
+      notifyUserInstructionsDropped()
+    }
+
+    const escapedGlobal = escapeXml(globalBody)
+    const globalBlock = `<global-instructions>\n${escapedGlobal}${truncationComment ? `\n${truncationComment}` : ''}\n</global-instructions>`
+    globalCost = globalBlock.length
+    parts.push(globalBlock)
+  }
+
   const md = ctx.rivetMd ?? readRivetMd(ctx.cwd)
   if (md) {
     // When codebase-index is present it already contains the module directory table
@@ -1103,12 +1144,26 @@ function buildVolatileBlockInternal(ctx: VolatileContext): string {
     // 预算按**转义后**长度计：转义在截断之前做，按原文计费会让块超出 cap
     // 后再被 truncateBlock 从头切一刀，等于白选。
     const wrap = '<project-instructions>\n\n</project-instructions>'.length
-    const selected = selectProjectInstructions(
-      stripped,
-      caps.projectInstructions - wrap,
-      t => escapeXml(t).length,
-    )
-    parts.push(truncateBlock(`<project-instructions>\n${escapeXml(selected.text)}\n</project-instructions>`, caps.projectInstructions, 'project-instructions'))
+    // 两个 parts 之间由 parts.join('\n\n') 插入 2 个换行，这 2 字符原先未计入预算
+    // ⇒ 项目段填满余量时合计会超出 cap 恰好 2。**只在全局段存在时扣除**：无条件扣
+    // 会把未配置路径的项目段预算从 cap-47 变成 cap-49，而 selectProjectInstructions
+    // 的贪心对预算非单调，那会改变既有会话的节选择、破坏逐字节兼容。
+    const partsGap = ctx.globalInstructionsBlock !== undefined ? '\n\n'.length : 0
+    const projectBudget = caps.projectInstructions - wrap - globalCost - partsGap
+    if (projectBudget <= 0 && ctx.globalInstructionsBlock !== undefined) {
+      notifyUserInstructionsDropped()
+    } else {
+      const selected = selectProjectInstructions(
+        stripped,
+        projectBudget,
+        t => escapeXml(t).length,
+      )
+      parts.push(truncateBlock(
+        `<project-instructions>\n${escapeXml(selected.text)}\n</project-instructions>`,
+        caps.projectInstructions - globalCost - partsGap,
+        'project-instructions',
+      ))
+    }
   }
 
   // A3: declared verify commands (from .rivet-config.json) rendered as the

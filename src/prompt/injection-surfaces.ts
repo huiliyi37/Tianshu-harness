@@ -588,6 +588,7 @@ export const FROZEN_KEEP_FIELDS: readonly string[] = [
   'projectIndexBlock',
   'projectMemoryBlock',
   'rivetMd',
+  'globalInstructionsBlock',
   'seedCapsuleBlock',
   'sessionMemoryBlock',
   'workingSet',

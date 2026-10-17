@@ -2,12 +2,8 @@
  * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成；description 人工维护，重生成时按 name 保留。
  * 默认值提示来自源码 ??/||；引用路径相对 src/；assembly-audit.test.ts 双向校验完整性。
  */
-export interface EnvRegistryEntry {
-  name: string
-  defaultHint: string
-  files: string[]
-  description: string
-}
+import type { EnvRegistryEntry } from './env-registry-types.js'
+export type { EnvRegistryEntry } from './env-registry-types.js'
 export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_ACCOUNT_ANON_KEY',
@@ -684,7 +680,7 @@ export const ENV_REGISTRY: EnvRegistryEntry[] = [
   {
     name: 'RIVET_JOB_LAUNCHER',
     defaultHint: '',
-    files: ['tools/process-kill.ts', 'tools/__tests__/job-store.test.ts', 'tools/__tests__/process-kill.test.ts'],
+    files: ['tools/__tests__/job-store.test.ts', 'tools/__tests__/process-kill.test.ts', 'tools/__tests__/windows-job-launcher-fixture.ts', 'tools/process-kill.ts'],
     description: '',
   },
   {

@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { open, type FileHandle } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -18,10 +18,12 @@ import { ToolRegistry } from '../../tools/registry.js'
 import { SessionContext } from '../context.js'
 import { AgentLoop, type AgentCallbacks } from '../loop.js'
 import { SessionPersist } from '../session-persist.js'
+import { buildContextBudget, genericBudgetPolicy } from '../../context/request-budget.js'
+import { createBudgetedCompactionHistory, createCompactionPressureInput, isSnapshotDirectoryCollision } from './compaction-pressure-fixture.js'
 
 async function verifyCompactionRecovery(context: TestContext, entry: 'automatic' | 'public' | 'official' | 'official-auto' | 'unknown' | 'persisted-unknown' | 'binding' | 'credential' | 'conflict' | 'object-conflict' | 'worker' | 'native-writer',
   persistence: 'none' | 'resume' | 'pending-old' | 'pending-new' | 'pending-other' | 'pending-old-append' | 'pending-new-append' | 'intent-append' | 'commit-append' | 'snapshot-failure' | 'snapshot-retry' | 'final-auth-failure' | 'serialized-mismatch' | 'cancel-tail' | 'consume-race' | 'consume-effort' | 'consume-native' | 'abort-intent' = 'none'): Promise<void> {
-  const root = mkdtempSync(join(tmpdir(), 'continuation-compaction-recovery-'))
+  const root = mkdtempSync(join(realpathSync.native(tmpdir()), 'continuation-compaction-recovery-'))
   const previousEnvironment = {
     RIVET_HOME: process.env.RIVET_HOME,
     RIVET_SESSION_DIR: process.env.RIVET_SESSION_DIR,
@@ -47,7 +49,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
       if (value === undefined) delete process.env[name]
       else process.env[name] = value
     }
-    rmSync(root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 
   const summary = persistence === 'serialized-mismatch' ? 'status detail. '.repeat(24_000)
@@ -112,13 +114,20 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
   }
   let client = makeClient()
   if (entry === 'worker') client = withExecutionContinuity(client, { provider: provider.name, model: 'fixture-model', singleAttempt: true })
-  let engine = new PromptEngine(engineConfig)
   let session = new SessionContext()
-  session.replaceMessages(Array.from({ length: persistence === 'snapshot-failure' || persistence === 'snapshot-retry' || persistence === 'cancel-tail' || persistence === 'abort-intent' || entry === 'official-auto' || native ? 230 : 160 }, (_, index): OaiMessage => ({
-    role: index % 2 === 0 ? 'user' : 'assistant',
-    content: `Archived status exchange ${index}: ${'status detail. '.repeat(1067)}`,
-  })))
+  const historyCount = persistence === 'snapshot-failure' || persistence === 'snapshot-retry' || persistence === 'cancel-tail' || persistence === 'abort-intent' || entry === 'official-auto' || native ? 230 : 160
+  session.replaceMessages(createBudgetedCompactionHistory(historyCount, messages => {
+    // Probe a separate engine: never prepare or publish a turn on the tested engine.
+    const probe = new PromptEngine(structuredClone(engineConfig))
+    const request = probe.buildOaiRequest([...messages, { role: 'user', content: 'What is the current status?' }], [], 1_000_000)
+    const visible = client.previewContextRequest?.(request) ?? request
+    return buildContextBudget(visible, engineConfig.requestBudgetPolicy ?? genericBudgetPolicy(1_000_000)!, {
+      requestId: 'fixture-seed-calibration', revision: 0,
+    })
+  }))
+  let engine = new PromptEngine(engineConfig)
   let persist = persistence === 'none' ? undefined : new SessionPersist('compaction-fixture', root)
+  const snapshotPath = persist ? join(dirname(persist.getFilePath()), 'compaction-fixture.frozen.json') : undefined
   if (persist) {
     await persist.compactOaiAsync(session.getMessages(), true)
     const initialPersist = persist
@@ -148,7 +157,14 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
   await agent.run('What is the current status?', callbacks)
   await agent.cancelIdleCompaction()
   await agent.drainPersistWrites()
+  await persist?.drainFrozenSnapshots()
   assert.deepEqual(errors.map(error => error.message), [])
+  const initialBudget = agent.getContextBudget()
+  assert.ok(initialBudget)
+  assert.equal(initialBudget.windowTokens, 1_000_000)
+  assert.equal(initialBudget.outputReserve, 4096)
+  assert.ok(initialBudget.inputTokens <= initialBudget.inputBudget, 'the first real request must fit before any recovery scenario begins')
+  assert.equal(persist?.getFrozenSnapshotError(), undefined)
   assert.equal(bodies.length, 1, 'the initial history must reach the real provider transport')
   assert.equal(summaryBodies.length, 0, 'the initial normal run must not reach the context ceiling')
   const published = client.getMainPrefixProof!()!
@@ -163,7 +179,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
       await commit(snapshot, cancel)
       if (!interrupted && snapshot.pendingCompaction) { interrupted = true; agent.abort() }
     })
-    await agent.run(`Abort this user before its first main request.\n${'status detail. '.repeat(6_000)}`, callbacks)
+    await agent.run(createCompactionPressureInput(session.getEstimatedTokens(), 1_000_000, 'Abort this user before its first main request.'), callbacks)
     assert.equal(interrupted, true)
     assert.equal(bodies.length, 1)
     await agent.drainPersistWrites()
@@ -217,7 +233,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
         agent.abort()
       }
     })
-    const input = `UNSENT_B_CANCELLED: new input to cancel before the main HTTP request.\n${'status detail. '.repeat(6_000)}`
+    const input = createCompactionPressureInput(session.getEstimatedTokens(), 1_000_000, 'UNSENT_B_CANCELLED: new input to cancel before the main HTTP request.')
     await agent.run(input, callbacks)
     assert.equal(cancelled, true, 'cancellation must occur after the real committed compression authorization')
     assert.equal(bodies.length, 1, 'B must never reach the main HTTP boundary')
@@ -244,7 +260,8 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
     return
   }
   if (entry === 'official-auto') {
-    const input = `Continue with this additional status evidence:\n${'status detail. '.repeat(6_000)}`
+    const input = createCompactionPressureInput(session.getEstimatedTokens(), 1_000_000, 'Continue with this additional status evidence:',
+      initialBudget.inputBudget - initialBudget.inputTokens + 2048)
     await agent.run(input, callbacks)
     await agent.drainPersistWrites()
     assert.deepEqual(errors.map(error => error.message), [])
@@ -363,7 +380,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
     return
   }
   const nextInput = entry === 'automatic'
-    ? `Continue with this additional status evidence:\n${'status detail. '.repeat(persistence === 'snapshot-failure' || persistence === 'snapshot-retry' ? 6_000 : 85_000)}`
+    ? createCompactionPressureInput(occupancy, 1_000_000, 'Continue with this additional status evidence:')
     : 'Continue with the follow-up status.'
   const addedInputTokens = estimateOaiTokens([{ role: 'user', content: nextInput }])
   assert.ok(occupancy < 950_000)
@@ -414,7 +431,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
       return
     }
     if (persistence === 'final-auth-failure') {
-      await assert.rejects(compact(), /EISDIR|ENOTDIR|EEXIST/)
+      await assert.rejects(compact(), error => isSnapshotDirectoryCollision(error, snapshotPath!))
       assert.deepEqual(client.getMainPrefixProof!(), published)
       engine.buildOaiRequest(session.getMessages())
       await persist!.drainFrozenSnapshots()
@@ -571,7 +588,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
   if (persistence === 'snapshot-failure' || persistence === 'snapshot-retry') {
     assert.equal(summaryBodies.length, 1)
     assert.equal(bodies.length, 1, 'failed authorization storage must prevent any new main HTTP request')
-    assert.ok(errors.some(error => /EISDIR|ENOTDIR|EEXIST/.test(error.message)),
+    assert.ok(errors.some(error => isSnapshotDirectoryCollision(error, snapshotPath!)),
       `the actual filesystem failure must surface: ${JSON.stringify(errors.map(error => ({ name: error.name, message: error.message })))}`)
     assert.deepEqual(client.getMainPrefixProof!(), published)
     assert.equal(engine.getRewindAuthorization(), undefined)
@@ -585,7 +602,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
         localRecoveryCommits++
         await commit(snapshot, cancel)
       })
-      await assert.rejects(agent.run('Explicitly continue while the local storage is still unavailable.', callbacks), /EISDIR|ENOTDIR|EEXIST/)
+      await assert.rejects(agent.run('Explicitly continue while the local storage is still unavailable.', callbacks), error => isSnapshotDirectoryCollision(error, snapshotPath!))
       assert.equal(localRecoveryCommits, 1, 'an explicit run may attempt local recovery only once while storage remains unavailable')
       assert.equal(summaryBodies.length, 1)
       assert.equal(bodies.length, 1)

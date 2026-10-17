@@ -50,6 +50,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   windows-smoke:
+    timeout-minutes: 10
     # Real-execution smoke for the Windows command path (Git Bash on the runner).
     # windows-latest ships Git for Windows, so this exercises the actual
     # spawn → stdio pipe → output capture → file side-effect chain that unit
@@ -76,6 +77,9 @@ jobs:
       - name: Windows watchdog rescue and Git probe teardown
         run: node --import tsx --test src/agent/__tests__/watchdog-rescue.test.ts src/agent/__tests__/git-freshness.test.ts src/agent/__tests__/git-freshness-lifecycle.test.ts
 
+      - name: Windows transactional compaction recovery
+        run: node --import tsx scripts/run-node-tests.ts src/agent/__tests__/compaction-pressure-fixture.test.ts src/agent/__tests__/continuation-compaction-recovery.test.ts
+
       - name: Windows private storage without audit privileges
         run: node --import tsx --test src/platform/__tests__/private-path.test.ts src/server/__tests__/server-info-protection.test.ts
 
@@ -89,7 +93,7 @@ jobs:
         run: node --import tsx --test src/tools/__tests__/write-file-esbuild-platform.test.ts
 
       - name: Windows job cleanup and workspace routes
-        run: node --import tsx --test src/tools/__tests__/job-store.test.ts src/server/__tests__/multi-root-workspace.test.ts src/server/__tests__/git-pr-workbench.test.ts src/server/__tests__/serve-store-lock.test.ts
+        run: node --import tsx scripts/run-node-tests.ts src/tools/__tests__/job-store.test.ts src/server/__tests__/multi-root-workspace.test.ts src/server/__tests__/git-pr-workbench.test.ts src/server/__tests__/serve-store-lock.test.ts
 
   cli-frontend:
     name: CLI frontend (${{ matrix.os }})

@@ -7,16 +7,19 @@ import { join } from 'node:path'
 import { startServer } from '../index.js'
 import { createRoutes } from '../routes.js'
 import { guardRuntimeRoutes } from '../runtime-route-guard.js'
-import { register } from '../../pro/index.js'
-import { sparkPreset } from '../../pro/spark/preset.js'
-import { proRegistry } from '../../api/pro-registry.js'
+import { proModulePresent, proRegistry, type ProPresetEntry } from '../../api/pro-registry.js'
 import { createProviderClient } from '../../api/factory.js'
 import { resolveCapabilities } from '../../api/provider.js'
 import { __setProGrantPublicKeyForTests } from '../../config/pro-license.js'
 import { buildGrantPayload, makeTestSigner, signGrant } from '../../config/__tests__/grant-fixtures.js'
 import type { Config } from '../../config/schema.js'
 
-it('authenticated native denial survives replay before any Node file observation, while Free tasks continue', async () => {
+// Keep private integration coverage when src/pro is present; do not swallow loader failures.
+it('authenticated native denial survives replay before any Node file observation, while Free tasks continue', { skip: !proModulePresent() && 'closed-source Pro modules are not distributed in public builds' }, async () => {
+  const { register } = await import(new URL('../../pro/index.js', import.meta.url).href) as {
+    register(registry: typeof proRegistry, config: Config): void
+  }
+  const { sparkPreset } = await import(new URL('../../pro/spark/preset.js', import.meta.url).href) as { sparkPreset: ProPresetEntry }
   const home = mkdtempSync(join(tmpdir(), 'native-pro-denial-'))
   const keys = ['RIVET_HOME', 'RIVET_DESKTOP', 'RIVET_PRO_GRANT', 'RIVET_PRO_DEVICE_ID']
   const previous = keys.map(key => process.env[key])

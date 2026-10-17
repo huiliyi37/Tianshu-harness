@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { buildContextBudget, ContextBudgetExceededError } from '../context/request-budget.js'
+import { buildContextBudget, ContextBudgetExceededError, genericBudgetPolicy, type RequestBudgetPolicy } from '../context/request-budget.js'
 import type { AgentLoop } from './loop.js'
 import type { AgentCallbacks } from './loop-types.js'
 import type { OaiChatRequest, OaiMessage } from '../api/oai-types.js'
@@ -33,6 +33,10 @@ export class RequestContextController {
   private lastCompactReason?: string
   constructor(private readonly agent: AgentLoop) {}
 
+  getBudgetPolicy(): RequestBudgetPolicy | undefined {
+    return this.agent.config.promptEngine.getRequestBudgetPolicy() ?? genericBudgetPolicy(this.agent.config.contextWindow)
+  }
+
   record(budget: ContextBudgetSnapshot, beginRequest = false): ContextBudgetSnapshot {
     if (!beginRequest && this.snapshot && this.snapshot.requestId !== budget.requestId) return this.snapshot
     this.snapshot = { ...budget, revision: ++this.revision, sampledAt: Date.now() }
@@ -46,7 +50,7 @@ export class RequestContextController {
       if (recovering) request.diagnostics = { ...request.diagnostics, purpose: 'reasoning_recovery' }
       return request
     }
-    const policy = this.agent.config.promptEngine.getRequestBudgetPolicy() ?? (Number.isFinite(this.agent.config.contextWindow) ? { windowTokens: this.agent.config.contextWindow!, maxOutputTokens: this.agent.config.contextWindow!, transportLimits: 'none' as const } : undefined)
+    const policy = this.getBudgetPolicy()
     if (!policy) { this.agent.reasoningRecoveryPending = false; return buildRequest() }
     try {
       const request = await prepareContextRequest({ build: buildRequest, policy, signal: this.agent.abortController?.signal,
@@ -68,7 +72,7 @@ export class RequestContextController {
   }
 
   refreshSnapshot(): void {
-    const self = this.agent, policy = self.config.promptEngine.getRequestBudgetPolicy()
+    const self = this.agent, policy = this.getBudgetPolicy()
     if (!policy) return
     const request = self.config.promptEngine.buildOaiRequest(self.session.getMessages(), self.recentToolHistory, self.config.contextWindow)
     const visible = (self.config.primaryClient ?? self.config.client)?.previewContextRequest?.(request) ?? request
@@ -78,7 +82,8 @@ export class RequestContextController {
   async compact(force = false): Promise<boolean> {
     const self = this.agent, budget = this.snapshot
     if (!force && (!budget || budget.inputTokens <= budget.inputBudget)) return false
-    if (!self.config.budgetSummaryClient || !self.persist || !self.artifactStore || self.config.compact?.enabled === false) return false
+    // This is explicit or hard-limit recovery, not discretionary ratio compaction.
+    if (!self.config.budgetSummaryClient || !self.persist || !self.artifactStore) return false
     if (!force && budget && this.failedAt?.model === budget.model && this.failedAt.budget === budget.inputBudget
       && budget.inputTokens < this.failedAt.input + 32_768) return false
     const signal = self.abortController?.signal
@@ -96,7 +101,9 @@ export class RequestContextController {
       client: self.config.budgetSummaryClient(),
       model: self.config.promptEngine.getModel(), signal, protectedUser: activeUser,
       targetTokens: budget ? Math.floor(budget.inputBudget * 0.7) - 16_384 : undefined,
-      minReclaimTokens: 32_768,
+      // Preserve the paid prefix under ordinary pressure, but do not reject a
+      // useful emergency reclaim merely because it is smaller than the 32K cost floor.
+      minReclaimTokens: force ? 1 : Math.min(32_768, Math.max(1, budget!.inputTokens - budget!.inputBudget)),
       recordUsage: usage => self.recordSidePathUsage('compact-summary', usage, self.config.promptEngine.getModel()),
       recordEvent: event => { this.lastCompactReason = event.reason; self.session.recordCompactEvent({ turn: self.session.getTurnCount(), tier: 4, createdAt: Date.now(), ...event }) },
       archiveRejectedReport: async (text, reason) => {

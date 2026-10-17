@@ -86,7 +86,13 @@ async function runRescue(t: import('node:test').TestContext, options: {
     for (const probe of probes) if (!probe.closed) probe.child.kill()
     await Promise.all(probes.map(probe => probe.done))
     if (options.holdGit) { t.mock.restoreAll(); syncBuiltinESMExports() }
-    agent.stopConfigWatcher(); agent.stopFsWatcher(); rmSync(cwd, { recursive: true, force: true })
+    agent.stopConfigWatcher()
+    agent.stopFsWatcher()
+    await agent.cancelIdleCompaction()
+    await agent.drainPostSession()
+    await agent.drainPersistWrites()
+    await agent.persist?.drainFrozenSnapshots()
+    rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
   const aborts: Array<string | undefined> = []
   const errors: unknown[] = []

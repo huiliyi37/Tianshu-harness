@@ -76,6 +76,18 @@ export function capOutputReserve(maxTokens: number, windowTokens?: number): numb
   return Math.min(maxTokens, DEEPSEEK_OUTPUT_RESERVE, windowCap)
 }
 
+/** Generic budgets use only the configured window, never a vendor's transport contract. */
+export function genericBudgetPolicy(windowTokens?: number): RequestBudgetPolicy | undefined {
+  if (windowTokens === undefined || !Number.isFinite(windowTokens) || windowTokens <= 0) return undefined
+  return { windowTokens, maxOutputTokens: windowTokens, transportLimits: 'none' }
+}
+
+/** Budget enforcement and transactional recovery must opt in together, including relays. */
+export function resolveRequestBudgetPolicy(baseUrl: string, model: string, configuredWindow?: number, canPreviewOfficial = false): RequestBudgetPolicy | undefined {
+  return (canPreviewOfficial ? deepSeekBudgetPolicy(baseUrl, model, configuredWindow) : undefined)
+    ?? genericBudgetPolicy(configuredWindow)
+}
+
 export function inputBudgetFor(windowTokens: number, outputReserve: number): { inputBudget: number; safetyMargin: number } {
   const safetyMargin = Math.max(Math.min(16_384, Math.ceil(windowTokens * 0.1)), Math.ceil(windowTokens * 0.05))
   return { inputBudget: Math.max(0, windowTokens - outputReserve - safetyMargin), safetyMargin }

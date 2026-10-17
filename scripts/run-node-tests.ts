@@ -1,6 +1,6 @@
 import { sealCompletionRun } from '../src/tools/test-completion.js'
 import { glob, mkdir } from 'node:fs/promises'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, realpathSync } from 'node:fs'
 import { constants, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { nodeTestFlags, resolveTestTimeoutMs, resolveTestConcurrency } from './test-runner-flags.js'
@@ -27,9 +27,12 @@ const pathFilters = args
 // temp dir is not writable (the original EPERM issue, commit 7cc487b2).
 function resolveTestTmp(): string {
   try {
-    const probe = mkdtempSync(join(tmpdir(), 'rivet-tmp-probe-'))
+    // libuv reports long Win32 paths: expand inherited 8.3 aliases before
+    // allocating worker homes or forwarding TEMP/TMP to watcher-owning children.
+    const directory = process.platform === 'win32' ? realpathSync.native(tmpdir()) : tmpdir()
+    const probe = mkdtempSync(join(directory, 'rivet-tmp-probe-'))
     rmSync(probe, { recursive: true, force: true })
-    return tmpdir()
+    return directory
   } catch {
     return join(process.cwd(), '.test-tmp')
   }

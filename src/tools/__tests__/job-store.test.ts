@@ -4,11 +4,14 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SessionJobs, type JobEvent, type JobVerificationMeta } from '../job-store.js'
+import { installWindowsJobLauncherFixture } from './windows-job-launcher-fixture.js'
 
 // These tests spawn real short-lived shell commands via the platform shell
 // (sh -c on POSIX). They assume a POSIX-ish shell — consistent with the rest of
 // the bash tool tests in this suite.
 
+const restoreJobLauncher = installWindowsJobLauncherFixture()
+after(restoreJobLauncher)
 const env = { ...process.env }
 
 function makeStore(): { store: SessionJobs; dir: string } {

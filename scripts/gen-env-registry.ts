@@ -14,14 +14,11 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { globSync } from 'node:fs'
+import type { EnvRegistryEntry } from '../src/config/env-registry-types.js'
 
 const SRC_ROOT = join(process.cwd(), 'src')
 
-interface EnvEntry {
-  name: string
-  files: string[]
-  defaultHint: string
-}
+type EnvEntry = Omit<EnvRegistryEntry, 'description'>
 
 function collectEnvVars(): Map<string, EnvEntry> {
   const map = new Map<string, EnvEntry>()
@@ -106,12 +103,8 @@ function generateRegistry(entries: EnvEntry[], descriptions: Map<string, string>
     ' * name/defaultHint/files 由 scripts/gen-env-registry.ts 生成；description 人工维护，重生成时按 name 保留。',
     ' * 默认值提示来自源码 ??/||；引用路径相对 src/；assembly-audit.test.ts 双向校验完整性。',
     ' */',
-    'export interface EnvRegistryEntry {',
-    '  name: string',
-    '  defaultHint: string',
-    '  files: string[]',
-    '  description: string',
-    '}',
+    "import type { EnvRegistryEntry } from './env-registry-types.js'",
+    "export type { EnvRegistryEntry } from './env-registry-types.js'",
     `export const ENV_REGISTRY: EnvRegistryEntry[] = [`,
   ]
 

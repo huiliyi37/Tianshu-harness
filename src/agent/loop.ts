@@ -192,7 +192,7 @@ export class AgentLoop {
   compactContextBudget(force = false): Promise<boolean> { return this.requestContext.compact(force) }
   async compactContext(): Promise<boolean> {
     if (this._running) throw new Error('请等待当前任务结束后整理上下文')
-    if (!this.config.promptEngine.getRequestBudgetPolicy()) throw new Error('当前模型尚未接入安全手动整理')
+    if (!this.requestContext.getBudgetPolicy()) throw new Error('无法确定模型上下文窗口，请检查模型的 contextWindow 配置后重试整理')
     this._running = true
     try {
       await waitForAgentRewind(this)

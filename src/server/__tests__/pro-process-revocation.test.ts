@@ -15,10 +15,15 @@ import { buildGrantPayload, makeTestSigner, signGrant } from '../../config/__tes
 import { ToolRegistry } from '../../tools/registry.js'
 import { __setProGrantPublicKeyForTests } from '../../config/pro-license.js'
 import { withProviderRequirement } from '../../api/execution-continuity.js'
-import { createIsolatedBackend } from '../../pro/runtime/backend.js'
+import { proModulePresent } from '../../api/pro-registry.js'
+import type { ExecutionBackend } from '../execution-backend.js'
 import type { AgentCallbacks } from '../../agent/loop-types.js'
 
-it('native deny ACK covers an existing detached worker, startup replay and missing child ACK', { timeout: 30000 }, async () => {
+// Public builds omit the isolated backend; a present but broken module must still fail.
+it('native deny ACK covers an existing detached worker, startup replay and missing child ACK', { timeout: 30000, skip: !proModulePresent() && 'closed-source Pro modules are not distributed in public builds' }, async () => {
+  const { createIsolatedBackend } = await import(new URL('../../pro/runtime/backend.js', import.meta.url).href) as {
+    createIsolatedBackend(options: { engineEntry: string }): ExecutionBackend
+  }
   const home = mkdtempSync(join(tmpdir(), 'managed-pro-denial-'))
   const saved = new Map(['RIVET_HOME', 'RIVET_DESKTOP', 'RIVET_PRO_GRANT', 'RIVET_PRO_DEVICE_ID'].map(key => [key, process.env[key]]))
   const signer = makeTestSigner()

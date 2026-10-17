@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildContextBudget, capOutputReserve, deepSeekBudgetPolicy, DEEPSEEK_WINDOW, estimateBudgetInput } from '../request-budget.js'
+import { buildContextBudget, capOutputReserve, deepSeekBudgetPolicy, DEEPSEEK_WINDOW, estimateBudgetInput, genericBudgetPolicy, resolveRequestBudgetPolicy } from '../request-budget.js'
 import { estimateOaiMessageTokens } from '../../compact/micro.js'
 
 test('multimodal CJK uses the same text accounting as plain text', () => {
@@ -71,4 +71,32 @@ test('native image count and per-image bytes fail visibly without discarding inp
   assert.equal(deepSeekImageLimitError([{ role: 'user', content: Array(601).fill(image) }])?.name, 'ImageInputRejectedError')
   const huge = { type: 'image_url' as const, image_url: { url: 'data:image/png;base64,' + 'A'.repeat(Math.ceil(32 * 1024 * 1024 / 3) * 4 + 4) } }
   assert.equal(deepSeekImageLimitError([{ role: 'user', content: [huge] }])?.name, 'ImageInputRejectedError')
+})
+
+
+test('self-hosted models join budget recovery without inheriting DeepSeek transport limits', () => {
+  const policy = resolveRequestBudgetPolicy('https://self-hosted.example/v1', 'deepseek-flash', 524_288, true)
+  assert.deepEqual(policy, { windowTokens: 524_288, maxOutputTokens: 524_288, transportLimits: 'none' })
+  const budget = buildContextBudget({ model: 'deepseek-flash', max_tokens: 300_000, messages: [] }, policy!, { requestId: 'custom', revision: 0 })
+  assert.equal(budget.outputReserve, capOutputReserve(300_000, 524_288), 'keep the existing shared output cap unchanged')
+})
+
+test('configured generic models can recover even without a transport preview hook', () => {
+  assert.deepEqual(resolveRequestBudgetPolicy('https://self-hosted.example/v1', 'custom', 524_288), genericBudgetPolicy(524_288))
+  const policy = genericBudgetPolicy(524_288)!
+  const budget = buildContextBudget({ model: 'custom', max_tokens: 256_000, messages: [] }, policy, { requestId: 'custom', revision: 0 })
+  assert.equal(budget.inputBudget, 242_073, 'the screenshot budget is preserved, not bypassed')
+})
+
+test('unknown windows are not invented for generic model compaction', () => {
+  for (const window of [undefined, 0, -1, Number.NaN, Infinity]) {
+    assert.equal(genericBudgetPolicy(window), undefined)
+    assert.equal(resolveRequestBudgetPolicy('https://self-hosted.example/v1', 'custom', window, true), undefined)
+  }
+})
+
+test('verified official DeepSeek budgeting keeps its existing contract', () => {
+  assert.deepEqual(resolveRequestBudgetPolicy('https://api.deepseek.com/v1', 'deepseek-flash', 524_288, true),
+    deepSeekBudgetPolicy('https://api.deepseek.com/v1', 'deepseek-flash', 524_288))
+  assert.equal(resolveRequestBudgetPolicy('https://api.deepseek.com/v1', 'deepseek-flash', 524_288, false)?.transportLimits, 'none')
 })

@@ -38,3 +38,16 @@ test('directory and SKILL.md entry preserve references without duplicate scan or
     assert.equal(registry.get('flat')?.body, 'Flat body')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('readPackage skips rebuildable Python bytecode caches but keeps real resources', () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-package-pyc-'))
+  const pkg = join(root, 'py')
+  mkdirSync(join(pkg, 'scripts', '__pycache__'), { recursive: true })
+  writeFileSync(join(pkg, 'SKILL.md'), '---\nname: py\ndescription: Py\n---\nBody')
+  writeFileSync(join(pkg, 'scripts', 'run.py'), 'print(1)')
+  writeFileSync(join(pkg, 'scripts', '__pycache__', 'run.cpython-312.pyc'), 'bytecode')
+  writeFileSync(join(pkg, 'scripts', 'stray.pyc'), 'bytecode')
+  try {
+    assert.deepEqual(readPackage(pkg).files.map(f => f.path), ['SKILL.md', 'scripts/run.py'])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

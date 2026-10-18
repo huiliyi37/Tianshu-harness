@@ -76,7 +76,8 @@ export function readPackage(path: string): SkillPackage {
     inside(realpathSync(root), realpathSync(file))
     if (st.isDirectory()) {
       for (const entry of readdirSync(file).sort()) {
-        if (entry === '.git' || isFilesystemMetadata(entry)) continue
+        // __pycache__/*.pyc 是可重建的解释器缓存，随快照逐会话复制只会放大磁盘占用（issue #512）
+        if (entry === '.git' || entry === '__pycache__' || entry.endsWith('.pyc') || isFilesystemMetadata(entry)) continue
         read(join(file, entry), `${name ? name + '/' : ''}${entry}`, depth + 1)
       }
     } else {

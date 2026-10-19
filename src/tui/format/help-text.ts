@@ -111,6 +111,8 @@ export const HELP_TEXT = `天枢帮助
 /context [pin|claims|antibodies|conflicts|reload|export|import] — Context ledger
 /memory [text|add|search|forget] — Session memory entries
 /debug [prompt|fingerprint|cache|context-payload|mcp] — Debug info
+/repair-prefix — 会话空闲时检查前缀证据并预览恢复方案（不直接修复）
+/repair-prefix --confirm <recoveryId> — 使用预览返回的 ID 确认恢复；保留聊天，不重放已完成工具，下一条输入继续原会话
 /mcp — Show MCP server status
 /logs [open [desktop]] — 本会话日志落点（会话 / 缓存 / 六维 / 桌面 sidecar），带写入门控与回收策略；open 直接在文件管理器里打开
 /sensorium — Show 天枢 3D self-awareness state

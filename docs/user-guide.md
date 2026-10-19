@@ -71,7 +71,7 @@ tianshu --goal "修复所有类型错误" --budget 50   # 无头目标自主模�
 | `--skip-welcome` | 跳过欢迎屏 |
 | `--stream-events <path>` | 把本次 run 镜像为 NDJSON `SessionEvent` 写入文件（TUI 与 `-p`/`--goal` 均支持；无头下与 `--stream-json` 同源、同一份脱敏口径。事件按行追加，可 `tail -f` / `jq` 消费；run 期间实时增长） |
 
-子命令：`tianshu config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`tianshu provider`（Provider 与模型管理：`add | list | models | probe | remove`）、`tianshu skills`（技能管理：`list | inspect | add | mode | update | remove | doctor | drafts | approve | reject | generate`）、`tianshu serve`（启动 sidecar HTTP/SSE）、`tianshu sessions`（列会话）、`tianshu logs`（日志落点）、`tianshu browser status` / `tianshu browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）、`tianshu web`（命令行搜索与抓取：`search | fetch | status`）。
+子命令：`tianshu config`（查看配置命令帮助；交互式 Provider 配置使用 TUI `/connect`）、`tianshu provider`（Provider 与模型管理：`add | list | models | probe | remove`）、`tianshu skills`（技能管理：`list | inspect | add | mode | update | remove | doctor | draft | drafts | approve | reject | generate`）、`tianshu serve`（启动 sidecar HTTP/SSE）、`tianshu sessions`（列会话）、`tianshu logs`（日志落点）、`tianshu browser status` / `tianshu browser install [--no-mirror]`（`browser_debug` 所需 chromium 的体检与一键安装，默认走国内镜像）、`tianshu web`（命令行搜索与抓取：`search | fetch | status`）。
 
 ### 事件流文件（`--stream-events`）
 
@@ -330,6 +330,21 @@ Worker 模型路由配置见 [Provider 配置手册](user-guide-provider-config.
 /skill visual-acceptance <你的任务>    # 加载并立即执行该 skill
 /skill off visual-acceptance           # 停止重复注入该 skill
 ```
+
+**对话式创建**：在新会话中输入 `/skill skill-creator 帮我创建一个按公司格式写周报的技能`，也可直接描述创建需求。内置技能会引导确认目标、触发场景、输入输出、边界与个人/项目范围，再生成单文件草稿。`description` 用于告诉模型何时选择技能，不只是显示名称。
+
+草稿保存与审核命令（`tianshu` 与 `rivet` 等价）：
+
+```bash
+tianshu skills draft weekly-report --file /absolute/path/weekly-report.md --scope project --project /absolute/project --json
+tianshu skills drafts --scope project --project /absolute/project --json
+# 审阅内容后明确批准；放弃则把 approve 换成 reject
+tianshu skills approve weekly-report --scope project --project /absolute/project
+```
+
+`--file` 相对 `--project`（省略时为当前目录）解析；`--scope personal` 保存到个人范围。`draft` 校验 YAML、非空描述和正文，保存原文而不再次调用模型；同名草稿可再次保存修改。草稿在批准前不可调用，批准后仅对新会话生效。该流程检查文档，不等于实际执行过生成的技能。
+
+桌面“让 AI 帮我创建”按钮、新窗口和预填仍需闭源桌面仓接入；仅有 sidecar、没有 CLI 的桌面环境需通过既有草稿接口保存。接入约定见[设计说明](design/2026-10-19-conversational-skill-creation.md#桌面接入由维护者在闭源仓完成)。
 
 也可在 `.rivet/skills/` 放一个带 YAML frontmatter（`name`、`description`、`triggers`）的 `.md` 自定义 skill：
 

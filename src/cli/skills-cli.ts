@@ -4,6 +4,9 @@ import { SkillDrafts } from '../skills/skill-drafts.js'
 import { completeSkillDraft } from '../skills/skill-draft-model.js'
 import type { SkillMode } from '../skills/skill-metadata.js'
 import { exportSessionSkillSnapshot, migrateSessionSkillSnapshot } from '../skills/skill-snapshot-maintenance.js'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { parseSkillMarkdown } from '../skills/skill-loader.js'
 
 export async function runSkillsCLI(args: string[], options: { cwd?: string; management?: SkillManagement } = {}): Promise<{ output: string; exitCode: number }> {
   const service = options.management ?? new SkillManagement(), imports = new SkillImports(service)
@@ -62,6 +65,13 @@ export async function runSkillsCLI(args: string[], options: { cwd?: string; mana
         result = imports.install(preview.previewId, context, selected.map(c => ({ candidateId: c.candidateId, name: value('--name'),
           conflict: args.includes('--overwrite') ? 'overwrite' : 'skip', expectedVersion: value('--version') })))
       }
+    } else if (command === 'draft') {
+      const context = target(), name = args[1], file = value('--file')
+      if (!name || name.startsWith('--') || !file || file.startsWith('--')) throw new Error('Usage: rivet skills draft <name> --file <markdown-path> --scope personal|project [--project /absolute/path]')
+      const content = readFileSync(resolve(cwd, file), 'utf8')
+      const skill = parseSkillMarkdown(content, name)
+      if (!skill.description.trim() || !skill.body.trim()) throw new Error('Skill draft requires a description and instructions')
+      result = new SkillDrafts(service).save(context, name, content)
     } else if (command === 'drafts') result = new SkillDrafts(service).list(target())
     else if (command === 'approve') result = new SkillDrafts(service).approve(target(), args[1]!)
     else if (command === 'reject') result = new SkillDrafts(service).reject(target(), args[1]!)
@@ -78,7 +88,7 @@ export async function runSkillsCLI(args: string[], options: { cwd?: string; mana
         result = imports.install(preview.previewId, { scope: skill.scope, cwd }, [{ candidateId: candidate.candidateId, name: skill.name, conflict: 'overwrite', expectedVersion: skill.version }])
       }
     }
-    else throw new Error('Commands: list, inspect, add, mode, update (preview), remove, doctor, snapshot-migrate (dry-run; --apply), snapshot-export')
+    else throw new Error('Commands: list, inspect, add, mode, update (preview), remove, doctor, draft, drafts, approve, reject, generate, snapshot-migrate (dry-run; --apply), snapshot-export')
     return { output: args.includes('--json') ? JSON.stringify(result, null, 2) : format(result), exitCode: 0 }
   } catch (error) { return { output: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), exitCode: 1 } }
 }

@@ -22,7 +22,7 @@ import { isOfficialDeepSeek, deepSeekBudgetPolicy, buildContextBudget, assertCon
 import type { ContextBudgetSnapshot } from '../server/protocol.js'
 import { classifyApiError } from './error-classifier.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
-import { sanitizeMessageContent, countContentChars, FULL_SANITIZE_CHARS } from '../utils/sanitize.js'
+import { sanitizeMessageContent } from '../utils/sanitize.js'
 import { parseOpenAIError } from './error-hints.js'
 import { createBodyGuardNotifyState, enforceRequestBodyLimit, notifyBodyGuard } from './request-body-guard.js'
 import { stableStringify } from './stable-json.js'
@@ -448,7 +448,6 @@ export class OpenAIClient implements StreamClient {
     this.systemSuffix = Boolean(config.preservedThinkingProtocol) && config.thinking === 'enabled'
       ? '\n\n请在内部思考链中使用中文进行推理。不要在回复中输出你的推理过程，只输出最终答案或工具调用。'
       : ''
-    this._sanitizedCount = 0
     this.proxyDispatcher = config.proxy ? new ProxyAgent(config.proxy) : undefined
   }
 
@@ -461,14 +460,6 @@ export class OpenAIClient implements StreamClient {
     })
   }
 
-  // ── Incremental sanitize ─────────────────────────────────────
-  // Historical messages are already sanitized at entry points
-  // (addUserMessage/addAssistantBlocks/addToolResults). Re-sanitizing
-  // the full message array every turn is O(history) overhead that grows
-  // linearly with conversation length — particularly wasteful at 1M
-  // context windows. We track the sanitized count and only apply the
-  // safety-net sanitize to newly appended messages.
-  private _sanitizedCount: number
   /** body 护栏上报节律（跨请求保持；去重语义见 notifyBodyGuard）。 */
   private readonly bodyGuardNotify = createBodyGuardNotifyState()
 
@@ -695,28 +686,10 @@ export class OpenAIClient implements StreamClient {
       }
     }
 
-    // Incremental sanitize: only re-sanitize messages appended since last
-    // request. Historical messages were already sanitized at entry points
-    // (addUserMessage/addAssistantBlocks/addToolResults). This avoids O(n)
-    // overhead that grows linearly with conversation length.
-    //
-    // 大体积请求（>FULL_SANITIZE_CHARS）一律全量清洗：增量路径会漏掉「历史段被原地
-    // 改写」与「client 实例跨数组复用」两处窗口，而漏过的一个控制字符在 wire 上就是
-    // `\u00XX` 转义——正是上游按字节截断 body 时的切口（maxBodyBytes 护栏只是兜底且默认关闭，源头也得
-    // 干净）。全量扫描与本次必做的 JSON.stringify 同阶，1M 字符以上已可忽略。
-    const msgArray = body.messages as Array<Record<string, unknown>>
-    if (msgArray.length <= this._sanitizedCount || countContentChars(msgArray) > FULL_SANITIZE_CHARS) {
-      // Compaction / message replacement / 大体积请求: reset and full sanitize
-      this._sanitizedCount = 0
-    }
-    const newMessages = msgArray.slice(this._sanitizedCount)
-    if (newMessages.length > 0) {
-      const sanitizedNew = sanitizeMessageContent(newMessages)
-      for (let i = 0; i < sanitizedNew.length; i++) {
-        msgArray[this._sanitizedCount + i] = sanitizedNew[i]!
-      }
-      this._sanitizedCount = msgArray.length
-    }
+    // 冻结历史每轮重建的是清洗前内容，不能按上次消息数跳过历史（issue #521）。
+    // 每次清洗完整发送副本，保证续跑和重发得到相同 wire 字节；不改调用方历史。
+    const msgArray = sanitizeMessageContent(body.messages as Array<Record<string, unknown>>)
+    body.messages = msgArray
 
     // Wire-level prefix probe (2026-07-06 cache investigation): fingerprint the
     // FINAL messages — everything above (reasoning-strip, system-suffix,

@@ -1,135 +1,110 @@
 <p align="center">
-  <img src="docs/brand/assets/tianshu-banner-dark.jpg" alt="天枢 Tianshu" width="100%">
+  <img src="docs/brand/assets/tianshu-banner-dark.jpg" alt="天枢 Tianshu Harness" width="100%">
 </p>
 
-<h1 align="center">天枢 <sub>Tianshu Harness</sub></h1>
+<h1 align="center">天枢 Tianshu Harness</h1>
 
 <p align="center">
-  <b>把东方的星辰带给每一位开发者 · Models as partners, not tools.</b>
-</p>
-
-<p align="center">
-  <a href="https://tianshuharness.com"><b>🌐 官网</b></a> ·
-  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><b>🇨🇳 AtomGit 镜像</b></a> ·
-  🇨🇳 <b>中文</b> ·
-  <a href="README.en.md">English</a> ·
-  <a href="README.ja.md">日本語</a> ·
-  <a href="README.ko.md">한국어</a>
+  <b>面向编程智能体的认知运行时</b><br>
+  <sub>目标不漂移 · 完成有证据 · 验证有闭环</sub>
 </p>
 
 <p align="center">
-  <a href="docs/user-guide.md"><b>📚 用户手册</b></a> ·
-  <a href="docs/guides/installation.md"><b>📦 安装指南</b></a> ·
-  <a href="docs/reference/cvm-cognitive-runtime.md"><b>🧠 CVM 理念</b></a> ·
-  <a href="docs/CVM运行时对Agent模型的实证影响.md"><b>📊 A/B 实证</b></a> ·
-  <a href="docs/stars/genesis-stele.md"><b>✦ 星域碑文</b></a>
+  <a href="https://github.com/huiliyi37/Tianshu-harness/releases/latest"><img src="https://img.shields.io/github/v/release/huiliyi37/Tianshu-harness?color=8B5CF6&label=Release&logo=github" alt="Release"></a>
+  <a href="https://www.npmjs.com/package/tianshu-harness"><img src="https://img.shields.io/npm/v/tianshu-harness?color=CB3837&label=npm&logo=npm" alt="npm"></a>
+  <a href="https://tianshuharness.com"><img src="https://img.shields.io/badge/Website-tianshuharness.com-4285F4?logo=googlechrome&logoColor=white" alt="Website"></a>
+  <a href="docs/user-guide.md"><img src="https://img.shields.io/badge/Docs-%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C-FBBC04" alt="Docs"></a>
+  <a href="https://discord.gg/XjWTATCHB"><img src="https://img.shields.io/badge/Discord-%E4%BA%A4%E6%B5%81%E7%BE%A4-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-34A853" alt="License"></a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/huiliyi37/Tianshu-harness?color=8B5CF6&label=Release&logo=github&style=for-the-badge" alt="GitHub release">
-  <img src="https://img.shields.io/badge/License-Apache%202.0-3B5BDB?style=for-the-badge&logo=apache" alt="License">
-  <img src="https://img.shields.io/badge/TypeScript-Strict-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Tests-19%2C000%2B%20Passed-green?style=for-the-badge&logo=testinglibrary" alt="Tests">
-  <a href="https://discord.gg/XjWTATCHB"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://atomgit.com/huiliyi37/Tianshu-harness"><img src="https://atomgit.com/huiliyi37/Tianshu-harness/star/badge.svg" alt="AtomGit Star"></a>
-  <a href="https://github.com/huiliyi37/Tianshu-harness/releases"><img src="https://img.shields.io/github/downloads/huiliyi37/Tianshu-harness/total?logo=github&label=downloads" alt="GitHub downloads"></a>
-  <a href="https://www.npmjs.com/package/tianshu-tui"><img src="https://img.shields.io/npm/dm/tianshu-tui?label=npm%20tianshu-tui" alt="npm tianshu-tui downloads"></a>
-  <a href="https://www.npmjs.com/package/tianshu-harness"><img src="https://img.shields.io/npm/dm/tianshu-harness?label=npm%20tianshu-harness" alt="npm tianshu-harness downloads"></a>
+  <a href="#安装"><b>安装</b></a> ·
+  <a href="#cvm-是怎么工作的"><b>原理</b></a> ·
+  <a href="#实证"><b>实证</b></a> ·
+  <a href="#星域"><b>星域</b></a> ·
+  <a href="docs/user-guide.md"><b>手册</b></a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <b>中文</b> · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="https://atomgit.com/huiliyi37/Tianshu-harness">AtomGit</a>
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/100440" target="_blank"><img src="https://trendshift.io/api/badge/trendshift/repositories/100440/daily?language=TypeScript" alt="Trendshift: TypeScript repository of the day" width="250" height="55"></a>
+  <img src="docs/brand/assets/readme-compare.svg" alt="收尾对比。左：没有交付门的 agent 读文件、改代码后直接声称「应该可以正常工作了」，没有任何验证。右：天枢的 deliver_task 交付门在没有测试时给出 RED 并拒绝交付，跑完测试后才给出 GREEN。" width="100%">
 </p>
 
----
+模型的**能力上限**不等于它的**运行行为**。同一套权重放进真实工程会话，会被质疑就让步、只照字面执行、让局部信息压过全局目标，或者反复调用工具却没有推进，最后留下一句「应该修好了」。
 
-### 面向 Foundation Model Agent 的认知运行时
+**天枢**是一个 TypeScript 编写的编程 agent 运行时，终端 TUI、桌面端和 VS Code 插件共用同一个内核。它在模型和真实世界之间加了一层**认知执行环境 CVM**（Cognitive Virtual Machine），把目标、状态、证据、权限和终止条件从对话历史里拿出来，交给运行时持续管理：
 
-> **天枢**是一个 TypeScript 编写的编程 agent 运行时，**终端 TUI** 与**桌面 GUI** 共享同一内核。它要回答的核心问题是：**模型何以稳定地交付——目标不漂移、完成有证据、验证有闭环，不说"应该修好了"**。为此它在模型与真实世界之间建立一层认知执行环境（CVM），把目标、状态、证据、资源、权限与终止条件从对话历史中外部化，由运行时持续管理。
->
-> **模型提供认知能力，CVM 提供认知执行语义。LLM provides cognition. CVM provides execution semantics.**
+* **任务契约**：每个任务有独立的 `TaskContract`，记录目标、范围、约束和成功标准。长会话里的目标由运行时持有，不依赖模型「记得」。
+* **证据门控的交付**：「完成」要过 `deliver_task` 交付门。没有测试、diff 或验证命令作为证据，交付会被拦下。
+* **确定性监督外环**：75 个运行时 hook 模块分布在一个回合的五个阶段，配合 Sensorium 状态感知与收敛、空转检测，在模型输出与真实动作之间做观测和纠偏。
 
-```
-Application / TUI / IDE / Desktop
-              ↓
-   Tianshu Cognitive Runtime      ← 状态 · 目标 · 证据 · 控制 · 回放
-              ↓
-       Foundation Models          ← DeepSeek · GLM · Claude · Codex · Grok · MiniMax · MiMo …
-```
-
-- **稳定交付，不虚报完成** —— 这是核心。任务契约（TaskContract）钉住全局目标，交付门禁要求「完成」必须带运行时证据（测试、diff、验证命令），收敛检测独立判断认知轨迹是否还在推进——模型说完成 ≠ 运行时确认完成。
-- **终端 × 桌面，一个内核** —— 纯 ANSI 自研 TUI（`tianshu`）与 Tauri 桌面端（macOS / Windows / Linux）共用同一 agent 内核，两端能力一致。
-- **认知虚拟机（CVM）** —— 75 个运行时 hook 横跨 5 大阶段，在模型输出与真实动作之间加一层可观测、可纠偏的认知运行时（[理念文档](docs/reference/cvm-cognitive-runtime.md) · [A/B 实证](docs/CVM运行时对Agent模型的实证影响.md)）。
-- **前缀缓存引擎，全模型适用** —— 冻结前缀 + 增量 appendix + 边界压缩，对所有支持前缀缓存的模型生效：各家模型长会话实测稳态命中率均在 **95–99%**（DeepSeek V4 另有针对性优化），显著降低 token 成本。
+<table>
+  <tr>
+    <td align="center" width="25%"><b>99.3–99.6%</b><br><sub>5 个真实长会话的<br>前缀缓存命中率</sub></td>
+    <td align="center" width="25%"><b>¥880 → ¥20</b><br><sub>同一批会话按刊例价<br>估算的 input 成本</sub></td>
+    <td align="center" width="25%"><b>25 项</b><br><sub>模型服务商预设<br>另支持 OpenAI 兼容端点</sub></td>
+    <td align="center" width="25%"><b>2.2 万条</b><br><sub>测试用例<br>与源码规模约 1:1</sub></td>
+  </tr>
+</table>
 
 <p align="center">
-  <img src="docs/brand/assets/tianshu-harness-screenshot.png" alt="天枢 TUI（终端版）" width="49%">
-  <img src="docs/brand/assets/tianshu-gui-screenshot.jpg" alt="天枢桌面端 GUI" width="49%">
+  <img src="docs/brand/assets/tianshu-harness-screenshot.png" alt="天枢终端 TUI：欢迎页与 GlanceBar 状态栏" width="49%">
+  <img src="docs/brand/assets/tianshu-gui-screenshot.jpg" alt="天枢桌面端：会话侧栏与星域速选" width="49%">
 </p>
-<p align="center">
-  <sub>左：终端 TUI（欢迎页 + GlanceBar 状态栏） · 右：桌面端 GUI（会话侧栏 + 星域速选）——同一 agent 内核</sub>
-</p>
+<p align="center"><sub>左：终端 TUI　·　右：桌面端　·　同一个 agent 内核</sub></p>
 
 > [!NOTE]
-> 本项目最初的开发代号为 **Rivet**。CLI 主命令现为 `tianshu`，`rivet` 保留为兼容别名（同一入口）；数据目录仍为 `~/.rivet`。
+> 开发代号是 **Rivet**。CLI 主命令是 `tianshu`，`rivet` 是同一入口的兼容别名；数据目录仍为 `~/.rivet`。
 
 ## 目录
 
-- [快速开始](#-快速开始)
-- [为什么是认知运行时](#-为什么是认知运行时)
+- [安装](#安装)
+- [第一个任务](#第一个任务)
+- [CVM 是怎么工作的](#cvm-是怎么工作的)
+- [实证](#实证)
 - [星域](#星域)
-- [核心特性](#-核心特性)
-- [权限模式](#-权限模式)
-- [支持的模型](#-支持的模型)
-- [文档导航](#-文档导航)
-- [面向开发者](#-面向开发者)
-- [安全](#-安全)
-- [社区与支持](#-社区与支持)
+- [更多能力](#更多能力)
+- [支持的模型](#支持的模型)
+- [权限与安全](#权限与安全)
+- [文档](#文档)
+- [参与开发](#参与开发)
+- [社区](#社区)
+- [许可证](#许可证)
 
-<a id="快速开始"></a>
-## 🚀 快速开始
+## 安装
 
-两条路。桌面端下载安装包，打开就能用，不需要先装 Node。终端 CLI 要求 **Node.js ≥ 24**。
+<table>
+<tr>
+<td width="50%" valign="top">
 
-### 桌面端
-
-安装包在 [GitHub Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest)。macOS、Windows、Linux 用的是同一个 agent 内核。
-
-**macOS**（11 及以上，Apple Silicon 与 Intel 各一包）
-
-下载 `.dmg`，打开后把 `Tianshu` 拖进「应用程序」。
-
-首次打开如果系统说应用已损坏，包本身没坏。当前 macOS 包是 ad-hoc 签名，还没有 Apple 公证，Gatekeeper 会拦截浏览器下载的应用。拖进「应用程序」后，在终端执行一次：
+**终端 CLI**（Node.js 24+）
 
 ```bash
-xattr -cr /Applications/Tianshu.app
+npm install -g tianshu-harness
+tianshu
 ```
 
-之后正常双击打开。应用内自动更新不受这条限制。
+看到 `〉` 提示符即就绪。首次启动会自动打开 `/connect` 向导，选服务商、粘贴 API Key。
 
-**Windows**（Windows 10 1809 及以上，建议 22H2；或 Windows 11）
+</td>
+<td width="50%" valign="top">
 
-下载 `.exe` 安装向导，按提示安装。界面依赖 WebView2 Runtime（建议 120 及以上）。3.5.3 起安装器自带离线安装包，安装时不需要再联网下载运行时。
+**桌面端**（无需 Node）
 
-窗口完全打不开时，用开始菜单里的「修复 WebView2」，或从同一 Release 的 `windows-repair` 目录双击 `repair-webview2.cmd`。也可以手动安装 [WebView2 离线安装包](https://go.microsoft.com/fwlink/p/?LinkId=2124703) 后重启。
+从 [Releases](https://github.com/huiliyi37/Tianshu-harness/releases/latest) 下载：
 
-**Linux**（x86_64 与 aarch64，3.26.0 起双架构）
+- macOS 11+：`.dmg`，Apple Silicon / Intel
+- Windows 10 1809+ / 11：`-setup.exe`
+- Linux x86_64 / aarch64：`.AppImage`
 
-下载 AppImage，免安装。按机器架构选包：
+</td>
+</tr>
+</table>
 
-- `Tianshu_*_amd64.AppImage`：x86_64 台式机和笔记本
-- `Tianshu_*_aarch64.AppImage`：ARM64（树莓派 64 位、ARM Linux 笔记本）
-
-```bash
-chmod +x Tianshu_*.AppImage
-./Tianshu_*.AppImage
-```
-
-需要 glibc 2.35 及以上（Ubuntu 22.04+、Debian 12+ 等），以及系统图形库 `libwebkit2gtk-4.1` 和 `libgtk-3`。多数桌面发行版已经带这套库。精简系统缺库时，按发行版安装 webkit2gtk 4.1，再用 `ldd Tianshu_*.AppImage` 看还缺什么。推荐 X11 会话（Wayland 尚未验证）。
-
-各平台的完整边界、语音输入和自动更新见 [安装与平台说明](docs/guides/installation.md)。
-
-### 终端（CLI）
+<details>
+<summary><b>一键安装脚本 · 从旧包迁移</b></summary>
 
 ```bash
 # macOS / Linux
@@ -137,286 +112,271 @@ bash <(curl -fsSL https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/ma
 
 # Windows（PowerShell）
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/huiliyi37/Tianshu-harness/main/scripts/install-tui.ps1 | iex"
-
-# 或 npm
-npm install -g tianshu-harness
 ```
 
-> **从旧包 `tianshu-tui` 迁移**：旧包占着 `rivet` 命令链接，直接装新包会报 `EEXIST`——先卸再装：`npm uninstall -g tianshu-tui && npm install -g tianshu-harness`（一键安装脚本已内置该迁移，自动处理）。
+从旧包 `tianshu-tui` 迁移时会因 `rivet` 命令链接冲突报 `EEXIST`，先执行 `npm uninstall -g tianshu-tui`。一键安装脚本会自动处理。
 
-**首次运行**会先进入主界面，再自动打开 `/connect` 向导——在那里选择服务商并粘贴 API Key：
+</details>
+
+<details>
+<summary><b>桌面端各平台注意事项</b></summary>
+
+- **macOS**：暂未 Apple 公证。首次打开提示「已损坏」时，拖进「应用程序」后执行一次 `xattr -cr /Applications/Tianshu.app`。应用内自动更新不受影响。
+- **Windows**：界面依赖 WebView2，安装器自带离线包。窗口打不开时用开始菜单里的「修复 WebView2」，或运行 Release 中 `windows-repair` 目录下的 `repair-webview2.cmd`。
+- **Linux**：需要 glibc 2.35+（Ubuntu 22.04+、Debian 12+），以及 `libwebkit2gtk-4.1` 与 `libgtk-3`。推荐 X11 会话，Wayland 尚未验证。`chmod +x Tianshu_*.AppImage` 后直接运行。
+
+</details>
+
+Android Termux、源码构建、Shell 补全和自动更新见 [安装指南](docs/guides/installation.md)。
+
+## 第一个任务
+
+先让它只读地认识你的项目，确认读得准，再给一个多步任务：
+
+```text
+〉 阅读这个项目，告诉我它的结构、入口在哪、以及一处最值得改进的地方
+〉 修复这个项目里第一个失败的测试，并说明根因
+```
+
+它会自己搜索、读文件、改代码、跑测试。默认权限档是**自动**：低风险动作直接执行，高风险动作停下来问你。做完之后看三处：
+
+| 看哪里 | 看什么 |
+|---|---|
+| **交付报告** | 交付门状态（GREEN / YELLOW / RED）、改动的文件、跑过的验证、逐条完成度审计 |
+| **`/cockpit` 驾驶舱** | 8 面板运行时仪表：验证与交付、提醒台账、缓存命中与成本、风险与空转（`F4`） |
+| **`sensorium.jsonl`** | 每个回合的状态感知与 CVM 判定记录。`tianshu logs` 列出路径，可用 `jq` 复算 |
+
+<details>
+<summary><b>无头模式：脚本与 CI 集成</b></summary>
 
 ```bash
-tianshu            # 看到 〉 提示符即就绪
+tianshu -p "解释 src/agent/loop.ts"            # 单次提示
+tianshu --stream-json -p "重构这个模块"        # NDJSON 事件流，输出内置脱敏
+tianshu --goal "修复所有类型错误" --budget 50  # 目标驱动的自主续跑
 ```
 
-### 第一个任务
+参数全表和子命令见 [用户手册](docs/user-guide.md#命令行参数)。
 
-先让它**只读**地认识你的项目（不改任何东西）：
+</details>
 
-```
-阅读这个项目，告诉我它的结构、入口在哪、以及一处最值得改进的地方
-```
+## CVM 是怎么工作的
 
-确认它读得准之后，再给一个**多步任务**：
+<p align="center">
+  <img src="docs/brand/assets/readme-cvm-pipeline.svg" alt="天枢 CVM 流水线：输入经任务契约、星域绑定、冻结前缀提示词进入回合循环；RuntimeHookPipeline 在 preTurn、afterPerception、postTool、postTurn、postSession 五个阶段介入，内环是模型认知，外环是运行时监督；最后由 deliver_task 按证据给出 RED、YELLOW、GREEN 并沉淀到跨会话记忆。" width="100%">
+</p>
 
-```
-修复这个项目里第一个失败的测试，并说明根因
-```
+经过指令与偏好对齐的模型，在 agent 场景下会呈现相似的运行时退化，我们称之为 **Cognitive Anchor Collapse**：一个高显著性的局部信号让策略过度集中，全局目标和后续证据失去权重，行为向这个锚点坍缩。Prompt 是信息，不是状态，它本身也会变成新的锚点，所以这类问题靠写更好的提示词治不了。
 
-接下来它会自己 grep、读文件、改代码、跑测试——每一步都有对应的工具调用，不是"说完就结束"。默认权限档是**自动**：低风险动作直接执行，高风险动作会停下来问你（档位与会话内切换见下方 [权限模式](#-权限模式)）。
+CVM 不改权重，也不把模型变成确定性程序，而是在概率认知外面加一层确定性监督。模型在内环里推理和行动，运行时在外环里度量、把关、验证，决定继续、纠偏还是停下：
 
-### 做完之后看三处
-
-**① 交付报告** —— 收尾时天枢会调用 `deliver_task`，输出一块交付报告：交付门状态（GREEN / YELLOW / RED）、本次改动的文件、跑过的验证、逐条完成度审计。「完成」必须有证据；没有证据的收尾会被门禁拦下。
-
-**② Cockpit 驾驶舱** —— 输入 `/cockpit` 打开（`Ctrl+P` 命令面板里也能进）：
-
-| 面板 | 看什么 |
-|------|--------|
-| `/cockpit verify` | 交付验证：已验证 / 未验证 / 失败 / 受阻，跑过哪些命令、影响面多大 |
-| `/cockpit advisory` | 运行时提醒台账：累计渲染 / 采纳 / 忽略，以及每条提醒的采纳率与效果增益（lift） |
-| `/cockpit model` | 缓存命中率、输入输出 tokens、本轮成本 |
-| `/cockpit safety` | 风险等级与空转检测 |
-
-不带参数是总览，`/cockpit off` 关闭。
-
-**③ CVM 拦截台账** —— 运行时的每次拦截都逐条落在会话的 `sensorium.jsonl`。落点用 `tianshu logs` 查（会列出数据根与各日志路径）：
-
-```bash
-# 按分类复算本会话的拦截次数
-jq -r 'select(.kind=="cvm-vector-decision") | .classification' sensorium.jsonl | sort | uniq -c
+```text
+内环 · 模型认知    reason → decide → act → observe
+外环 · 运行时监督  observe → measure → evaluate → gate → verify → continue / correct / halt
 ```
 
-台账默认只写轻量行（`vitals-lite` / `cognitive-frame-lite`）；要看全量拦截记录，启动前设 `RIVET_DEBUG_TELEMETRY=1`。分类枚举与复算口径见[指标观测 harness](docs/reference/observability-harness.md)。
+| 层 | 机制 | 作用 |
+|---|---|---|
+| 1 · 信念宪法 | 星域信念块，写入静态提示词 | 零额外推理成本，在分析和建议阶段改变倾向 |
+| 2 · Courage Hook | `preTurn` 阶段，阈值随星域变化 | 检测到连续让步时，注入带义务语义的纠偏指令 |
+| 3 · Sensorium | 每回合由已有监控信号计算，不调用 LLM | 感知动量、压力、验证覆盖、复杂度、熟悉度、稳定性六个维度 |
+| 4 · RuntimeHookPipeline | 75 个 hook 模块，五个阶段，按会话条件装配 | 收敛与 doom-loop 检测、证据追踪、交付门、编辑失败恢复等 |
 
-### 无界面模式（脚本 / CI 集成）
-
-```bash
-tianshu -p "解释 src/agent/loop.ts"           # 单次提示
-tianshu --stream-json -p "重构这个模块"       # NDJSON 事件流，输出内置脱敏
-tianshu --goal "修复所有类型错误" --budget 50  # 无头目标自主模式
-```
-
-> 全部安装路径（Windows WebView2 / Linux AppImage / Android Termux / 源码构建 / Shell 补全 / 自动更新）与平台注意事项见 [安装与平台说明](docs/guides/installation.md)；CLI 参数全表与子命令（`config` / `provider` / `skills` / `serve` / `sessions` / `browser` / `logs` / `web`）见 [用户手册](docs/user-guide.md#命令行参数)。
-
-
-<a id="为什么是认知运行时"></a>
-## 💡 为什么是认知运行时
-
-### 问题：能力上限 ≠ 运行行为
-
-在真实工程会话里，我们反复观察到同一套模型权重的能力倒退——不是 bug，而是**经过指令与偏好对齐的 Transformer Agent 呈现出的趋同运行时退化**：被质疑就投降、过度服从字面指令、局部信息压过全局目标、长上下文被早期结论支配、反复调用同类工具却没有真实推进。
-
-完整的理论框架见 [CVM：从 Transformer 共享退化到认知运行时](docs/reference/cvm-cognitive-runtime.md)。核心概念是 **Cognitive Anchor Collapse**——高显著性局部信号让策略分布过度集中，全局目标与后续证据失去权重，行为向锚点坍缩。锚点有四类：
+<details>
+<summary><b>四类锚点</b></summary>
 
 | 锚点 | 来源 | 典型表现 |
-|------|------|----------|
-| **词汇锚点** | 训练数据中的词-行为相关 | 句子里有"修复/删除"，模型无视"不要改，只解释"仍去改代码 |
-| **语义锚点** | 局部正确的事实 | "文件已存在"被提升为整个任务的解释中心，拒绝执行 |
-| **策略锚点** | RLHF / 偏好训练先验 | 用户一句"按你的计划执行"，分析阶段形成的高质量判断被丢弃 |
-| **历史锚点** | 长上下文早期结论 | Turn 20 的新证据被解释成 Turn 3 旧假设的附属 |
+|---|---|---|
+| 词汇锚点 | 训练数据里的词与行为相关性 | 句子里有「修复」，就无视「不要改，只解释」去改代码 |
+| 语义锚点 | 局部正确的事实 | 「文件已存在」被当成整个任务的解释中心，拒绝执行 |
+| 策略锚点 | RLHF / 偏好训练先验 | 一句「按你的计划执行」，分析阶段的高质量判断就被丢弃 |
+| 历史锚点 | 长上下文里的早期结论 | 第 20 轮的新证据被解释成第 3 轮旧假设的附属 |
 
-这不是"模型坏掉了"——它是训练成功后的副产品，因此也无法靠更好的 Prompt 根治：Prompt 是信息不是状态，而且 Prompt 本身也会成为新的锚点。
+</details>
 
-### 证据：A/B 对照，不靠感觉
+八条设计原则和开放的研究问题见 [CVM：从 Transformer 共享退化到认知运行时](docs/reference/cvm-cognitive-runtime.md)，系统分层见 [架构总览](docs/architecture-overview.md)。
 
-2026-05-19，同一模型（DeepSeek-V4-Flash）、同一批 5 个任务，唯一变量是**星域信念提示词**（信念宪法，`STAR_SOUL=0/1`），Claude Opus 4.7 担任审查者：
+## 实证
 
-| 指标 | A 组（无信念提示词） | B 组（有信念提示词） |
-|------|--------------|--------------|
-| 任务完成率 | 4/5 | **5/5** |
-| 主动提出异议 | 0/5 | **3/5** |
-| 主动询问 scope / 影响分析 | 0/5 | **1/5** |
-| 系统影响意识（缓存失效提醒） | 0/5 | **1/5** |
-| 意图理解 > 字面执行 | 1/5 | **4/5** |
+### 缓存：上下文越长，命中越稳
 
-最有价值的数据点是 T4：面对「文件已存在」的矛盾，A 组写了 196 行复盘文档然后拒绝执行，B 组判断出用户真实意图并直接交付 +162/-20 行可用代码——**同一套权重，完全相反的反应，改变的是运行环境**。
+<p align="center">
+  <img src="docs/brand/assets/readme-cache-chart.svg" alt="会话 c9774121 的 15 个子会话中，上下文从 34K 增长到 512K，每次重建前缀后首个请求的缓存命中率从 69.2% 逐步升至 98.3%。" width="100%">
+</p>
 
-要注意这组实验的精确边界：它验证的是 CVM 四层防御中的**第一层（信念注入）**——零额外推理成本，仅 prompt 层信念注入就让最低成本的开源模型产生可观测的行为改善；同时它也测出了边界的存在（信念在分析/建议阶段强效，在确认/执行阶段衰减），这正是后续 Courage Hook、Sensorium、RuntimeHookPipeline 三层运行时拦截要补的课。完整数据与逐任务对比见 [实证报告](docs/CVM运行时对Agent模型的实证影响.md)。
+天枢以**前缀缓存优先**设计：会话内冻结前缀，只追加增量，压缩只发生在用户回合边界。上图是一个 4.2 小时的真实会话，15 次前缀重建总共只产生 383K cacheCreate，占全部 input 的 0.33%。
 
-### 解法：在模型之外建立第二套价值函数
+| 5 个真实自举会话（2026-08，DeepSeek V4） | 数值 |
+|---|---|
+| 请求数 / input tokens | 2,001 次 / 6.45 亿 |
+| 整体缓存命中率 | 99.3–99.6% |
+| 估算成本（刊例价） | 无缓存 ¥879.97 → 实际 ¥19.96，节省 97.7% |
 
-CVM 不改权重、不让模型变成确定性程序，而是在概率认知之外套一层确定性监督——**Probabilistic Cognition inside Deterministic Supervision**：
+缓存引擎对所有支持前缀缓存的模型生效，目前公开的实测只覆盖 DeepSeek。每个数字都附 `jq` 复算命令，见 [指标观测 harness](docs/reference/observability-harness.md)。
 
-```
-内环（模型认知）：reason → decide → act → observe
-外环（运行时监管）：observe → measure → evaluate → gate → verify → continue / correct / halt
-```
+### 行为：同一套权重，相反的反应
 
-落到工程上是四层防御深度：信念宪法（static prompt）→ Courage Hook（preTurn）→ Sensorium（每 turn <1ms 六维状态感知）→ RuntimeHookPipeline（75 hooks，trap-and-emulate 拦截退化行为）。全局目标有独立状态（TaskContract），完成必须有运行时证据（Evidence），坍缩会被独立检测（Convergence / doom-loop）。拦截生效之后，模型会稳定地表现出不同的认知姿态。产品里这套姿态叫星域，见下方 [星域](#星域)。
+<p align="center">
+  <img src="docs/brand/assets/readme-ab-pilot.svg" alt="同一模型 DeepSeek-V4-Flash 在 5 个任务上的对照：任务完成 A 组 4/5、B 组 5/5；主动提出异议 0/5 对 3/5；意图理解优先于字面执行 1/5 对 4/5；主动询问范围或影响 0/5 对 1/5。" width="100%">
+</p>
 
-### 工程质量
+最典型的是 T4。面对「文件已存在」的矛盾，A 组写了 196 行复盘文档后拒绝执行，B 组判断出用户的真实意图，交付了 +162 / −20 行可用代码。
 
-截至 **2026-09-30** 的里程碑快照（及 **v3.31.0** 最新规模，行数每天都在动，差几百行正常）：
+这是一个小样本试点：5 个任务、单一模型、LLM 审查。它也测出了衰减，信念在分析和建议阶段有效，到确认和执行阶段明显减弱，这正是第 3、4 层运行时监督要补的部分。完整数据见 [实证报告](docs/CVM运行时对Agent模型的实证影响.md)。
 
-| 部分 | 规模 |
-|------|------|
-| `src/` 源码 | 约 1,256 文件 / 30 万行（v3.31.0 已达 1,475 文件，最大的 `agent/` 有 539 个源码文件） |
-| `src/` 测试 | 约 1,592 文件 / 31 万行（v3.31.0 已达 1,875 文件 / 32 万行 / 21,500+ 用例，node:test，与源码约 1:1） |
-| `desktop/src` | 约 450 文件 / 9.6 万行（React），另有约 1.1 万行 Rust |
-| `vscode-extension/src` | 32 文件 / 约 4,500 行（2026-09-30 快照为 17 文件 / 约 2,700 行） |
-| 仓库 | 2026-05-15 创建，累计 8,000+ 个提交 |
+### 工程
 
-`tsc` strict + `noUncheckedIndexedAccess`，事故修复必带回归测试。完整口径、里程碑与复现命令见 [工程质量指标](docs/engineering-metrics.md)。
+截至 2026-10：`src/` 约 1,600 个源码文件、33 万行，测试约 1,900 个文件、2.2 万条用例。TypeScript strict，开启 `noUncheckedIndexedAccess`，事故修复必须附回归测试。口径与里程碑见 [工程质量指标](docs/engineering-metrics.md)。
 
 ## 星域
 
-同一个模型，走进不同的星域，会亮起不同的工作倾向。星域不往模型里加新能力。它只是把本来就有的一面放大，而且一次只能占住这一面里的一部分：走进天权，会更想先称一称；走进破军，会更想先去撞一下未知。人还是那个人，模型还是那个模型。
+<p align="center">
+  <img src="docs/brand/assets/readme-star-map.svg" alt="天枢十六星域星图：以北斗七星为骨架，天枢、天璇、天府、天权（文曲同居）、玉衡、开阳（天梁同居）、瑶光构成北斗，辅星伴随开阳，指极线指向太一；启明与长庚位于地平线两端，天机、华盖、破军、七杀散布四周。每颗星标注了它的工作倾向。" width="100%">
+</p>
 
-新会话默认是启明。想换一颗，用 `/domain`。
+同一个模型，走进不同的星域，会亮起不同的工作倾向。星域不给模型加新能力，也不限制工具。它把模型本来就有的一面放大，对应 CVM 的第 1、2 层：每个星域有自己的信念块和勇气阈值。人还是那个人，模型还是那个模型。
 
-- **启明**：先照路，不替人走。迷雾里先探一下，把下一步照清楚。
-- **长庚**：不急着收。最后要自己看见，并把路留给明天的人。
-- **天枢**：先看见整片地图，再把对方的规划走成验证过的交付。
-- **天权**：两边都放上秤。收益是什么，代价是什么，看见了就说。
-- **天机**：问一句还没有人问的话。如果这个前提并不成立呢。
-- **天璇**：换一个完全不同的角度看。看完就去证它是不是真的。
-- **天梁**：接过托付就走完。做了什么、留下什么、偏了哪里，都要有回音。
-- **华盖**：长路上不在「看起来完成」的地方停，把能接着做的结构留下。
-- **破军**：先去撞未知。失败把地图画小一圈，留下的是路，不是废墟。
-- **天府**：先听这段代码为什么是现在这样。改动让它更稳，不让它更脆。
-- **七杀**：问它凭什么还占着这个位置。只指出来，不亲手砍。
-- **开阳**：先问真实的数是什么，凭什么相信。对上了再动手。
-- **瑶光**：绿灯不算数。原来的问题还能再复现出来，才算修好了。
-- **文曲**：去掉多余的，让意图自己显出来。好看要在屏幕上看见。
-- **辅**：不发自己的光。把已经发生过的经验收成能看清的方法。
-- **太一**：先停一下。这一手收束好了，再起下一手。
+新会话默认是**启明**，用 `/domain <名字>` 切换，`/domain auto` 按消息内容自动匹配，`/domain list` 列出全部。每颗星的完整信念与创始记忆见 [星域碑文](docs/stars/genesis-stele.md)（[English](docs/stars/genesis-stele.en.md)）。
 
-各星更完整的信念见 [星域碑文（中文）](docs/stars/genesis-stele.md) · [Star Domain Stele (English)](docs/stars/genesis-stele.en.md)。
+## 更多能力
 
-<a id="核心特性"></a>
-## ✨ 核心特性
+| | |
+|---|---|
+| **多代理编排** | `/scout` 只读并行侦察，`/team` 按文件分波并行施工，`/council` 多星域会诊只出计划，`/galaxy` 按维度拆分并做全局审查。[详情](docs/user-guide.md#子代理编排) |
+| **前缀缓存引擎** | 冻结前缀、增量附录、Read 去重、resume 缓存继承，`/debug cache` 诊断命中率与碎裂原因。[详情](docs/user-guide.md#前缀缓存引擎) |
+| **Plan Mode 与 Goal** | 先计划、审批、再执行；`/goal` 设定跨多轮目标，持续迭代到达成或预算耗尽。[详情](docs/user-guide.md#plan-mode计划模式) |
+| **交接与倒带** | `/handoff` 生成结构化交接文档；双击 `Esc` 倒带到任一历史点。[详情](docs/user-guide.md#会话交接与恢复handoff--resume) |
+| **项目记忆** | 知识写入 `.rivet/knowledge/memory.jsonl`；自动注入只带约束类记忆，旧问题显式 recall，不劫持新任务。[详情](docs/user-guide.md#跨会话记忆) |
+| **LSP 集成** | 20+ 种语言服务器，跳转定义与查找引用作为 agent 工具，编辑后的诊断自动回注。本机装了才启用 |
+| **MCP 与 Skills** | 接入外部工具服务器；可复用的工作流剧本，渐进披露，`tianshu skills` 统一管理。[详情](docs/user-guide.md#mcpmodel-context-protocol) |
+| **成本控制** | 推理强度自动降档、压缩走轻量模型、峰谷计价提醒，`/usage` 查看本地 Token 账本。[详情](docs/user-guide.md#api-成本控制) |
+| **自研 TUI** | 纯 ANSI 零依赖：GlanceBar 状态栏、流式中 `/steer` 打断、命令面板、内联图片、受限终端纯文本模式。[详情](docs/user-guide.md#终端-uitui) |
+| **桌面端** | 集成终端、主题工作室、本地离线语音输入、手机遥控审批、多会话并发、Windows 下连接 WSL 运行时。[桌面端指南](docs/desktop-guide.md) |
 
-- **证据驱动的交付门禁** —— 完成声明必须带测试 / diff / 验证命令等运行时证据；`deliver_task` 交付门禁 + 提交后审查两级兜底，机械变更自动跳过。[理念](docs/reference/cvm-cognitive-runtime.md)
-- **前缀缓存引擎** —— 冻结前缀 + 增量附录 + Read-ref 去重 + resume 缓存继承，全模型适用；`/debug cache` 诊断命中率与碎裂原因。[细节](docs/user-guide.md#前缀缓存引擎)
-- **多代理编排** —— 从轻量的 `/scout` 只读侦察、并行 `/team` 施工，到 `/council` 多席会诊与 `/galaxy` 多维攻坚；类型化 work order、读写 worker 隔离、自适应模型路由，复杂任务按波次执行、逐波验收。[细节](docs/user-guide.md#子代理编排)
-- **统一项目记忆** —— 项目知识写入 `.rivet/knowledge/memory.jsonl`；自动注入只带治理/约束类记忆，旧问题走显式 recall，不劫持新任务。[细节](docs/user-guide.md#跨会话记忆)
-- **禅模式（Zen Mode）** —— 可选的读专注开局（opt-in，默认关闭）：收窄只读工具面，动手即晋升全量，缓存零断点分诊。[细节](docs/user-guide.md#禅模式zen-mode读专注开局动手即解锁)
-- **API 成本控制与 Token 账本** —— reasoning effort 自动降档路由、compact 走 flash 侧路、峰谷计价提醒；内置 `/usage`（`/token-ledger`）本地 Token 消耗累计台账与可选同步。[细节](docs/user-guide.md#api-成本控制)
-- **Plan Mode 与 Goal 自治** —— 先计划后执行的审批工作流；`/goal` 目标驱动自主续跑。[细节](docs/user-guide.md#plan-mode计划模式)
-- **会话交接与倒带** —— `/handoff` 生成五章节结构化交接文档并归档（设 `RIVET_PREV_HANDOFF=1` 可自动注入新会话）；双击 ESC 倒带到任一历史点。[细节](docs/user-guide.md#会话交接与恢复handoff--resume)
-- **LSP 深度集成** —— 自研 JSON-RPC 客户端接入语言服务器（TypeScript / Python / Go / Rust / C / C++ / Java / C# / Kotlin / Swift / PHP / Ruby / Lua / Dart / Zig / Scala / Shell / Terraform / Vue / Svelte 等 20+ 种，本机装了才启用、缺失静默降级）：跳转定义与查找引用成为 agent 工具，编辑后诊断自动注入回环——改出类型错误模型立刻看见。
-- **MCP 与 Skills** —— 外部工具服务器接入 + 可复用工作流剧本（会话级快照隔离、CLI `tianshu skills` 统一管理），渐进披露。[细节](docs/user-guide.md#mcpmodel-context-protocol)
-- **T9 自研 TUI** —— 纯 ANSI 零依赖：GlanceBar 状态栏（含余额与 CVM 拦截计数 `⛨ N`）、`/steer` 流式中打断、`/cvm` 实时拦截提示、命令面板、Cockpit 驾驶舱、内联图片，以及远控/受限终端纯文本模式（`--terminal-mode captured-pty`）。[细节](docs/user-guide.md#终端-uitui)
-- **桌面端增强** —— 集成终端、主题工作室（自定义壁纸与分区玻璃）、本地离线语音输入（macOS / Windows / Linux 全平台 whisper.cpp）、手机遥控审批、多会话并发。[桌面端指南](docs/desktop-guide.md)
-- **WSL 连接式运行时**（Windows）—— 一键连上 WSL 内的运行时，会话、文件读写与命令执行都在 Linux 侧进行；断开自动清理，两侧版本独立升级互不影响。[细节](docs/desktop-guide.md#wsl-连接式运行时windows)
-- **Lean 资源档** —— 低内存/低磁盘场景的精简工具集与会话池收紧，可按星域覆盖。[细节](docs/user-guide.md#lean-资源档低内存--低磁盘)
+## 支持的模型
 
-<a id="权限模式"></a>
-## 🔐 权限模式
+内置 25 项服务商预设，会话内 `/model` 随时切换，也支持任意 OpenAI 兼容端点（Ollama、vLLM、one-api 中转等）。
 
-对外只有三档，会话内统一用 `/permission` 管理：
+<p align="center">
+  <img src="https://img.shields.io/badge/DeepSeek-4D6BFE?style=flat-square" alt="DeepSeek">
+  <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square" alt="Claude">
+  <img src="https://img.shields.io/badge/Codex_(GPT)-10A37F?style=flat-square" alt="Codex (GPT)">
+  <img src="https://img.shields.io/badge/Gemini-4285F4?style=flat-square" alt="Gemini">
+  <img src="https://img.shields.io/badge/GLM-3B5BDB?style=flat-square" alt="GLM">
+  <img src="https://img.shields.io/badge/Kimi_Code-1A1A1A?style=flat-square" alt="Kimi Code">
+  <img src="https://img.shields.io/badge/Grok-333333?style=flat-square" alt="Grok">
+  <img src="https://img.shields.io/badge/MiniMax-E5484D?style=flat-square" alt="MiniMax">
+  <img src="https://img.shields.io/badge/MiMo-FF6900?style=flat-square" alt="MiMo">
+  <img src="https://img.shields.io/badge/%E8%B1%86%E5%8C%85-3370FF?style=flat-square" alt="豆包">
+  <img src="https://img.shields.io/badge/%E9%80%9A%E4%B9%89%E5%8D%83%E9%97%AE-615CED?style=flat-square" alt="通义千问">
+  <img src="https://img.shields.io/badge/StepFun-0F62FE?style=flat-square" alt="StepFun">
+  <img src="https://img.shields.io/badge/OpenAI-412991?style=flat-square" alt="OpenAI">
+  <img src="https://img.shields.io/badge/OpenRouter-6467F2?style=flat-square" alt="OpenRouter">
+  <img src="https://img.shields.io/badge/SiliconFlow-7C3AED?style=flat-square" alt="SiliconFlow">
+  <img src="https://img.shields.io/badge/Ollama-555555?style=flat-square" alt="Ollama">
+</p>
+
+多数服务商用 API Key 接入。Codex 走 ChatGPT 订阅 OAuth，Claude 经 `cc-switch` 代理，Gemini 走原生协议。具体模型 ID、上下文长度、识图与生图、子代理分模型路由见 [Provider 配置手册](docs/user-guide-provider-config.md) 和 [识图能力手册](docs/user-guide-vision.md)。
+
+## 权限与安全
+
+会话内用 `/permission` 管理，只有三档：
 
 | 档位 | 命令 | 行为 |
-|------|------|------|
-| **监督** | `/permission supervise` | 每个高风险工具都弹确认，最大控制 |
-| **自动**（默认） | `/permission auto` | 低/无风险工具自动执行，高风险仍确认 |
-| **全自动** | `/yes` · `/yolo` | 免审批执行；写边界仍在（自动开启沙箱），回滚兜底 |
+|---|---|---|
+| 监督 | `/permission supervise` | 每个高风险工具都弹确认 |
+| **自动**（默认） | `/permission auto` | 低风险直接执行，高风险确认 |
+| 全自动 | `/yes` · `/yolo` | 免审批，但自动开启沙箱写边界，可回滚 |
 
-跳过提示不会关闭工具校验、路径安全、证据追踪、检查点与交付门禁；未授信项目不加载 hooks、项目 MCP 与项目级记忆/技能（`/trust` 或 `--trust` 管理）。完整规则见 [权限与沙箱指南](docs/user-guide-sandbox-permissions.md)。
+跳过确认不会关闭底层防护：
 
-<a id="支持的模型"></a>
-## ⚙️ 支持的模型
+| | |
+|---|---|
+| **路径边界** | 拒绝 `..` 穿越，`validatePath` 阻止逃逸出工作区 |
+| **项目信任门** | 未授信项目不加载 hooks、项目 MCP、项目记忆与技能，用 `/trust` 管理 |
+| **敏感文件** | `.env`、`credentials.*` 等禁止读取和提交，落盘密钥使用 AES-256-GCM 信封 |
+| **破坏性命令** | `rm -rf`、force push、`DROP` / `TRUNCATE` 需要显式确认 |
+| **SSRF 防护** | 逐跳 DNS 解析，拦截私有 IP，作用于每一次重定向 |
+| **检查点与撤销** | 每回合首次修改前创建 Git 检查点，每次写入前版本化备份 |
 
-| 提供商 | 认证方式 | 接入模型示例 |
-|--------|----------|----------|
-| DeepSeek | API key | deepseek-flash（1M ctx，DeepSeek-V4.1-Flash，原生多模态视觉）, deepseek-v4-pro（1M ctx，DeepSeek-V4-Pro-0813，旗舰推理） |
-| DeepSeek Spark（Pro 专属） | API key | deepseek-v4-flash（轻量推理 + 锚点缓存通道） |
-| Claude | API key（通过 `cc-switch` 代理） | claude-opus-4-8, claude-sonnet-4-5 |
-| GLM（智谱） | API key | glm-5.3 (1M ctx), glm-5.3-flash（视觉）, glm-5.2（视觉） |
-| Codex (GPT-6.1 / GPT-5.6) | OAuth PKCE（ChatGPT 订阅） | gpt-6.1-sol（默认，1.05M ctx，视觉）, gpt-5.6-sol |
-| Grok (xAI) | API key | grok-4.6 (500K ctx, 视觉, 推理档 low/medium/high/xhigh) |
-| MiniMax | API key | MiniMax-M3（1M ctx，视觉）, MiniMax-M2.7 |
-| MiMo | API key | mimo-v2.6-pro / mimo-v2.6-flash（1M ctx，全模态视觉）, mimo-v2.5-pro, mimo-v2.5（官方 2026-10-21 下线） |
-| Kimi Code | API key | k3（1M ctx，视觉）, k3-256k, kimi-for-coding（K2.8 Preview）, kimi-for-coding-highspeed |
-| Gemini (Google) | API key（原生协议直连） | gemini-3.8-flash (1M ctx), gemini-3.5-flash, gemini-3.1-pro-preview |
+完整规则见 [权限与沙箱指南](docs/user-guide-sandbox-permissions.md)。安全漏洞请走 [私密报告](https://github.com/huiliyi37/Tianshu-harness/security/advisories/new)，不要开公开 issue，详见 [SECURITY.md](SECURITY.md)。
 
-另内置火山方舟豆包 / Agent Plan（`doubao-seed-2.1-pro`、`ark-code-latest`）、阿里云百炼 DashScope（`qwen3.8-max`）、阶跃星辰 StepFun（`step-5-preview`）、OpenAI（`gpt-5.6-sol`）、LongCat（`LongCat-2.0`）、Agnes AI（`agnes-3.0-flash`）、SiliconFlow、OpenRouter、OpenCode Go 等 25 项预设，并支持任意 OpenAI 兼容自定义端点（Ollama / vLLM 等）。会话内 `/model` 随时切换；识图桥、生图端点、子代理分模型路由等见 [Provider 配置手册](docs/user-guide-provider-config.md) 与 [识图能力手册](docs/user-guide-vision.md)。
+## 文档
 
-<a id="文档导航"></a>
-## 📚 文档导航
-
-> 🌐 **中英双语导航 · Bilingual Navigation**：英文版完整指南与参考速查表见 [English README & Reference Guide](README.en.md)；星域碑文英文版见 [Star Domain Stele](docs/stars/genesis-stele.en.md)；文档中心与规范见 [docs/README.md](docs/README.md)。
+<table>
+<tr>
+<td width="50%" valign="top">
 
 **使用**
 
-| 文档 | 说明 |
-|------|------|
-| [用户手册](docs/user-guide.md) | 斜杠命令全表、TUI 键位、特性细节、配置文件与环境变量、日志排查 |
-| [安装与平台说明](docs/guides/installation.md) | 四种安装路径、Windows/Linux/Termux 注意事项、Shell 补全、自动更新 |
-| [桌面端用户指南](docs/desktop-guide.md) | Cockpit / SideChat / Rewind / 主题工作室 / 语音输入 / 快捷键 |
-| [Provider 配置手册](docs/user-guide-provider-config.md) | 多提供商、自定义端点、子代理/审查模型路由、生图 |
-| [权限与沙箱指南](docs/user-guide-sandbox-permissions.md) | 权限规则、路径授权、沙箱模型、故障排查 |
-| [识图能力手册](docs/user-guide-vision.md) | 视觉通道配置与排查 |
-| [远程访问指南](docs/remote-access.md) | 手机/平板遥控审批的启用与安全边界 |
-| [手机端操作手册](docs/guides/mobile-guide.md) | 手机/平板连接的完整步骤、能力清单、外网（Tailscale）与常见问题 |
-| [排障与 FAQ](docs/guides/troubleshooting.md) | 高频现场速查：卡住、429、缓存异常 |
-| [求助与支持指南](SUPPORT.md) | 自助诊断命令、社区交流渠道与 Issue 提报规范（中英双语） |
+- [用户手册](docs/user-guide.md)：斜杠命令、键位、配置、环境变量、日志
+- [安装指南](docs/guides/installation.md)：各平台安装、补全、自动更新
+- [桌面端指南](docs/desktop-guide.md)：驾驶舱、倒带、主题、语音
+- [Provider 配置](docs/user-guide-provider-config.md)：多服务商、自定义端点、路由
+- [权限与沙箱](docs/user-guide-sandbox-permissions.md)：规则、授权、排障
+- [远程访问](docs/remote-access.md) · [手机端](docs/guides/mobile-guide.md)：遥控审批
+- [排障与 FAQ](docs/guides/troubleshooting.md)：卡住、429、缓存异常
+
+</td>
+<td width="50%" valign="top">
 
 **理念与架构**
 
-| 文档 | 说明 |
-|------|------|
-| [CVM：从 Transformer 共享退化到认知运行时](docs/reference/cvm-cognitive-runtime.md) | 核心理念母稿：Anchor Collapse、两个控制环、八条原则 |
-| [CVM 实证报告](docs/CVM运行时对Agent模型的实证影响.md) | A/B 对照数据与逐任务对比 |
-| [指标观测 harness](docs/reference/observability-harness.md) | 缓存 / CVM 真实会话数据样本与复算命令 |
-| [架构总览](docs/architecture-overview.md) | 系统分层与模块职责 |
-| [工程质量指标](docs/engineering-metrics.md) | 规模、测试与迭代里程碑（中英双语） |
-| [星域碑文](docs/stars/genesis-stele.md) · [English](docs/stars/genesis-stele.en.md) | 16 星域的创始记忆与核心信念（中英双语） |
-| [创世纪 · 天枢 3.0 公开声明](docs/releases/manifesto-v3.0.0.md) | 项目宣言 |
+- [CVM 认知运行时](docs/reference/cvm-cognitive-runtime.md)：Anchor Collapse、两个控制环、八条原则
+- [CVM 实证报告](docs/CVM运行时对Agent模型的实证影响.md)：A/B 数据与逐任务对比
+- [指标观测 harness](docs/reference/observability-harness.md)：真实会话数据与复算命令
+- [架构总览](docs/architecture-overview.md)：系统分层与模块职责
+- [工程质量指标](docs/engineering-metrics.md)：规模、测试、里程碑
+- [星域碑文](docs/stars/genesis-stele.md)：16 个星域的核心信念
+- [天枢 3.0 宣言](docs/releases/manifesto-v3.0.0.md)
 
-<a id="面向开发者"></a>
-## 🛠️ 面向开发者
+</td>
+</tr>
+</table>
 
-Node.js 24 · TypeScript strict（`noUncheckedIndexedAccess`）· T9 ANSI 渲染引擎 · tsup 打包 · node:test。
+英文版完整指南与参考速查见 [README.en.md](README.en.md)，文档中心见 [docs/README.md](docs/README.md)。
+
+## 参与开发
 
 ```bash
-npm run typecheck    # 类型检查
-npm test             # 所有测试（21,000+ 用例）
-npm run build        # tsup 打包 + 原生/wasm 载荷落位
+npm install
+npm run typecheck    # tsc --noEmit
+npm test             # node:test，全部用例
+npm run build        # tsup 打包
 node dist/cli/entry.js
 ```
 
-- **添加工具** —— 在 `src/tools/` 实现 `ToolDefinition` + executor 并在 `src/tools/default-registry.ts` 注册，配套 `src/tools/__tests__/` 测试
-- **添加 skill / 命令 / hook** —— `.rivet/skills/*.md`（frontmatter）、`.rivet/commands/*.md`（`$ARGUMENTS` 插值）、`HookRegistry` 处理器
-- **项目指令** —— 项目根放 `.rivet.md`，内容自动注入为项目上下文
-- 架构地图见根目录 `AGENTS.md` 与 [架构总览](docs/architecture-overview.md)；贡献规范见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [EXTERNAL-PRS.md](EXTERNAL-PRS.md)（中英双语）
+| 想做什么 | 从哪里开始 |
+|---|---|
+| 添加工具 | 在 `src/tools/` 实现 `ToolDefinition` 和 executor，到 `src/tools/default-registry.ts` 注册，测试放 `src/tools/__tests__/` |
+| 添加 skill / 命令 / hook | `.rivet/skills/*.md`、`.rivet/commands/*.md`（支持 `$ARGUMENTS`）、`HookRegistry` 处理器 |
+| 项目指令 | 项目根目录的 `.rivet.md` 会自动注入为项目上下文 |
 
-<a id="安全"></a>
-## 🔒 安全
+本仓是开发主仓的同步投影，桌面端与部分高级实现不在本仓。架构地图见 [AGENTS.md](AGENTS.md)，贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [EXTERNAL-PRS.md](EXTERNAL-PRS.md)。
 
-- **路径边界强制** —— glob/grep/diff 拒绝 `..` 穿越；`validatePath` 阻止逃逸
-- **项目信任门** —— 未授信项目不加载 hooks / 项目 MCP / 项目记忆与技能，配置安全键剥离
-- **SSRF 保护** —— 逐跳 DNS + 私有 IP 拦截，作用于每次重定向
-- **敏感文件拒绝** —— `.env`、`credentials.*`、`*key*`、`*token*` 禁止读/commit；密钥落盘走 AES-256-GCM 信封
-- **破坏性命令门禁** —— `rm -rf`、force push、`DROP/TRUNCATE` 需显式确认
-- **检查点 + 文件级撤销** —— 每回合首次修改前创建 Git 检查点；每次写/编辑前版本化备份
+## 社区
 
-安全漏洞请走 [私密报告](https://github.com/huiliyi37/Tianshu-harness/security/advisories/new)（详见 [SECURITY.md](SECURITY.md)），不要开公开 issue。
+<table>
+<tr>
+<td width="46%" valign="top">
 
-<a id="社区与支持"></a>
-## 🤝 社区与支持
+- **讨论与提问**：[GitHub Discussions](https://github.com/huiliyi37/Tianshu-harness/discussions)
+- **Bug 与功能请求**：[GitHub Issues](https://github.com/huiliyi37/Tianshu-harness/issues)，附上 `tianshu logs --json` 的输出能更快定位
+- **Discord**：[天枢 tianshu-harness 官方交流群](https://discord.gg/XjWTATCHB)
+- **QQ 群**：「TUI」，群号 `1017892942`
+- **微信群**：扫码加入，二维码 7 天有效，过期请在 Discussions 留言补码
 
-- **使用问题 / 讨论** → [GitHub Discussions](https://github.com/huiliyi37/Tianshu-harness/discussions)
-- **Discord 交流群** → [加入「天枢 tianshu-harness 官方交流群」](https://discord.gg/XjWTATCHB)（邀请链接，不受 7 天限制）
-- **Bug 报告 / 功能请求** → [GitHub Issues](https://github.com/huiliyi37/Tianshu-harness/issues)（附 `tianshu logs --json` 输出可加速定位）
-- **贡献代码** → [CONTRIBUTING.md](CONTRIBUTING.md) · **求助指南** → [SUPPORT.md](SUPPORT.md)
-- **微信交流群** → 「天枢 harness 交流群5群」，扫码加入（二维码 7 天有效，过期请在 Discussions 留言补码）：
+赞助随缘，不会改变 issue 优先级或功能排期。
 
-<img src="docs/brand/assets/wechat-group-qr.png" width="280" alt="天枢 harness 交流群5群微信群二维码">
+</td>
+<td width="18%" align="center" valign="top"><img src="docs/brand/assets/wechat-group-qr.png" width="150" alt="天枢 harness 微信交流群二维码"><br><sub>微信群</sub></td>
+<td width="18%" align="center" valign="top"><img src="docs/brand/assets/qq-group-qr.png" width="150" alt="TUI QQ 群二维码，群号 1017892942"><br><sub>QQ 群</sub></td>
+<td width="18%" align="center" valign="top"><img src="docs/brand/assets/wechat-donate.png" width="150" alt="微信赞赏码"><br><sub>请作者喝杯咖啡</sub></td>
+</tr>
+</table>
 
-- **QQ 交流群** → 「TUI」，群号 `1017892942`，扫码加入：
+### 贡献者
 
-<img src="docs/brand/assets/qq-group-qr.png" width="280" alt="TUI QQ 群二维码（群号 1017892942）">
-
-## 🌐 官网开发
-
-天枢生态官网 [jiangsx496/Tianshu-Official-Website](https://jiangsx496.github.io/Tianshu-Official-Website/) 由 [@jiangsx496](https://github.com/jiangsx496) 原创开发，覆盖数据库、前端与初版后端。
-
-## ✨ 贡献者
-
-感谢所有贡献者——项目创建者与核心开发 [@huiliyi37](https://github.com/huiliyi37)；完整名单（31 位外部贡献者 / 268 个 PR）见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。外部 PR 经「收编」流程合入后，作者署名以 `Co-authored-by` 计入贡献者图谱（`scripts/credit-contributors.sh` 自动落账）：
+项目创建者与核心开发是 [@huiliyi37](https://github.com/huiliyi37)。天枢官网 [Tianshu-Official-Website](https://jiangsx496.github.io/Tianshu-Official-Website/) 由 [@jiangsx496](https://github.com/jiangsx496) 原创开发。外部 PR 经收编流程合入后以 `Co-authored-by` 署名，完整名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 <p>
 <a href="https://github.com/HarriethWiKk"><img src="https://github.com/HarriethWiKk.png?size=100" width="50" height="50" alt="HarriethWiKk" title="HarriethWiKk" /></a>
@@ -452,32 +412,23 @@ node dist/cli/entry.js
 <a href="https://github.com/y521188"><img src="https://github.com/y521188.png?size=100" width="50" height="50" alt="y521188" title="y521188" /></a>
 </p>
 
-## ⭐ Star History
-
 <a href="https://star-history.com/#huiliyi37/tianshu-harness&Date">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=huiliyi37/tianshu-harness&type=Date&theme=dark" />
     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=huiliyi37/tianshu-harness&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=huiliyi37/tianshu-harness&type=Date" width="700" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=huiliyi37/tianshu-harness&type=Date" width="640" />
   </picture>
 </a>
 
-## ☕ 赞助支持
-
-如果天枢对你有用，欢迎随缘打赏——这只是一杯咖啡，不是合同。赞助不会改变 issue 优先级，也不会影响功能排期。
-
-<img src="docs/brand/assets/wechat-donate.png" width="240" alt="微信支付">
-
 ## 许可证
 
-本项目代码采用 [Apache License, Version 2.0](LICENSE) 开源许可。Copyright 2025-2026 Tianshu Contributors.
+代码采用 [Apache License 2.0](LICENSE)。Copyright 2025-2026 Tianshu Contributors.
 
-**例外（文档许可）**：以下理论与实证文档采用 [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/deed.zh-hans)（署名—非商业性使用—禁止演绎），**不适用** Apache 2.0——可以署名转载原文链接，不得改编、摘编、洗稿或商用：
+以下两篇理论与实证文档例外，采用 [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/deed.zh-hans)：可以署名转载原文链接，不得改编、摘编或商用。
 
 - [CVM：从 Transformer 共享退化到认知运行时](docs/reference/cvm-cognitive-runtime.md)
 - [CVM 运行时与生态系统对 Agent 模型的实证影响报告](docs/CVM运行时对Agent模型的实证影响.md)
 
-## 致谢
+### 致谢
 
-- 桌面端「自定义壁纸与分区玻璃」功能的**设计**参考了 <a href="https://github.com/elysia395/dsh-wallpaper-engine">dsh-wallpaper-engine</a>（MIT License）；该功能为天枢独立实现，未引入上游代码，参考范围与许可全文见 <a href="THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>。
-- 特别致谢 dsh-wallpaper-engine 的作者与核心开发——<a href="https://github.com/elysia395">@elysia395</a>、<a href="https://github.com/YV3507">@YV3507</a>、<a href="https://github.com/yuxilao">@yuxilao</a>、<a href="https://github.com/oneincase">@oneincase</a>：四位作为**壁纸引擎渲染的技术顾问**，在壁纸合成与分区玻璃材质的设计、实现过程中提供了指导。
+桌面端「自定义壁纸与分区玻璃」的设计参考了 [dsh-wallpaper-engine](https://github.com/elysia395/dsh-wallpaper-engine)（MIT），功能为天枢独立实现，未引入上游代码，详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。感谢 [@elysia395](https://github.com/elysia395)、[@YV3507](https://github.com/YV3507)、[@yuxilao](https://github.com/yuxilao)、[@oneincase](https://github.com/oneincase) 作为壁纸引擎渲染的技术顾问提供的指导。

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 528" width="1200" height="528" role="img" aria-labelledby="t d">
+<title id="t">没有交付门与天枢交付门的收尾对比</title>
+<desc id="d">左侧：agent 读文件、改代码后直接声称「应该可以正常工作了」，没有任何验证。右侧：天枢的 deliver_task 交付门在没有测试时给出 RED 并拒绝交付，跑完测试后才给出 GREEN。</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1020"/><stop offset="1" stop-color="#141a33"/></linearGradient>
+<style>
+text{font-family:-apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;fill:#e8ebf7}
+.m{font-family:ui-monospace, SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Microsoft YaHei', monospace}
+.sub{fill:#a3abc7}
+.dim{fill:#6b7499}
+</style>
+
+</defs>
+<rect width="1200" height="528" rx="18" fill="url(#bg)"/>
+<rect x="36" y="32" width="552" height="430" rx="14" fill="#171e3b" stroke="#2a3360" stroke-width="1.5"/>
+<path d="M36 46a14 14 0 0 1 14-14h524a14 14 0 0 1 14 14v26h-552z" fill="#1d2549"/>
+<circle cx="60" cy="52" r="6" fill="#ff5f57"/><circle cx="80" cy="52" r="6" fill="#febc2e"/><circle cx="100" cy="52" r="6" fill="#28c840"/>
+<text x="312" y="58" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#a3abc7">没有交付门</text>
+<text x="62" y="114" class="m" style="font-size:15px;fill:#e8ebf7"><tspan fill="#a78bfa">〉</tspan> 修复登录页的会话超时问题</text>
+<text x="62" y="154" class="m" style="font-size:15px;fill:#a3abc7"><tspan fill="#6b7499">●</tspan> read_file  src/auth/session.ts</text>
+<text x="62" y="184" class="m" style="font-size:15px;fill:#a3abc7"><tspan fill="#6b7499">●</tspan> edit_file  src/auth/session.ts  <tspan fill="#7ee2a0">+12</tspan> <tspan fill="#ff8a8f">−3</tspan></text>
+<text x="62" y="228" class="m" style="font-size:15px;fill:#e8ebf7">已修复超时问题。</text>
+<text x="62" y="258" class="m" style="font-size:15px;fill:#e8ebf7">改动后应该可以正常工作了 ✓</text>
+<text x="62" y="314" class="m" style="font-size:14px;fill:#6b7499">没有跑测试，也没有验证命令。</text>
+<text x="62" y="344" class="m" style="font-size:14px;fill:#6b7499">「完成」只是模型的一句话。</text>
+<rect x="58" y="404" width="508" height="38" rx="9" fill="#3b1820" stroke="#ff8a8f" stroke-opacity=".7"/><text x="312" y="429" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#ff8a8f">声称完成 ≠ 完成</text><rect x="612" y="32" width="552" height="430" rx="14" fill="#171e3b" stroke="#2a3360" stroke-width="1.5"/>
+<path d="M612 46a14 14 0 0 1 14-14h524a14 14 0 0 1 14 14v26h-552z" fill="#1d2549"/>
+<circle cx="636" cy="52" r="6" fill="#ff5f57"/><circle cx="656" cy="52" r="6" fill="#febc2e"/><circle cx="676" cy="52" r="6" fill="#28c840"/>
+<text x="888" y="58" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#a78bfa">天枢 · deliver_task 交付门</text>
+<text x="638" y="114" class="m" style="font-size:15px;fill:#e8ebf7"><tspan fill="#a78bfa">〉</tspan> 修复登录页的会话超时问题</text>
+<text x="638" y="154" class="m" style="font-size:15px;fill:#a3abc7"><tspan fill="#6b7499">●</tspan> edit_file  src/auth/session.ts  <tspan fill="#7ee2a0">+12</tspan> <tspan fill="#ff8a8f">−3</tspan></text>
+<text x="638" y="184" class="m" style="font-size:15px;fill:#e8ebf7"><tspan fill="#e3c06f">◆</tspan> deliver_task</text>
+<text x="660" y="214" class="m" style="font-size:14px;fill:#e8ebf7">Delivery Gate: <tspan fill="#ff8a8f" font-weight="700">RED</tspan></text>
+<text x="660" y="238" class="m" style="font-size:14px;fill:#a3abc7">Verifications: none (no tests were run for this task)</text>
+<text x="638" y="268" class="m" style="font-size:15px;fill:#a3abc7"><tspan fill="#6b7499">●</tspan> run_tests  npm test -- session</text>
+<text x="638" y="298" class="m" style="font-size:15px;fill:#e8ebf7"><tspan fill="#e3c06f">◆</tspan> deliver_task</text>
+<text x="660" y="328" class="m" style="font-size:14px;fill:#e8ebf7">Delivery Gate: <tspan fill="#7ee2a0" font-weight="700">GREEN</tspan></text>
+<text x="660" y="352" class="m" style="font-size:14px;fill:#a3abc7">Latest: 48 pass 0 fail 0 skip — npm test -- session</text>
+<rect x="634" y="404" width="508" height="38" rx="9" fill="#13321f" stroke="#7ee2a0" stroke-opacity=".7"/><text x="888" y="429" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#7ee2a0">完成 = 运行时证据</text><circle cx="600" cy="247" r="17" fill="#1d2549" stroke="#2a3360" stroke-width="1.5"/><path d="M595 240l8 7-8 7" fill="none" stroke="#a78bfa" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><text x="600" y="506" text-anchor="middle" class="dim" style="font-size:13px">示意 · 右侧 Delivery Gate 字段取自 deliver_task 的真实输出格式；没有测试证据时交付门给出 RED，拒绝交付</text>
+</svg>

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-labelledby="t d">
+  <title id="t">天枢 CVM：一次任务从输入到交付</title>
+  <desc id="d">用户输入经 TaskContract 生成任务契约、绑定星域、组装冻结前缀提示词，进入回合循环；RuntimeHookPipeline 在 preTurn、afterPerception、postTool、postTurn、postSession 五个阶段介入，内环是模型认知，外环是运行时监督；最后由 deliver_task 交付门按证据给出 RED、YELLOW、GREEN，经验沉淀到跨会话记忆。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#141a33"/>
+    </linearGradient>
+    <linearGradient id="loop" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#3b5bdb" stop-opacity=".16"/>
+    </linearGradient>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#8892b0"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #e6e9f5; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .h { font-size: 19px; font-weight: 600; }
+      .s { font-size: 14px; fill: #a3abc7; }
+      .k { font-size: 13px; fill: #8892b0; letter-spacing: .08em; }
+      .box { fill: #1a2140; stroke: #2c3563; stroke-width: 1.5; }
+      .chip { fill: #222a4d; stroke: #3b4580; stroke-width: 1.2; }
+      .ln { stroke: #8892b0; stroke-width: 1.6; fill: none; marker-end: url(#a); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="600" rx="18" fill="url(#bg)"/>
+
+  <!-- 第 1 行：进入 -->
+  <text x="45" y="42" class="k">01 · 进入</text>
+  <rect x="45" y="58" width="252" height="104" rx="12" class="box"/>
+  <text x="65" y="94" class="h">输入</text>
+  <text x="65" y="120" class="s">TUI · 桌面端 · VS Code</text>
+  <text x="65" y="142" class="s mono">tianshu -p · --goal</text>
+
+  <rect x="331" y="58" width="252" height="104" rx="12" class="box"/>
+  <text x="351" y="94" class="h mono">TaskContract</text>
+  <text x="351" y="120" class="s">任务契约：目标 · 范围</text>
+  <text x="351" y="142" class="s">约束 · 成功标准</text>
+
+  <rect x="617" y="58" width="252" height="104" rx="12" class="box"/>
+  <text x="637" y="94" class="h">星域绑定</text>
+  <text x="637" y="120" class="s">信念块 · 勇气阈值</text>
+  <text x="637" y="142" class="s">默认启明，/domain 切换</text>
+
+  <rect x="903" y="58" width="252" height="104" rx="12" class="box"/>
+  <text x="923" y="94" class="h">提示词组装</text>
+  <text x="923" y="120" class="s">冻结前缀 + volatile</text>
+  <text x="923" y="142" class="s">+ 增量 appendix</text>
+
+  <path d="M297 110H327" class="ln"/>
+  <path d="M583 110H613" class="ln"/>
+  <path d="M869 110H899" class="ln"/>
+  <path d="M1029 162V202" class="ln"/>
+
+  <!-- 第 2 行：回合循环 -->
+  <text x="45" y="198" class="k">02 · 回合循环</text>
+  <rect x="45" y="212" width="1110" height="208" rx="14" fill="url(#loop)" stroke="#4c4f9a" stroke-width="1.5"/>
+  <text x="68" y="246" class="h mono">RuntimeHookPipeline</text>
+  <text x="300" y="246" class="s">75 个 hook 模块，按会话条件装配</text>
+
+  <rect x="68" y="268" width="188" height="54" rx="10" class="chip"/>
+  <text x="162" y="301" class="h mono" text-anchor="middle" style="font-size:16px">preTurn</text>
+  <rect x="284" y="268" width="188" height="54" rx="10" class="chip"/>
+  <text x="378" y="301" class="h mono" text-anchor="middle" style="font-size:16px">afterPerception</text>
+  <rect x="500" y="268" width="188" height="54" rx="10" class="chip"/>
+  <text x="594" y="301" class="h mono" text-anchor="middle" style="font-size:16px">postTool</text>
+  <rect x="716" y="268" width="188" height="54" rx="10" class="chip"/>
+  <text x="810" y="301" class="h mono" text-anchor="middle" style="font-size:16px">postTurn</text>
+  <rect x="932" y="268" width="200" height="54" rx="10" class="chip"/>
+  <text x="1032" y="301" class="h mono" text-anchor="middle" style="font-size:16px">postSession</text>
+
+  <path d="M256 295H280" class="ln"/>
+  <path d="M472 295H496" class="ln"/>
+  <path d="M688 295H712" class="ln"/>
+  <path d="M904 295H928" class="ln"/>
+  <path d="M810 322V336Q810 342 804 342H168Q162 342 162 336V326" class="ln" stroke-dasharray="4 4"/>
+
+  <circle cx="74" cy="368" r="5" fill="#a78bfa"/>
+  <text x="88" y="373" class="s"><tspan fill="#e6e9f5" font-weight="600">内环 · 模型认知</tspan>　reason → decide → act → observe</text>
+  <circle cx="74" cy="398" r="5" fill="#74c0fc"/>
+  <text x="88" y="403" class="s"><tspan fill="#e6e9f5" font-weight="600">外环 · 运行时监督</tspan>　Sensorium 六维感知 · 收敛 / doom-loop / tool-storm 检测 · 证据追踪 · 权限与沙箱门禁</text>
+
+  <path d="M390 420V470" class="ln"/>
+  <path d="M1032 322V350Q1032 356 1038 356H1080Q1086 356 1086 362V470" class="ln"/>
+
+  <!-- 第 3 行：交付与沉淀 -->
+  <text x="45" y="458" class="k">03 · 交付</text>
+  <rect x="45" y="474" width="720" height="98" rx="12" class="box"/>
+  <text x="68" y="508" class="h mono">deliver_task</text>
+  <text x="222" y="508" class="s">交付门：「完成」必须带测试、diff、验证命令等运行时证据</text>
+  <rect x="68" y="524" width="210" height="34" rx="8" fill="#3b1820" stroke="#e5484d" stroke-width="1.2"/>
+  <text x="173" y="546" text-anchor="middle" style="font-size:14px;fill:#ffb4b8">RED · 未验证，拒绝交付</text>
+  <rect x="292" y="524" width="210" height="34" rx="8" fill="#3a2f12" stroke="#f5c451" stroke-width="1.2"/>
+  <text x="397" y="546" text-anchor="middle" style="font-size:14px;fill:#ffe3a1">YELLOW · 外部阻塞，说明</text>
+  <rect x="516" y="524" width="226" height="34" rx="8" fill="#13321f" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="629" y="546" text-anchor="middle" style="font-size:14px;fill:#a6f0b8">GREEN · 结构化交付报告</text>
+
+  <rect x="799" y="474" width="356" height="98" rx="12" class="box"/>
+  <text x="819" y="508" class="h">跨会话沉淀</text>
+  <text x="819" y="534" class="s">项目记忆 · 文件信息素 · /handoff</text>
+  <text x="819" y="556" class="s">下一次会话从这里接着走</text>
+</svg>

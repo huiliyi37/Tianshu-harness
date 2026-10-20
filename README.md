@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/brand/assets/tianshu-banner-dark.jpg" alt="天枢 Tianshu Harness" width="100%">
+  <img src="docs/brand/assets/tianshu-banner.svg" alt="天枢 Tianshu Harness" width="100%">
 </p>
 
 <h1 align="center">天枢 Tianshu Harness</h1>

@@ -623,6 +623,48 @@ test('IME: 行与 caret 均未变 → H2 短路零写入', () => {
   assert.equal(term.flush(), '', '完全无变化应零写入')
 })
 
+for (const hardwareCursorVisible of [true, false]) {
+  test(`IME: unchanged text releases and restores the caret (visible=${hardwareCursorVisible})`, () => {
+    const term = new MockTerminal(80, 3)
+    const engine = new LiveEngine({ stdout: asStdout(term), reservedRows: 0, maxRows: 3, hardwareCursorVisible })
+    const focused = [{ text: 'header' }, { text: 'input', caretCol: 3 }, { text: 'footer' }]
+    const unfocused = lines('header', 'input', 'footer')
+    engine.render(focused)
+    term.flush()
+
+    engine.render(unfocused)
+    const released = term.flush()
+    assert.ok(released.includes('\x1B[?25l'), 'removing the caret must hide the hardware cursor')
+    assert.equal(term.cursorRow, 2, 'release must return to the final live row')
+    assert.ok(!released.includes('input'), 'unchanged text must not be repainted')
+    engine.render(unfocused)
+    assert.equal(term.flush(), '', 'an unchanged frame without a caret remains a no-op')
+
+    engine.render(focused)
+    const restored = term.flush()
+    assert.equal(term.cursorRow, 1, 'restored caret must use the released cursor position')
+    assert.equal(term.cursorCol, 3)
+    assert.equal(restored.includes('\x1B[?25h'), hardwareCursorVisible)
+    assert.ok(!restored.includes('input'), 'restoring focus must not repaint the text')
+    engine.clear()
+    assert.equal(term.cursorRow, 0, 'clear must still return to the live region origin')
+    assert.equal(term.scrollCount, 0, 'focus transitions must not scroll a full-height frame')
+  })
+}
+
+test('IME: removing a caret on the final row also hides it and settles the frame', () => {
+  const term = new MockTerminal(80, 3)
+  const engine = new LiveEngine({ stdout: asStdout(term), reservedRows: 0, maxRows: 3, hardwareCursorVisible: true })
+  engine.render([{ text: 'header' }, { text: 'input', caretCol: 0 }])
+  term.flush()
+  const unfocused = lines('header', 'input')
+  engine.render(unfocused)
+  assert.ok(term.flush().includes('\x1B[?25l'), 'column zero is still an active caret to release')
+  assert.equal(term.cursorRow, 1)
+  engine.render(unfocused)
+  assert.equal(term.flush(), '', 'the released caret must not cause repeated redraws')
+})
+
 test('IME: CPR 响应按驻停记账折算区域末行——caret 移动/列变化不误判污染', () => {
   let polluted = 0
   const term = new MockTerminal(80, 24)

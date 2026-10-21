@@ -13,7 +13,7 @@ let originalTerm: string | undefined
 beforeEach(() => { originalTerm = process.env.TERM; process.env.TERM = 'xterm-256color' })
 afterEach(() => { if (originalTerm === undefined) delete process.env.TERM; else process.env.TERM = originalTerm })
 
-test('自动模式保留原生主屏，完成正文不随输入重绘，第二条消息正常发送', async () => {
+test('自动模式保留原生主屏，完成正文只提交一次并保留预览，第二条消息正常发送', async () => {
   const saved = process.env.TERM_PROGRAM
   process.env.TERM_PROGRAM = 'Apple_Terminal'
   const { app, out, stdin } = makeApp({ renderer: 'auto' })
@@ -30,11 +30,17 @@ test('自动模式保留原生主屏，完成正文不随输入重绘，第二�
     app.callbacks.onTurnComplete({}, 1, true)
     await tick()
     assert.equal(stripAnsi(app.getScrollbackContent()).split('NativeReplyOnce').length - 1, 1)
+    const committedAfterFirst = app.getScrollbackContent()
     out.clear()
     stdin.dataHandler!('第二条 j/k 路径 /src\r')
     await tick()
     assert.deepEqual(sent, ['第一条', '第二条 j/k 路径 /src'])
-    assert.doesNotMatch(out.chunks.join(''), /NativeReplyOnce|\x1b\[2J|\x1b\[\?1049h/)
+    const output = out.chunks.join('')
+    assert.doesNotMatch(output, /\x1b\[2J|\x1b\[\?(?:1049|1002|1006)h/)
+    assert.match(stripAnsi(output), /NativeReplyOnce/, 'the completed answer remains visible in the read-only viewport')
+    assert.ok(app.getScrollbackContent().startsWith(committedAfterFirst), 'redrawing must preserve the committed history prefix')
+    assert.equal(stripAnsi(app.getScrollbackContent()).split('NativeReplyOnce').length - 1, 1, 'previewing must not commit the answer again')
+    assert.equal(frontendOf(app).isFullscreen, false)
     assert.equal(app.activeOverlayId(), null)
   } finally {
     app.dispose()
@@ -43,7 +49,7 @@ test('自动模式保留原生主屏，完成正文不随输入重绘，第二�
   }
 })
 
-test('原生模式历史面板可折叠、鼠标选择，返回后关闭鼠标捕获且不重放正文', async () => {
+test('原生模式历史面板可折叠、鼠标选择，返回后关闭鼠标捕获且预览不重复提交正文', async () => {
   const { app, out, stdin } = makeApp({ renderer: 'classic' })
   const frontend = frontendOf(app)
   try {
@@ -52,6 +58,8 @@ test('原生模式历史面板可折叠、鼠标选择，返回后关闭鼠标�
     app.callbacks.onTextDelta('CopyableReply')
     app.callbacks.onTurnComplete({}, 1, true)
     await tick()
+    const committedBeforeHistory = app.getScrollbackContent()
+    assert.equal(stripAnsi(committedBeforeHistory).split('CopyableReply').length - 1, 1)
     out.clear()
     app.openUIHistory()
     await tick()
@@ -82,9 +90,13 @@ test('原生模式历史面板可折叠、鼠标选择，返回后关闭鼠标�
     stdin.dataHandler!('\x1b')
     await tick()
     assert.equal(app.activeOverlayId(), null)
-    assert.match(out.chunks.join(''), /\x1b\[\?1006l/)
-    assert.match(out.chunks.join(''), /\x1b\[\?1049l/)
-    assert.doesNotMatch(out.chunks.join(''), /CopyableReply|\x1b\[\?1006h/)
+    const output = out.chunks.join('')
+    assert.match(output, /\x1b\[\?1006l/)
+    assert.equal(output.split('\x1b[?1049l').length - 1, 1)
+    assert.doesNotMatch(output, /\x1b\[\?(?:1049|1002|1006)h/)
+    assert.match(stripAnsi(output), /CopyableReply/, 'leaving history restores the committed answer preview')
+    assert.equal(app.getScrollbackContent(), committedBeforeHistory, 'opening, copying and closing history must not append formal output')
+    assert.equal(stripAnsi(app.getScrollbackContent()).split('CopyableReply').length - 1, 1)
   } finally { app.dispose() }
 })
 

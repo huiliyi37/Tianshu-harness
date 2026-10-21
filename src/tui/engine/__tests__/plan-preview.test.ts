@@ -16,6 +16,7 @@ import type { ReadStream, WriteStream } from 'node:tty'
 import { TuiApp } from '../app.js'
 import { parseScrollbackTranscript } from '../../scrollback-transcript.js'
 import type { PlanSubmittedInfo } from '../../../tools/types.js'
+import { captureLiveFrame } from './_capture-frame.js'
 
 class MockOut {
   columns = 80
@@ -48,6 +49,7 @@ function makeApp(rows = 24) {
     stdin: stdin as unknown as ReadStream,
     cols: 80, rows, modelName: 'test',
   })
+  const liveFrame = captureLiveFrame(app)
   // 仿 main.ts pagerContent 的 plan 分支：预览指针在 → 全文 + footerHints 覆盖
   //（无 verbose/message 可切，q 语义是「返回」）+ messages 供 / 搜索与 n/N 跳匹配。
   app.registerOverlays({
@@ -74,7 +76,8 @@ function makeApp(rows = 24) {
     }),
   })
   app.start()
-  return { app, out, stdin }
+  const screen = () => app.activeOverlayId() ? screenOf(out) : liveFrame.text()
+  return { app, out, stdin, screen }
 }
 
 const stripAnsi = (s: string) => s.replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, '')
@@ -114,9 +117,9 @@ const screenOf = (out: MockOut): string => stripAnsi(reconstructScreen(out.chunk
 const PLAN_INFO: PlanSubmittedInfo = { slug: 'fix-cache', title: '重构缓存层' }
 
 test('审批卡 v → pager 显示计划全文，q 返回审批卡', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.openPlanApprovalPanel(PLAN_INFO, { body: PLAN_BODY, date: '2026-08-26' })
-  const opened = screenOf(out)
+  const opened = screen()
   assert.ok(opened.includes('计划审批'), '前置：钉底审阅卡已打开')
   assert.ok(opened.includes('2026-08-26'), '标题标日期')
   assert.ok(opened.includes('❯'), '输入框仍可见')
@@ -124,7 +127,7 @@ test('审批卡 v → pager 显示计划全文，q 返回审批卡', () => {
 
   out.clear()
   stdin.dataHandler!('v')
-  const preview = screenOf(out)
+  const preview = screen()
   assert.ok(preview.includes('计划预览'), `v 应打开全文预览，帧: ${preview}`)
   assert.ok(preview.includes('计划第0行') && preview.includes('计划第19行'), '首页应含前 20 行（pageSize = rows-4）')
   assert.ok(!preview.includes('计划第20行'), '首页不应含第 21 行')
@@ -134,71 +137,71 @@ test('审批卡 v → pager 显示计划全文，q 返回审批卡', () => {
 
   out.clear()
   stdin.dataHandler!('q')
-  const back = screenOf(out)
+  const back = screen()
   assert.ok(back.includes('计划审批') && back.includes('批准并执行'), `q 应回审批卡，帧: ${back}`)
   assert.ok(!back.includes('计划预览'), '返回后预览标题应消失')
   assert.equal(app.getPlanPreview(), null, '预览指针应已清空')
 })
 
 test('审批卡预览 Esc 同样返回审批卡', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.openPlanApprovalPanel(PLAN_INFO, { body: PLAN_BODY, date: '2026-08-26' })
   stdin.dataHandler!('v')
   out.clear()
   stdin.dataHandler!('\x1B')
-  const back = screenOf(out)
+  const back = screen()
   assert.ok(back.includes('计划审批'), `Esc 应回审批卡，帧: ${back}`)
   assert.equal(app.getPlanPreview(), null)
 })
 
 test('plan-picker v → pager，q 返回 picker', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.activateOverlay('plan-picker')
-  assert.ok(screenOf(out).includes('选择要批准执行的计划'), '前置：picker 已打开')
+  assert.ok(screen().includes('选择要批准执行的计划'), '前置：picker 已打开')
 
   out.clear()
   stdin.dataHandler!('v')
-  const preview = screenOf(out)
+  const preview = screen()
   assert.ok(preview.includes('计划预览') && preview.includes('计划第0行'), `v 应预览选中计划，帧: ${preview}`)
 
   out.clear()
   stdin.dataHandler!('q')
-  const back = screenOf(out)
+  const back = screen()
   assert.ok(back.includes('选择要批准执行的计划'), `q 应回 picker，帧: ${back}`)
   assert.equal(app.getPlanPreview(), null)
 })
 
 test('/plan-view（无 returnTo）q 退出回主屏，指针不残留', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.openPlanPreview('fix-cache')
-  const frame = screenOf(out)
+  const frame = screen()
   assert.ok(frame.includes('计划预览'), '前置：预览已打开')
   assert.ok(frame.includes('关闭') && !frame.includes('返回'), '无 returnTo 时 footer 应提示关闭')
 
   out.clear()
   stdin.dataHandler!('q')
   assert.equal(app.getPlanPreview(), null, '退出后指针必须清空（防劫持后续 pager）')
-  assert.ok(!screenOf(out).includes('计划预览'), '预览标题应消失')
+  assert.ok(!screen().includes('计划预览'), '预览标题应消失')
 })
 
 test('预览支持 / 搜索与行级匹配计数，Enter 后 n/N 导航', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.openPlanPreview('fix-cache')
   out.clear()
   stdin.dataHandler!('/') // 进入搜索模式
   stdin.dataHandler!('计划第5')
   stdin.dataHandler!('\r') // 确认搜索
-  const frame = screenOf(out)
+  const frame = screen()
   // 行级命中：计划第5行与计划第50..59行，共 11 处。
   const first2 = frame.split('\n').slice(0, 2).join(' | ')
   assert.ok(frame.includes('搜索 "计划第5"'), `搜索标题应出现，首两行: ${first2}`)
   assert.ok(frame.includes('(1/11)'), `匹配计数应为 1/11，首两行: ${first2}`)
   stdin.dataHandler!('n')
   assert.equal(app['overlayController'].nav().pagerSearchCurrent, 2)
-  assert.ok(screenOf(out).includes('计划第50行'), '第二处命中在可见范围内')
+  assert.ok(screen().includes('计划第50行'), '第二处命中在可见范围内')
   stdin.dataHandler!('N')
   assert.equal(app['overlayController'].nav().pagerSearchCurrent, 1)
-  assert.ok(screenOf(out).includes('计划第5行'), '返回首处命中')
+  assert.ok(screen().includes('计划第5行'), '返回首处命中')
 })
 
 test('预览态 v/m 是 no-op（无 verbose/message 可切，不 rerender）', () => {
@@ -212,11 +215,11 @@ test('预览态 v/m 是 no-op（无 verbose/message 可切，不 rerender）', (
 })
 
 test('长计划翻页：PgDn 移动半屏并显示 11-30 / 60 行', () => {
-  const { app, out, stdin } = makeApp()
+  const { app, out, stdin, screen } = makeApp()
   app.openPlanPreview('fix-cache')
   out.clear()
   stdin.dataHandler!('\x1B[6~')
-  const page2 = screenOf(out)
+  const page2 = screen()
   assert.ok(page2.includes('(11-30 / 60 行)'), `pageSize 20 → 半屏 10 行，帧: ${page2}`)
   assert.ok(page2.includes('计划第10行') && page2.includes('计划第29行'), '半屏后应显示第 11 至 30 行')
   assert.equal(app['overlayController'].nav().pagerLineOffset, 10)

@@ -12,11 +12,10 @@ import type { ReadStream, WriteStream } from 'node:tty'
 import { TuiApp } from '../app.js'
 import { DEFAULT_FRONTEND_PREFERENCES } from '../../frontend-preferences.js'
 import { MockOut, MockIn, stripAnsi } from './_harness.js'
+import type { LiveRegionLine } from '../live-engine.js'
 
 interface AppInternals {
   outputFrozen: boolean
-  getDynamicBudget(chromeRows: number, dynamicRows: number): number
-  rows: number
 }
 
 function makeApp(rows = 24) {
@@ -128,26 +127,37 @@ describe('输出冻结（Ctrl+S）', () => {
   })
 })
 
-describe('矮屏降级 — 高水位半屏封顶', () => {
-  // welcomeIdle 守卫（idle + turn 0 → 预算 0）会盖住矮屏断言，先驱动一个
-  // delta 让 phase 离开 idle。
+describe('矮屏与桌面 — 满窗口视口保持底部输入框', () => {
   async function makePrimedApp(rows: number) {
     const ctx = makeApp(rows)
+    const live = (ctx.app as unknown as { live: { render: (lines: readonly LiveRegionLine[], opts?: { reservedTail?: number }) => void } }).live
+    const render = live.render.bind(live)
+    let frame: readonly LiveRegionLine[] = []
+    live.render = (lines, opts) => { frame = lines; render(lines, opts) }
+    ctx.app.setInput('保留草稿')
     ctx.app.callbacks.onThinkingDelta('prime')
     await tick()
-    return ctx
+    return { ...ctx, frame: () => frame }
   }
 
-  test('rows=12（软键盘展开）高水位预算 ≤ 半屏', async () => {
-    const { internals } = await makePrimedApp(12)
-    const budget = internals.getDynamicBudget(3, 100)
-    assert.ok(budget <= 6 - 3, `rows=12 的动态预算应 ≤ 3（半屏 6 减 chrome 3），got ${budget}`)
+  test('rows=12（软键盘展开）满帧不超屏，草稿和实时状态仍可见', async t => {
+    const { app, frame } = await makePrimedApp(12)
+    t.after(() => app.dispose())
+    assert.equal(frame().length, 12)
+    assert.ok(frame().some(line => line.livePart === 'status'))
+    assert.ok(frame().findIndex(line => line.caretCol !== undefined) >= 8)
+    assert.ok(frame().map(line => line.region).lastIndexOf('composer') >= 10)
+    assert.equal(app.getInputValue(), '保留草稿')
   })
 
-  test('rows=40 桌面高度不受影响（回归锚点）', async () => {
-    const { internals } = await makePrimedApp(40)
-    const budget = internals.getDynamicBudget(3, 100)
-    assert.ok(budget > 10, `rows=40 桌面档维持原 cap（28），got ${budget}`)
+  test('rows=40 桌面同样使用完整视口，底部光标不被旧28行预算抬起', async t => {
+    const { app, frame } = await makePrimedApp(40)
+    t.after(() => app.dispose())
+    assert.equal(frame().length, 40)
+    assert.ok(frame().some(line => line.livePart === 'status'))
+    assert.ok(frame().findIndex(line => line.caretCol !== undefined) >= 36)
+    assert.ok(frame().map(line => line.region).lastIndexOf('composer') >= 38)
+    assert.equal(app.getInputValue(), '保留草稿')
   })
 })
 

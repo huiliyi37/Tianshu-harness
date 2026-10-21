@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import stringWidth from 'string-width'
-import { makeApp } from './_harness.js'
+import { makeApp, stripAnsi } from './_harness.js'
+import type { LiveRegionLine } from '../live-engine.js'
 
 /**
  * 收编公开仓 PR #475：内联决策卡（提问 / 计划审批）首弹时的 live 锚点与行预算。
@@ -11,8 +12,8 @@ import { makeApp } from './_harness.js'
  * `\r\x1B[0J` + live.reset()——live 增量绘制锚点被重置，旧 chrome 残留、
  * 决策卡从输入光标位置继续绘制，对话被分成上下两层。
  *
- * 缺陷二（行预算）：getDynamicBudget 的高水位（liveRowsHighWater）在决策卡
- * 收起（visible=false）后仍保持展开时的上限——收起后保留大片空白。
+ * 缺陷二（内容生命周期）：收起后卡片正文必须退场，仅保留返回入口。
+ * 经典模式现在保持满窗口高度，允许历史投影与 padding；总帧塌缩不再是验收条件。
  *
  * 断言基于「终态帧文本 + scrollback」：TerminalGrid 模拟 normal screen 的
  * 行为（光标移动、擦除、换行、scrollback），比 frame-only 断言更接近真实终端。
@@ -92,28 +93,47 @@ for (const [cols, rows] of [[120, 30], [80, 24]] as const) {
       } finally { h.app.dispose() }
     })
 
-    test(`${cols}x${rows} ${kind}: collapse releases card height and Tab preserves selection without a blank band`, async () => {
+    test(`${cols}x${rows} ${kind}: collapse removes the card, keeps the composer fixed and Tab restores selection`, async () => {
       const h = makeApp({ cols, rows })
       try {
         await (h.app as any).frontend.ready
+        const live = (h.app as unknown as { live: { render: (lines: readonly LiveRegionLine[], opts?: { reservedTail?: number }) => void } }).live
+        const render = live.render.bind(live)
+        let frame: readonly LiveRegionLine[] = []
+        live.render = (lines, opts) => { frame = lines; render(lines, opts) }
+        const position = () => {
+          assert.equal(frame.length, rows, 'decision transitions must retain the full terminal height')
+          const caret = frame.findIndex(line => line.caretCol !== undefined)
+          const bottom = frame.map(line => line.region).lastIndexOf('composer')
+          assert.ok(caret >= rows - 4 && caret <= bottom)
+          assert.ok(bottom >= rows - 2)
+          return { caret, bottom }
+        }
         if (kind === 'question') h.app.openAskUserQuestionPanel(question)
         else h.app.openPlanApprovalPanel(plan, { body: Array.from({ length: 30 }, (_, i) => `计划第${i + 1}行`).join('\n') })
         h.stdin.dataHandler!('\x1b[B')
         const cursor = h.app.decisions.active!.cursor
-        const expanded = (h.app as any).live.lastDisplayRows
+        const expanded = position()
+        const cardText = kind === 'question' ? '按哪个范围落地修复' : '修复界面分层'
+        assert.ok(frame.some(line => stripAnsi(line.text).includes(cardText)), 'expanded card content must be visible')
+        assert.ok(frame.some(line => line.decisionPart === 'action'))
         h.stdin.dataHandler!('\x1b')
         await tick()
-        const collapsed = (h.app as any).live.lastDisplayRows
-        assert.ok(collapsed <= 7, `collapsed card must leave only its return hint and input chrome, got ${collapsed}`)
-        assert.ok(collapsed < expanded, `collapsing must release the expanded height (expanded=${expanded}, collapsed=${collapsed})`)
+        assert.deepEqual(position(), expanded, 'collapsing a card must not lift the bottom composer')
+        const collapsed = frame.map(line => stripAnsi(line.text)).join('\n')
+        assert.match(collapsed, /Tab 返回卡片/, 'the collapsed card must retain its return control')
+        assert.equal(collapsed.includes(cardText), false, 'the old card body must not remain in the frame')
+        assert.equal(frame.filter(line => line.decisionPart).length, 1, 'only the return hint may remain from the card')
         h.stdin.dataHandler!('\t')
         await tick()
         assert.equal(h.app.decisions.active?.cursor, cursor, 'Tab must restore the card with the original selection')
         assert.equal(h.app.decisions.focused, true)
-        const cache: string[] = (h.app as any).live.lineCache
+        assert.deepEqual(position(), expanded, 'restoring the card must keep the composer at the same screen rows')
+        const cache = frame.map(line => stripAnsi(line.text))
+        assert.equal(cache.join('\n').split(cardText).length - 1, 1, 'restoring must show one copy of the card')
         const footer = cache.findIndex(line => line.includes('Enter 确认'))
-        const chrome = cache.findIndex(line => line.includes('test'))
-        assert.ok(chrome - footer <= 2, 'restored card must join the composer without old height padding')
+        const chrome = frame.findIndex(line => line.region === 'mode')
+        assert.ok(footer >= 0 && chrome > footer && chrome - footer <= 2, 'restored confirmation controls must join the composer without stale card padding')
       } finally { h.app.dispose() }
     })
   }

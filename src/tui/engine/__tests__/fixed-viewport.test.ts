@@ -5,13 +5,13 @@
  *  1. padDynamicRegion 把动态段垫高/截断到恰好 budget display rows：
  *     - 不足 → 在动态内容与 chrome 之间垫空行（内容贴上、输入框贴下）；
  *     - 超出 → 从顶部截最旧行（approval 等关键内容在动态段尾部，天然保留）；
- *     - budget<=0 → 原样返回（空闲塌回）。
+ *     - budget<=0 → 纯函数原样返回。
  *  2. TuiApp 活动期（thinking/streaming）连续帧的 live region 总 display rows
  *     恒定 —— 输入框屏幕坐标不随字符增长浮动。
- *  3. 活动期合并绘制；空闲与菜单关闭允许回缩，不跨轮预留空白。
+ *  3. 活动、空闲与菜单开合均保持完整终端高度，输入框不移动。
  *  4. 小终端（rows=10）预算收缩，live region 不超屏。
- *  5. liveMaxRowsFor 终端高度感知（min(28, rows-1)，下限 4）。
- *  6. 普通区域最多半屏，审批与菜单可临时扩容。
+ *  5. liveMaxRowsFor 保留旧区域/读屏预算语义；经典满窗口视口独立按 rows 计算。
+ *  6. 审批、菜单与历史投影共享输入框上方的空间，不改变终端视口高度。
  */
 
 import { test } from 'node:test'
@@ -49,7 +49,7 @@ test('恰好等于预算：原样保留，无垫行无截断', () => {
   assert.equal(r.chromeStart, 3)
 })
 
-test('budget<=0：原样返回（空闲塌回自然流）', () => {
+test('budget<=0：纯函数保持原始输入', () => {
   const lines = [...L('a'), ...L('input')]
   const r = padDynamicRegion(lines, 1, 0)
   assert.deepEqual(r.lines.map(l => l.text), ['a', 'input'])
@@ -91,67 +91,82 @@ test('liveMaxRowsFor：高终端封顶 28，小终端 rows-1，下限 4，非法
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 const liveRows = (app: unknown): number => (app as { live: { lastDisplayRows: number } }).live.lastDisplayRows
 
-/**
- * 轮内不缩（非「逐帧恒定」）：动态段按本轮高水位定高，内容增长时抬高、
- * 永不回缩。回缩才是输入框上抖的成因；单向抬高在满屏后由终端滚动吸收。
- */
-const assertNoShrink = (heights: readonly number[]): void => {
-  for (let i = 1; i < heights.length; i++) {
-    assert.ok(
-      heights[i]! >= heights[i - 1]!,
-      `第 ${i} 帧回缩（输入框上抖）: ${heights[i]} < ${heights[i - 1]}（heights=${heights.join(',')}）`,
-    )
-  }
+function observeFrames(app: unknown): () => readonly LiveRegionLine[] {
+  const live = (app as { live: { render: (lines: readonly LiveRegionLine[], opts?: { reservedTail?: number }) => void } }).live
+  const render = live.render.bind(live)
+  let frame: readonly LiveRegionLine[] = []
+  live.render = (lines, opts) => { frame = lines; render(lines, opts) }
+  return () => frame
 }
 
-test('thinking 逐字增长期间 live region 轮内只涨不缩（输入框不上抖）', async () => {
+function anchored(frame: readonly LiveRegionLine[], rows: number): { caret: number; bottom: number } {
+  assert.equal(frame.length, rows, '视口必须按当前终端高度完整绘制')
+  const caret = frame.findIndex(line => line.caretCol !== undefined)
+  const bottom = frame.map(line => line.region).lastIndexOf('composer')
+  assert.ok(caret >= rows - 4 && caret <= bottom, '可编辑光标必须留在底部输入框')
+  assert.ok(bottom >= rows - 2, '输入框之后只允许普通键位 footer')
+  return { caret, bottom }
+}
+
+test('thinking 逐字增长期间满窗口视口与底部输入框保持不变', async t => {
   const { app } = makeApp({ cols: 80, rows: 40 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('保留草稿')
+  const position = anchored(frame(), 40)
   const heights: number[] = []
   for (let i = 0; i < 12; i++) {
     app.callbacks.onThinkingDelta(`推理片段 ${i}：分析代码结构与依赖关系。\n`)
     await flush()
     heights.push(liveRows(app))
+    assert.deepEqual(anchored(frame(), 40), position)
   }
-  assert.ok(heights[0]! > 5, `活动期视口应有可观高度: ${heights[0]}`)
-  assertNoShrink(heights)
-  // 高水位跟随真实内容，不再恒定撑到引擎上限 liveMaxRowsFor(40)=28——撑到上限
-  // 会让轮末塌回落差达 20+ 行，短回复后全部露成输入框下方的空白。
-  assert.ok(
-    heights[heights.length - 1]! < 28,
-    `动态段不应撑到引擎上限: ${heights[heights.length - 1]}（heights=${heights.join(',')}）`,
-  )
+  assert.ok(heights.every(height => height === 40), `heights=${heights}`)
 })
 
-test('streaming 文本增长期间同样只涨不缩', async () => {
+test('streaming 文本增长期间同样保持满视口和底部光标', async t => {
   const { app } = makeApp({ cols: 80, rows: 40 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('保留草稿')
+  const position = anchored(frame(), 40)
   const heights: number[] = []
   for (let i = 0; i < 10; i++) {
     app.callbacks.onTextDelta(`streaming output chunk ${i} with some longer content to fill the tail. `)
     await flush()
     heights.push(liveRows(app))
+    assert.deepEqual(anchored(frame(), 40), position)
   }
-  assert.ok(heights[0]! > 5)
-  assertNoShrink(heights)
-  assert.ok(heights[heights.length - 1]! < 28, `heights=${heights.join(',')}`)
+  assert.ok(heights.every(height => height === 40), `heights=${heights.join(',')}`)
 })
 
-test('turn 结束后移除空白预留，只留下输入 chrome', async () => {
+test('turn 结束后清理实时活动内容，满视口和输入框位置不塌缩', async t => {
   const { app } = makeApp({ cols: 80, rows: 40 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('保留草稿')
   app.callbacks.onThinkingDelta('思考中……\n')
   await flush()
   const active = liveRows(app)
+  const position = anchored(frame(), 40)
 
   await (app as unknown as { handleTurnComplete: (u: object, t: number, f: boolean) => Promise<void> })
     .handleTurnComplete({ input_tokens: 10, output_tokens: 5 }, 1, true)
   await flush()
   const idle = liveRows(app)
 
-  // 空闲期不再为旧动态帧保留空白。
-  assert.ok(idle < active, `轮末应回缩: idle=${idle} active=${active}`)
+  assert.equal(idle, active, '轮末不能把输入框从窗口底部抬起')
+  assert.deepEqual(anchored(frame(), 40), position)
+  assert.ok(!frame().some(line => line.livePart === 'status' || line.livePart === 'tail'), '已结束的实时状态必须退场')
+  assert.equal(app.getInputValue(), '保留草稿')
 })
 
-test('连续多轮只在活动期扩容，空闲高度保持一致', async () => {
+test('连续多轮活动与空闲都保持完整高度，底部输入框不漂移', async t => {
   const { app } = makeApp({ cols: 80, rows: 40 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('保留草稿')
+  const position = anchored(frame(), 40)
   const priv = app as unknown as {
     setPhase: (p: string) => void
     renderLive: () => void
@@ -167,6 +182,7 @@ test('连续多轮只在活动期扩容，空闲高度保持一致', async () =>
     priv.renderLive()
     await flush()
     heights.push(liveRows(app))
+    assert.deepEqual(anchored(frame(), 40), position)
 
     for (let i = 0; i < 5; i++) {
       app.callbacks.onThinkingDelta(`推理片段 ${i}\n`)
@@ -175,74 +191,83 @@ test('连续多轮只在活动期扩容，空闲高度保持一致', async () =>
     app.callbacks.onTextDelta('简短回复。')
     await flush()
     heights.push(liveRows(app))
+    assert.deepEqual(anchored(frame(), 40), position)
 
     await priv.handleTurnComplete({ input_tokens: 10, output_tokens: 5 }, turn, true)
     await flush()
     heights.push(liveRows(app))
+    assert.deepEqual(anchored(frame(), 40), position)
   }
 
   const idle = heights.filter((_, i) => i % 3 === 2)
   assert.ok(idle.every(height => height === idle[0]), `idle=${idle}`)
-  assert.ok(heights.every(height => height <= 20), `heights=${heights}`)
+  assert.ok(heights.every(height => height === 40), `heights=${heights}`)
 })
 
-test('首帧走自然流，不补空行撑底（凭空造的空白只能堆在欢迎屏某一侧，比自然流更难看）', async () => {
-  const { out } = makeApp({ cols: 80, rows: 40 })
+test('首帧占满窗口，但不单独写出成片空行污染原生历史', async t => {
+  const { app, out } = makeApp({ cols: 80, rows: 40 })
+  t.after(() => app.dispose())
   await flush()
+  assert.equal(liveRows(app), 40)
   assert.equal(out.chunks.find(c => /^\n{2,}$/.test(c)), undefined,
     `首帧不应出现成片空行: ${JSON.stringify(out.chunks.slice(0, 4))}`)
 })
 
-test('小终端（rows=10）预算收缩，live region 不超屏', async () => {
+test('小终端（rows=10）仍填满窗口，live region 不超屏', async t => {
   const { app } = makeApp({ cols: 80, rows: 10 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
   for (let i = 0; i < 8; i++) {
     app.callbacks.onThinkingDelta(`小屏思考片段 ${i}\n`)
     await flush()
-    assert.ok(liveRows(app) <= 10, `live region 超屏: ${liveRows(app)} > 10`)
+    assert.equal(liveRows(app), 10, '小屏视口必须恰好等于终端高度')
+    anchored(frame(), 10)
   }
 })
 
-test('30 行窗口：高水位压到半屏（cap=15）——峰值预留不吃掉半屏以上', async () => {
+test('30 行窗口：活动内容增长与回落都不改变底部输入框的位置', async t => {
   const { app } = makeApp({ cols: 80, rows: 30 })
-  const priv = app as unknown as {
-    getDynamicBudget: (chromeRows: number, dynamicRows: number) => number
-    renderLive: () => void
-    setPhase: (p: string) => void
-    agentBusy: boolean
-  }
-  priv.agentBusy = true
-  priv.setPhase('thinking')
-  // 一轮大峰值：动态 20 + chrome 6 = 26 > cap 15 → 压到 15，预算 = 15 − 6 = 9
-  assert.equal(priv.getDynamicBudget(6, 20), 9)
-  // 高水位被 cap 钳住：后续小内容不会突破 15
-  assert.equal(priv.getDynamicBudget(6, 2), 9)
-  priv.renderLive()
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('峰值期间保留草稿')
+  const position = anchored(frame(), 30)
+  app.callbacks.onThinkingDelta('较长的思考内容\n'.repeat(20))
   await flush()
-  assert.equal(liveRows(app), 15, `30 行窗口 live region 应恰好等于半屏 cap: ${liveRows(app)}`)
+  assert.deepEqual(anchored(frame(), 30), position)
+  assert.ok(frame().some(line => line.livePart === 'status'))
+  await (app as unknown as { handleTurnComplete: (u: object, t: number, f: boolean) => Promise<void> })
+    .handleTurnComplete({}, 1, true)
+  await flush()
+  assert.deepEqual(anchored(frame(), 30), position)
+  assert.equal(app.getInputValue(), '峰值期间保留草稿')
 })
 
-test('32 行窗口同样限制普通高水位为半屏', () => {
+test('32 行窗口同样保持完整视口与可编辑的底部草稿', async t => {
   const { app } = makeApp({ cols: 80, rows: 32 })
-  const priv = app as unknown as {
-    getDynamicBudget: (chromeRows: number, dynamicRows: number) => number
-    setPhase: (p: string) => void
-    agentBusy: boolean
-  }
-  priv.agentBusy = true
-  priv.setPhase('thinking')
-  assert.equal(priv.getDynamicBudget(6, 20), 10)
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
+  app.setInput('桌面草稿')
+  app.callbacks.onTextDelta('正文增长。'.repeat(200))
+  await flush()
+  anchored(frame(), 32)
+  assert.equal(liveRows(app), 32)
+  assert.equal(app.getInputValue(), '桌面草稿')
 })
 
-test('半屏 cap 不截掉审批状态行：rows=30 审批挂起时「等待审批」仍可见', async () => {
+test('满窗口预算保留审批状态行：rows=30 审批挂起时「等待审批」仍可见', async t => {
   const { app, out } = makeApp({ cols: 80, rows: 30 })
+  t.after(() => app.dispose())
   void app.callbacks.onApprovalRequired!('1', 'read_file', { file_path: '/tmp/x' })
   await flush()
   const frame = stripAnsi(out.chunks.join(''))
-  assert.ok(frame.includes('等待审批 read_file'), '半屏 cap 下审批状态行不得被截掉')
+  assert.ok(frame.includes('等待审批 read_file'), '满窗口预算下审批状态行不得被截掉')
+  assert.equal(liveRows(app), 30)
 })
 
-test('欢迎页 slash 关闭后释放菜单预留', async () => {
+test('欢迎页 slash 开合只移除菜单内容，输入框持续贴底', async t => {
   const { app } = makeApp({ cols: 80, rows: 24 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
   app.setSlashCommands(
     Array.from({ length: 8 }, (_, i) => ({
       name: `/cmd${i}`,
@@ -250,26 +275,31 @@ test('欢迎页 slash 关闭后释放菜单预留', async () => {
       tier: 'core' as const,
     })),
   )
+  app.forceRedraw()
   await flush()
   const idle = liveRows(app)
-  assert.ok(idle > 0, `欢迎首帧应已画出 live region: ${idle}`)
+  assert.equal(idle, 24)
+  const position = anchored(frame(), 24)
 
   app.setInput('/')
   await flush()
   const open = liveRows(app)
-  assert.ok(open > idle, `slash 打开应撑高（输入框下落）: open=${open} idle=${idle}`)
+  assert.equal(open, idle, 'slash 打开不能移动底部输入框')
+  assert.deepEqual(anchored(frame(), 24), position)
+  assert.ok(frame().some(line => stripAnsi(line.text).includes('/cmd0')), '菜单项确实显示')
 
   app.setInput('')
   await flush()
   const closed = liveRows(app)
-  assert.ok(
-    closed < open,
-    `欢迎页取消 slash 后应释放预留: closed=${closed} open=${open} idle=${idle}`,
-  )
+  assert.equal(closed, open, '关闭菜单后仍保持满视口')
+  assert.deepEqual(anchored(frame(), 24), position)
+  assert.ok(!frame().some(line => stripAnsi(line.text).includes('/cmd0')), '取消后菜单项不得残留')
 })
 
-test('活动期 slash 关闭后回落半屏预算', async () => {
+test('活动期 slash 开合保持满视口，关闭后菜单内容不残留', async t => {
   const { app } = makeApp({ cols: 80, rows: 24 })
+  t.after(() => app.dispose())
+  const frame = observeFrames(app)
   app.setSlashCommands(
     Array.from({ length: 8 }, (_, i) => ({
       name: `/cmd${i}`,
@@ -280,19 +310,19 @@ test('活动期 slash 关闭后回落半屏预算', async () => {
   app.callbacks.onThinkingDelta('思考中\n')
   await flush()
   const before = liveRows(app)
+  const position = anchored(frame(), 24)
 
   app.setInput('/')
   await flush()
   const open = liveRows(app)
-  assert.ok(open > before, `slash 提示应撑高 chrome: open=${open} before=${before}`)
+  assert.equal(open, before)
+  assert.deepEqual(anchored(frame(), 24), position)
+  assert.ok(frame().some(line => stripAnsi(line.text).includes('/cmd0')))
 
   app.setInput('')
   await flush()
   const closed = liveRows(app)
-  // 关闭态回落到半屏预算内（菜单扩容的预留不得滞留）。chrome 轻量时菜单把动态段
-  // 挤到 0，open 本身即半屏下界——故"回落"以半屏为界，而非严格小于 open。
-  assert.ok(
-    closed <= Math.ceil(24 / 2),
-    `slash 关闭后应回落到半屏预算内: closed=${closed} open=${open} before=${before}`,
-  )
+  assert.equal(closed, 24)
+  assert.deepEqual(anchored(frame(), 24), position)
+  assert.ok(!frame().some(line => stripAnsi(line.text).includes('/cmd0')))
 })

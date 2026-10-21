@@ -10,18 +10,19 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { makeApp, stripAnsi } from './_harness.js'
+import { makeApp } from './_harness.js'
+import { captureLiveFrame, type CapturedLiveFrame } from './_capture-frame.js'
 
 const tick = () => new Promise(r => setTimeout(r, 20))
 
 /** 取最近一帧的纯文本行序列（strip ANSI、去空行）。 */
-function lastFrameLines(out: { chunks: string[] }): string[] {
-  const last = out.chunks[out.chunks.length - 1] ?? ''
-  return stripAnsi(last).split('\n').filter(l => l.trim() !== '')
+function lastFrameLines(frame: CapturedLiveFrame): string[] {
+  return frame.lines().filter(line => line.trim() !== '')
 }
 
 test('输入框（botBorder）应为渲染帧最后一行：其后无状态行/提示行', async () => {
-  const { app, out, stdin } = makeApp({ rows: 24 })
+  const { app, stdin } = makeApp({ rows: 24 })
+  const frame = captureLiveFrame(app)
   app.onSubmit(() => {})
 
   // 触发渲染：提交一条消息
@@ -29,7 +30,7 @@ test('输入框（botBorder）应为渲染帧最后一行：其后无状态行/�
   stdin.dataHandler!('\r')
   await tick()
 
-  const lines = lastFrameLines(out)
+  const lines = lastFrameLines(frame)
   // 输入框底边框（thick/dots 主题用 ╰，thin 用 └）
   const botIdx = lines.map(l => /^[─━┄-]+$/.test(l)).lastIndexOf(true)
   assert.ok(botIdx >= 0, `应能找到输入框 botBorder，帧行: ${lines.join(' | ')}`)
@@ -44,14 +45,15 @@ test('输入框（botBorder）应为渲染帧最后一行：其后无状态行/�
 })
 
 test('状态行（metrics/权限模式）位于输入框上方', async () => {
-  const { app, out, stdin } = makeApp({ rows: 24 })
+  const { app, stdin } = makeApp({ rows: 24 })
+  const frame = captureLiveFrame(app)
   app.onSubmit(() => {})
 
   app.setInput('hello')
   stdin.dataHandler!('\r')
   await tick()
 
-  const lines = lastFrameLines(out)
+  const lines = lastFrameLines(frame)
   const botIdx = lines.map(l => /^[─━┄-]+$/.test(l)).lastIndexOf(true)
   assert.ok(botIdx >= 0)
   // 状态行特征：权限模式（auto-safe / plan / ask）在输入框上方

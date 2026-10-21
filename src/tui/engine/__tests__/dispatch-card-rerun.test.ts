@@ -51,25 +51,28 @@ describe('派发契约卡 — 稳定 id 再派发', () => {
     send(app, { workOrderId: 'batch:0', parentToolId: 'tool_1', status: 'completed', summary: '第一轮结论' })
     const firstRound = stripAnsi(out.chunks.join(''))
     assert.match(firstRound, /审查缓存边界/, '第一轮本就该打卡')
+    const previousContent = app.getScrollbackContent()
 
     out.chunks.length = 0
     send(app, { workOrderId: 'batch:0', parentToolId: 'tool_2', status: 'running', contract: contract('补 rewind 回归测试') })
     const secondRound = stripAnsi(out.chunks.join(''))
 
     assert.match(secondRound, /补 rewind 回归测试/, '第二轮派发必须打出本轮的卡')
-    assert.doesNotMatch(secondRound, /审查缓存边界/, '不得复读上一轮的目标')
+    const newCards = stripAnsi(app.getScrollbackContent().slice(previousContent.length))
+    assert.match(newCards, /补 rewind 回归测试/)
+    assert.doesNotMatch(newCards, /审查缓存边界/, '新提交的派发卡不得复读上一轮目标；只读历史预览仍可显示旧卡')
   })
 
   test('同一轮内重复 running 事件只打一次卡', () => {
-    const { app, out } = makeApp()
+    const { app } = makeApp()
 
     send(app, { workOrderId: 'batch:0', parentToolId: 'tool_1', status: 'running', contract: contract('审查缓存边界') })
     send(app, { workOrderId: 'batch:0', parentToolId: 'tool_1', status: 'running', contract: contract('审查缓存边界'), progressLine: '⚙ grep' })
 
-    const text = stripAnsi(out.chunks.join(''))
+    const text = stripAnsi(app.getScrollbackContent())
     // 注意：目标现在会出现在两处——派发契约卡（scrollback 沉淀）与舰队面板
     // 主行（0e46b0c6 任务优先布局）。去重的语义是「契约卡只打一次」，
-    // 所以数卡头标记而不是目标文本。
+    // 所以数正式历史的卡头标记，不把只读视口重绘当作新派发。
     const cards = text.split('◆ 派发').length - 1
     assert.equal(cards, 1, `同轮内应只打一次派发卡，实际 ${cards} 次`)
   })

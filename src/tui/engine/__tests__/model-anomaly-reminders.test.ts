@@ -22,11 +22,12 @@ test('final turn stopReason=max_tokens → 截断提示行；正常收尾不落'
   const committed = stripAnsi(out.chunks.join(''))
   assert.ok(committed.includes('token 上限'), `截断提示行必须在场，实得：${committed.slice(-300)}`)
   assert.ok(committed.includes('继续'), '提示必须告诉用户发「继续」可续')
+  const previousContent = app.getScrollbackContent()
 
   out.chunks.length = 0
   app.callbacks.onTurnComplete({}, 2, true)
   await new Promise(r => setTimeout(r, 100))
-  assert.ok(!stripAnsi(out.chunks.join('')).includes('token 上限'), '正常收尾不得出截断提示')
+  assert.ok(!stripAnsi(app.getScrollbackContent().slice(previousContent.length)).includes('token 上限'), '正常收尾不得再次提交截断提示')
 })
 
 test('onModelRetry → 静态警告行带类别中文名与等待秒数', async () => {

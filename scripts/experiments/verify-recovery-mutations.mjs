@@ -71,7 +71,7 @@ export function verifyMutation(name, destination, run) {
       delete env.NODE_TEST_CONTEXT
       if (phase === 'mutant') env.EXPERIMENT_MUTATION = name
       const r = run ? run(phase, env) : spawnSync(process.execPath, ['--import', 'tsx', ...(phase === 'mutant' ? ['--import', import.meta.filename] : []), '--test', '--test-reporter=tap', '--test-name-pattern=' + pattern, tests + file], {
-        encoding: 'utf8', timeout: 100_000, maxBuffer: 4_000_000,
+        encoding: 'utf8', timeout: 100_000, maxBuffer: 4_000_000, windowsHide: true,
         env,
       })
       writeFileSync(join(destination, name + (phase === 'baseline' ? '.baseline.log' : '.log')), r.stdout + r.stderr)

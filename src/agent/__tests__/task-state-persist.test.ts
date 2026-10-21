@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { createPersistentTaskState, classifyFingerprintPath } from '../task-state-persist.js'
 import { getEffectiveVerifications } from '../verification-attribution.js'
+import { candidateSnapshotRef } from '../candidate-snapshot-ref.js'
 
 /**
  * task-state-persist 指纹一致性回归（8784b64b8 提交后审查 P1）。
@@ -49,6 +50,40 @@ it('P1：ownership 含 ledger 外路径（plan draft）时，新验证不被判 
   writeFileSync(join(cwd, 'owned.ts'), 'next')
   state.taskLedger.record({ type: 'file_write', path: 'owned.ts' })
   assert.equal(getEffectiveVerifications(state.taskLedger.getEvents()).effective.length, 0, '新写事件必须使旧验证失效')
+})
+
+it('候选验证仅随所选文件与 HEAD 失效，范围外写入及恢复不清除证据', () => {
+  const { cwd, baseline } = fixture()
+  const state = createPersistentTaskState(cwd, 'candidate-scoped', baseline)
+  writeFileSync(join(cwd, 'owned.ts'), 'candidate')
+  state.taskLedger.record({ type: 'file_write', path: 'owned.ts' })
+  const ref = candidateSnapshotRef(cwd, ['owned.ts'])
+  assert.ok(ref)
+  state.taskLedger.record({ type: 'verification', command: 'candidate test', status: 'passed', meta: {
+    scope: 'targeted', kind: 'test', candidateFiles: ['owned.ts'], snapshotRef: ref, workspaceFingerprint: ref,
+  } })
+  writeFileSync(join(cwd, 'unrelated.ts'), 'peer work')
+  state.taskLedger.record({ type: 'file_write', path: 'unrelated.ts' })
+  assert.equal(getEffectiveVerifications(state.taskLedger.getEvents(), ref).effective.length, 1)
+  const restored = createPersistentTaskState(cwd, 'candidate-scoped', baseline)
+  assert.equal(getEffectiveVerifications(restored.taskLedger.getEvents(), ref).effective.length, 1)
+
+  writeFileSync(join(cwd, 'owned.ts'), 'edited after test')
+  restored.taskLedger.record({ type: 'file_write', path: 'owned.ts' })
+  assert.equal(getEffectiveVerifications(restored.taskLedger.getEvents(), candidateSnapshotRef(cwd, ['owned.ts']) ?? undefined).effective.length, 0)
+})
+
+it('候选身份包含未跟踪文件内容和 HEAD，拒绝敏感路径', () => {
+  const { cwd } = fixture()
+  writeFileSync(join(cwd, 'new.ts'), 'one')
+  const first = candidateSnapshotRef(cwd, ['new.ts'])
+  assert.ok(first)
+  writeFileSync(join(cwd, 'new.ts'), 'two')
+  assert.notEqual(candidateSnapshotRef(cwd, ['new.ts']), first)
+  assert.equal(candidateSnapshotRef(cwd, ['.env']), null)
+  git(cwd, 'add', '--', 'new.ts')
+  git(cwd, 'commit', '-qm', 'new file')
+  assert.notEqual(candidateSnapshotRef(cwd, ['new.ts']), first)
 })
 
 it('P1 对照：ownership 与 ledger 集合相同时（无外部条目）验证本就有效——防修复引入新失效', () => {

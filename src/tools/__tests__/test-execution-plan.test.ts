@@ -53,6 +53,24 @@ test('workspace files produce package-scoped batches and keep their original scr
   } finally { f.dispose() }
 })
 
+test('desktop package test script produces a file-scoped Node batch', () => {
+  const f = fixture()
+  try {
+    f.write('desktop/package.json', { name: 'tianshu-desktop', scripts: { test: 'node --import tsx scripts/run-tests.ts' } })
+    f.write('desktop/scripts/__tests__/panel.test.ts', '// fixture')
+    const desktop = join(f.root, 'desktop')
+    const invocation = classifyVerificationCommand('npm test', desktop)
+    assert.equal(invocation.runner, 'node-test')
+    assert.equal(invocation.batchRunner, true)
+    const plan = buildTestExecutionPlan(f.root, { files: ['desktop/scripts/__tests__/panel.test.ts'] })
+    assert.deepEqual(plan.blocked, [])
+    assert.equal(plan.groups[0]!.cwd, desktop)
+    assert.deepEqual(plan.groups[0]!.files, ['desktop/scripts/__tests__/panel.test.ts'])
+    assert.deepEqual(plan.groups[0]!.args, ['run', 'test', '--', 'scripts/__tests__/panel.test.ts'])
+    assert.equal(classifyVerificationCommand('node --import tsx scripts/run-tests.ts', f.root).runner, undefined, 'same relative script outside desktop remains unsupported')
+  } finally { f.dispose() }
+})
+
 test('ambiguous names, escaping symlinks, cycles and unknown options fail towards less execution', () => {
   const f = fixture()
   try {

@@ -11,6 +11,16 @@ import { pathToFileURL } from 'node:url'
 import { RUN_TESTS_TOOL, runTestCommandIn, type RunTestCommandDeps, type RunnableTestCommand } from '../run-tests.js'
 
 class Child extends EventEmitter { stdout = new PassThrough(); stderr = new PassThrough() }
+
+/** Completion capture is prepared off-thread, so the spawn lands on a later
+ *  macrotask — wait for the observable side effect instead of assuming it. */
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 3000; attempt++) {
+    if (predicate()) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 1))
+  }
+  assert.fail(`timed out waiting for ${label}`)
+}
 const ipcError = 'Error: listen ENOTSUP: operation not supported on socket /fixture/tsx-501/42.pipe\n    at createIpcServer (tsx/dist/cli.mjs:1:1)'
 
 for (const [label, stderr, code, retries, channel] of [
@@ -37,20 +47,25 @@ for (const [label, stderr, code, retries, channel] of [
       kill: () => {}, persist: async id => { persisted.push(id); return join(cwd, 'raw') },
       setTimeout: (_callback, ms) => { timers.push(ms); return timers.length }, clearTimeout: () => {},
       createDecoder: () => { const stdout = decoders++ === 0; return { write: (data: Buffer) => data.toString(), end: () => channel === 'tail' && stdout ? 'TAP version 13' : '' } },
+      // Completion capture normally runs in an evidence worker process; these
+      // cases assert the spawn/retry contract, so the seam returns no capture.
+      prepareCompletion: async () => undefined,
     }
     try {
       const target = 'src/空 格.test.ts'
       const command: RunnableTestCommand = { type: 'run', command: 'tsx', args: ['--test', '--test-concurrency=1', target], display: 'tsx --test', runner: 'node-test', scope: 'targeted' }
       const pending = runTestCommandIn(cwd, command, { input: {}, cwd, toolUseId: 'original-tool' }, target, 50, deps, cwd)
+      await waitFor(() => spawns.length === 1, 'initial test spawn')
       children[0]![channel === 'stdout' ? 'stdout' : 'stderr'].write(stderr); if (channel === 'started') children[0]!.stdout.write('TAP version 13\n# tests 1\n# fail 1'); if (channel === 'truncated') children[0]!.stdout.write('TAP version 13\n' + ' '.repeat(200_000)); elapsed = 40; children[0]!.emit('close', code, null)
-      assert.equal(spawns.length, 1 + retries)
       if (retries) {
+        await waitFor(() => spawns.length === 2, 'tsx IPC retry spawn')
         assert.equal(spawns[1]!.command, process.execPath)
         assert.deepEqual(spawns[1]!.args.slice(-3), ['--test', '--test-concurrency=1', target])
         assert.equal(spawns[1]!.args[0], '--import')
         assert.ok(timers.includes(10), 'retry must receive only the remaining budget')
         children[1]!.emit('close', 0, null)
       }
+      assert.equal(spawns.length, 1 + retries)
       const result = await pending
       assert.equal(result.verification?.scope, 'targeted')
       assert.deepEqual(persisted, ['original-tool'])

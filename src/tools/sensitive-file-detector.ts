@@ -1,4 +1,5 @@
 import { realpathSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { GIT_GLOBAL_OPTS_SRC } from './destructive-patterns.js'
 
 /**
@@ -230,4 +231,269 @@ export function detectSensitiveGitAdd(command: string): string[] {
 
   if (sawAggregate) sensitiveFiles.push(AGGREGATE_ADD_MARKER)
   return sensitiveFiles
+}
+
+/**
+ * `git commit` 的提交目标解析——bash 侧 commit 硬门的前置。
+ *
+ * 背景：git 工具的 commit 动作自带敏感文件门（查将要暂存 + 已暂存），但 bash 里
+ * 的 `git commit` 没有任何等价检查：`git add -A`（聚合形态免审批）之后或
+ * 暂存区本就有敏感文件时，`git commit -m` 在 auto-safe 档静默执行（medium 风险），
+ * 凭据直接入库。本解析器把 commit 命令分类，供调用方决定做哪种检查：
+ *   - --only / 裸 pathspec：只提交列出的文件 → 按名静态检查即可（实测
+ *     `git commit -- b.txt` 只提交 b.txt，已暂存的 a.txt 保持 staged）；
+ *   - --include / 无操作数：提交整个暂存区 → 调用方需查 `git diff --cached --name-only`；
+ *   - 带 -a/--all：先把已跟踪改动全部暂存 → 另需查工作区脏文件。
+ * 与 detectSensitiveGitAdd 同口径：`git -C <dir> commit` 等全局选项形态同样捕获；
+ * 混淆形态（`git${IFS}commit`）由调用方做归一化双视图并检。
+ */
+export interface GitIndexCommit {
+  /** 显式文件操作数（pathspec / --only 目标），已剥引号 */
+  files: string[]
+  /**
+   * 是否会提交 index 内容：
+   * - 无操作数 / --include / -a：true（整个暂存区入库）；
+   * - --only / 裸 pathspec：false（只提交列出的文件）。
+   */
+  commitsIndex: boolean
+  /** -a/--all：提交前先把已跟踪改动全部暂存 */
+  stagesAllTracked: boolean
+  /** --only/-o 或裸 pathspec：只提交列出的文件，index 其余内容不入库 */
+  onlyFiles: boolean
+  /** 透传给 git 子命令的仓库定位参数（-C/--git-dir/--work-tree 白名单） */
+  repoArgs: string[]
+  /** 仓库定位不可靠（GIT_DIR 等环境前缀/无法解析的定位参数）→ 调用方保守要求审批 */
+  uncertainRepo: boolean
+}
+
+/**
+ * 取值型 flag：下一个 token 是它的值，不是文件操作数。
+ * 只收「确定取值」的旗标——误把布尔旗标当取值会跳过真正的路径（漏判）；
+ * 误把值当路径最多多一次审批。P1-3：`--author`/`--date` 等的值曾被误当成
+ * 文件操作数，导致 files 非空后直接跳过暂存区检查。
+ */
+const COMMIT_VALUE_FLAGS = new Set([
+  '-m', '-F', '-C', '-c', '-t',
+  '--message', '--file', '--reuse-message', '--reedit-message', '--template',
+  '--author', '--date', '--cleanup', '--pathspec-from-file',
+  '--fixup', '--squash', '--trailer',
+])
+
+function splitCommitArgs(s: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    if (quote) {
+      if (c === quote) quote = null
+      else cur += c
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === '\\' && i + 1 < s.length) { cur += s[i + 1]!; i++; continue }
+    // shell 连接符处截断：后面的已是另一条命令
+    if (c === ';' || c === '&' || c === '|' || c === '(' || c === ')' || c === '<' || c === '>' || c === '\n' || c === '`') break
+    if (c === '$' && s[i + 1] === '(') break
+    if (/\s/.test(c)) {
+      if (cur) { out.push(cur); cur = '' }
+      continue
+    }
+    cur += c
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+/**
+ * 从 git 全局选项文本中提取仓库定位参数（P1-2）。
+ * `git -C <dir>` / `--git-dir=` / `--work-tree=` 改变的是**实际提交目标**，
+ * 检查暂存区时必须透传给 git 子命令，否则会查到工具 cwd 的仓库造成漏拦。
+ * 只透传定位类白名单（-C/--git-dir/--work-tree）；-c k=v 等不改变仓库定位。
+ * 无法可靠解析时 uncertain=true，调用方保守要求审批。
+ */
+function parseGitRepoArgs(optsText: string): { repoArgs: string[]; uncertain: boolean } {
+  const repoArgs: string[] = []
+  let uncertain = false
+  const tokens = splitCommitArgs(optsText)
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (t === '-C') {
+      const v = tokens[i + 1]
+      if (v === undefined) { uncertain = true; break }
+      repoArgs.push('-C', stripQuotes(v))
+      i++
+      continue
+    }
+    if (t.startsWith('-C') && t.length > 2) {
+      // -C<dir> 紧贴形态
+      repoArgs.push('-C', stripQuotes(t.slice(2)))
+      continue
+    }
+    const eq = /^(--git-dir|--work-tree)=(.*)$/.exec(t)
+    if (eq) {
+      repoArgs.push(`${eq[1]}=${stripQuotes(eq[2]!)}`)
+      continue
+    }
+    if (t === '--git-dir' || t === '--work-tree') {
+      const v = tokens[i + 1]
+      if (v === undefined || v.startsWith('-')) { uncertain = true; break }
+      repoArgs.push(t, stripQuotes(v))
+      i++
+      continue
+    }
+    // -c k=v：跳过它的值；--namespace/--no-pager/-p 等不改变仓库定位
+    if (t === '-c') { i++; continue }
+  }
+  return { repoArgs, uncertain }
+}
+
+/**
+ * `GIT_DIR=` / `GIT_WORK_TREE=` / `GIT_INDEX_FILE=` 环境前缀（P1-2）。
+ * 这类前缀改变 git 的实际目标，但不在命令文本的 git 参数里——静态无法可靠
+ * 确定目标仓库时必须保守要求审批，不能按"最多多一次审批"处理（失效方向是漏拦）。
+ */
+function hasUncertainGitEnvPrefix(command: string, matchIndex: number): boolean {
+  const before = command.slice(0, matchIndex)
+  const m = /(?:^|[;&|]\s*)((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+)$/.exec(before)
+  if (!m) return false
+  return /\bGIT_(DIR|WORK_TREE|INDEX_FILE)\b/.test(m[1]!)
+}
+
+export function parseGitIndexCommits(command: string): GitIndexCommit[] {
+  // 捕获组 1：git 与 commit 之间的全局选项文本（供 parseGitRepoArgs 提取 -C 等定位参数）
+  const re = new RegExp(String.raw`\bgit(${GIT_GLOBAL_OPTS_SRC})\s+commit\b`, 'gi')
+  const out: GitIndexCommit[] = []
+  let match: RegExpExecArray | null
+  while ((match = re.exec(command)) !== null) {
+    const { repoArgs, uncertain } = parseGitRepoArgs(match[1] ?? '')
+    const uncertainRepo = uncertain || hasUncertainGitEnvPrefix(command, match.index)
+    const args = splitCommitArgs(command.slice(match.index + match[0].length))
+    const files: string[] = []
+    let stagesAllTracked = false
+    let onlyFiles = false
+    let includeMode = false
+    let seenDashDash = false
+    let skipNext = false
+    for (const a of args) {
+      if (skipNext) { skipNext = false; continue }
+      if (seenDashDash) { files.push(stripQuotes(a)); continue }
+      if (a === '--') { seenDashDash = true; continue }
+      if (a === '--only' || a === '-o') { onlyFiles = true; continue }
+      // --include：列出的文件先暂存，但整个 index 照样提交（P1-3）——不置 onlyFiles
+      if (a === '--include') { includeMode = true; continue }
+      if (COMMIT_VALUE_FLAGS.has(a)) { skipNext = true; continue }
+      if (a === '-a' || a === '--all') { stagesAllTracked = true; continue }
+      // 合写短旗标（-am / -ca / -ao）：含 a 即 stagesAllTracked；含 o 即 only；
+      // 含 m/F/C/c/t 时下一个 token 是它的值（`git commit -am "msg"` 的 "msg"
+      // 不是文件操作数；-t 是 --template 的取值形态）
+      if (/^-[a-zA-Z]+$/.test(a)) {
+        const letters = a.slice(1)
+        if (letters.includes('a')) stagesAllTracked = true
+        if (letters.includes('o')) onlyFiles = true
+        if (/[mFCct]/.test(letters)) skipNext = true
+        continue
+      }
+      if (a.startsWith('-')) continue
+      files.push(stripQuotes(a))
+    }
+    // 裸 pathspec（无 --only/--include）按 --only 语义：只提交列出的文件
+    // （实测 `git commit -- b.txt` 不提交已暂存的 a.txt）；
+    // --include 即使带 --only 也按提交 index 处理（保守）。
+    if (!onlyFiles && !includeMode && files.length > 0) onlyFiles = true
+    const commitsIndex = includeMode || !onlyFiles
+    out.push({
+      files,
+      commitsIndex,
+      stagesAllTracked,
+      onlyFiles: onlyFiles && !includeMode,
+      repoArgs,
+      uncertainRepo,
+    })
+  }
+  return out
+}
+
+/**
+ * 去混淆但保留仓库定位参数的归一化视图（P1-2 双视图）。
+ * normalizeBashCommand 会剥掉 -C/--git-dir 等全局选项，导致
+ * `git${IFS}-C /b commit` 在归一化视图里查错仓库（查工具 cwd 而不是 /b）；
+ * 本视图只做去混淆（${IFS}/字符转义/续行），保留定位参数与引号
+ * （引号由 splitCommitArgs/parseGitRepoArgs 自行处理）。
+ */
+function normalizeKeepRepoArgs(command: string): string {
+  return command
+    .replace(/\\\r?\n/g, ' ')
+    .replace(/\$\{IFS\}/gi, ' ')
+    .replace(/\\(.)/g, '$1')
+}
+
+/**
+ * git commit 暂存区硬门的双视图入口：原始视图 + 去混淆保留定位视图并检。
+ * 调用方（requiresApproval / pipeline 门）统一走这里，与 #495 的 git add
+ * 双视图同口径。
+ */
+export function gitCommitStagesSensitiveDualView(cwd: string | undefined, command: string): boolean {
+  return gitCommitStagesSensitive(cwd, command)
+    || gitCommitStagesSensitive(cwd, normalizeKeepRepoArgs(command))
+}
+
+/**
+ * bash 里 `git commit` 的暂存区敏感文件硬门（P1-1/P1-2/P1-3）。
+ *
+ * 背景：git 工具的 commit 动作自带敏感文件门，但 bash 里的 `git commit -m`
+ * 在 auto-safe 档风险仅 medium，会静默把暂存区已有的敏感文件入库。
+ *
+ * 检查策略（parseGitIndexCommits 已做语义分类）：
+ * 1. 仓库定位不可靠（uncertainRepo，如 GIT_DIR 环境前缀）→ 直接要求审批；
+ * 2. --only / 裸 pathspec 纯文件形态：按名静态检查（聚合 pathspec 如 `.`
+ *    仍回落到 index 检查——`git commit .` 会卷入未列出的已跟踪改动）；
+ * 3. 提交整个暂存区（bare / -m / --amend / --include）：`git diff --cached`
+ *    查已暂存；-a/--all 或同命令聚合 add（git add -A）另查工作区脏文件/未跟踪；
+ * 4. -C/--git-dir/--work-tree 透传给 git 子命令——查的是**实际提交目标**的
+ *    仓库，不是工具 cwd（P1-2：`git -C <B> commit` 在干净仓库 A 里不能查 A）。
+ * git 调用失败（非仓库等）按无命中处理：commit 本来也会失败，无凭据入库风险。
+ * 检测器 fail-closed 且不抛——不可解析的命令最多漏报，不崩。
+ */
+export function gitCommitStagesSensitive(cwd: string | undefined, command: string): boolean {
+  const commits = parseGitIndexCommits(command)
+  if (commits.length === 0) return false
+  // P1-2：仓库定位不可靠时保守要求审批（失效方向是漏拦，不能按"最多多一次审批"处理）
+  if (commits.some(c => c.uncertainRepo)) return true
+  const dir = typeof cwd === 'string' && cwd ? cwd : process.cwd()
+  const gitList = (repoArgs: string[], args: string[]): string[] => {
+    try {
+      return execFileSync('git', [...repoArgs, ...args], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+        .toString()
+        .split('\0')
+        .map(s => s.trim())
+        .filter(s => s.length > 0)
+    } catch {
+      return []
+    }
+  }
+  const hasSensitive = (files: string[]): boolean =>
+    files.some(f => detectSensitiveFile(f).sensitive)
+  // 同命令内的聚合暂存形态（-A / . / --all）：静态无法核验将暂存什么
+  const hasAggregateAdd = detectSensitiveGitAdd(command).includes(AGGREGATE_ADD_MARKER)
+  for (const c of commits) {
+    const aggregatePathspec = c.files.some(f => AGGREGATE_ARGS.has(f))
+    if (c.onlyFiles && !aggregatePathspec) {
+      if (hasSensitive(c.files)) return true
+      // 目录/通配 pathspec 会选中其中的已跟踪文件；只看操作数字面值会漏掉子文件。
+      if (hasSensitive(gitList(c.repoArgs, ['ls-files', '--cached', '-z', '--', ...c.files]))) return true
+      continue
+    }
+    if (c.files.length > 0 && hasSensitive(c.files)) return true
+    if (hasSensitive(gitList(c.repoArgs, ['diff', '--cached', '--name-only', '-z']))) return true
+    if (c.stagesAllTracked || hasAggregateAdd || aggregatePathspec) {
+      // -a/--all：已跟踪改动先暂存再提交；add -A / 聚合 pathspec：未跟踪也收
+      const dirty = gitList(c.repoArgs, ['diff', '--name-only', '-z'])
+      const untracked = (hasAggregateAdd || aggregatePathspec)
+        ? gitList(c.repoArgs, ['ls-files', '--others', '--exclude-standard', '-z'])
+        : []
+      if (hasSensitive(dirty) || hasSensitive(untracked)) return true
+    }
+  }
+  return false
 }

@@ -1324,3 +1324,112 @@ describe('inline reasoning tag stripping', () => {
     assert.equal(blocks.filter(b => b.type === 'text')[0]!.text, '我先看看文件。结论是 A。')
   })
 })
+
+// ---------------------------------------------------------------------------
+// provider 格式闸（2026-10-21 用户实报 DeepSeek 400「unsupported image」）：
+// 首轮即生效——字节不识的 image part 在**发出前**就换占位，不再吃一发 400
+// 再走 image_strip 剥图重试。坏图留在历史里也不再毒化后续每轮。
+// ---------------------------------------------------------------------------
+describe('sanitizeOaiImageParts 上线前格式闸', () => {
+  const originalFetch = globalThis.fetch
+
+  const NOOP_CALLBACKS = {
+    onTextDelta: () => {},
+    onThinkingDelta: () => {},
+    onContentBlock: () => {},
+    onStopReason: () => {},
+    onError: () => {},
+  }
+
+  const BMP_2X2_URL = (() => {
+    const bmp = Buffer.alloc(54 + 8 * 2)
+    bmp.write('BM', 0, 'ascii')
+    bmp.writeUInt32LE(bmp.length, 2)
+    bmp.writeUInt32LE(54, 10)
+    bmp.writeUInt32LE(40, 14)
+    bmp.writeInt32LE(2, 18)
+    bmp.writeInt32LE(2, 22)
+    bmp.writeUInt16LE(1, 26)
+    bmp.writeUInt16LE(24, 28)
+    for (let p = 54; p < bmp.length; p += 3) { bmp[p] = 0; bmp[p + 1] = 0; bmp[p + 2] = 255 }
+    return `data:image/bmp;base64,${bmp.toString('base64')}`
+  })()
+
+  it('历史里的 bmp 首轮即被换占位/转 PNG：零 400 往返，通知一次', async () => {
+    const calls: Array<{ body: string }> = []
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls.push({ body: String(init.body ?? '') })
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(enc.encode(
+            'data: {"choices":[{"delta":{"content":"ok"},"index":0,"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          ))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      const stripped: Array<{ removedCount: number }> = []
+      await client.stream({
+        model: 'deepseek-flash',
+        stream: true,
+        messages: [
+          { role: 'system', content: 'sys' },
+          { role: 'user', content: [
+            { type: 'text', text: 'look at this' },
+            { type: 'image_url', image_url: { url: BMP_2X2_URL } },
+          ] },
+        ],
+      } as never, {
+        ...NOOP_CALLBACKS,
+        onImageStripped: (info: { removedCount: number }) => { stripped.push(info) },
+      })
+      assert.equal(calls.length, 1, '首轮即净化——不再先吃一发 400 再剥图重试')
+      const body = calls[0]!.body
+      assert.ok(!body.includes('image/bmp'), 'bmp 不得上线')
+      // bmp 被转 PNG（模型仍可见）；不可转的在同一通道换占位——本例是可见保留侧。
+      assert.ok(body.includes('image/png') || body.includes('not supported by vision providers'), body.slice(0, 400))
+      assert.equal(stripped.length <= 1, true, '通知至多一次（bmp 转码不剥图时可为零）')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('历史里的 tiff 首轮即换占位：DeepSeek 400 类错误绝迹', async () => {
+    const tiff = `data:image/tiff;base64,${Buffer.from([0x49, 0x49, 0x2a, 0x00, 1, 2, 3, 4]).toString('base64')}`
+    const calls: Array<{ body: string }> = []
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls.push({ body: String(init.body ?? '') })
+      const enc = new TextEncoder()
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"ok"},"index":0,"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+          controller.close()
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as typeof fetch
+    try {
+      const client = new OpenAIClient(TEST_CONFIG)
+      const stripped: Array<{ removedCount: number; uniqueUrlCount?: number }> = []
+      await client.stream({
+        model: 'deepseek-flash',
+        stream: true,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'old turn' },
+          { type: 'image_url', image_url: { url: tiff } },
+        ] }],
+      } as never, {
+        ...NOOP_CALLBACKS,
+        onImageStripped: (info: { removedCount: number; uniqueUrlCount?: number }) => { stripped.push(info) },
+      })
+      assert.equal(calls.length, 1)
+      assert.ok(!calls[0]!.body.includes('image/tiff'))
+      assert.ok(calls[0]!.body.includes('not supported by vision providers'), '占位措辞必须上线')
+      assert.deepEqual(stripped, [{ removedCount: 1, uniqueUrlCount: 1 }], '剥图通知一次且带计数')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})

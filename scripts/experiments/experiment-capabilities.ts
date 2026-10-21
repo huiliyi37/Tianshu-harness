@@ -85,8 +85,8 @@ try{writeFileSync(external,'changed')}catch(e){writeDenied=['EPERM','EACCES','ER
 const networkDenied=await new Promise(yes=>{const s=connect({host:'127.0.0.1',port:9});s.once('connect',()=>{s.destroy();yes(false)});s.once('error',e=>yes(['EPERM','EACCES'].includes(e.code)));setTimeout(()=>{s.destroy();yes(false)},300).unref()});
 let listener=true,descendant=true;
 if(!child){const s=createServer(c=>c.end());const h=await listen(s);listener=await new Promise(yes=>{const c=connect({host:'127.0.0.1',port:h.port});c.on('connect',()=>{c.destroy();yes(true)});c.on('error',()=>yes(false))});await h.close();
- if(process.argv.includes('--children')){const r=spawnSync('/usr/bin/env',['-i','PATH=/usr/bin:/bin',process.execPath,'support/capability-probe.mjs',external,'--child'],{encoding:'utf8'});try{const x=JSON.parse(r.stdout.trim().split('\\n').at(-1));descendant=r.status===0&&x.readDenied&&x.writeDenied&&x.networkDenied}catch{descendant=false}}
- else{try{spawnSync(process.execPath,['--version']);descendant=false}catch(e){descendant=e.code==='ERR_ACCESS_DENIED'}}
+ if(process.argv.includes('--children')){const r=spawnSync('/usr/bin/env',['-i','PATH=/usr/bin:/bin',process.execPath,'support/capability-probe.mjs',external,'--child'],{encoding:'utf8',windowsHide:true});try{const x=JSON.parse(r.stdout.trim().split('\\n').at(-1));descendant=r.status===0&&x.readDenied&&x.writeDenied&&x.networkDenied}catch{descendant=false}}
+ else{try{spawnSync(process.execPath,['--version'],{windowsHide:true});descendant=false}catch(e){descendant=e.code==='ERR_ACCESS_DENIED'}}
 }
 console.log(JSON.stringify({readDenied,writeDenied,networkDenied,listener,descendant}));
 process.exitCode=readDenied&&writeDenied&&networkDenied&&listener&&descendant?0:1;

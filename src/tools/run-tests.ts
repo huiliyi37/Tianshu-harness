@@ -1,4 +1,4 @@
-import { prepareCompletionCaptureAsync } from './test-completion-async.js'
+import { prepareCompletionCaptureAsync, type AsyncCompletionCapture } from './test-completion-async.js'
 import { classifyVerificationCommand, verificationArgv, shellWord } from './verification-command.js'
 import { applyBatchCounts, formatTestCounts } from './test-output-counts.js'
 import { DisplayOutputBuffer } from './display-output-buffer.js'
@@ -21,6 +21,8 @@ import { runTestPhases } from './run-test-phases.js'
 import { runPlannedTests } from './run-planned-tests.js'
 import { verificationTimeout, runTestsTimeoutMs, verificationBudgetStop } from './verification-budget.js'
 import { resolveNpmCliCommand } from '../platform/resolve-node-cli.js'
+import { candidateTypecheckCommand } from './candidate-typecheck.js'
+import { candidateSnapshotRef } from '../agent/candidate-snapshot-ref.js'
 
 /** context-collapse 靠此正则解析 formatOutput 摘要行；改文案必须与消费方同步（常量共享，禁止两边各自手抄）。 */
 export const RUN_TESTS_PASSED_RE = /(\d+)\s+通过/
@@ -351,6 +353,8 @@ export const RUN_TESTS_TOOL: Tool = {
 ### 用法
 - 修改代码后用 run_tests 验证改动
 - files 接受精确仓库相对路径，可跨包；与 filter 互斥
+- deliveryFiles 指定本次拟提交的文件，验证在当前 HEAD + 这些文件改动的隔离候选树上运行；与 files（测试文件）含义不同
+- check="typecheck" 与 deliveryFiles 合用，仅在本地 tsc 的项目配置覆盖全部候选 TypeScript 文件时提供同树类型检查证明
 - filter 按文件名／词干定位 .test/.spec；重名返回候选，不选择第一项
 - JS/TS 保留项目入口、hooks、配置和 loader；支持 Node、Vitest、Jest 的逐文件采证
 - 无法推断出安全的 runner 时返回具体受阻原因，不自动安装依赖
@@ -373,6 +377,8 @@ export const RUN_TESTS_TOOL: Tool = {
       type: 'object',
       properties: {
         files: { type: 'array', items: { type: 'string' }, minItems: 1, description: '精确的仓库相对测试路径；可以跨包，与 filter 互斥。' },
+        deliveryFiles: { type: 'array', items: { type: 'string' }, minItems: 1, description: '拟提交的仓库相对文件路径；仅验证这些改动与当前 HEAD 形成的候选树。' },
+        check: { type: 'string', enum: ['typecheck'], description: '对 deliveryFiles 候选树做完整本地 TypeScript 类型检查；不运行测试。' },
         projects: { type: 'array', items: { type: 'string' }, description: '明确选择配置项目，空数组表示恢复标准配置的全部项目；不会缩小交付所需的项目范围。' },
         shard: { type: 'boolean', enum: [false], description: '显式取消原 Jest/Vitest 分片，用于剩余文件定向补测。' },
         filter: { type: 'string', description: '测试文件名、词干或相对路径（不是测试名）。留空跑全量。' },
@@ -382,11 +388,43 @@ export const RUN_TESTS_TOOL: Tool = {
   },
 
   async execute(params: ToolCallParams) {
+    if (params.input.deliveryFiles !== undefined) {
+      const files = params.input.deliveryFiles
+      if (!Array.isArray(files) || files.length === 0 || files.some(file => typeof file !== 'string' || !file.trim()) || params.candidateSnapshotError || !params.verificationSnapshot?.candidateOnly) {
+        return { content: params.candidateSnapshotError ?? '候选快照不可用；未运行实时工作区测试，交付验证仍待完成。', isError: true,
+          verification: { command: 'run_tests', kind: 'test', status: 'blocked', scope: 'targeted', blockedReason: 'unknown_runner', candidateFiles: Array.isArray(files) ? files.filter((file): file is string => typeof file === 'string') : [] } }
+      }
+    }
     const filter = params.input.filter as string | undefined
     const timeout = verificationTimeout(params.input.timeout)
     const startTime = Date.now()
     const remaining = () => Math.max(0, timeout - (Date.now() - startTime))
-    if (params.input.projects !== undefined || params.input.shard !== undefined || params.input.files !== undefined || existsSync(join(params.cwd, 'package.json')) && !loadDeclaredVerify(params.cwd).test
+    if (params.input.check !== undefined) {
+      const selected = params.input.deliveryFiles as string[] | undefined
+      const snapshot = params.verificationSnapshot
+      const command = params.input.check === 'typecheck' && selected && snapshot?.candidateOnly
+        && params.input.files === undefined && params.input.filter === undefined
+        ? candidateTypecheckCommand(snapshot.path, selected) : null
+      if (!command || !snapshot) return { content: '候选类型检查不可采证：需要 deliveryFiles，且本地 tsconfig.json 必须覆盖所有候选 TypeScript 文件。', isError: true,
+        verification: { command: 'run_tests check=typecheck', kind: 'typecheck', status: 'blocked', scope: 'full', blockedReason: 'unknown_runner', candidateFiles: selected } }
+      const candidateParams = params.onOutput
+        ? { ...params, onOutput: (chunk: string) => params.onOutput?.(chunk.replaceAll(snapshot.path, params.cwd)) }
+        : params
+      const result = await runTestCommandIn(snapshot.path, { type: 'run', command: command.command, args: command.args,
+        display: 'tsc --noEmit --project tsconfig.json', runner: 'declared', scope: 'full' }, candidateParams, undefined, remaining(), undefined, params.cwd)
+      result.content = result.content.replaceAll(snapshot.path, params.cwd)
+      if (result.verification) result.verification = { ...result.verification, coverage: undefined, userGuidance: undefined,
+        kind: 'typecheck', scope: 'full', snapshotRef: snapshot.snapshotRef, verificationPhase: 'isolated', candidateFiles: selected,
+        candidateTypecheckComplete: result.verification.status === 'passed' }
+      if (candidateSnapshotRef(snapshot.path, selected ?? []) !== snapshot.snapshotRef) {
+        result.isError = true
+        result.content += '\n候选快照在类型检查期间变化；类型证明已作废。'
+        if (result.verification) result.verification = { ...result.verification, status: 'blocked', stale: true, candidateTypecheckComplete: false, blockedReason: 'unknown_runner' }
+      }
+      result.content = `[候选类型检查] ${result.content}`
+      return result
+    }
+    if (params.input.deliveryFiles !== undefined || params.input.projects !== undefined || params.input.shard !== undefined || params.input.files !== undefined || existsSync(join(params.cwd, 'package.json')) && !loadDeclaredVerify(params.cwd).test
       && (filter || classifyVerificationCommand('npm test', params.cwd).runner)) {
       return runPlannedTests(params, remaining)
     }
@@ -440,7 +478,25 @@ export interface RunTestCommandDeps {
   setTimeout(callback: () => void | Promise<void>, ms: number): unknown
   clearTimeout(handle: unknown): void
   createDecoder(): TestStreamDecoder
+  /**
+   * Completion capture runs in a separate evidence process (moved off the
+   * service thread). Injectable so unit tests can exercise the spawn and
+   * settlement contract without paying for a worker fork on every case.
+   */
+  prepareCompletion?: PrepareTestCompletion
 }
+
+export type PrepareTestCompletion = (
+  command: string,
+  cwd: string,
+  repositoryRoot: string | undefined,
+  deadline: number,
+  signal: AbortSignal | undefined,
+) => Promise<AsyncCompletionCapture | undefined>
+
+/** Default seam: hand the command to the evidence process worker. */
+export const defaultPrepareTestCompletion: PrepareTestCompletion = (command, cwd, repositoryRoot, deadline, signal) =>
+  prepareCompletionCaptureAsync(command, cwd, 'bash', repositoryRoot, deadline, signal)
 
 const defaultRunTestDeps: RunTestCommandDeps = {
   spawn: (command, args, options) => track(spawnHidden(command, [...args], options)),
@@ -449,6 +505,7 @@ const defaultRunTestDeps: RunTestCommandDeps = {
   setTimeout: (callback, ms) => setTimeout(() => { void callback() }, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   createDecoder: () => new WinStreamDecoder(),
+  prepareCompletion: defaultPrepareTestCompletion,
 }
 
 export async function runTestCommandIn(
@@ -466,7 +523,8 @@ export async function runTestCommandIn(
   // Normalize for the host OS: on Windows npm/npx/tsx are `.cmd` shims that need
   // a shell (else modern Node throws EINVAL); node/pytest spawn directly.
   // Declared commands (verify.test / fingerprint) are full shell strings.
-  const completion = await prepareCompletionCaptureAsync(testCommand.shell ? testCommand.command : [testCommand.command, ...testCommand.args].map(shellWord).join(' '), cwd, 'bash', repositoryRoot, startTime + timeout, params.abortSignal)
+  const prepareCompletion = deps.prepareCompletion ?? defaultPrepareTestCompletion
+  const completion = await prepareCompletion(testCommand.shell ? testCommand.command : [testCommand.command, ...testCommand.args].map(shellWord).join(' '), cwd, repositoryRoot, startTime + timeout, params.abortSignal)
   timeout = Math.max(0, timeout - (Date.now() - startTime))
   if (timeout <= 0 || params.abortSignal?.aborted) { completion?.dispose(); return Promise.resolve(verificationBudgetStop(testCommand, startTime, params.abortSignal?.aborted ? 'cancelled' : 'timeout')) }
   if (completion?.preparationError) { completion.dispose(); return Promise.resolve({ content: completion.preparationError, isError: true, verification: { ...buildBlockedVerification(testCommand, startTime, 'unknown_runner', completion.preparationError), coverage: await completion.read(-1), targetFiles: testCommand.targetFiles } }) }

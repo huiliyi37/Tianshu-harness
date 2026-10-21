@@ -1,4 +1,5 @@
 import { parseTestSelection } from './test-selection.js'
+import { basename, resolve } from 'node:path'
 import { resolvePackageTestCommand } from './test-package-command.js'
 import { modernRunnerSelection, type TestRunner } from './test-runner-options.js'
 
@@ -74,7 +75,8 @@ export function classifyVerificationCommand(command: string, cwd?: string, depth
       continue
     }
     const normalized = arg.replaceAll('\\', '/')
-    if (!nodeTest && /(?:^|\/)(?:scripts\/run-node-tests\.ts|desktop\/scripts\/run-tests\.ts)$/.test(normalized)) batchRunner = true
+    const desktopPackageEntry = cwd && basename(resolve(cwd)) === 'desktop' && normalized === 'scripts/run-tests.ts'
+    if (!nodeTest && (/(?:^|\/)(?:scripts\/run-node-tests\.ts|desktop\/scripts\/run-tests\.ts)$/.test(normalized) || desktopPackageEntry)) batchRunner = true
     else {
       if (!nodeTest) return unknown('脚本参数不是 Node 测试入口。')
       targets.push(arg)

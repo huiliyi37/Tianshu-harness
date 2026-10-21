@@ -16,11 +16,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { makeApp, stripAnsi } from './_harness.js'
+import { makeApp } from './_harness.js'
+import { captureLiveFrame } from './_capture-frame.js'
 import type { TuiApp } from '../app.js'
 
 function makeStartedApp() {
   const t = makeApp()
+  const frame = captureLiveFrame(t.app)
   let exited = false
   t.app.onExit(() => { exited = true })
   const pendingSince = () =>
@@ -29,7 +31,7 @@ function makeStartedApp() {
     (t.app as unknown as { inputLine: { value: string } }).inputLine.value
   const lastEscAt = () =>
     (t.app as unknown as { inputController: { lastEscAt: number } }).inputController.lastEscAt
-  const plain = () => stripAnsi(t.out.chunks.join(''))
+  const plain = () => frame.text()
   return { ...t, exitedRef: () => exited, pendingSince, inputText, lastEscAt, plain }
 }
 type StartedApp = ReturnType<typeof makeStartedApp>
@@ -45,13 +47,12 @@ test('Esc 取消退出确认：输入框恢复、提示消失、不污染 rewind
   assert.ok(t.pendingSince() > 0, '第一次 Ctrl+C 进入确认窗口')
   assert.ok(t.plain().includes(HINT), '提示行显示')
 
-  // MockOut 是累积写入流；「消失」断言只看取消动作之后的新增帧（行级 diff
-  // 只重写变化行，旧帧文本会永远留在 chunks 里）。
+  // 按完整可见帧检查消失；行级 diff 可以保留未重写的输入框边框。
   t.out.clear()
   t.stdin.dataHandler!(ESC)
   await tick(120) // lone ESC 经 80ms 超时派发
   assert.equal(t.pendingSince(), 0, 'Esc 取消确认窗口')
-  assert.ok(!t.plain().includes(HINT), '提示行消失（新增帧不再写提示）')
+  assert.ok(!t.plain().includes(HINT), '取消后的可见帧不再包含提示')
   assert.ok(INPUT_BORDER.test(t.plain()), '输入框始终可见')
   assert.equal(t.lastEscAt(), 0, '取消用的 Esc 不计入双击 rewind 计时')
 })
@@ -66,7 +67,7 @@ test('编辑键取消确认：打字立即可见，不再幽灵输入', async ()
   assert.equal(t.pendingSince(), 0, '编辑活动取消确认窗口')
   assert.equal(t.inputText(), 'a', '字符进输入框')
   assert.ok(t.plain().includes('a'), '打的字立即可见（输入框渲染）')
-  assert.ok(!t.plain().includes(HINT), '提示行消失（新增帧不再写提示）')
+  assert.ok(!t.plain().includes(HINT), '取消后的可见帧不再包含提示')
 })
 
 test('有内容首按 Ctrl+C：清空草稿、不进退出确认（fa2c971f0 恢复的清空语义）', async () => {

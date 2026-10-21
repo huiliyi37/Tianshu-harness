@@ -9,7 +9,9 @@ export function snapshotOmissionNote(plan: VerificationSnapshotPlan): string {
 
 /** 阶段 A 失败时也必须报告快照缺口；结果状态仍由 A 决定。 */
 export function snapshotTestResult(phaseA: ToolResult, plan: VerificationSnapshotPlan, phaseB?: ToolResult): ToolResult {
-  const phaseBNote = !phaseB
+  const phaseBNote = plan.candidateOnly
+    ? '\n\n[提交候选] 已在当前 HEAD + deliveryFiles 上验证；范围外工作树改动不参与本次结果。'
+    : !phaseB
     ? '\n\n[阶段 B · 当前 HEAD 集成] 跳过 — 隔离验证未通过，无需再跑集成阶段；请先诊断阶段 A 的失败。'
     : phaseB.verification?.status === 'blocked'
       ? `\n\n[阶段 B · 当前 HEAD 集成] 未完成 — ${phaseB.content}`

@@ -20,7 +20,7 @@ function killOwnedTree(child: ChildProcess): void {
   if (!child.pid) return
   const owned = new Set([child.pid])
   try {
-    const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n').map(s => s.trim().split(/\s+/).map(Number))
+    const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', windowsHide: true }).trim().split('\n').map(s => s.trim().split(/\s+/).map(Number))
     for (let pass = 0; pass < rows.length; pass++) { const before = owned.size; for (const [pid, ppid] of rows) if (owned.has(ppid!)) owned.add(pid!); if (owned.size === before) break }
   } catch { /* root process group is still owned */ }
   for (const pid of [...owned].reverse()) { try { process.kill(-pid, 'SIGKILL') } catch { try { process.kill(pid, 'SIGKILL') } catch { /* already exited */ } } }
@@ -121,7 +121,7 @@ export class HookWorld extends LongWorld {
     return { ...probe, compiled, generatedReadable, git: gitBinary, passed: probe.passed && compiled.ok && generatedReadable }
   }
   private git(repo: string, ...args: string[]): string {
-    return execFileSync(gitBinary, args, { cwd: repo, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: join(this.root, '.home'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', LANG: 'C' } }).trimEnd()
+    return execFileSync(gitBinary, args, { cwd: repo, encoding: 'utf8', windowsHide: true, env: { PATH: '/usr/bin:/bin', HOME: join(this.root, '.home'), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', LANG: 'C' } }).trimEnd()
   }
   private repo() {
     const path = join(this.root, '.runs', String(++this.runIndex)); mkdirSync(path, { recursive: true })
@@ -207,15 +207,15 @@ export class HookWorld extends LongWorld {
           writeFileSync(join(repo, '.git/foreign-owned'), 'foreign content\n')
           const blob = this.git(repo, 'hash-object', '-w', '--', '.git/foreign-owned')
           const entries = this.git(repo, 'ls-tree', 'HEAD').split('\n').map(line => line.endsWith('\towned.txt') ? line.replace(/blob [0-9a-f]+/, 'blob ' + blob) : line).join('\n') + '\n'
-          tree = execFileSync(gitBinary, ['mktree'], { cwd: repo, input: entries, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: join(this.root, '.home'), GIT_CONFIG_NOSYSTEM: '1' } }).trim()
+          tree = execFileSync(gitBinary, ['mktree'], { cwd: repo, input: entries, encoding: 'utf8', windowsHide: true, env: { PATH: '/usr/bin:/bin', HOME: join(this.root, '.home'), GIT_CONFIG_NOSYSTEM: '1' } }).trim()
         }
         foreign = this.git(repo, 'commit-tree', tree, '-p', before, '-m', message)
         this.git(repo, 'update-ref', 'HEAD', foreign, before)
       } else {
         const pid = Number(readFileSync(join(repo, '.git/hook.pid'), 'utf8').trim())
-        const pgid = Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim())
-        const parent = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim())
-        const ancestor = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(parent)], { encoding: 'utf8' }).trim())
+        const pgid = Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true }).trim())
+        const parent = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true }).trim())
+        const ancestor = Number(execFileSync('/bin/ps', ['-o', 'ppid=', '-p', String(parent)], { encoding: 'utf8', windowsHide: true }).trim())
         if (pgid !== parent || ancestor !== server.child.pid || pgid <= 1) throw new Error('Cannot establish fixture group ownership')
         group = pgid
       }

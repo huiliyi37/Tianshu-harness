@@ -1,8 +1,8 @@
 /**
  * 二进制文件预览路由（2026-09-22，桌面端侧边栏 word/pdf/pptx 预览）——
  *  - `GET /sessions/:id/file-content?raw=1`：raw 字节 + 真实 MIME（pdf/docx/
- *    pptx/图片白名单），沿用 validatePath cwd 沙箱，8MB 上限（附件口径）。
- *  - `GET /sessions/:id/file-preview/pdf`：office → PDF（soffice），
+ *    pptx/表格三件套/图片白名单），沿用 validatePath cwd 沙箱，8MB 上限（附件口径）。
+ *  - `GET /sessions/:id/file-preview/pdf`：office 演示文稿 → PDF（soffice），
  *    415 非可转换扩展名 / 404 文件缺失 / 422 转换失败或 soffice 未安装。
  * 两条路由都是 res 接管（handled:true）的二进制响应——测试用 fake
  *  ServerResponse 捕获 writeHead/end。
@@ -145,6 +145,32 @@ test('file-preview/pdf 损坏 pptx → 422（soffice 转换失败或未安装都
     assert.equal(result.status, 422)
     const body = result.body as { error: string }
     assert.ok(body.error === 'conversion_failed' || body.error === 'converter_unavailable')
+  } finally {
+    cleanup()
+  }
+})
+
+test('file-content?raw=1 xlsx 返回 raw 字节与表格 MIME（SheetJS 通道）', async () => {
+  const { cwd, router, id, cleanup } = await setup()
+  try {
+    // 表格族不经 soffice：raw=1 取原字节，前端 SheetJS（XlsxView）渲染。
+    // 2026-10-21 前 xlsx 不在 RAW_PREVIEW_MIME → 415 → 前端落文本通道乱码。
+    const xlsxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x01, 0x02, 0x03])
+    writeFileSync(join(cwd, 'data.xlsx'), xlsxBytes)
+
+    const { res, captured } = fakeRes()
+    const result = await router('GET', `/sessions/${id}/file-content?path=data.xlsx&raw=1`, {}, AUTH, res)
+    assert.equal(result.handled, true)
+    assert.equal(captured.status, 200)
+    assert.equal(
+      captured.headers['Content-Type'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    assert.deepEqual(captured.body, xlsxBytes)
+
+    // 同时不再走 soffice 转换通道（raw + SheetJS 已覆盖，转换白名单只留演示文稿族）。
+    const pdfResult = await router('GET', `/sessions/${id}/file-preview/pdf?path=data.xlsx`, {}, AUTH, fakeRes().res)
+    assert.equal(pdfResult.status, 415)
   } finally {
     cleanup()
   }

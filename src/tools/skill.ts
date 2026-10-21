@@ -45,16 +45,16 @@ skill 是可复用的工作流 playbook。available-skills 区块列出了每个
     }
     const name = raw.trim()
     if (params.input.action === 'save_draft') {
-      if (!params.saveSkillDraft) return { content: 'Draft saving is unavailable in this host. No draft was saved.', isError: true }
+      if (!params.saveSkillDraft) return { content: '当前宿主不支持保存 skill 草稿，未保存任何草稿。', isError: true }
       const { scope, content, expectedVersion } = params.input
       if (params.input.complete || (scope !== 'personal' && scope !== 'project') || typeof content !== 'string'
-        || (expectedVersion !== undefined && expectedVersion !== null && typeof expectedVersion !== 'string')) return { content: 'Invalid draft input', isError: true }
+        || (expectedVersion !== undefined && expectedVersion !== null && typeof expectedVersion !== 'string')) return { content: '草稿输入无效：scope 必须为 personal/project，content 必须为字符串，且不能与 complete 同时使用。', isError: true }
       try {
         const skillDraft = await params.saveSkillDraft({ name, scope, content, expectedVersion: expectedVersion as string | null | undefined })
         return { content: JSON.stringify({ draft: true, ...skillDraft }), uiContent: `待审核草稿：${skillDraft.name}`, skillDraft }
       } catch (error) { return { content: error instanceof Error ? error.message : String(error), isError: true } }
     }
-    if (params.input.action !== undefined && params.input.action !== 'load') return { content: 'Unknown skill action', isError: true }
+    if (params.input.action !== undefined && params.input.action !== 'load') return { content: '未知的 skill 操作：action 只支持 load/save_draft。', isError: true }
     const registry = params.skillRegistry ?? skillRegistry
 
     const skill = registry.get(name) ?? registry.list().find(s => s.name.toLowerCase() === name.toLowerCase())

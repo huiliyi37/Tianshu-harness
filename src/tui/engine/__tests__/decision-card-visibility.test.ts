@@ -33,7 +33,9 @@ function currentFrame(h: ReturnType<typeof makeApp>): string {
   else app.live.clear()
   h.out.clear()
   app.rerender()
-  return stripAnsi(h.out.chunks.join(''))
+  const text = stripAnsi(h.out.chunks.join(''))
+  if (!app.frontend.isFullscreen) assert.equal(text.endsWith('\n'), false, 'a full-height frame must not scroll by writing a final newline')
+  return text
 }
 
 function open(h: ReturnType<typeof makeApp>, kind: 'question' | 'plan'): void {
@@ -72,7 +74,7 @@ for (const renderer of ['classic', 'fullscreen'] as const) {
             assert.match(screen, /Ctrl\+E\/v 全文/)
           }
           if (extra === 'draft') assert.equal(h.app.getInputValue(), draft, 'compact display must preserve the entire draft')
-          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows <= 23, 'no frame may spill past the terminal')
+          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows <= h.out.rows, 'a full-height frame may use the last terminal row but must not spill past it')
         } finally { h.app.dispose() }
       })
     }
@@ -91,7 +93,7 @@ for (const renderer of ['classic', 'fullscreen'] as const) {
           assert.match(screen, /Enter 确认/)
           assert.equal(h.app.decisions.active?.cursor, 3)
           assert.equal(h.app.getInputValue(), draft)
-          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows < rows!, 'resizing must not overflow')
+          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows <= rows!, 'resizing may fill the last terminal row but must not overflow')
         }
       } finally { h.app.dispose() }
     })
@@ -120,7 +122,7 @@ for (const renderer of ['classic', 'fullscreen'] as const) {
             assert.match(resized, /Enter 确认/)
             assert.equal(h.app.decisions.active?.cursor, 3)
             assert.equal(h.app.getInputValue(), draft)
-            if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows < rows)
+            if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows <= rows, 'the sidebar must not extend the full-height frame')
           }
         } finally { h.app.dispose() }
       })
@@ -139,7 +141,7 @@ for (const renderer of ['classic', 'fullscreen'] as const) {
           assert.match(screen, kind === 'question' ? /› 4\. 第四方案/ : /› 4\. 驳回并退出/)
           assert.match(screen, /Enter 确认/)
           assert.equal(h.app.getInputValue(), draft)
-          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows < 5)
+          if (renderer === 'classic') assert.ok((h.app as any).live.lastDisplayRows <= 5, 'a five-row screen may use all five rows without scrolling')
         }
         h.out.rows = 24
         assert.match(currentFrame(h), /提交失败：提交失败的详细说明/)

@@ -99,14 +99,14 @@ export function matchesPythonRequirement(version: string, requires: string): { o
   return { ok: true }
 }
 
-async function probeInterpreter(path: string, exec: PythonExec, realpath: (p: string) => string): Promise<PythonInterpreter | undefined> {
-  const versionOut = await exec(path, ['--version'])
+async function probeInterpreter(path: string, runPython: PythonExec, realpath: (p: string) => string): Promise<PythonInterpreter | undefined> {
+  const versionOut = await runPython(path, ['--version'])
   if (!versionOut.ok || isStoreStub(versionOut)) return undefined
   // Python ≥3.4 打 stdout，更老的打 stderr——两边都试。
   let version = parseVersion(versionOut.stdout)?.join('.') ?? parseVersion(versionOut.stderr)?.join('.')
   if (!version) return undefined
   let abi: string | undefined
-  const abiOut = await exec(path, ['-c', ABI_PROBE])
+  const abiOut = await runPython(path, ['-c', ABI_PROBE])
   if (abiOut.ok) {
     try {
       const info = JSON.parse(abiOut.stdout.trim()) as { version?: number[]; implementation?: string; abi?: string }
@@ -116,14 +116,14 @@ async function probeInterpreter(path: string, exec: PythonExec, realpath: (p: st
   }
   let realPath = path
   try { realPath = realpath(path) } catch { /* 保留 which 给出的路径 */ }
-  const venv = await exec(path, ['-m', 'venv', '--help'])
-  const pip = await exec(path, ['-m', 'pip', '--version'])
+  const venv = await runPython(path, ['-m', 'venv', '--help'])
+  const pip = await runPython(path, ['-m', 'pip', '--version'])
   return { found: true, path, realPath, version, ...(abi ? { abi } : {}), venvOk: venv.ok, pipOk: pip.ok }
 }
 
 export async function detectPythonInterpreter(options: DetectPythonOptions = {}): Promise<PythonProbeResult> {
   const platform = options.platform ?? process.platform
-  const exec = options.exec ?? defaultExec(options.env)
+  const runPython = options.exec ?? defaultExec(options.env)
   const which = options.which ?? (command => whichOnPath(command, options.env))
   const realpath = options.realpath ?? (path => realpathSync(path))
   const guidance = getInstallCommand('python', platform)
@@ -133,7 +133,7 @@ export async function detectPythonInterpreter(options: DetectPythonOptions = {})
   const env = options.env ?? process.env
   const explicit = env['RIVET_PYTHON_PATH'] || options.explicitPath
   if (explicit) {
-    const probed = await probeInterpreter(explicit, exec, realpath)
+    const probed = await probeInterpreter(explicit, runPython, realpath)
     if (probed) return probed
     return { found: false, code: 'interpreter_missing', guidance: `配置的 Python 解释器不可用: ${explicit}\n${guidance}` }
   }
@@ -141,7 +141,7 @@ export async function detectPythonInterpreter(options: DetectPythonOptions = {})
   for (const command of candidates) {
     const path = await which(command)
     if (!path) continue
-    const probed = await probeInterpreter(path, exec, realpath)
+    const probed = await probeInterpreter(path, runPython, realpath)
     if (probed) return probed
   }
   return { found: false, code: 'interpreter_missing', guidance }

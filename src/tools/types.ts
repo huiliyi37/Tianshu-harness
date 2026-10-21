@@ -190,6 +190,8 @@ export interface VerificationSnapshotPlan {
    *  经 bash 脚本生成的改动）。run_tests 据此在阶段 A 输出里点名，避免「隔离红
    *  但原因不可见」。与 agent/verification-snapshot-manager.ts 的同名接口一致。 */
   omittedDirtyFiles?: string[]
+  /** Candidate already contains current HEAD and the selected commit files. */
+  candidateOnly?: boolean
 }
 
 export interface ToolCallParams {
@@ -197,6 +199,8 @@ export interface ToolCallParams {
   saveSkillDraft?: import('../skills/skill-creation.js').SkillDraftWriter
   onVerificationCompleted?: (verification: VerificationMetadata) => void
   input: Record<string, unknown>
+  /** Explicit candidate verification must fail closed if its tree cannot be built. */
+  candidateSnapshotError?: string
   toolUseId: string
   cwd: string
   /** 当前会话审批档（tool-pipeline 每次调用注入）。仅极少数按档分叉的工具
@@ -419,6 +423,10 @@ export interface VerificationMetadata {
    *  (baselineHead + sha(ownedDiff)). Absent for in-place (non-snapshot) runs.
    *  When the owned diff changes, the ref changes → old verifications go stale. */
   snapshotRef?: string
+  /** Explicit commit candidate whose evidence survives edits outside this set. */
+  candidateFiles?: string[]
+  /** Local tsc covered every selected TypeScript file in this candidate. */
+  candidateTypecheckComplete?: boolean
   /** VSW two-phase: 'isolated' = Phase A on baseline.head + owned diff (blocking
    *  gate); 'integration' = Phase B on current HEAD + owned diff (advisory). */
   verificationPhase?: 'isolated' | 'integration'

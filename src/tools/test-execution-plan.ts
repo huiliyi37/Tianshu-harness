@@ -25,6 +25,10 @@ export interface TestPlanBlock { files: string[]; code: 'invalid_selection' | 'f
 export interface TestExecutionPlan { version: 1; repositoryRoot: string; groups: TestExecutionGroup[]; blocked: TestPlanBlock[] }
 export interface DeliveryVerificationPlan {
   version: 1
+  /** Explicit delivery candidate; batch calls must use this same file set. */
+  candidateFiles?: string[]
+  /** The HEAD + selected-file identity used for impact and plan discovery. */
+  candidateRef?: string
   required: string[]
   covered: string[]
   pending: string[]

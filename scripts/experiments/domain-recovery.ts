@@ -57,7 +57,7 @@ const results: any[] = []
 try {
   const catalog = await fetch(api + '/models', { headers: { Authorization: `Bearer ${credential}` }, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20000)]) })
   if (!catalog.ok || !(await catalog.json() as any).data?.some((m: any) => m.id === parameters.model)) throw new Error('Official model catalog preflight failed')
-  const python = ['/usr/bin/python3', '/usr/local/bin/python3'].find(p => existsSync(p) && spawnSync(p, ['--version'], { encoding: 'utf8' }).status === 0)
+  const python = ['/usr/bin/python3', '/usr/local/bin/python3'].find(p => existsSync(p) && spawnSync(p, ['--version'], { encoding: 'utf8', windowsHide: true }).status === 0)
   if (!python || process.platform === 'win32') throw new Error('This fixture needs a verified POSIX Python interpreter; no automatic installation')
   const [{ PromptEngine }, { STAR_DOMAINS }, { AdvisoryBus }, { RecoveryWorld }] = await Promise.all([
     import('../../src/prompt/engine.js'), import('../../src/agent/star-domain-data.js'), import('../../src/agent/advisory-bus.js'), import('./domain-recovery-world.js'),
@@ -88,7 +88,7 @@ try {
       const built = engine.buildOaiRequest(history, undefined, 1000000), wire: any[] = structuredClone(built.messages)
       const rendered = JSON.stringify(wire)
       if (!rendered.includes(entry.content) || rendered.includes('职责边界：') !== arm.scoped) throw new Error('Actual request did not contain the intended factorial treatment')
-      append(trace, { kind: 'initial', id, scenario, arm, inputHashes: world.initialHashes, tools: built.tools, messages: wire, delivered: bus.drainDelivered(), ledger: bus.drainLedger(), pythonVersion: spawnSync(python!, ['--version'], { encoding: 'utf8' }).stdout.trim(), seedEvents: world.events, promptHash: hash(wire) })
+      append(trace, { kind: 'initial', id, scenario, arm, inputHashes: world.initialHashes, tools: built.tools, messages: wire, delivered: bus.drainDelivered(), ledger: bus.drainLedger(), pythonVersion: spawnSync(python!, ['--version'], { encoding: 'utf8', windowsHide: true }).stdout.trim(), seedEvents: world.events, promptHash: hash(wire) })
       for (let step = 0; step < protocol.maxSteps; step++) {
         abort.signal.throwIfAborted()
         let response: Response

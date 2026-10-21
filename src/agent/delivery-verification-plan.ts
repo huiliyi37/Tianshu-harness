@@ -9,7 +9,7 @@ import type { TaskLedgerEvent } from './task-ledger.js'
 
 export type { DeliveryVerificationPlan } from '../tools/test-execution-plan.js'
 
-export function buildDeliveryVerificationPlan(cwd: string, required: readonly string[], uncovered: readonly string[], advisoryCount: number, evidence: readonly TaskLedgerEvent[] = [], currentSnapshotRef?: string): DeliveryVerificationPlan {
+export function buildDeliveryVerificationPlan(cwd: string, required: readonly string[], uncovered: readonly string[], advisoryCount: number, evidence: readonly TaskLedgerEvent[] = [], currentSnapshotRef?: string, candidateFiles?: readonly string[], candidateRef?: string): DeliveryVerificationPlan {
   const active = [...new Set(required.filter(file => existsSync(resolve(cwd, file))))].sort()
   const pending = [...new Set(uncovered)].sort()
   const scopes = deliveryScopeProgress(active, evidence, currentSnapshotRef)
@@ -39,17 +39,26 @@ export function buildDeliveryVerificationPlan(cwd: string, required: readonly st
     }
     return { path, state: 'not_run', reason: '尚无该文件的完整执行证明。' }
   })
-  return { version: 1, ...scopes, required: active, covered: active.filter(file => !pending.includes(file)), pending, advisoryCount,
+  return { version: 1, ...(candidateFiles?.length ? { candidateFiles: [...candidateFiles], candidateRef } : {}), ...scopes, required: active, covered: active.filter(file => !pending.includes(file)), pending, advisoryCount,
     batches: plan?.groups ?? [], blocked: plan?.blocked ?? [], pendingReasons }
 }
 
 /** Presentation is derived from the same plan consumed by the tool, never a second runner detector. */
 export function renderDeliveryVerificationPlan(plan: DeliveryVerificationPlan, cwd: string): string[] {
-  const lines = [`验证进度：required ${plan.required.length}，已覆盖 ${plan.covered.length}，剩余 ${plan.pending.length}；advisory ${plan.advisoryCount} 不阻断提交。`,
-    '按剩余文件分批执行 run_tests；也可用下面的独立命令在对应 cwd 后台执行。完成后再调用 deliver_task；force 不豁免验证义务。']
-  for (const item of plan.pendingReasons) lines.push(`  ${item.path}: ${item.state} — ${item.reason}`)
-  for (const batch of plan.batches) {
-    lines.push(`  run_tests(files=${JSON.stringify(batch.files)}${batch.projects ? ', projects=' + JSON.stringify(batch.projects) : ''}${batch.shard === false ? ', shard=false' : ''})`)
+  const lines = [...(plan.candidateRef ? [`提交候选：${plan.candidateRef}（${plan.candidateFiles?.length ?? 0} 个文件）。`] : []),
+    `验证进度：required ${plan.required.length}，已覆盖 ${plan.covered.length}，剩余 ${plan.pending.length}；advisory ${plan.advisoryCount} 不阻断提交。`,
+    `验证计划：可执行 ${plan.batches.length} 批；不可自动采证 ${plan.blocked.reduce((count, block) => count + block.files.length, 0)} 个文件。完整批次与文件状态见 verificationPlan。`,
+    plan.candidateFiles?.length
+      ? '按剩余文件分批执行带相同 deliveryFiles 的 run_tests；候选验证须在隔离树运行。完成后再调用 deliver_task；force 不豁免验证义务。'
+      : '按剩余文件分批执行 run_tests；也可用下面的独立命令在对应 cwd 后台执行。完成后再调用 deliver_task；force 不豁免验证义务。']
+  for (const block of plan.blocked.slice(0, 4)) {
+    const preview = block.files.slice(0, 5).join(', ')
+    lines.push(`  未生成可采证批命令（${block.code}）：${block.reason}；义务保留：${preview}${block.files.length > 5 ? ` 等共 ${block.files.length} 个文件` : ''}`)
+  }
+  if (plan.blocked.length > 4) lines.push(`  其余 ${plan.blocked.length - 4} 组不可采证项见 verificationPlan.blocked。`)
+  for (const batch of plan.batches.slice(0, 3)) {
+    lines.push(`  run_tests(files=${JSON.stringify(batch.files)}${plan.candidateFiles?.length ? ', deliveryFiles=' + JSON.stringify(plan.candidateFiles) : ''}${batch.projects ? ', projects=' + JSON.stringify(batch.projects) : ''}${batch.shard === false ? ', shard=false' : ''})`)
+    if (plan.candidateFiles?.length) continue
     if (batch.requiresAdapter) { lines.push('  此批需要运行时适配项目／分片覆盖；请执行上面的 run_tests 调用。'); continue }
     const command = renderTestCommand([batch.command, ...batch.args], getShellCommand().kind)
     lines.push(`  cwd: ${batch.cwd}`)
@@ -59,7 +68,9 @@ export function renderDeliveryVerificationPlan(plan: DeliveryVerificationPlan, c
       lines.push(`  ${batch.cwd === resolve(cwd) ? '' : shell === 'powershell' ? `Set-Location -LiteralPath '${batch.cwd.replaceAll("'", "''")}'; ` : `${change} && `}${command}`)
     } else lines.push('  当前 shell 无法安全表达该路径；请使用上面的 run_tests(files)。')
   }
-  for (const block of plan.blocked) lines.push(`  未生成可采证批命令（${block.code}）：${block.reason}；义务保留：${block.files.join(', ')}`)
+  if (plan.batches.length > 3) lines.push(`  其余 ${plan.batches.length - 3} 批可执行命令见 verificationPlan.batches；完成当前批次后重新调用 deliver_task 获取最新计划。`)
+  for (const item of plan.pendingReasons.slice(0, 8)) lines.push(`  ${item.path}: ${item.state} — ${item.reason}`)
+  if (plan.pendingReasons.length > 8) lines.push(`  其余 ${plan.pendingReasons.length - 8} 个文件状态见 verificationPlan.pendingReasons。`)
   return lines
 }
 export function formatDeliveryVerificationPlan(cwd: string, required: readonly string[], uncovered: readonly string[], advisoryCount: number): string[] {
@@ -76,7 +87,7 @@ export async function buildDeliveryVerificationPlanAsync(signal: AbortSignal | u
   } catch {
     signal?.throwIfAborted()
     const [, required, uncovered, advisoryCount] = args
-    return { version: 1, required: [...required], covered: [], pending: [...uncovered], advisoryCount,
+    return { version: 1, ...(args[6]?.length ? { candidateFiles: [...args[6]], candidateRef: args[7] } : {}), required: [...required], covered: [], pending: [...uncovered], advisoryCount,
       requiredScopes: [], coveredScopes: [], pendingScopes: [], batches: [],
       blocked: [{ code: 'unknown_runner', files: [...uncovered], reason: 'verification_worker_unavailable: 无法完成验证计划；义务保留，请稍后重试。' }],
       pendingReasons: uncovered.map(path => ({ path, state: 'unsupported', reason: '验证计划进程不可用；未取得新证明。' })) }

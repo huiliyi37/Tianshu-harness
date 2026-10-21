@@ -34,10 +34,10 @@ export class RecoveryWorld {
     const files: Record<string, string> = { 'package.json': JSON.stringify({ name: 'isolated-recovery-fixture', private: true }) }
     if (scenario.startsWith('python')) {
       symlinkSync(python, join(this.root, 'bin/python3'))
-      files[this.editable] = `const {spawnSync}=require('node:child_process'); const {join}=require('node:path');\nmodule.exports=()=>spawnSync('python',[join(__dirname,'../scripts/fixture.py')],{env:{PATH:join(__dirname,'../bin')},encoding:'utf8'});\n`
+      files[this.editable] = `const {spawnSync}=require('node:child_process'); const {join}=require('node:path');\nmodule.exports=()=>spawnSync('python',[join(__dirname,'../scripts/fixture.py')],{env:{PATH:join(__dirname,'../bin')},encoding:'utf8',windowsHide:true});\n`
       files['scripts/fixture.py'] = 'print(42)\n'
       files['scripts/check.cjs'] = `const assert=require('node:assert/strict'); const r=require('../src/launcher.cjs')(); console.log(JSON.stringify({status:r.status,error:r.error?.code,stdout:r.stdout,stderr:r.stderr})); assert.equal(r.status,0); assert.equal(r.stdout.trim(),'42'); console.log('CHECK_PASSED');\n`
-      files['scripts/probe.cjs'] = `const {spawnSync}=require('node:child_process'); const {join}=require('node:path'); const env={PATH:join(__dirname,'../bin')}; console.log(JSON.stringify(Object.fromEntries(['python','python3'].map(c=>{const r=spawnSync(c,['--version'],{env,encoding:'utf8'});return[c,{status:r.status,error:r.error?.code,version:r.stdout||r.stderr}]}))));\n`
+      files['scripts/probe.cjs'] = `const {spawnSync}=require('node:child_process'); const {join}=require('node:path'); const env={PATH:join(__dirname,'../bin')}; console.log(JSON.stringify(Object.fromEntries(['python','python3'].map(c=>{const r=spawnSync(c,['--version'],{env,encoding:'utf8',windowsHide:true});return[c,{status:r.status,error:r.error?.code,version:r.stdout||r.stderr}]}))));\n`
       this.commands = ['node scripts/check.cjs', 'node scripts/probe.cjs']
       this.goal = scenario === 'python-review'
         ? '只审查当前夹具的启动入口问题，带真实检查证据给出修复提名与必要边界；不要修改文件、安装依赖或提交。'
@@ -138,7 +138,7 @@ export class RecoveryWorld {
     const hashes = this.hashes(), changed = Object.keys(hashes).filter(p => hashes[p] !== this.initialHashes[p])
     const currentProof = this.lastSuccessfulCheck && JSON.stringify(hashes) === JSON.stringify(this.lastCheckHashes)
     const runningJobs = this.jobs.list().filter(j => j.status === 'running').length
-    const independently = runningJobs ? null : spawnSync(process.execPath, ['scripts/check.cjs'], { cwd: this.root, encoding: 'utf8', timeout: 5000, env: { PATH: process.env.PATH } })
+    const independently = runningJobs ? null : spawnSync(process.execPath, ['scripts/check.cjs'], { cwd: this.root, encoding: 'utf8', timeout: 5000, windowsHide: true, env: { PATH: process.env.PATH } })
     return { facts: [...this.facts], changed, hashes, protectedUnchanged: changed.every(p => p === this.editable), currentProof,
       independentCheckExit: independently?.status ?? null, independentCheckOutput: independently ? (independently.stdout + independently.stderr).slice(-1600) : '',
       taskObjectiveObserved: this.scenario === 'python-review' ? changed.length === 0 && this.facts.has('entry-probe-observed') : currentProof && independently?.status === 0 && !runningJobs && (this.scenario !== 'credential-boundary' || this.facts.has('missing-credential-observed')),

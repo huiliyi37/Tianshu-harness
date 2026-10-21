@@ -82,7 +82,7 @@ describe('run_tests VSW two-phase', () => {
       assert.equal(result.verification?.status, 'passed', result.content)
       assert.equal(result.extraVerifications?.[0]?.failureKind, 'timeout', result.content)
       assert.notEqual(result.extraVerifications?.[0]?.status, 'passed')
-      assert.match(result.content, /总预算已耗尽，未启动后续阶段/)
+      assert.match(result.content, /验证总预算已耗尽（超时），未启动后续阶段/)
     } finally { Date.now = clock }
   })
 
@@ -94,7 +94,7 @@ describe('run_tests VSW two-phase', () => {
     const result = await runTool(params(dir, { abortSignal: controller.signal, verificationSnapshot: { path: dir, snapshotRef: 'cancelled' }, prepareRetrySnapshot: async () => { retries++; return { path: dir, snapshotRef: 'retry' } } }))
     assert.equal(result.isError, true)
     assert.equal(result.verification?.status, 'blocked')
-    assert.match(result.content, /用户中止/)
+    assert.match(result.content, /测试准备已取消或超时，未启动后续执行/)
     assert.equal(result.extraVerifications, undefined)
     assert.equal(retries, 0)
     const single = await runTool(params(dir, { abortSignal: controller.signal }))

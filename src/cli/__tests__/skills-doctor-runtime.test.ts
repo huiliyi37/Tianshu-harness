@@ -1,4 +1,8 @@
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
+// doctor <id> 走 assertRuntimeAccess：项目级技能带信任门，fixture 显式授信。
+const priorProjectTrust = process.env.RIVET_TRUST_PROJECT
+process.env.RIVET_TRUST_PROJECT = '1'
+after(() => { if (priorProjectTrust === undefined) delete process.env.RIVET_TRUST_PROJECT; else process.env.RIVET_TRUST_PROJECT = priorProjectTrust })
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

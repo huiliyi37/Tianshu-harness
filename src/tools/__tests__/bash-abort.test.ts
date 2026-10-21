@@ -76,3 +76,28 @@ test('abort 杀掉子进程树：被中止的 sleep&&touch 不写出 marker', as
   assert.equal(existsSync(marker), false, '子进程应在 touch 之前被杀，marker 不应存在')
   rmSync(cwd, { recursive: true, force: true })
 })
+
+/**
+ * 上面两条 abort 都落在**准备窗口**（evidence worker fork + 握手，实测 macOS ~200ms）：
+ * 修好之后那一段直接 settle 且根本不 spawn，所以覆盖不到「子进程已经跑起来再中止」的
+ * kill 路径。这条用 started 标记先把 spawn 钉成事实，再 abort —— 否则 killProcessTree
+ * 的回归可以一路躲在「反正没 spawn」后面不被发现。
+ */
+test('abort 落在子进程已 spawn 之后：进程树被杀，后续 touch 不执行', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'rivet-bash-kill-late-'))
+  const started = join(cwd, 'started.txt')
+  const marker = join(cwd, 'marker.txt')
+  const ctrl = new AbortController()
+  const p = BASH_TOOL.execute(makeParams(`touch "${started}" && sleep 3 && touch "${marker}"`, ctrl.signal, cwd))
+  // 轮询 started 直到出现：它证明子进程真的在跑，而不是还在准备阶段。
+  const spawnDeadline = Date.now() + 10_000
+  while (!existsSync(started) && Date.now() < spawnDeadline) await sleepMs(50)
+  assert.equal(existsSync(started), true, '子进程应已 spawn 并执行到 touch started')
+  ctrl.abort()
+  const result = await p
+  assert.equal((result as { isError?: boolean }).isError, false, 'abort 是用户行为，非失败')
+  // 等过原本的 touch 时刻，确认进程树确实被杀
+  await sleepMs(3200)
+  assert.equal(existsSync(marker), false, '已 spawn 的子进程应被 abort 杀掉，marker 不应存在')
+  rmSync(cwd, { recursive: true, force: true })
+})

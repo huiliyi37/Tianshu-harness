@@ -1,4 +1,4 @@
-import { prepareCompletionCaptureAsync } from './test-completion-async.js'
+import { prepareCompletionCaptureAsync, type AsyncCompletionCapture } from './test-completion-async.js'
 import { completionPreparationBlocked } from './completion-preparation-result.js'
 import { inferBashVerificationScope } from '../agent/bash-verification.js'
 import { prepareBackgroundVerification } from './background-verification.js'
@@ -19,7 +19,7 @@ import {
   startYieldWatch,
 } from './bash-yield.js'
 import { probeUserIdleMs, resolveYieldMs, type UserIdleMs } from '../system/user-idle.js'
-import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER } from './sensitive-file-detector.js'
+import { detectSensitiveGitAdd, AGGREGATE_ADD_MARKER, gitCommitStagesSensitiveDualView } from './sensitive-file-detector.js'
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { track } from './process-tracker.js'
 import { killProcessTreeAsync, killProcessTree, spawnShell } from './process-kill.js'
@@ -460,7 +460,15 @@ export function isLongRunner(command: string): boolean {
   return LONG_RUNNER_PATTERNS.some((p) => p.test(command))
 }
 
-/** One full attempt. Extracted verbatim so execute() can retry it in learn mode. */
+/**
+ * 用户中止落在 spawn **之前**（准备阶段 / spawn 前检查点）的统一结果。
+ *
+ * 语义必须与 spawn 之后的 onAbort 一致：abort 是用户行为，不是失败——`isError: false`，也不抛。
+ */
+function abortedBeforeSpawn(rawCommand: string): BashExecResult {
+  return { content: '命令被用户中止。', uiContent: '⏹ aborted', isError: false, command: rawCommand }
+}
+
 async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> {
   const rawCommand = params.input.command as string
   const rewritten = rtkRewrite(rawCommand, params.toolUseId)
@@ -520,10 +528,25 @@ async function executeBashOnce(params: ToolCallParams): Promise<BashExecResult> 
     })
   }
 
-  const completion = await prepareCompletionCaptureAsync(rewrittenWithMirrors, params.cwd ?? process.cwd(), getShellCommand().kind, undefined, startTime + timeout, params.abortSignal)
+  // 准备阶段同样是可中止的窗口：prepareCompletionCaptureAsync 会 fork 一个 evidence
+  // worker 并等 IPC 握手（实测 macOS 上 fork + tsx 引导约 200ms）。abort 落在这段窗口里时，
+  // evidence-process 的 abort 监听会 reject 在途调用，准备函数随即用 `signal.throwIfAborted()`
+  // 把这次拒绝**转成 AbortError 抛给调用方**——整条工具调用以 AbortError 结束，而不是像
+  // spawn 之后那样 settle 成「被用户中止」。用户在命令还没开始跑时按 Esc，绝不该收到一个异常。
+  // 两件事在这里做：① AbortError 不再上抛，就地返回 onAbort 同款结果；② abort 之后**不再
+  // spawn**——abort 意味着「别再跑了」，晚到的子进程没有人再盯着它（`sleep && touch` 照常写副作用）。
+  let completion: AsyncCompletionCapture | undefined
+  try {
+    completion = await prepareCompletionCaptureAsync(rewrittenWithMirrors, params.cwd ?? process.cwd(), getShellCommand().kind, undefined, startTime + timeout, params.abortSignal)
+  } catch (error) {
+    if (!params.abortSignal?.aborted) throw error
+    return abortedBeforeSpawn(rawCommand)
+  }
+  if (params.abortSignal?.aborted) { completion?.dispose(); return abortedBeforeSpawn(rawCommand) }
   const executionTimeout = Math.max(0, startTime + timeout - Date.now())
   if (completion?.preparationError || !executionTimeout) { completion?.dispose(); return completionPreparationBlocked(rawCommand, completion?.preparationError ?? 'budget exhausted', !executionTimeout) }
   if (completion) { sandbox = wrapSandboxCommand(completion.command, params.cwd); command = sandbox.command }
+  if (params.abortSignal?.aborted) { completion?.dispose(); return abortedBeforeSpawn(rawCommand) }
   return new Promise((resolve) => {
     const shell = getShellCommand()
     // Wrap by shell FAMILY (not fragile cmd-string matching): Git Bash needs
@@ -1164,7 +1187,18 @@ export const BASH_TOOL: Tool = {
     const sensitiveGitAddHit = (c: string): boolean =>
       detectSensitiveGitAdd(c).some(h => h !== AGGREGATE_ADD_MARKER)
       || detectSensitiveGitAdd(normalizeBashCommand(c)).some(h => h !== AGGREGATE_ADD_MARKER)
-    return sensitiveGitAddHit(rawCommand) || sensitiveGitAddHit(rewrittenCommand)
+    if (sensitiveGitAddHit(rawCommand) || sensitiveGitAddHit(rewrittenCommand)) {
+      return true
+    }
+    // git commit 敏感文件硬门（收编公开仓 PR #496）：bash 里的 `git commit` 此前
+    // 没有任何等价于 git 工具 commit 动作的暂存区检查——暂存区已有敏感文件
+    // （前序聚合 add、用户预暂存）时，`git commit -m` 在 auto-safe 档静默执行
+    // （medium 风险），凭据直接入库。
+    // 双视图并检：`git${IFS}commit` 这类混淆不能把本门降级；去混淆视图保留
+    // -C/--git-dir 定位参数（查的是实际提交目标，不是工具 cwd）。
+    const commitHit = (c: string): boolean =>
+      gitCommitStagesSensitiveDualView(params.cwd, c)
+    return commitHit(rawCommand) || commitHit(rewrittenCommand)
   },
 
   isConcurrencySafe: () => false,

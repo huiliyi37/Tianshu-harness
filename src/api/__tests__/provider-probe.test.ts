@@ -2,7 +2,14 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { inflateSync } from 'node:zlib'
-import { probeProvider, VISION_PROBE_IMAGE_DATA_URI } from '../provider-probe.js'
+import { probeProvider as probeProviderCore, VISION_PROBE_IMAGE_DATA_URI } from '../provider-probe.js'
+
+// These cases exercise the HTTP contract through local servers. A whole-suite
+// run can delay their event loops beyond the product's 15s onboarding budget;
+// keep that budget in production and give only this fixture room to be scheduled.
+// Individual timeout cases pass timeoutMs explicitly and retain their own limit.
+const probeProvider: typeof probeProviderCore = options =>
+  probeProviderCore({ timeoutMs: 60_000, ...options })
 
 const liveServers = new Set<http.Server>()
 after(async () => { await Promise.all([...liveServers].map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))) })

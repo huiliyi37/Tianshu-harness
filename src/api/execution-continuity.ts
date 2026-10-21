@@ -286,6 +286,11 @@ export function withExecutionContinuity(client: StreamClient, options: Continuit
               const mapping = currentExecutionScope()?.nativeSourceBoundaries
               const nativeContinues = baseline !== rewindBaseline && mapping
                 ? isProvenNativeContinuation(baseline, next, normalizedBody(raw), mapping) : undefined
+              // A restored OpenAI-style request may rebuild the same source/render
+              // history from a stale persisted wire proof. An explicit negative
+              // native proof remains a hard rejection (forged tail/layout or a
+              // historical rewrite); only absent native evidence can rebase.
+              const restoreRebase = restoredFirstRequest && !validation && at !== -1 && nativeContinues === undefined
               if (nativeContinues === false) throw new ContinuationPrefixError(at === -1 ? 'native_evidence' : at, baseline, next)
               const lastUserAt = baseline.messages.reduce((last, message, index) => message.role === 'user' ? index : last, -1)
               // An unchanged source AND render cannot justify a resume/abort rewrite.
@@ -297,7 +302,7 @@ export function withExecutionContinuity(client: StreamClient, options: Continuit
               // 主会话 + resume 首请求 + 切到当前配置模型（其余组合上方已抛）。
               const driftReason = modelDrift ? 'resume_model_switch'
                 : at !== -1 && nativeContinues !== true
-                  ? stableProjection ? undefined : restoredFirstRequest ? 'resume_prefix_drift'
+                  ? restoreRebase ? 'resume_prefix_drift' : stableProjection ? undefined
                     : abortedContinuation && lastUserAt !== -1 && at >= lastUserAt ? 'abort_tail_rebuild'
                     : undefined
                   : undefined

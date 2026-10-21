@@ -19,7 +19,8 @@ import { renderDecisionCard } from '../format/decision-card.js'
 import { formatPinnedPrompt } from '../format/pinned-prompt.js'
 import type { WriteStream, ReadStream } from 'node:tty'
 import { CommitEngine } from './commit-engine.js'
-import { LiveEngine, padDynamicRegion, thinkingRowBudgetFor, type LiveRegionLine } from './live-engine.js'
+import { LiveEngine, thinkingRowBudgetFor, type LiveRegionLine } from './live-engine.js'
+import { CommittedHistoryViewport, layoutPinnedViewport } from './pinned-viewport.js'
 import { installOutputGuard, type OutputGuard } from './output-guard.js'
 import { OverlayEngine } from './overlay-engine.js'
 import { ModePanel } from './mode-panel.js'
@@ -936,7 +937,8 @@ export class TuiApp {
     this.live = new LiveEngine({
       stdout: options.stdout,
       reservedRows: 3,
-      maxRows: liveMaxRowsFor(options.rows),
+      maxRows: Math.max(1, options.rows || 24),
+      fullViewport: true,
       // CPR 自愈：帧后/空闲探针经 stdout 发出，响应由 InputHandler 的 onCpr 喂回；
       // 检出污染（外来写入移动光标）→ 重渲染走恢复路径重锚帧。
       onProbeRequest: () => { options.stdout.write(QUERY_CURSOR_POS) },
@@ -1083,7 +1085,7 @@ export class TuiApp {
     this.resize.onResize((cols, rows) => {
       this.columns = cols
       this.rows = rows
-      this.live.setMaxRows(liveMaxRowsFor(rows))
+      this.live.setMaxRows(this.screenReader ? liveMaxRowsFor(rows) : Math.max(1, rows || 24))
       this.rerender()
     })
 
@@ -4183,6 +4185,7 @@ export class TuiApp {
     this.historyOpenGeneration++
     if (this.historyOpening) { this.historyOpening = false; this.frontend.closeHistory() }
     try {
+      const inlineViewport = this.started && !this.screenReader && !this.frontend.isFullscreen
       // 备用屏只在确实处于激活态时才退出：无条件发 ?1049l 会让部分终端跳到
       // 一个陈旧的保存光标位置。
       if (this.frontend.isFullscreen) this.frontend.stopFullscreen()
@@ -4194,6 +4197,7 @@ export class TuiApp {
       // 弹出 Kitty keyboard protocol（与 start() 的 DISAMBIGUATE_ON 成对），
       // 避免把增强键盘状态遗留给 shell/后续程序。
       this.stdout.write(ANSI.KITTY_KEYBOARD_OFF)
+      if (inlineViewport) this.stdout.write(`\x1B[${Math.max(1, this.stdout.rows || this.rows || 24)};1H\r\n`)
       this.stdout.write(ANSI.SHOW_CURSOR)
     } catch { /* 还原失败不得吞掉原始崩溃栈 */ }
   }
@@ -4240,6 +4244,8 @@ export class TuiApp {
     if (this.screenReader === enabled) return
     this.screenReader = enabled
     if (enabled && this.frontend.isFullscreen) { this.frontend.stopFullscreen(); this.overlay.setBorrowed(false); this.commit.setOutputEnabled(true); this.live.reset() }
+    this.live.setFullViewport(!enabled)
+    this.live.setMaxRows(enabled ? liveMaxRowsFor(this.rows) : Math.max(1, this.rows || 24))
     // 立刻收敛：开启时要把已经画在屏上的动态段擦掉，关闭时要让 ticker 重新起转。
     this.updateTicker()
     this.forceRedraw()
@@ -6216,34 +6222,11 @@ export class TuiApp {
     return Math.ceil(dw / width)
   }
 
-  /** Classic live chrome keeps a bounded high-water height; fullscreen owns its fixed grid. */
-  private getDynamicBudget(chromeRows: number, dynamicRows: number): number {
-    const rows = this.rows || 24
-    const decision = this.decisions.active
-    const expanded = !!(this.approvalIntentController.approvalPending || decision?.visible
-      || this.inputController.slashMenu.open || this.inputLine.value.startsWith('/'))
-    const cap = expanded ? liveMaxRowsFor(rows) : Math.min(liveMaxRowsFor(rows), Math.ceil(rows / 2))
-    if (decision && !this.approvalIntentController.approvalPending) {
-      // 决策卡有自己的稳定行预算：展开时按内容计（cap 封顶），收起时按当前
-      // 内容释放高水位——否则收起后保留展开高度，输入框上方留大片空白。
-      this.liveRowsHighWater = Math.min(Math.max(chromeRows, cap), dynamicRows + chromeRows)
-      return Math.max(0, this.liveRowsHighWater - chromeRows)
-    }
-    if (!expanded && this.state.phase === 'idle') {
-      this.liveRowsHighWater = dynamicRows + chromeRows
-      return dynamicRows
-    }
-    this.liveRowsHighWater = Math.min(Math.max(chromeRows, cap), Math.max(this.liveRowsHighWater, dynamicRows + chromeRows))
-    return Math.max(0, this.liveRowsHighWater - chromeRows)
-  }
+  private committedViewport = new CommittedHistoryViewport()
 
-  /** Stable within an active phase; menus/decisions and idle may shrink once. */
-  private liveRowsHighWater = 0
-
-  /** Session switches discard the previous session's geometry. */
-
+  /** 会话切换与 /clear 只把旧显示藏出视口，pager 历史原样保留（投影边界后移）。 */
   resetLiveHighWater(): void {
-    this.liveRowsHighWater = 0
+    this.committedViewport.clear(this.commit.revision)
   }
 
   /**
@@ -6298,7 +6281,8 @@ export class TuiApp {
 
   private mergeSidePanel(lines: LiveRegionLine[], panelLines: string[], contentCols: number, panelWidth: number): LiveRegionLine[] {
     const merged: LiveRegionLine[] = []
-    const totalRows = lines.some(line => line.decisionPart) ? lines.length : Math.max(lines.length, panelLines.length)
+    const totalRows = !this.screenReader && !this.frontend.isFullscreen ? lines.length
+      : lines.some(line => line.decisionPart) ? lines.length : Math.max(lines.length, panelLines.length)
     const RESET = '\x1B[0m'
     for (let i = 0; i < totalRows; i++) {
       const mainRaw = lines[i]?.text ?? ''
@@ -6333,7 +6317,7 @@ export class TuiApp {
       if (this.columns !== latestCols || this.rows !== latestRows) {
         this.columns = latestCols
         this.rows = latestRows
-        this.live.setMaxRows(liveMaxRowsFor(this.rows))
+        this.live.setMaxRows(this.screenReader ? liveMaxRowsFor(this.rows) : Math.max(1, this.rows || 24))
       }
     }
     if (this.perfMonitor?.enabled) {
@@ -7007,7 +6991,7 @@ export class TuiApp {
 
     const decisionRows = lines.slice(0, chromeStart).filter(line => line.decisionPart).length
     if (decisionRows && !this.screenReader) {
-      const cap = this.frontend.isFullscreen ? this.rows : liveMaxRowsFor(this.rows)
+      const cap = this.rows || 24
       const chrome = lines.slice(chromeStart), keep = Math.max(1, cap - decisionRows)
       lines = [...lines.slice(0, chromeStart), ...budgetInputChrome(chrome, keep)]
     }
@@ -7017,23 +7001,15 @@ export class TuiApp {
       lines = lines.slice(chromeStart)
       chromeStart = 0
     } else if (!this.frontend.isFullscreen) {
-      // ── 定高视口：动态段垫到「总高度高水位 − chrome」，slash/todo 等 chrome
-      //    关掉后垫行补上，输入框不上跳。欢迎首帧（未开 slash、水位 0）仍不垫。
-      //    度量与 LiveEngine.rowsForLine 同口径。
-      let chromeRows = 0
-      for (let i = chromeStart; i < lines.length; i++) {
-        chromeRows += this.displayRowsFor(lines[i]!.text, cols)
-      }
-      let dynamicRows = 0
-      for (let i = 0; i < chromeStart; i++) {
-        dynamicRows += this.displayRowsFor(lines[i]!.text, cols)
-      }
-      const budget = this.getDynamicBudget(chromeRows, dynamicRows)
-      if (budget > 0) {
-        const padded = padDynamicRegion(lines, chromeStart, budget, (text) => this.displayRowsFor(text, cols))
-        lines = padded.lines
-        chromeStart = padded.chromeStart
-      }
+      // 全高 normal-buffer 投影：摘要钉窗口顶、输入区贴窗口底；
+      // 已提交历史只做只读投影进帧，绝不再交给 CommitEngine 二次提交。
+      const viewport = layoutPinnedViewport(lines, chromeStart, {
+        rows: this.rows || 24,
+        historyLines: this.committedViewport.project(this.commit, cols, this.rows || 24),
+        rowsForLine: text => this.displayRowsFor(text, cols),
+      })
+      lines = viewport.lines
+      chromeStart = viewport.chromeStart
     }
 
     if (showSidePanel) {

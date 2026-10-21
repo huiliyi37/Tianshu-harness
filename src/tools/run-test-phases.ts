@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { runTestCommandIn, type RunnableTestCommand } from './run-tests.js'
 import type { ToolCallParams, ToolResult, VerificationSnapshotPlan } from './types.js'
 import { snapshotOmissionNote, snapshotTestResult } from './run-tests-snapshot-result.js'
+import { candidateSnapshotRef } from '../agent/candidate-snapshot-ref.js'
 
 export async function runTestPhases(params: ToolCallParams, testCommand: RunnableTestCommand, filter: string | undefined, remaining: () => number): Promise<ToolResult> {
   const plan = params.verificationSnapshot
@@ -40,7 +41,17 @@ export async function runTestPhases(params: ToolCallParams, testCommand: Runnabl
   // Record both executions; only matched complete proofs can waive integration failure.
   const comparisonId = randomUUID()
   const phaseA = await runTestCommandIn(plan.path, testCommand, params, filter, remaining(), undefined, plan.repositoryRoot)
-  tagVerification(phaseA, 'isolated', plan.snapshotRef)
+  tagVerification(phaseA, 'isolated', plan.snapshotRef, plan.candidateOnly ? params.input.deliveryFiles as string[] : undefined)
+  if (plan.candidateOnly && candidateSnapshotRef(plan.path, params.input.deliveryFiles as string[]) !== plan.snapshotRef) {
+    phaseA.isError = true
+    phaseA.content += '\n候选快照在验证期间发生变化；本批结果不可作为交付证明。'
+    if (phaseA.verification) phaseA.verification = { ...phaseA.verification, status: 'blocked', stale: true, blockedReason: 'unknown_runner', userGuidance: '候选快照已变化，需重新构建并验证。' }
+  }
+
+  // A candidate snapshot already starts at current HEAD and overlays only the
+  // selected commit files. The live tree contains unrelated dirty files; a
+  // second run there cannot prove or disprove this candidate.
+  if (plan.candidateOnly) return snapshotTestResult(phaseA, plan)
 
   // 阶段 A（隔离）失败即已定论：门禁只在「隔离通过」时才认集成差异
   // （isolatedPassed）。此时再跑一遍实时工作区只会多付一整轮测试时间
@@ -57,8 +68,8 @@ export async function runTestPhases(params: ToolCallParams, testCommand: Runnabl
   return snapshotTestResult(phaseA, plan, phaseB)
 }
 
-function tagVerification(result: ToolResult, phase: 'isolated' | 'integration', snapshotRef: string): void {
+function tagVerification(result: ToolResult, phase: 'isolated' | 'integration', snapshotRef: string, candidateFiles?: string[]): void {
   if (!result.verification) return
-  result.verification = { ...result.verification, verificationPhase: phase, snapshotRef }
+  result.verification = { ...result.verification, verificationPhase: phase, snapshotRef, ...(candidateFiles ? { candidateFiles } : {}) }
 }
 

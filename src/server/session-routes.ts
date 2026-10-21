@@ -39,6 +39,7 @@ import { validateWorkspaceRoots } from './workspace-roots.js'
  *   POST   /github/prs/:number/push-fix                push auto-fix diff to PR head (confirm-gated)
  */
 import { buildDocumentRoutes, documentVersion } from './file-document.js'
+import { RAW_PREVIEW_MIME } from './file-preview-mime.js'
 import { buildGitWorkbenchRoutes, serveFileRoute } from './git-workbench-routes.js'
 import { buildGitPrRoutes } from './git-pr-routes.js'
 import { buildApprovalRoutes, sendApprovalSnapshot } from './approval-routes.js'
@@ -68,7 +69,7 @@ import { parseUsageRows } from '../cache/usage-aggregator.js'
 import { getRollbackPreview, rollbackToCheckpoint, makeOwnershipGuard } from '../agent/checkpoint.js'
 import { rankFiles, listDirEntries } from './file-list.js'
 import { cachedProjectFiles } from './file-context-routes.js'
-import { validateImagesPayload, validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, buildArchiveHandleText, type SessionArchivePayload } from './attachment-validation.js'
+import { validateImagesPayload, validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, buildArchiveHandleText, persistDocumentsForPrompt, type SessionArchivePayload } from './attachment-validation.js'
 import {
   MAX_ARCHIVES,
   MAX_DOCUMENTS,
@@ -227,21 +228,6 @@ function planSummary(p: PlanDocument) {
 const REPLAY_SLICE_EVENTS = 200
 const REPLAY_SLICE_MS = 4
 
-/** ?raw=1 二进制预览的 MIME 白名单（file-content 路由）。文档三件套 +
- *  常见图片（FileExplorer 点图片此前也是 utf-8 乱码）。svg 只经 <img>
- *  上下文渲染（script 不执行），不允许直接浏览。 */
-const RAW_PREVIEW_MIME: Record<string, string> = {
-  pdf: 'application/pdf',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-}
-
 async function sendReplayTimeSliced(
   res: import('node:http').ServerResponse,
   sse: SseStream,
@@ -296,6 +282,9 @@ async function persistArchivesForPrompt(
     handleText: persisted.refs.map((ref) => buildArchiveHandleText(ref)).join('\n\n---\n\n'),
   }
 }
+
+/** 文档附件「原样落盘 + 句柄文本」管线已沿接缝落在 attachment-validation.ts
+ * （persistDocumentsForPrompt）——本文件只做三处路由接线（prompt/create/queue）。 */
 
 export function buildSessionRoutes(
   manager: RuntimeSessionManager,
@@ -366,7 +355,6 @@ export function buildSessionRoutes(
       let prompt = data.prompt
       // 展开技能或附加文档时仍保留用户实际输入。
       const promptText = docsCheck.documents?.length || archivesCheck.archives?.length || prompt?.trim().startsWith('/') ? (prompt ?? '') : undefined
-      const docTexts = docsCheck.documents?.length ? await extractDocumentsToText(docsCheck.documents) : ''
       let workspaceRoots: string[] | undefined
       if (data.workspaceRoots !== undefined) {
         if (data.workspaceMode && data.workspaceMode !== 'explicit') return {status:400,body:{error:'Project folders require an explicit workspace'}}
@@ -408,11 +396,15 @@ export function buildSessionRoutes(
       if (prompt && /@computer\b/i.test(prompt)) await manager.enableTool(rec.id, 'computer_use')
       // 压缩包在 createSession 后才有 sessionId 可落盘——持久化失败即 400
       // （会话已建但未启动任何 run，与抽取失败降级语义不同：没有句柄就没有注入形态）。
+      // 文档同址：persistDocumentsForPrompt 落盘（单文档失败降级无句柄，不 400），
+      // 抽取改读落盘副本，块首句柄带 savedPath。
       const archivePersist = await persistArchivesForPrompt(manager, rec.id, archivesCheck.archives)
       if (archivePersist && 'error' in archivePersist) return { status: 400, body: { error: archivePersist.error } }
+      const docPersist = persistDocumentsForPrompt(manager, rec.id, docsCheck.documents)
+      const docTexts = docsCheck.documents?.length ? await extractDocumentsToText(docsCheck.documents, docPersist?.saved) : ''
       const attachmentTexts = [docTexts, archivePersist?.handleText].filter((s) => s)
       if (attachmentTexts.length > 0) prompt = `${attachmentTexts.join('\n\n---\n\n')}\n\n${prompt ?? ''}`
-      if (prompt?.trim()) manager.run(rec.id, prompt, imagesCheck.images, false, undefined, { skillInvoked, documents: docsCheck.documents, archiveRefs: archivePersist?.eventRefs, promptText })
+      if (prompt?.trim()) manager.run(rec.id, prompt, imagesCheck.images, false, undefined, { skillInvoked, documents: docsCheck.documents, documentRefs: docPersist?.refs, archiveRefs: archivePersist?.eventRefs, promptText })
       rec = manager.getSession(rec.id) ?? rec
       if (__dbg) console.log(`[createSession] +${Date.now() - __t0}ms id=${rec.id} cwd=${data.cwd}`)
       return { status: 201, body: rec }
@@ -1036,9 +1028,6 @@ export function buildSessionRoutes(
       // issue #300 — documents 原文与 promptText（用户实际输入，抽取前置前）随
       // run 透传：user 事件携带附件卡片元数据，UI 气泡显示原文而非拼接全文。
       const promptText = documents?.length || archivesCheck.archives?.length ? prompt : undefined
-      // 抽取块先备好不拼——与压缩包句柄文本合流后统一前置（prepareSession 之后），
-      // 保证「documents 块在前、archive 句柄块随后、用户输入最后」的次序。
-      const docTexts = documents && documents.length > 0 ? (await extractDocumentsToText(documents) ?? '') : ''
 
       // Stop → settle window（同 /rewind）：Stop 后 status 立刻变 aborted，桌面端
       // Composer 据此把下一条输入按新 prompt 发出，而 agent loop 还在收尾、
@@ -1046,8 +1035,12 @@ export function buildSessionRoutes(
       // 收尾再起新轮；仍在跑的 run 立即 409（方法直接返回），steer/queue 语义不变。
       await manager.waitForRunSettled(params!.id!)
       if (!await manager.prepareSession(params!.id!)) return { status: 404, body: { error: 'Session not found' } }
-      // 压缩包持久化 + 句柄前置（会话已确认存在）。落盘幂等（docId=内容哈希），
-      // requestId 重试产出的 prompt 与首次字节一致，run-ledger 指纹去重成立。
+      // 文档/压缩包持久化 + 句柄前置（会话已确认存在才有 sessionId 可落盘）。落盘
+      // 幂等（docId=内容哈希），requestId 重试产出的 prompt 与首次字节一致，
+      // run-ledger 指纹去重成立。次序：documents 块在前、archive 句柄块随后、
+      // 用户输入最后。文档抽取改读落盘副本，句柄带 savedPath（模型可读原文件）。
+      const docPersist = persistDocumentsForPrompt(manager, params!.id!, documents)
+      const docTexts = documents && documents.length > 0 ? (await extractDocumentsToText(documents, docPersist?.saved) ?? '') : ''
       const archivePersist = await persistArchivesForPrompt(manager, params!.id!, archivesCheck.archives)
       if (archivePersist && 'error' in archivePersist) return { status: 400, body: { error: archivePersist.error } }
       const archiveRefs = archivePersist?.eventRefs
@@ -1058,7 +1051,7 @@ export function buildSessionRoutes(
           return { status: 400, body: { error: 'Invalid requestId' } }
         }
         try {
-          const result = await manager.submitRun(params!.id!, prompt, images, data.requestId, { skillInvoked, documents, archiveRefs, promptText })
+          const result = await manager.submitRun(params!.id!, prompt, images, data.requestId, { skillInvoked, documents, documentRefs: docPersist?.refs, archiveRefs, promptText })
           if (!result.ok) return { status: result.code === 'not_found' ? 404 : 409, body: { error: result.code } }
           return { status: 200, body: { ...manager.getSession(params!.id!), receipt: 'receipt' in result ? result.receipt : undefined } }
         } catch (error) {
@@ -1068,7 +1061,7 @@ export function buildSessionRoutes(
           return { status: 503, body: { error: 'Could not durably accept request; retry with the same requestId', code: 'request_persistence_failed' } }
         }
       }
-      const ok = manager.run(params!.id!, prompt, images, false, undefined, { skillInvoked, documents, archiveRefs, promptText })
+      const ok = manager.run(params!.id!, prompt, images, false, undefined, { skillInvoked, documents, documentRefs: docPersist?.refs, archiveRefs, promptText })
       // 区分两种拒绝：session 缺失（404，前端可提示重新打开）与执行中（409 busy，
       // 前端显示"正在执行中"而非错误 toast——用户连续发消息时这是正常排队语义）。
       if (!ok) {
@@ -1185,10 +1178,12 @@ export function buildSessionRoutes(
       const documents = docsCheck.documents
       // 文档抽取必须发生在入队前（run 是同步入口，归并路径不能 await）——而它同时
       // 是配额判定的 TOCTOU 窗口，故权威判定放在 manager.queue（同步块）里；此处
-      // 不做前置校验，避免"路由放行、manager 拒绝"两套语义。
+      // 不做前置校验，避免"路由放行、manager 拒绝"两套语义。落盘同址进行：
+      // persistDocumentsForPrompt 给句柄 savedPath（会话目录持久，flush 时仍有效）。
       let attachmentText: string | undefined
       if (documents && documents.length > 0) {
-        attachmentText = (await extractDocumentsToText(documents)) ?? undefined
+        const docPersist = persistDocumentsForPrompt(manager, id, documents)
+        attachmentText = (await extractDocumentsToText(documents, docPersist?.saved)) ?? undefined
       }
       // 压缩包同构：入队时完成持久化 + 句柄拼接（归并路径不能 await）。句柄文本
       // 接在文档抽取块之后（documents 之后、排队文本之前），引用随条目归并进下轮

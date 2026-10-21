@@ -207,6 +207,9 @@ function eventToVerificationMetadata(event: TaskLedgerEvent): VerificationMetada
     ...(resolvedCommand ? { resolvedCommand } : {}),
     ...(recommendedCommand ? { recommendedCommand } : {}),
     ...(snapshotRef ? { snapshotRef } : {}),
+    ...(Array.isArray(event.meta?.candidateFiles) && event.meta.candidateFiles.every(file => typeof file === 'string')
+      ? { candidateFiles: event.meta.candidateFiles as string[] } : {}),
+    ...(event.meta?.candidateTypecheckComplete === true ? { candidateTypecheckComplete: true } : {}),
     ...(verificationPhase ? { verificationPhase } : {}),
     ...(typeof event.meta?.isolatedPassed === 'boolean' ? { isolatedPassed: event.meta.isolatedPassed } : {}),
     ...(blockedReason ? { blockedReason } : {}),

@@ -74,16 +74,27 @@ test('历史查看器保留嵌套列表与原编号，宽屏正文和实时渲�
 })
 
 for (const [cols, rows] of [[120, 30], [80, 24], [40, 24], [120, 50]] as const) {
-  test(`${cols}×${rows}: metrics are wired into the real frame and menu height shrinks`, async t => {
+  test(`${cols}×${rows}: metrics stay visible and menu/idle keep the composer at the viewport bottom`, async t => {
     const { app } = makeApp({ cols, rows })
     t.after(() => app.dispose())
     const priv = app as unknown as {
-      state: { phase: string }; liveRowsHighWater: number
+      state: { phase: string }
       live: { render: (lines: LiveRegionLine[], options: { reservedTail: number }) => void }
       renderLive: () => void
     }
     let frame: LiveRegionLine[] = []
     priv.live.render = lines => { frame = lines }
+    const anchored = () => {
+      assert.equal(frame.length, rows, 'classic frames occupy the current terminal height')
+      const mode = frame.findIndex(line => line.region === 'mode')
+      const composer = frame.findIndex(line => line.region === 'composer')
+      const caret = frame.findIndex(line => line.caretCol !== undefined)
+      const bottom = frame.map(line => line.region).lastIndexOf('composer')
+      assert.ok(mode >= rows - 7 && mode < composer, 'metrics and mode remain beside the bottom composer')
+      assert.ok(caret >= composer && caret < bottom, 'the editable caret remains inside the composer')
+      assert.ok(bottom >= rows - 2, 'only the ordinary prompt footer may follow the composer')
+      return { caret, bottom }
+    }
     app.setGitBranch('feature/中文')
     app.setReasoningEffortProvider(() => 'high')
     app.setMetricsProvider(() => ({ estimatedTokens: 32000, conversationTokens: 100, maxTokens: 64000,
@@ -98,17 +109,17 @@ for (const [cols, rows] of [[120, 30], [80, 24], [40, 24], [120, 50]] as const) 
     assert.doesNotMatch(text, /后台 0/)
     assert.doesNotMatch(text, /\/metrics/)
     if (cols >= 80) { assert.match(text, /feature\/中文/); assert.match(text, /◎high/) }
+    const resting = anchored()
     app.setInput('/')
     priv.renderLive()
+    assert.deepEqual(anchored(), resting, 'opening the menu must not lift the input box')
     priv.state.phase = 'streaming'
-    priv.liveRowsHighWater = rows - 2
     app.setInput('继续')
     priv.renderLive()
-    assert.ok(priv.liveRowsHighWater <= Math.ceil(rows / 2))
+    assert.deepEqual(anchored(), resting, 'closing the menu during a run must keep the input box fixed')
     priv.state.phase = 'idle'
     priv.renderLive()
-    const chrome = frame.findIndex(line => line.region === 'mode')
-    assert.equal(chrome, 0, 'idle cannot reserve blank dynamic rows')
+    assert.deepEqual(anchored(), resting, 'settling to idle must keep the input box at the same screen rows')
     assert.ok(frame.every(row => displayWidth(row.text) < cols))
     app.setMetricsProvider(() => null)
     priv.renderLive()
@@ -143,17 +154,31 @@ for (const name of ['read_file', 'bash']) test(`${name}: collapsed results retai
   assert.match(plain(app.getScrollbackContent()), /全文来源: \/tmp\/tui-source.raw/)
 })
 
-test('resize after menu expansion recomputes the half-screen budget', t => {
+test('resize after menu expansion recomputes the full viewport and bottom composer', t => {
   const { app, out } = makeApp({ cols: 120, rows: 50 })
   t.after(() => app.dispose())
-  const priv = app as unknown as { state: { phase: string }; liveRowsHighWater: number; renderLive: () => void }
+  const priv = app as unknown as {
+    state: { phase: string }; renderLive: () => void
+    live: { render: (lines: LiveRegionLine[]) => void }
+  }
+  let frame: LiveRegionLine[] = []
+  priv.live.render = lines => { frame = lines }
   app.setInput('/')
   priv.state.phase = 'streaming'
-  priv.liveRowsHighWater = 28
-  out.columns = 80; out.rows = 24
   app.setInput('继续')
-  priv.renderLive()
-  assert.ok(priv.liveRowsHighWater <= 12)
+  for (const [columns, rows] of [[80, 24], [120, 50], [40, 12], [80, 30]] as const) {
+    out.columns = columns; out.rows = rows
+    priv.renderLive()
+    assert.equal(frame.length, rows, 'resizing must use the new viewport height immediately')
+    const composer = frame.findIndex(line => line.region === 'composer')
+    const caret = frame.findIndex(line => line.caretCol !== undefined)
+    const bottom = frame.map(line => line.region).lastIndexOf('composer')
+    assert.ok(caret >= rows - 4 && caret >= composer, 'the caret must stay at the new window bottom')
+    assert.ok(bottom >= rows - 2, 'the composer must be followed only by its optional footer')
+    const mode = frame.findIndex(line => line.region === 'mode')
+    if (mode >= 0) assert.ok(mode < composer && mode >= rows - 7)
+    assert.ok(frame.every(line => displayWidth(line.text) < columns), 'resizing must also use the new width')
+  }
 })
 
 test('narrow telemetry details command is local and includes the omitted branch and effort', async t => {

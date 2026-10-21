@@ -839,6 +839,17 @@ export class MeridianDb {
     }
   }
 
+  /** Consistent SQLite copy for candidate-only impact analysis. Never copies a live WAL file. */
+  async backupTo(path: string): Promise<boolean> {
+    if (!this.available) return false
+    try {
+      await this.db.backup(path)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   close(): void {
     if (this.conn) {
       // Truncate the WAL so the file shrinks back to ~0 on close instead of

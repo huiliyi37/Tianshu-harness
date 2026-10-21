@@ -1,9 +1,10 @@
 import type { MeridianDb } from './meridian-db.js'
 import { isTestEntry as isTestFile } from './test-entry.js'
+import { candidateTypecheckCoverage, isPureTypeOnlyImportEdge, type TypecheckProof } from './type-only-import.js'
 
-export interface ImpactStep { from: string; to: string; kind: string; confidence?: string }
+export interface ImpactStep { from: string; to: string; kind: string; confidence?: string; typeOnly?: boolean }
 export interface ImpactResult {
-  policyVersion?: 1
+  policyVersion?: 1 | 2
   requiredTests?: string[]
   advisoryTests?: string[]
   reasons?: Record<string, ImpactStep[]>
@@ -24,9 +25,23 @@ export interface ImpactResult {
 export function analyzeImpact(
   db: MeridianDb,
   changedFiles: string[],
-  opts?: { maxHops?: number },
+  opts?: { maxHops?: number; cwd?: string; typecheckProof?: TypecheckProof },
 ): ImpactResult {
   const maxHops = opts?.maxHops ?? 3
+  const candidateCwd = opts?.cwd
+  const checkedFiles = candidateCwd ? candidateTypecheckCoverage(candidateCwd, opts?.typecheckProof) : null
+  const canDemoteTypeOnly = checkedFiles !== null
+  const typeOnlyCache = new Map<string, boolean>()
+  const isTypeOnly = (importer: string, imported: string): boolean => {
+    if (!canDemoteTypeOnly) return false
+    const key = `${importer}\0${imported}`
+    let result = typeOnlyCache.get(key)
+    if (result === undefined) {
+      result = isPureTypeOnlyImportEdge(candidateCwd!, importer, imported, opts?.typecheckProof, checkedFiles!)
+      typeOnlyCache.set(key, result)
+    }
+    return result
+  }
   const direct = new Set<string>()
   const transitive = new Set<string>()
   const tests = new Set<string>()
@@ -84,17 +99,26 @@ export function analyzeImpact(
   const required = new Set<string>(changedFiles.filter(isTestFile))
   const reasons: Record<string, ImpactStep[]> = {}
   for (const file of required) reasons[file] = []
-  let proofFrontier = changedFiles.map(file => ({ file, path: [] as ImpactStep[] }))
-  const proofVisited = new Set(changedFiles)
+  // A file reached through a type-only edge must not hide a later runtime
+  // path. Track the two proof strengths independently; required wins.
+  let proofFrontier = changedFiles.map(file => ({ file, path: [] as ImpactStep[], requiredPath: true }))
+  const proofVisited = new Set(changedFiles.map(file => `required\0${file}`))
   for (let hop = 0; hop < maxHops; hop++) {
     const next: typeof proofFrontier = []
-    for (const { file, path } of proofFrontier) {
+    for (const { file, path, requiredPath } of proofFrontier) {
       for (const dep of db.getReverseDependents(file)) {
-        if (dep.confidence !== 'extracted' || !['imports', 'calls'].includes(dep.kind) || proofVisited.has(dep.file)) continue
-        proofVisited.add(dep.file)
-        const proof = [...path, { from: file, to: dep.file, kind: dep.kind, confidence: dep.confidence }]
-        next.push({ file: dep.file, path: proof })
-        if (isTestFile(dep.file)) { required.add(dep.file); reasons[dep.file] = proof }
+        if (dep.confidence !== 'extracted' || !['imports', 'calls'].includes(dep.kind)) continue
+        const typeOnly = dep.kind === 'imports' && isTypeOnly(dep.file, file)
+        const nextRequired = requiredPath && !typeOnly
+        const visitKey = `${nextRequired ? 'required' : 'conditional'}\0${dep.file}`
+        if (proofVisited.has(visitKey)) continue
+        proofVisited.add(visitKey)
+        const proof = [...path, { from: file, to: dep.file, kind: dep.kind, confidence: dep.confidence, ...(typeOnly ? { typeOnly: true } : {}) }]
+        next.push({ file: dep.file, path: proof, requiredPath: nextRequired })
+        if (isTestFile(dep.file) && (nextRequired || !reasons[dep.file])) {
+          if (nextRequired) required.add(dep.file)
+          reasons[dep.file] = proof
+        }
       }
     }
     proofFrontier = next
@@ -109,7 +133,7 @@ export function analyzeImpact(
       advisoryVisited.add(dep.file)
       const explanation = [...path, { from: file, to: dep.file, kind: dep.kind, confidence: dep.confidence }]
       next.push({ file: dep.file, path: explanation })
-      if (isTestFile(dep.file) && !required.has(dep.file)) reasons[dep.file] = explanation
+      if (isTestFile(dep.file) && !required.has(dep.file) && !reasons[dep.file]) reasons[dep.file] = explanation
     }
     advisoryFrontier = next
   }
@@ -119,7 +143,7 @@ export function analyzeImpact(
   }
   for (const test of required) tests.add(test)
   return {
-    policyVersion: 1,
+    policyVersion: canDemoteTypeOnly ? 2 : 1,
     requiredTests: [...required].sort(),
     advisoryTests: [...tests].filter(test => !required.has(test)).sort(),
     reasons,

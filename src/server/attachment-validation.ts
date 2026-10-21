@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
+import type { RuntimeSessionManager, SessionDocumentRef, SessionDocumentVerbatimRef } from './session-manager.js'
 import { MAX_IMAGES, MAX_IMAGE_BYTES, MAX_DOCUMENTS, MAX_DOCUMENT_BYTES, MAX_ARCHIVES, MAX_ARCHIVE_DATAURL_BYTES } from './attachment-limits.js'
 import { contextFileKind, contextDataUrlBytes, decodeContextText, isPrivateContextPath, isSupportedArchiveName, MAX_TEXT_ATTACHMENT_BYTES } from './file-context-policy.js'
 import { extractDocumentText, EXTRACTION_CAVEAT, isExtractableDocument } from '../tools/doc-extract.js'
@@ -83,31 +84,43 @@ export function validateDocumentsPayload(value: unknown): { documents?: Array<{ 
 
 /** 把文档附件（base64 dataUrl）落盘到临时目录，调 extractDocumentText 抽取文本，
  *  返回拼好的前置块（含 EXTRACTION_CAVEAT）。失败的单个文档降级为错误提示，
- *  不阻断整体发送。 */
+ *  不阻断整体发送。
+ *  saved（按输入下标对齐，persistDocumentsVerbatim 的产出）给出原文的只读落盘
+ *  副本：有时抽取改读该副本（不再写临时文件），且块首带句柄文本（路径进 prompt，
+ *  模型可用 read_file 读原文件）；无 saved 的文档维持「临时文件抽取 + 无路径」
+ *  旧行为——丢失句柄是降级，不是阻断理由。 */
 export async function extractDocumentsToText(
   documents: Array<{ name: string; dataUrl: string }>,
+  saved?: readonly ({ bytes: number; sha256short: string; savedPath: string } | undefined)[],
 ): Promise<string | null> {
   const parts: string[] = []
   let tmpBase: string | undefined
   try {
-    for (const doc of documents) {
+    for (const [index, doc] of documents.entries()) {
       if (doc.dataUrl.startsWith('data:text/plain;base64,')) {
         parts.push(`[file: ${doc.name}]\n${decodeContextText(contextDataUrlBytes(doc.dataUrl))}`)
         continue
       }
-      tmpBase ??= mkdtempSync(join(tmpdir(), 'rivet-doc-'))
-      const tmpPath = join(tmpBase, `${doc.name.replace(/[^A-Za-z0-9._-]/g, '_')}`)
+      const ref = saved?.[index]
+      const header = ref
+        ? buildDocumentHandleText({ name: doc.name, bytes: ref.bytes, sha256short: ref.sha256short, savedPath: ref.savedPath })
+        : `[document: ${doc.name}]`
+      let extractPath: string | undefined = ref?.savedPath
       try {
-        const base64 = doc.dataUrl.split(',')[1] ?? ''
-        writeFileSync(tmpPath, Buffer.from(base64, 'base64'))
-        const result = await extractDocumentText(tmpPath)
+        if (!extractPath) {
+          tmpBase ??= mkdtempSync(join(tmpdir(), 'rivet-doc-'))
+          extractPath = join(tmpBase, `${doc.name.replace(/[^A-Za-z0-9._-]/g, '_')}`)
+          const base64 = doc.dataUrl.split(',')[1] ?? ''
+          writeFileSync(extractPath, Buffer.from(base64, 'base64'))
+        }
+        const result = await extractDocumentText(extractPath)
         if (result.ok) {
-          parts.push(`[document: ${doc.name}]\n${EXTRACTION_CAVEAT}\n\n${result.text}`)
+          parts.push(`${header}\n${EXTRACTION_CAVEAT}\n\n${result.text}`)
         } else {
-          parts.push(`[document: ${doc.name}]\n(extraction failed: ${result.suggestion})`)
+          parts.push(`${header}\n(extraction failed: ${result.suggestion})`)
         }
       } catch (err) {
-        parts.push(`[document: ${doc.name}]\n(extraction error: ${(err as Error).message})`)
+        parts.push(`${header}\n(extraction error: ${(err as Error).message})`)
       }
     }
   } finally {
@@ -174,6 +187,26 @@ function humanBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+/** 文档附件「原样落盘 + 句柄文本」管线（dsh 句柄式，与压缩包同范式，2026-10-21）：
+ *  persistDocumentsVerbatim 按内容寻址落盘（幂等/只读/保真扩展名），抽取改读落盘
+ *  副本、块首带句柄（savedPath 进 prompt——模型拿 read_file 自助读原文，不再
+ *  全盘 find）。saved 按输入下标对齐喂给 extractDocumentsToText；refs 剥成
+ *  SessionDocumentRef 进 run 事件通道（savedPath/sha256 不进事件流），同时让
+ *  run 内 persistDocuments 跳过已落盘条目（卡片复用 verbatim 副本，不二次落盘）。
+ *  全部文档落盘失败时返回 undefined——降级为「临时文件抽取、无句柄」旧行为。 */
+export function persistDocumentsForPrompt(
+  manager: RuntimeSessionManager,
+  sessionId: string,
+  documents: Array<{ name: string; dataUrl: string }> | undefined,
+): { refs: SessionDocumentRef[]; saved: readonly (SessionDocumentVerbatimRef | undefined)[] } | undefined {
+  if (!documents?.length) return undefined
+  const saved = manager.persistDocumentsVerbatim(sessionId, documents)
+  const refs = saved
+    .filter((r): r is SessionDocumentVerbatimRef => r !== undefined)
+    .map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime }))
+  return refs.length > 0 ? { refs, saved } : undefined
+}
+
 /** 压缩包句柄文本（~90 token，与文件大小无关）——user message 里压缩包的
  *  唯一投影，与 [document:] 同位前置。解压是模型的工具行为（unzip/tar 自取），
  *  服务端永不解压；savedPath 随会话附件目录持久化，resume/重放不失效。 */
@@ -183,4 +216,15 @@ export function buildArchiveHandleText(ref: { name: string; bytes: number; sha25
     `Do not inline its contents. Inspect on demand: \`unzip -l ${ref.savedPath}\` to list; ` +
     `extract into a writable workspace dir (\`unzip ${ref.savedPath} -d <dir>\`) before reading. ` +
     `Pass this path in delegation prompts when workers need it.`
+}
+
+/** 文档句柄文本（dsh 句柄式范式，与压缩包同款）——抽取文本紧随其后但表格/
+ *  排版/图可能有损，需要原貌时模型拿这个只读路径自助（read_file 的 office
+ *  通道覆盖 xlsx/docx 等抽取引擎）；要改动先复制到可写目录（副本 0o444）。
+ *  savedPath 随会话附件目录持久化，委派 worker 时路径可显式传递。 */
+export function buildDocumentHandleText(ref: { name: string; bytes: number; sha256short: string; savedPath: string }): string {
+  return `[document: ${ref.name} (${humanBytes(ref.bytes)}, sha256:${ref.sha256short})]\n` +
+    `Saved verbatim at: ${ref.savedPath}\n` +
+    `The extracted text below may be lossy (tables, layout, figures). Read this path with read_file when you need the original; ` +
+    `copy it to a writable location before modifying it. Pass this path in delegation prompts when workers need it.`
 }

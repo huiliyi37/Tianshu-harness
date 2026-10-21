@@ -797,6 +797,13 @@ export interface SessionPersistenceAdapter {
    *  persistArchives 直接报错（压缩包没有句柄就没有注入形态，不能降级）。
    */
   saveArchive?(sessionId: string, docId: string, source: { base64: string } | { srcPath: string }, fileName: string): string
+  /**
+   * 文档附件原样落盘（句柄式，2026-10-21）：与 saveArchive 同机制（content-
+   * addressed / 原子发布 / 只读），扩展名保真（doc-extract 与 read_file 按
+   * 扩展名分引擎）。返回落盘绝对路径——进 prompt 句柄文本。Optional — 缺省时
+   * persistDocumentsVerbatim 全部降级「无句柄」（仍有抽取文本注入，可降级）。
+   */
+  saveVerbatimDocument?(sessionId: string, docId: string, source: { base64: string }, fileName: string): string
 }
 
 export interface RuntimeSessionManagerOptions {
@@ -1003,6 +1010,13 @@ export interface SessionDocumentRef {
   name: string
   bytes: number
   mime: string
+}
+
+/** 文档附件的完整引用（persistDocumentsVerbatim 返回值）：savedPath/sha256 只进
+ *  prompt 句柄文本与路由层，**不进事件流**（事件只留 SessionDocumentRef 形态）。 */
+export interface SessionDocumentVerbatimRef extends SessionDocumentRef {
+  sha256short: string
+  savedPath: string
 }
 
 /** 压缩包附件的完整引用（persistArchives 返回值）：savedPath/sha256 只进
@@ -2768,7 +2782,7 @@ export class RuntimeSessionManager {
     return { ...session.record }
   }
 
-  async submitRun(id: string, prompt: string, images: string[] | undefined, requestId: string, opts?: { skillInvoked?: string; documents?: SessionDocumentInput[]; archiveRefs?: SessionArchiveEventRef[]; promptText?: string }) {
+  async submitRun(id: string, prompt: string, images: string[] | undefined, requestId: string, opts?: { skillInvoked?: string; documents?: SessionDocumentInput[]; documentRefs?: SessionDocumentRef[]; archiveRefs?: SessionArchiveEventRef[]; promptText?: string }) {
     if (!this.sessions.has(id)) return { ok: false as const, code: 'not_found' }
     if (!this.runLedger) return { ok: this.run(id, prompt, images, false, undefined, opts), code: 'busy' }
     const receipt = await this.runLedger.accept(id, requestId, { prompt, images, documents: opts?.documents?.map((d) => d.name), archives: opts?.archiveRefs?.map((a) => a.name), promptText: opts?.promptText }, receipt => this.run(id, prompt, images, false, receipt, opts))
@@ -2948,7 +2962,7 @@ export class RuntimeSessionManager {
       // 本轮新带（persistDocuments）、排队归并（run 内 merge）、queue flush（调用方透传）。
       const documentRefs = recovery
         ? []
-        : [...queuedDocuments, ...(opts?.documentRefs ?? []), ...this.persistDocuments(id, docInputs)]
+        : [...queuedDocuments, ...(opts?.documentRefs ?? []), ...this.persistDocuments(id, docInputs, opts?.documentRefs)]
       // 压缩包引用两路来源：排队归并 + 路由层 persistArchives 后透传（原文均已落盘，
       // 句柄文本已前置进 prompt；事件只留 {id,name,bytes} 小对象）。
       const archiveRefs = recovery
@@ -7312,14 +7326,19 @@ export class RuntimeSessionManager {
    * 文档附件原文落盘，返回事件流引用（issue #300）。与 persistImages 同款
    * best-effort：单个失败跳过，不阻断 run——抽取文本已进 prompt，卡片只少一个
    * 可回读条目。bytes/mime 以服务端解码自算为准（不信客户端自报）。
+   * covered（路由层 persistDocumentsVerbatim 的 refs）已落盘的条目跳过——
+   * 卡片直接复用 verbatim 副本（id=内容 sha256，readDocument 同表回读），
+   * 同一文件不再随机 docId 二次落盘。
    */
-  private persistDocuments(sessionId: string, documents?: SessionDocumentInput[]): SessionDocumentRef[] {
+  private persistDocuments(sessionId: string, documents?: SessionDocumentInput[], covered?: SessionDocumentRef[]): SessionDocumentRef[] {
     if (!documents?.length) return []
+    const coveredKeys = covered?.length ? new Set(covered.map((r) => `${r.name} ${r.bytes}`)) : undefined
     const refs: SessionDocumentRef[] = []
     for (const doc of documents) {
       const base64 = doc.dataUrl.split(',')[1] ?? ''
       if (!base64 && !doc.dataUrl.startsWith('data:text/plain;base64,')) continue
       const bytes = Buffer.from(base64, 'base64').length
+      if (coveredKeys?.has(`${doc.name} ${bytes}`)) continue
       const mimeMatch = /^data:([^;,]+)/.exec(doc.dataUrl)
       const mime = mimeMatch?.[1] ?? 'application/octet-stream'
       const docId = randomId()
@@ -7331,6 +7350,33 @@ export class RuntimeSessionManager {
       refs.push({ id: docId, name: doc.name, bytes, mime })
     }
     return refs
+  }
+
+  /**
+   * 文档附件原样落盘（句柄式，与 persistArchives 同机制，2026-10-21）：docId=
+   * 内容 sha256（content-addressed，requestId 重试/同内容重发幂等，句柄文本
+   * 字节一致）。返回按输入下标对齐的引用（文本文档与失败条目为 undefined）：
+   * savedPath 进 prompt 句柄文本，模型可用 read_file 读原文；文本附件不落盘
+   * （全文内联，无需句柄）。单条失败降级为「该文档无句柄」（抽取回退临时
+   * 文件、卡片走 persistDocuments 随机 docId），不阻断发送——与 persistArchives
+   * 的 fail-hard 刻意不同：文档还有抽取文本这个注入形态，压缩包没有。
+   */
+  persistDocumentsVerbatim(sessionId: string, documents?: SessionDocumentInput[]): (SessionDocumentVerbatimRef | undefined)[] {
+    if (!documents?.length || !this.persistence?.saveVerbatimDocument) return (documents ?? []).map(() => undefined)
+    return documents.map((doc) => {
+      if (doc.dataUrl.startsWith('data:text/plain;base64,')) return undefined
+      const base64 = doc.dataUrl.split(',')[1] ?? ''
+      if (!base64) return undefined
+      try {
+        const bytes = Buffer.from(base64, 'base64')
+        const sha256hex = createHash('sha256').update(bytes).digest('hex')
+        const savedPath = this.persistence!.saveVerbatimDocument!(sessionId, sha256hex, { base64 }, doc.name)
+        const mime = /^data:([^;,]+)/.exec(doc.dataUrl)?.[1] ?? 'application/octet-stream'
+        return { id: sha256hex, name: doc.name, bytes: bytes.length, mime, sha256short: sha256hex.slice(0, 8), savedPath }
+      } catch {
+        return undefined
+      }
+    })
   }
 
   /** Read a persisted user document (for the GET document route). */

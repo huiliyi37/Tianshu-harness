@@ -18,6 +18,7 @@ import { ArtifactStore } from '../../artifact/store.js'
 import { _setSandboxBackendForTest, _resetSandboxBackendCache } from '../../tools/sandbox-profile.js'
 import { isWriteGranted, _resetGrantsForTest, loadPersistedGrants, revokeGrant } from '../../tools/path-grants.js'
 import { rivetHome } from '../../config/paths.js'
+import { BASH_TOOL } from '../../tools/bash.js'
 import { executeWithCourseProgress } from '../course-file-progress.js'
 import { EvidenceTracker } from '../evidence.js'
 import { READ_FILE_TOOL } from '../../tools/read-file.js'
@@ -428,6 +429,36 @@ describe('executeToolUse', () => {
     )
 
     assert.deepEqual(seen, { path: '/snap/dir', snapshotRef: 'head1+diffX', repositoryRoot: deps.cwd })
+  })
+
+  it('deliveryFiles builds a current-HEAD candidate snapshot and cleans it after run_tests', async () => {
+    const cwd = mkdtempSync(join(testTmp(), 'candidate-pipeline-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+    try {
+      git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test')
+      writeFileSync(join(cwd, 'selected.ts'), 'base')
+      writeFileSync(join(cwd, 'peer.ts'), 'base')
+      git('add', '--', 'selected.ts', 'peer.ts'); git('commit', '-qm', 'base')
+      writeFileSync(join(cwd, 'selected.ts'), 'selected edit')
+      writeFileSync(join(cwd, 'peer.ts'), 'peer edit')
+      let snapshotPath = ''
+      const deps = makeDeps({ cwd, verificationSnapshotManager: { prepare: () => { throw Error('session snapshot must not run') } } as any,
+        config: { ...makeDeps().config, toolRegistry: {
+          execute: async (_name: string, params: any) => {
+            snapshotPath = params.verificationSnapshot?.path ?? ''
+            assert.equal(params.verificationSnapshot?.candidateOnly, true)
+            assert.equal(readFileSync(join(snapshotPath, 'selected.ts'), 'utf8'), 'selected edit')
+            assert.equal(readFileSync(join(snapshotPath, 'peer.ts'), 'utf8'), 'base')
+            return { content: 'ok', isError: false }
+          },
+          get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+          needsApproval: () => false,
+          resolveName: (name: string) => name,
+        } } as any })
+      await executeToolUse({ id: 'candidate-run', name: 'run_tests', input: { deliveryFiles: ['selected.ts'] } }, deps, noopCallbacks as any, 1, false)
+      assert.ok(snapshotPath)
+      assert.equal(existsSync(snapshotPath), false)
+    } finally { rmSync(cwd, { recursive: true, force: true }) }
   })
 
   it('VSW: leaves verificationSnapshot unset when the manager returns null (in-place)', async () => {
@@ -2424,6 +2455,61 @@ describe('executeToolUse', () => {
       assert.equal(executed, true)
     } finally {
       _resetSandboxBackendCache()
+    }
+  })
+
+  it('P1-1: auto-safe + sandbox still requires approval for `git commit` with sensitive staged', async () => {
+    // 作者复现：真实 executeToolUse + 真实 requiresApproval + 含合成敏感路径的
+    // Git index + 启用沙箱，旧逻辑得到 needsApproval=true / risk=medium /
+    // approvalCallbacks=0 / executeCalls=1（沙箱开着也被静默执行）。
+    // 修复后：暂存区敏感文件硬门是模式无关不变量，auto-safe 也必须弹审批。
+    const repo = mkdtempSync(join(testTmp(), 'commit-gate-e2e-'))
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repo })
+    writeFileSync(join(repo, 'README.md'), 'hi')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo })
+    writeFileSync(join(repo, '.env'), 'SECRET=1')
+    execFileSync('git', ['add', '.env'], { cwd: repo })
+
+    const prevSandbox = process.env.RIVET_SANDBOX
+    process.env.RIVET_SANDBOX = '1'
+    _setSandboxBackendForTest('bwrap')
+    let approvalCalls = 0
+    let executeCalls = 0
+    try {
+      const deps = makeDeps({
+        cwd: repo,
+        config: {
+          ...makeDeps().config,
+          approvalMode: 'auto-safe',
+          permissions: { allow: [] },
+          toolRegistry: {
+            // 真实 requiresApproval（BASH_TOOL）；执行入口用无副作用替身
+            execute: async () => { executeCalls++; return { content: 'ok', isError: false } },
+            get: () => ({ definition: { input_schema: {} }, isConcurrencySafe: () => false }),
+            needsApproval: (name: string, params: any) =>
+              name === 'bash' ? BASH_TOOL.requiresApproval(params) : false,
+            resolveName: (n: string) => n,
+          },
+        } as any,
+      })
+      const callbacks = { ...noopCallbacks, onApprovalRequired: async () => { approvalCalls++; return false } }
+
+      const result = await executeToolUse(
+        { id: 'tu-commit-sensitive', name: 'bash', input: { command: 'git commit -m fixture' } },
+        deps, callbacks as any, 1, false,
+      )
+
+      assert.equal(approvalCalls, 1, '暂存区有敏感文件时 auto-safe 必须弹审批，不能静默执行')
+      assert.equal(executeCalls, 0, '审批被拒后不得执行')
+      assert.equal((result.toolResult as any).is_error, true)
+    } finally {
+      if (prevSandbox === undefined) delete process.env.RIVET_SANDBOX
+      else process.env.RIVET_SANDBOX = prevSandbox
+      _resetSandboxBackendCache()
+      rmSync(repo, { recursive: true, force: true })
     }
   })
 

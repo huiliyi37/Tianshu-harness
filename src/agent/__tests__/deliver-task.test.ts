@@ -17,6 +17,9 @@ import { createVerificationAttribution } from '../verification-attribution.js'
 import type { ToolCallParams, ToolResult, DelegationActivity } from '../../tools/types.js'
 import type { SessionRegistry } from '../session-registry.js'
 import { getReviewHealth, resetReviewHealth } from '../review-health.js'
+import { openCandidateDeliveryTree } from '../candidate-delivery-tree.js'
+import { candidateSnapshotRef } from '../candidate-snapshot-ref.js'
+import { resolveDeliveryImpact } from '../delivery-impact.js'
 
 function makeContext(opts: {
   taskId: string
@@ -41,6 +44,10 @@ function makeContext(opts: {
   inventorySearcher?: import('../regression-inventory.js').InventorySearcher
   obligationGateRunner?: import('../council/council-obligations.js').GateRunner
   impactedTests?: string[]
+  resolveDeliveryImpact?: (cwd: string, files: readonly string[], proof?: import('../../repo/type-only-import.js').TypecheckProof) => Promise<import('../delivery-impact.js').DeliveryImpact>
+  getCurrentSnapshotRef?: () => string | undefined
+  getCurrentSnapshotRefForFiles?: (files: string[]) => string | undefined
+  prepareCandidateTree?: (cwd: string, files: readonly string[], signal?: AbortSignal) => Promise<import('../candidate-delivery-tree.js').CandidateDeliveryTree>
   palConvergedCases?: import('../problem-attack-loop.js').ConvergedCaseEntry[]
   palNeedsUserCases?: Array<{ caseId: string; problem: string; minimalQuestion: string }>
   reviewConfig?: import('../../config/schema.js').ReviewConfig
@@ -93,6 +100,13 @@ function makeContext(opts: {
     inventorySearcher: opts.inventorySearcher,
     obligationGateRunner: opts.obligationGateRunner,
     getImpactedTests: opts.impactedTests ? () => opts.impactedTests! : undefined,
+    resolveDeliveryImpact: opts.resolveDeliveryImpact ?? (async () => ({ resolved: true, requiredTests: opts.impactedTests ?? [], advisoryTests: [] })),
+    getCurrentSnapshotRef: opts.getCurrentSnapshotRef,
+    getCurrentSnapshotRefForFiles: opts.getCurrentSnapshotRefForFiles,
+    prepareCandidateTree: opts.prepareCandidateTree ?? (async (cwd, files) => ({
+      path: cwd, files: [...files], ref: opts.getCurrentSnapshotRefForFiles?.([...files]) ?? 'candidate-ref', buildMs: 0,
+      isCurrent: () => true, destroy: () => {},
+    })),
     getPalConvergedCases: opts.palConvergedCases ? () => opts.palConvergedCases! : undefined,
     getPalNeedsUserCases: opts.palNeedsUserCases ? () => opts.palNeedsUserCases! : undefined,
     reviewConfig: opts.reviewConfig,
@@ -114,6 +128,68 @@ function makeContext(opts: {
 
   return { tool, params, ledger, ownership, gate }
 }
+
+it('candidate impact receives only a matching complete typecheck receipt', async () => {
+  const seen: Array<import('../../repo/type-only-import.js').TypecheckProof | undefined> = []
+  const base = { taskId: 'candidate-type-proof', ownedFiles: ['src/a.ts'], dirtyFiles: ['src/a.ts'],
+    getCurrentSnapshotRefForFiles: () => 'candidate-ref',
+    resolveDeliveryImpact: async (_cwd: string, _files: readonly string[], proof?: import('../../repo/type-only-import.js').TypecheckProof) => {
+      seen.push(proof)
+      return { resolved: true, requiredTests: [], advisoryTests: [], policyVersion: 1 as const }
+    } }
+  const good = makeContext({ ...base, verifications: [{ command: 'tsc --noEmit', status: 'passed', meta: {
+    kind: 'typecheck', scope: 'full', snapshotRef: 'candidate-ref', candidateFiles: ['src/a.ts'], candidateTypecheckComplete: true,
+  } }] })
+  await good.tool.execute({ ...good.params, input: { files: ['src/a.ts'] } })
+  assert.deepEqual(seen[0], { candidateRef: 'candidate-ref', verifiedRef: 'candidate-ref', passed: true, complete: true, candidateFiles: ['src/a.ts'] })
+
+  const stale = makeContext({ ...base, taskId: 'candidate-type-stale', verifications: [{ command: 'tsc --noEmit', status: 'passed', meta: {
+    kind: 'typecheck', scope: 'full', snapshotRef: 'older-ref', candidateFiles: ['src/a.ts'], candidateTypecheckComplete: true,
+  } }] })
+  await stale.tool.execute({ ...stale.params, input: { files: ['src/a.ts'] } })
+  assert.equal(seen[1], undefined)
+})
+
+it('explicit delivery plans impact and batches from the candidate tree, not peer edits', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'candidate-delivery-report-'))
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test')
+    mkdirSync(join(cwd, 'src'))
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }))
+    writeFileSync(join(cwd, 'src/a.ts'), 'export const value = 1\n')
+    writeFileSync(join(cwd, 'src/consumer.test.ts'), "import { value } from './a.js'; void value\n")
+    git('add', '--', 'package.json', 'src/a.ts', 'src/consumer.test.ts'); git('commit', '-qm', 'base')
+    writeFileSync(join(cwd, 'src/a.ts'), 'export const value = 2\n')
+    writeFileSync(join(cwd, 'src/consumer.test.ts'), 'export const peerEdit = true\n')
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ scripts: { test: 'node missing-peer-runner.mjs' } }))
+    const fixture = makeContext({ taskId: 'candidate-delivery-report', ownedFiles: ['src/a.ts'],
+      externalFiles: ['package.json', 'src/consumer.test.ts'], dirtyFiles: ['src/a.ts', 'package.json', 'src/consumer.test.ts'],
+      repoRoot: cwd, prepareCandidateTree: openCandidateDeliveryTree,
+      resolveDeliveryImpact: (root, files, proof) => resolveDeliveryImpact(root, files, null, proof) })
+    const result = await fixture.tool.execute({ ...fixture.params, cwd, input: { files: ['src/a.ts'] } })
+    assert.equal(result.isError, undefined, result.content)
+    assert.deepEqual(result.verificationPlan?.required, ['src/consumer.test.ts'])
+    assert.equal(result.verificationPlan?.candidateRef, candidateSnapshotRef(cwd, ['src/a.ts']))
+    assert.match(result.content, /Candidate: [a-f0-9+]+ · 1 files · snapshot \d+ms · impact \d+ms · plan \d+ms/)
+    assert.ok(result.verificationPlan?.batches.some(batch => batch.files.includes('src/consumer.test.ts')))
+    assert.doesNotMatch(JSON.stringify(result.verificationPlan), /\.rivet\/vsw|missing-peer-runner/)
+    assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).length, 1)
+  } finally { rmSync(cwd, { recursive: true, force: true }) }
+})
+
+it('explicit delivery fails closed when the candidate snapshot cannot be built', async () => {
+  const fixture = makeContext({ taskId: 'candidate-unavailable', ownedFiles: ['src/a.ts'], dirtyFiles: ['src/a.ts'],
+    prepareCandidateTree: async () => { throw new Error('snapshot unavailable') },
+    commitOwnedFiles: () => { throw new Error('commit must not run') } })
+  const result = await fixture.tool.execute({ ...fixture.params, input: { commit: true, message: 'fix: candidate', files: ['src/a.ts'] } })
+  assert.equal(result.isError, true)
+  assert.match(result.content, /候选快照不可用.*snapshot unavailable/)
+})
 
 function toolDescription(): string {
   const { tool } = makeContext({
@@ -2167,6 +2243,57 @@ Do not declare a streamed response duplicate in the middle of the stream.
       assert.match(result.content, /Scoped commit created/)
     })
 
+    it('selects files before impact, gate, and verification plan', async () => {
+      const impactCalls: string[][] = []
+      const snapshotCalls: string[][] = []
+      const ctx = makeContext({
+        taskId: 'scope-first',
+        ownedFiles: ['src/a.ts', 'src/b.ts'],
+        dirtyFiles: ['src/a.ts', 'src/b.ts'],
+        verifications: [{ command: 'npx tsc --noEmit', status: 'passed', meta: { snapshotRef: 'candidate-a' } }],
+        resolveDeliveryImpact: async (_cwd, files) => {
+          impactCalls.push([...files])
+          return { resolved: true, requiredTests: [], advisoryTests: [] }
+        },
+        getCurrentSnapshotRef: () => 'full-session',
+        getCurrentSnapshotRefForFiles: files => {
+          snapshotCalls.push([...files])
+          return 'candidate-a'
+        },
+      })
+
+      const result = await ctx.tool.execute({ ...ctx.params, input: { files: ['src/a.ts'] } })
+
+      assert.equal(result.isError, undefined)
+      assert.deepEqual(impactCalls, [['src/a.ts']])
+      assert.deepEqual(snapshotCalls, [['src/a.ts']])
+      assert.match(result.content, /Owned files \(1\):\n  src\/a\.ts/)
+      assert.match(result.content, /Historical owned files \(1\):\n  src\/b\.ts/)
+      assert.match(result.content, /Delivery Gate: GREEN/)
+      assert.doesNotMatch(result.content, /none usable/)
+    })
+
+    it('rejects a clean or non-owned selected file before impact resolution', async () => {
+      let impactCalls = 0
+      const ctx = makeContext({
+        taskId: 'scope-invalid',
+        ownedFiles: ['src/a.ts', 'src/clean.ts'],
+        dirtyFiles: ['src/a.ts'],
+        resolveDeliveryImpact: async () => {
+          impactCalls++
+          return { resolved: true, requiredTests: [], advisoryTests: [] }
+        },
+      })
+
+      const clean = await ctx.tool.execute({ ...ctx.params, input: { files: ['src/clean.ts'] } })
+      const external = await ctx.tool.execute({ ...ctx.params, input: { files: ['src/other.ts'] } })
+      assert.equal(clean.isError, true)
+      assert.match(clean.content, /not currently dirty/)
+      assert.equal(external.isError, true)
+      assert.match(external.content, /not in owned files/)
+      assert.equal(impactCalls, 0)
+    })
+
     it('rejects files param containing non-owned file', async () => {
       const { tool, params } = makeContext({
         taskId: 't1',
@@ -2208,11 +2335,11 @@ Do not declare a streamed response duplicate in the middle of the stream.
       assert.match(result.content, /No files specified/)
     })
 
-    it('ignores files param when commit is false (status-only)', async () => {
+    it('scopes the status report when commit is false', async () => {
       const { tool, params } = makeContext({
         taskId: 't1',
-        ownedFiles: ['src/agent/a.ts'],
-        dirtyFiles: ['src/agent/a.ts'],
+        ownedFiles: ['src/agent/a.ts', 'src/agent/b.ts'],
+        dirtyFiles: ['src/agent/a.ts', 'src/agent/b.ts'],
         verifications: [{ command: 'npx tsc --noEmit', status: 'passed' }],
       })
 
@@ -2223,6 +2350,8 @@ Do not declare a streamed response duplicate in the middle of the stream.
 
       assert.equal(result.isError ?? false, false)
       assert.match(result.content, /Delivery Gate: GREEN/)
+      assert.match(result.content, /Owned files \(1\):\n  src\/agent\/a\.ts/)
+      assert.match(result.content, /Historical owned files \(1\):\n  src\/agent\/b\.ts/)
       assert.doesNotMatch(result.content, /Scoped commit/)
     })
   })
@@ -2354,6 +2483,35 @@ Do not declare a streamed response duplicate in the middle of the stream.
   })
 
   describe('adopt — cross-session takeover', () => {
+    it('includes adopted files in an explicit candidate before impact resolution', async () => {
+      const impactCalls: string[][] = []
+      const committed: string[][] = []
+      const ctx = makeContext({
+        taskId: 'adopt-candidate',
+        ownedFiles: ['src/mine.ts'],
+        externalFiles: ['src/orphan.ts'],
+        dirtyFiles: ['src/mine.ts', 'src/orphan.ts'],
+        verifications: [{ command: 'npx tsc --noEmit', status: 'passed' }],
+        resolveDeliveryImpact: async (_cwd, files) => {
+          impactCalls.push([...files])
+          return { resolved: true, requiredTests: [], advisoryTests: [] }
+        },
+        commitOwnedFiles: (_cwd, files) => {
+          committed.push([...files])
+          return { ok: true, output: 'commit abc123' }
+        },
+      })
+
+      const result = await ctx.tool.execute({
+        ...ctx.params,
+        input: { commit: true, message: 'fix: adopt scoped work', files: ['src/mine.ts'], adopt: ['src/orphan.ts'] },
+      })
+
+      assert.equal(result.isError, undefined)
+      assert.deepEqual(impactCalls, [['src/mine.ts', 'src/orphan.ts']])
+      assert.deepEqual(committed, [['src/mine.ts', 'src/orphan.ts']])
+    })
+
     it('adopts external files and commits them alongside owned files', async () => {
       const calls: Array<{ files: string[]; message: string }> = []
       const ctx = makeContext({
@@ -2442,7 +2600,7 @@ Do not declare a streamed response duplicate in the middle of the stream.
 
       assert.equal(result.isError, true)
       assert.equal(committed, false)
-      assert.match(result.content, /delivery gate is RED after adoption/)
+      assert.match(result.content, /delivery gate is RED/)
       assert.match(result.content, /Run verification before delivery/)
     })
 

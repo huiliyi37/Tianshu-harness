@@ -438,7 +438,7 @@ test('一轮 pump 等待期间第二轮 overlay 退出：只有一个 pump 实�
     await tick()
 
     const joined = out.chunks.join('')
-    const count = (s: string) => joined.split(s).length - 1
+    const count = (s: string) => app.getScrollbackContent().split(s).length - 1
     assert.equal(count('SYNC_A'), 1, 'SYNC_A 恰好写一次')
     assert.equal(count('SYNC_B'), 1, 'SYNC_B 恰好写一次（无并发 pump 重复回放）')
     assert.equal(app.getScrollbackContent().split('mutex-bubble').length - 1, 1, '真实 scrollback 气泡恰好写一次')
@@ -690,8 +690,7 @@ test('键盘 Esc 直连退出 overlay + 队列非空：回放走统一收口，�
   await tick()
 
   const chunks = out.chunks
-  const joined = chunks.join('')
-  assert.equal(joined.split('QUEUED_X').length - 1, 1, '排队 commit 恰好回放一次')
+  assert.equal(app.getScrollbackContent().split('QUEUED_X').length - 1, 1, '排队 commit 恰好回放一次，视口预览不算新提交')
   const offIdx = chunks.findIndex(c => c.includes('\x1B[?1049l'))
   assert.ok(offIdx !== -1, 'alt screen 退出序列已写')
   assert.ok(

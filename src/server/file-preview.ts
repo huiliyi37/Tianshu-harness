@@ -1,5 +1,8 @@
 /**
- * Office 文档预览转换 — headless soffice 转 PDF（桌面端侧边栏 PPTX 预览）。
+ * Office 文档预览转换 — headless soffice 转 PDF（桌面端侧边栏演示文稿预览）。
+ * 白名单 OFFICE_CONVERTIBLE_EXTS：pptx/ppt/odp（Impress）。
+ * 表格族（xlsx/xls/ods）不在此列——前端 SheetJS 原生渲染（raw=1 通道），
+ * 不依赖 soffice。
  *
  * 与 `src/tools/doc-extract.ts` 的 runSoffice 同款模式（--headless
  * --convert-to --outdir + tmp 目录 + finally 清理），区别在输出 PDF 字节
@@ -22,7 +25,8 @@ const CACHE_MAX_ENTRIES = 8
 /** soffice/libreoffice 两个二进制都不存在时抛出（路由层 → 422）。 */
 export class ConverterUnavailableError extends Error {}
 
-/** 可走 soffice → PDF 的扩展名（路由层白名单）。 */
+/** 可走 soffice → PDF 的扩展名（路由层白名单）。仅演示文稿族（Impress）——
+ *  表格族走 raw 字节 + 前端 SheetJS，word 走 raw + mammoth，都不经 soffice。 */
 export const OFFICE_CONVERTIBLE_EXTS = new Set(['pptx', 'ppt', 'odp'])
 
 interface CacheEntry {

@@ -4,6 +4,7 @@ import type { CompactEvent, ContextLedger } from '../context/types.js'
 import { estimateOaiMessageTokens, estimateOaiTokens } from '../compact/micro.js'
 import { stableStringify } from '../api/stable-json.js'
 import { sanitizeForJsonTransport } from '../utils/sanitize.js'
+import { normalizeVisionImageDataUrl } from '../utils/image-bytes.js'
 import { wrapSystemReminder } from '../prompt/system-reminder.js'
 import { SessionInputBoundary, removeUserMessageAt } from './session-input-boundary.js'
 
@@ -283,10 +284,16 @@ export class SessionContext {
     let msg: OaiMessage
     if (images && images.length > 0) {
       // Multimodal: construct OpenAI vision content parts (text + image_url).
-      const parts: OaiContentPart[] = [
-        { type: 'text', text: sanitizeForJsonTransport(content) },
-        ...images.map(url => ({ type: 'image_url' as const, image_url: { url } })),
-      ]
+      // 图片一律过 vision 归一化（字节 magic 为准）：bmp 转 PNG、tiff/坏图换
+      // 占位文本——一张 provider 不识的图会把整段历史的每个请求都毒化成
+      // 400（DeepSeek invalid_request_error，2026-10-21 用户实报）。
+      const parts: OaiContentPart[] = [{ type: 'text', text: sanitizeForJsonTransport(content) }]
+      for (const url of images) {
+        const normalized = normalizeVisionImageDataUrl(url)
+        parts.push(normalized.ok
+          ? { type: 'image_url' as const, image_url: { url: normalized.dataUrl } }
+          : { type: 'text', text: `[image not sent: ${normalized.reason}]` })
+      }
       msg = { role: 'user', content: parts }
     } else {
       msg = { role: 'user', content: sanitizeForJsonTransport(content) }

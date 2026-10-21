@@ -15,6 +15,8 @@ import { decideReadPolicy } from './read-policy.js'
 import { canUsePrewarmForRead, consumePrewarm } from '../agent/prewarm-file.js'
 import { canonicalPathKey, relativePosix } from '../path-format.js'
 import { OFFICE_EXTENSIONS, readOfficeFile } from './office-reader.js'
+import { extractDocumentText } from './doc-extract.js'
+import { normalizeVisionImageDataUrl } from '../utils/image-bytes.js'
 import { buildFocusedReadView } from './focused-read.js'
 import { readExplicitRange, supplyNoRangeContent, headBoundedPayload } from './read-file-range.js'
 import { buildLogPreviewContent, buildFileUiOutput } from './read-file-views.js'
@@ -423,6 +425,11 @@ const BINARY_EXTENSIONS = new Set([
   '.db', '.sqlite', '.sqlite3',
 ])
 
+/** 表格/演示文稿扩展名——走 doc-extract 引擎链（exceljs 等）转文本/markdown，
+ *  与 OFFICE_EXTENSIONS（office-reader 平台原生工具）互补。这些扩展不在
+ *  BINARY_EXTENSIONS，没有专用通道就会把 zip 容器当 utf-8 读成乱码。 */
+const DOC_EXTRACT_EXTENSIONS = new Set(['.xlsx', '.xls', '.ods', '.ppt', '.pptx', '.odp'])
+
 /** 图片文件 → MIME。这些扩展从 BINARY_EXTENSIONS 里分流：不再报 binary 错误，
  *  而是 base64 编码后经 ToolResult.images 通道返回——pipeline 按当前模型
  *  supportsVision 决定是否转发给模型（非视觉模型自动丢弃，行为与安全期一致）。 */
@@ -446,11 +453,21 @@ async function readImageFile(filePath: string, ext: string, sizeBytes: number) {
     }
   }
   const buf = await readFile(filePath)
-  const mime = IMAGE_EXTENSIONS.get(ext)!
-  const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+  // 归一化以字节 magic 为准（扩展名只作声明种子）：bmp 转 PNG 模型仍可见；
+  // tiff/坏图返回明确错误——绝不挂 provider 不识的格式（一张坏图进历史，
+  // 后续每个请求都被 400「unsupported image」毒化，2026-10-21 用户实报）。
+  const normalized = normalizeVisionImageDataUrl(`data:${IMAGE_EXTENSIONS.get(ext)};base64,${buf.toString('base64')}`)
+  if (!normalized.ok) {
+    return {
+      content: `Error: ${filePath} 的图片格式视觉 provider 无法使用（${normalized.reason}）。请先转 PNG/JPEG（如 sips -s format png "${filePath}" --out out.png 或 magick "${filePath}" out.png），或用 tesseract OCR 提取文字。`,
+      isError: true,
+    }
+  }
+  const note = normalized.change === 'bmp-transcoded' ? '（bmp 已转 PNG）'
+    : normalized.change === 'declared-fixed' ? '（声明已按实际字节修正）' : ''
   return {
-    content: `read_file: ${filePath} 是图片（${mime}，${sizeBytes} bytes），已作为视觉附件附上——请直接查看图片内容作答（视觉模型可见；非视觉模型该附件会被自动丢弃）。`,
-    images: [dataUrl],
+    content: `read_file: ${filePath} 是图片${note}（${sizeBytes} bytes），已作为视觉附件附上——请直接查看图片内容作答（视觉模型可见；非视觉模型该附件会被自动丢弃）。`,
+    images: [normalized.dataUrl],
   }
 }
 
@@ -528,6 +545,24 @@ export async function readFilePayload(cwd: string, options: ReadFilePayloadOptio
       canonicalPath: filePath,
       rawContent: result.text,
       modelContent: truncateContent(result.text, cap.maxChars, cap.headChars, cap.tailChars) + officeHint,
+      uiContent: result.text.slice(0, 200),
+    }
+  }
+
+  // 表格/演示文稿：doc-extract 引擎链（exceljs 等）转文本/markdown。这些扩展不在
+  // BINARY_EXTENSIONS，此前落进文本通道——zip 容器当 utf-8 读出一屏乱码
+  // （文档附件句柄落地后，模型按句柄 read_file 原文件就是这条路径）。
+  if (DOC_EXTRACT_EXTENSIONS.has(ext)) {
+    const result = await extractDocumentText(filePath)
+    if (!result.ok) {
+      throw new Error(`File is binary (${ext} format) and text extraction failed. ${result.suggestion}`)
+    }
+    const extractHint = `\n\n── Office document (${ext}, converted via ${result.engine}) ──`
+    const cap = options.modelCap ?? DEFAULT_MODEL_READ_CAP
+    return {
+      canonicalPath: filePath,
+      rawContent: result.text,
+      modelContent: truncateContent(result.text, cap.maxChars, cap.headChars, cap.tailChars) + extractHint,
       uiContent: result.text.slice(0, 200),
     }
   }

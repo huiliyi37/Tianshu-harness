@@ -52,7 +52,7 @@ const hashes = () => Object.fromEntries(controlled.map(p => [p, sha(readFileSync
 const frozen = hashes(), assertSources = () => { if (sha(hashes()) !== sha(frozen)) throw new Error('Controlled source changed') }
 mkdirSync(output, { recursive: true })
 for (const p of controlled) { const target = join(output, 'frozen-source', p); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, readFileSync(p)) }
-writeFileSync(join(output, 'manifest.json'), JSON.stringify({ createdAt: new Date().toISOString(), head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), protocol, frozen,
+writeFileSync(join(output, 'manifest.json'), JSON.stringify({ createdAt: new Date().toISOString(), head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim(), protocol, frozen,
   ...(historical ? { base: BASE_REF, reference: REFERENCE_REF, adaptation: 'declared HTTP/facade/clean-env host and versioned experiment-only reference correction' } : {}) }, null, 2), { flag: 'wx', mode: 0o600 })
 // Resolve credentials only in the parent, before switching to an isolated runtime home.
 const binding = live ? resolveModelBinding({ deepseek: provider }, { provider: 'deepseek', model }) : undefined

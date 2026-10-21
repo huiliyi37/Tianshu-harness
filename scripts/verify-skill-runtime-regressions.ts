@@ -44,7 +44,7 @@ for (const test of cases) {
       mutated.set(file, source.replace(before, after))
     }
     for (const [file, source] of mutated) writeFileSync(file, source)
-    const run = spawnSync(process.execPath, ['--import', 'tsx', '--test', `--test-name-pattern=${test.pattern}`, test.file], { encoding: 'utf8', timeout: 40_000, maxBuffer: 8 * 1024 * 1024 })
+    const run = spawnSync(process.execPath, ['--import', 'tsx', '--test', `--test-name-pattern=${test.pattern}`, test.file], { encoding: 'utf8', timeout: 40_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true })
     const output = run.stdout + run.stderr
     assert.equal(run.status, 1, `Defect was not detected: ${test.name}\n${output}`)
     assert.match(output, /ERR_ASSERTION|AssertionError/, `Expected a behavioral assertion, not an import/build failure: ${test.name}\n${output}`)

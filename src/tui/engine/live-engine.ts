@@ -18,7 +18,7 @@
  */
 
 import type { WriteStream } from 'node:tty'
-import { ANSI, cursorUp, cursorDown, cursorToCol, enforceTextContract } from './ansi.js'
+import { ANSI, cursorUp, cursorDown, cursorTo, cursorToCol, enforceTextContract } from './ansi.js'
 import { displayWidth, ambiguousWideEnabled } from '../width.js'
 
 export interface LiveRegionLine {
@@ -47,6 +47,8 @@ export interface LiveEngineOptions {
   reservedRows?: number
   /** 最大 live region 行数（安全上限，防止意外超屏） */
   maxRows?: number
+  /** 全高视口：调用方提供整屏 normal-buffer 投影（pinned-viewport），resize/污染时从 (1,1) 重锚整帧。 */
+  fullViewport?: boolean
   /**
    * CPR 探针请求回调（通常写 `\x1B[6n` 到 stdout）。响应经 stdin 回到
    * InputHandler，再喂给 {@link LiveEngine.noteCpr}。提供后启用外来写入检测。
@@ -143,11 +145,13 @@ export class LiveEngine {
   private stdout: WriteStream
   private reservedRows: number
   private maxRows: number
+  private fullViewport: boolean
 
   /** 上一帧渲染的 display rows（wrapping-aware）。用于计算上移量。 */
   private lastDisplayRows = 0
   /** lineCache 渲染时的终端宽度。resize 检测：宽度变了说明屏上内容已被 reflow。 */
   private lastColumns = 0
+  private lastRows = 0
   /** 是否已执行过首次渲染（用于判断是否需要 save cursor） */
   private hasRendered = false
   /** live region 行缓存：每行的原始文本（不含 ANSI）用于 diff */
@@ -214,6 +218,7 @@ export class LiveEngine {
     this.stdout = options.stdout
     this.reservedRows = options.reservedRows ?? 2
     this.maxRows = options.maxRows ?? 20
+    this.fullViewport = options.fullViewport ?? false
     this.onProbeRequest = options.onProbeRequest
     this.onPolluted = options.onPolluted
     this.hardwareCursorVisible = options.hardwareCursorVisible ?? (process.env.RIVET_TUI_HARDWARE_CURSOR === '1')
@@ -308,6 +313,13 @@ export class LiveEngine {
    */
   setMaxRows(n: number): void {
     this.maxRows = Math.max(1, Math.floor(n))
+  }
+
+  /** 读屏模式保留 append-only 紧凑输出，不进全高网格。 */
+  setFullViewport(enabled: boolean): void {
+    if (this.fullViewport === enabled) return
+    this.clear()
+    this.fullViewport = enabled
   }
 
   // ── Display-row helpers ───────────────────────────────────────
@@ -412,6 +424,24 @@ export class LiveEngine {
   render(lines: readonly LiveRegionLine[], opts?: { reservedTail?: number }): void {
     const bounded = this.applyRowBudget(this.normalizeLines(lines), opts?.reservedTail)
     const parking = this.computeParking(bounded)
+    const currentColumns = this.stdout.columns || 80
+    const currentRows = this.stdout.rows || 24
+
+    // 自有视口的原点是 (1,1)，resize/reflow 挪走旧 caret 也不影响——原地重锚
+    // 整帧；若此处走 append，会把旧投影挤进原生 scrollback（重复历史）。
+    if (this.fullViewport && this.hasRendered && this.lastDisplayRows > 0 &&
+      (this.polluted || currentColumns !== this.lastColumns || currentRows !== this.lastRows)) {
+      this.stdout.write(ANSI.BEGIN_SYNC + ANSI.HIDE_CURSOR + cursorTo(1, 1) + ANSI.ERASE_SCREEN_END + this.buildAppend(bounded) + this.buildParkSeq(parking) + ANSI.END_SYNC)
+      this.lastDisplayRows = this.countDisplayRows(bounded)
+      this.lineCache = bounded.map(line => line.text)
+      this.lastColumns = currentColumns
+      this.lastRows = currentRows
+      this.polluted = false
+      this.cprBaseline = null
+      this.setParked(parking)
+      this.requestProbe()
+      return
+    }
 
     // 恢复重铺：CPR 检出外来写入污染后，不再信任 lastDisplayRows 的屏上假设
     // （H2 短路会被 lineCache 与屏上不符的内容欺骗，diff 会加剧错位）。
@@ -437,6 +467,7 @@ export class LiveEngine {
       this.lineCache = bounded.map(l => l.text)
       this.hasRendered = true
       this.lastColumns = this.stdout.columns || 80
+      this.lastRows = currentRows
       this.cprBaseline = null // 重锚完成，帧后探针重建基线
       this.setParked(parking)
       this.requestProbe()
@@ -447,13 +478,13 @@ export class LiveEngine {
     // 无需任何重绘（省去 diff 计算与 stdout 写入）。idle / ticker 空转的主要省功点。
     // 用 lineCache（屏上真实内容的权威记录）比对，天然兼容 clear/reset/overlay 退出：
     // 那些路径会令 lastDisplayRows===0 或 hasRendered===false，不会被误短路。
-    const currentColumns = this.stdout.columns || 80
     if (
       this.hasRendered &&
       this.lastDisplayRows > 0 &&
       currentColumns === this.lastColumns &&
       bounded.length === this.lineCache.length &&
-      bounded.every((l, i) => l.text === this.lineCache[i])
+      bounded.every((l, i) => l.text === this.lineCache[i]) &&
+      (parking !== null || this.parkedCol === null)
     ) {
       // 行未变但 caret 移动（纯光标键）：不重绘文字，只把硬件光标搬到新坐标
       // （kimi-code pi-tui 同款——无变化帧也归位光标，几字节零闪烁）。
@@ -478,6 +509,7 @@ export class LiveEngine {
       this.lastDisplayRows = newDisplayRows
       this.lineCache = bounded.map(l => l.text)
       this.hasRendered = true
+      this.lastRows = currentRows
       this.setParked(parking)
       this.requestProbe()
       return
@@ -511,6 +543,7 @@ export class LiveEngine {
     this.stdout.write(ANSI.BEGIN_SYNC + ANSI.HIDE_CURSOR + body + this.buildParkSeq(parking) + ANSI.END_SYNC)
     this.lastDisplayRows = newDisplayRows
     this.lineCache = bounded.map(l => l.text)
+    this.lastRows = currentRows
     this.setParked(parking)
     this.requestProbe()
   }
@@ -541,6 +574,7 @@ export class LiveEngine {
 
   /** 更新驻停记账（须在 requestProbe 前调用——探针按它折算响应坐标）。 */
   private setParked(parking: { rowsUp: number; col: number } | null): void {
+    if (parking === null && this.parkedCol !== null) this.cprBaseline = null
     this.parkedRowsUp = parking?.rowsUp ?? 0
     this.parkedCol = parking?.col ?? null
   }
@@ -674,9 +708,13 @@ export class LiveEngine {
    * 区域起始处。后续 append/commit 从这里开始写，干净无空白带。
    */
   clear(): void {
+    const viewportResized = this.fullViewport &&
+      ((this.stdout.columns || 80) !== this.lastColumns || (this.stdout.rows || 24) !== this.lastRows)
     this.reconcileWidth()
     if (this.lastDisplayRows === 0) return
-    this.stdout.write(ANSI.HIDE_CURSOR + this.moveToTop(this.lastDisplayRows - this.parkedRowsUp) + '\r' + ANSI.ERASE_SCREEN_END)
+    const origin = viewportResized ? cursorTo(1, 1) : this.moveToTop(this.lastDisplayRows - this.parkedRowsUp)
+    this.stdout.write(ANSI.HIDE_CURSOR + origin + '\r' + ANSI.ERASE_SCREEN_END)
+    if (viewportResized) this.cprBaseline = null
     this.lastDisplayRows = 0
     this.lineCache = []
     this.setParked(null)

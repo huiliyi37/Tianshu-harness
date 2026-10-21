@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   isAssistantWithTools, isToolMessage, isUserMessage,
   oaiMessagesHaveImageParts, stripOaiImageParts, STRIPPED_IMAGE_PLACEHOLDER,
+  sanitizeOaiImageParts, UNSUPPORTED_IMAGE_PLACEHOLDER,
   type OaiChatRequest, type OaiMessage,
 } from '../oai-types.js'
 
@@ -239,5 +240,73 @@ describe('stripOaiImageParts', () => {
     }]
     const result = stripOaiImageParts(msgs, '[图片已省略]')
     assert.deepEqual(result.messages[0]!.content, [{ type: 'text', text: '[图片已省略]' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// provider 格式闸（2026-10-21）：字节不识的 image part 定点换占位，
+// 白名单/声明可信的原样保留，声字节不符以字节为准修正。
+// ---------------------------------------------------------------------------
+describe('sanitizeOaiImageParts', () => {
+  const BMP_2X2 = (() => {
+    // 2x2 24bpp bottom-up BMP（全红）
+    const bmp = Buffer.alloc(54 + 8 * 2)
+    bmp.write('BM', 0, 'ascii')
+    bmp.writeUInt32LE(bmp.length, 2)
+    bmp.writeUInt32LE(54, 10)
+    bmp.writeUInt32LE(40, 14)
+    bmp.writeInt32LE(2, 18)
+    bmp.writeInt32LE(2, 22)
+    bmp.writeUInt16LE(1, 26)
+    bmp.writeUInt16LE(24, 28)
+    for (let p = 54; p < bmp.length; p += 3) { bmp[p] = 0; bmp[p + 1] = 0; bmp[p + 2] = 255 }
+    return `data:image/bmp;base64,${bmp.toString('base64')}`
+  })()
+  const TIFF = `data:image/tiff;base64,${Buffer.from([0x49, 0x49, 0x2a, 0x00, 1, 2, 3, 4]).toString('base64')}`
+  const GOOD_PNG = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9]).toString('base64')}`
+  const STUB_PNG = 'data:image/png;base64,QUJD' // 测试桩：声明合法、字节未识别——信声明
+
+  it('bmp 转 PNG 保留可见，tiff 换占位，好图与可信声明原样保留', () => {
+    const msgs: OaiMessage[] = [
+      { role: 'user', content: [
+        { type: 'text', text: 'look' },
+        { type: 'image_url', image_url: { url: BMP_2X2 } },
+        { type: 'image_url', image_url: { url: TIFF } },
+        { type: 'image_url', image_url: { url: GOOD_PNG } },
+        { type: 'image_url', image_url: { url: STUB_PNG } },
+      ] },
+    ]
+    const result = sanitizeOaiImageParts(msgs)
+    assert.equal(result.removedCount, 1, '只有 tiff 被剥')
+    assert.equal(result.uniqueUrlCount, 1)
+    const parts = (result.messages[0] as { content: Array<{ type: string; text?: string; image_url?: { url: string } }> }).content
+    assert.ok(parts[1]!.image_url!.url.startsWith('data:image/png;base64,'), 'bmp 转 PNG 后模型仍可见')
+    assert.deepEqual(parts[2], { type: 'text', text: UNSUPPORTED_IMAGE_PLACEHOLDER })
+    assert.equal(parts[3]!.image_url!.url, GOOD_PNG)
+    assert.equal(parts[4]!.image_url!.url, STUB_PNG, '字节未识别但声明合法 → 信声明，不误判好图')
+    // 原数组未被修改（纯函数）。
+    const originalParts = (msgs[0] as { content: Array<{ image_url: { url: string } }> }).content
+    assert.equal(originalParts[1]!.image_url.url, BMP_2X2)
+  })
+
+  it('声字节不符以字节为准（declared png 实为 bmp → 转 PNG 而不是信声明）', () => {
+    const mislabeled = `data:image/png;base64,${Buffer.from('BM' + '0'.repeat(60)).toString('base64')}`
+    // BM 头但体量不足合法 BMP → 转码失败 → 剥掉
+    const msgs: OaiMessage[] = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: mislabeled } }] }]
+    const result = sanitizeOaiImageParts(msgs)
+    assert.equal(result.removedCount, 1)
+  })
+
+  it('非 user 角色与无图消息不动；全干净时返回原引用（幂等零成本）', () => {
+    const msgs: OaiMessage[] = [
+      { role: 'assistant', content: [{ type: 'image_url', image_url: { url: TIFF } }] as never },
+      { role: 'user', content: 'plain text' },
+      { role: 'user', content: [{ type: 'image_url', image_url: { url: GOOD_PNG } }] },
+    ]
+    const result = sanitizeOaiImageParts(msgs)
+    assert.equal(result.removedCount, 0)
+    assert.equal(result.messages, msgs)
+    // assistant 消息里的坏图不在本闸范围（provider 只在校验 user 图时报该错）。
+    assert.equal((result.messages[0] as { content: Array<{ image_url: { url: string } }> }).content[0]!.image_url.url, TIFF)
   })
 })

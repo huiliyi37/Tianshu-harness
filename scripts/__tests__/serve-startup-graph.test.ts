@@ -56,8 +56,11 @@ const FORBIDDEN_HEAVY = [
  * 路由/会话演进新增 ~8 条边；FORBIDDEN_HEAVY 8 模块全绿、无 agent/tui 回流。
  * 收编 Windows 审计补丁包（20261009）P2-04 同项：公开仓按 ce4b60a 实测 504 调
  * 500→520，dev 按本仓实测另调。
+ * 2026-10-21：525→560（代为登记，对齐实测 550）——10-10 后新增 chatgpt MCP bridge
+ * 与 server 面路由演进，+25 条可达模块；FORBIDDEN_HEAVY 8 模块仍全绿、无 agent/tui
+ * 回流，属正当增长。若后续把新边改动态 import，应回调本值。
  */
-const REACHABLE_LIMIT = 525
+const REACHABLE_LIMIT = 560
 
 /**
  * 启动图允许静态出现的 bare 包（tsup 会按入口可达性把它们打进 chunk）。

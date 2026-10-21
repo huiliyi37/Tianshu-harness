@@ -108,6 +108,23 @@ test('main resume opens a new generation on first-request drift; allowance is co
   assert.equal(bodies.length, 2)
 }))
 
+test('restored worker rebases a stale wire proof even when source and render projections are unchanged', async () => withFetch(async bodies => {
+  const first = client(true)
+  await first.stream(request(), callbacks)
+  const saved = structuredClone(first.getMainPrefixProof!()!)
+  saved.messages[0] = { ...saved.messages[0]!, hash: 'deadbeef'.repeat(8), chars: 1 }
+
+  const resumed = client(true)
+  resumed.restoreExecutionSnapshot!(saved)
+  const next = request()
+  next.messages.push({ role: 'user', content: 'continue' })
+  next.continuityEvidence = { sourcePrefix: 'same', renderPrefix: 'same' }
+  await assert.doesNotReject(resumed.stream(next, callbacks))
+  assert.equal(bodies.length, 2)
+  assert.equal(resumed.getMainPrefixProof!()!.generationReason, 'resume_prefix_drift')
+  assert.notEqual(resumed.getMainPrefixProof!()!.cacheGenerationId, saved.cacheGenerationId)
+}))
+
 test('incomplete legacy proof blocks resume without HTTP', async () => withFetch(async bodies => {
   const c = client(true)
   assert.throws(() => c.restoreExecutionSnapshot!({ version: 1, provider: 'deepseek', model: 'deepseek-flash', requestId: 'legacy', optionsHash: '', toolsHash: '', messages: [] }), /snapshot/)

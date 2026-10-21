@@ -13,7 +13,7 @@ export function snapshotFiles(fixed = false): Record<string, string> {
   const ref = fixed ? REFERENCE_REF : BASE_REF
   const paths = ['src/agent/scoped-git-commit.ts', 'src/agent/commit-version.ts', 'src/tools/spawn-git.ts', 'src/tools/sensitive-file-detector.ts', 'src/tools/destructive-patterns.ts']
   if (fixed) paths.push('src/agent/commit-version-async.ts', 'src/tools/git-command.ts', 'src/tools/process-kill.ts', 'src/tools/process-tracker.ts')
-  const files = Object.fromEntries(paths.map(path => [path, execFileSync('git', ['show', `${ref}:${path}`], { encoding: 'utf8', maxBuffer: 2_000_000 })]))
+  const files = Object.fromEntries(paths.map(path => [path, execFileSync('git', ['show', `${ref}:${path}`], { encoding: 'utf8', maxBuffer: 2_000_000, windowsHide: true })]))
   // Same declared host boundary for base/reference: never discover a login shell or load user config.
   files['src/tools/spawn-git.ts'] = files['src/tools/spawn-git.ts']!.replace("'./resolved-env.js'", "'../../support/resolved-env.js'")
   files['support/resolved-env.ts'] = 'export function getResolvedEnv(_cwd?: string): NodeJS.ProcessEnv { return { ...process.env } }\n'

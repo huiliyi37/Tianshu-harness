@@ -107,6 +107,34 @@ it('complete static fallback preserves real imports; unavailable/truncated analy
   } finally { f.dispose() }
 })
 
+it('index and fallback agree on conditional type-only impact for the verified candidate', async () => {
+  const f = fixture()
+  execFileSync('git', ['init', '-q'], { cwd: f.cwd })
+  const indexer = new MeridianIndexer(f.cwd)
+  try {
+    f.write('feature.ts', 'export interface Feature { value: number }; export const value = 1')
+    f.write('type.test.ts', "import type { Feature } from './feature.js'; type Check = Feature; export const check = 1")
+    f.write('runtime.test.ts', "import { value } from './feature.js'; export const check = value")
+    f.write('tsconfig.json', JSON.stringify({ compilerOptions: { noEmit: true }, include: ['*.ts'] }))
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: f.cwd })
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: f.cwd })
+    execFileSync('git', ['add', '--', 'tsconfig.json'], { cwd: f.cwd })
+    execFileSync('git', ['commit', '-qm', 'config'], { cwd: f.cwd })
+    const proof = { candidateRef: 'candidate-a', verifiedRef: 'candidate-a', passed: true, complete: true, candidateFiles: ['feature.ts', 'type.test.ts'] }
+    for (const active of [indexer, undefined]) {
+      const withoutProof = await resolveDeliveryImpact(f.cwd, ['feature.ts'], active)
+      assert.deepEqual(withoutProof.requiredTests, ['runtime.test.ts', 'type.test.ts'])
+      const withProof = await resolveDeliveryImpact(f.cwd, ['feature.ts'], active, proof)
+      assert.equal(withProof.resolved, true, withProof.reason)
+      assert.deepEqual(withProof.requiredTests, ['runtime.test.ts'])
+      assert.deepEqual(withProof.advisoryTests, ['type.test.ts'])
+      assert.equal(withProof.policyVersion, 2)
+      const stale = await resolveDeliveryImpact(f.cwd, ['feature.ts'], active, { ...proof, verifiedRef: 'older-tree' })
+      assert.deepEqual(stale.requiredTests, ['runtime.test.ts', 'type.test.ts'])
+    }
+  } finally { indexer.close(); f.dispose() }
+})
+
 it('delivery awaits fresh impact for dirty owned/coOwned, excludes history, and refuses unresolved analysis', async () => {
   const f = fixture()
   try {

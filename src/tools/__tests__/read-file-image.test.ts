@@ -33,12 +33,13 @@ describe('read_file — 图片文件视觉分流', () => {
     assert.deepEqual(decoded, PNG_BYTES, 'base64 round-trips to the original bytes')
   })
 
-  it('jpg → image/jpeg MIME', async () => {
+  it('jpg → 声明按字节修正（.jpg 文件装 PNG 字节 → image/png；扩展名不再优先于字节）', async () => {
     const file = join(TEST_DIR, 'photo.jpg')
-    writeFileSync(file, PNG_BYTES) // 内容不重要，按扩展名分流
+    writeFileSync(file, PNG_BYTES) // 内容是 PNG：归一化以字节为准，声明被修正
     const result = await READ_FILE_TOOL.execute(makeParams({ file_path: file }))
     assert.ok(!result.isError)
-    assert.ok(result.images![0]!.startsWith('data:image/jpeg;base64,'))
+    assert.ok(result.images![0]!.startsWith('data:image/png;base64,'))
+    assert.ok(result.content.includes('声明已按实际字节修正'))
   })
 
   it('超过 10MB 的图片 → 拒绝并指向缩放/OCR 绕行', async () => {
@@ -65,5 +66,49 @@ describe('read_file — 图片文件视觉分流', () => {
     const result = await READ_FILE_TOOL.execute(makeParams({ file_path: file }))
     assert.equal(result.isError, true)
     assert.ok(result.content.includes('binary'))
+  })
+})
+
+// 2026-10-21 — 归一化以字节为准：bmp 转 PNG（模型仍可见），坏图明确报错。
+describe('read_file — 图片归一化（bmp/tiff 不毒化历史）', () => {
+  it('bmp → 转 PNG 后仍走 images 通道（此前原样挂 image/bmp，DeepSeek 整请求 400）', async () => {
+    // 2x2 24bpp bottom-up BMP（全红）
+    const bmp = Buffer.alloc(54 + 8 * 2)
+    bmp.write('BM', 0, 'ascii')
+    bmp.writeUInt32LE(bmp.length, 2)
+    bmp.writeUInt32LE(54, 10)
+    bmp.writeUInt32LE(40, 14)
+    bmp.writeInt32LE(2, 18)
+    bmp.writeInt32LE(2, 22)
+    bmp.writeUInt16LE(1, 26)
+    bmp.writeUInt16LE(24, 28)
+    for (let p = 54; p < bmp.length; p += 3) { bmp[p] = 0; bmp[p + 1] = 0; bmp[p + 2] = 255 }
+    const file = join(TEST_DIR, 'shot.bmp')
+    writeFileSync(file, bmp)
+    const result = await READ_FILE_TOOL.execute(makeParams({ file_path: file }))
+    assert.ok(!result.isError, `expected success, got: ${result.content}`)
+    assert.ok(result.content.includes('bmp 已转 PNG'))
+    const url = result.images![0]!
+    assert.ok(url.startsWith('data:image/png;base64,'), `bmp must be transcoded: ${url.slice(0, 40)}`)
+    // 转出的 PNG 是真 PNG（magic 头）。
+    const decoded = Buffer.from(url.slice('data:image/png;base64,'.length), 'base64')
+    assert.deepEqual([...decoded.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  })
+
+  it('.png 文件实为 bmp 字节 → 按字节转 PNG（扩展名声明不可信）', async () => {
+    const bmp = Buffer.alloc(54 + 8 * 2)
+    bmp.write('BM', 0, 'ascii')
+    bmp.writeUInt32LE(bmp.length, 2)
+    bmp.writeUInt32LE(54, 10)
+    bmp.writeUInt32LE(40, 14)
+    bmp.writeInt32LE(2, 18)
+    bmp.writeInt32LE(2, 22)
+    bmp.writeUInt16LE(1, 26)
+    bmp.writeUInt16LE(24, 28)
+    const file = join(TEST_DIR, 'mislabeled.png')
+    writeFileSync(file, bmp)
+    const result = await READ_FILE_TOOL.execute(makeParams({ file_path: file }))
+    assert.ok(!result.isError)
+    assert.ok(result.images![0]!.startsWith('data:image/png;base64,'), '字节是 bmp → 转出的必须是 PNG')
   })
 })

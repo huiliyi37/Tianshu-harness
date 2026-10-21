@@ -7,7 +7,7 @@ import { assertCompleteAttachments } from './attachment-integrity.js'
 import { UsageSettlement } from './usage-settlement.js'
 import type { StreamClient, WireDivergence } from './stream-client.js'
 import type { StreamCallbacks } from './stream-client.js'
-import { normalizeOaiMessage, oaiMessagesHaveImageParts, stripOaiImageParts, stripOaiProviderMetadata } from './oai-types.js'
+import { normalizeOaiMessage, oaiMessagesHaveImageParts, sanitizeOaiImageParts, stripOaiImageParts, stripOaiProviderMetadata } from './oai-types.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { proRegistry } from './pro-registry.js'
 import { estimateOaiTokens } from '../compact/micro.js'
@@ -750,6 +750,11 @@ export class OpenAIClient implements StreamClient {
     let stripRequested = false
     let imagesStripped = false
 
+    // provider 格式闸状态（2026-10-21）：首轮即生效的定点清除（字节不识的
+    // image part 换占位），不等 400 再剥——DeepSeek「unsupported image」整
+    // 请求 400，且坏图在历史里会毒化每轮。通知只发一次，attempt 间幂等重放。
+    let imageFormatSanitized = false
+
     // reasoning_echo 恢复状态（issue #258）：网关回 400「reasoning_content must be
     // passed back」时，本次请求重发一次**保留思考内容**的历史；成功后把
     // preservedThinkingProtocol 粘到实例上，后续轮次不再吃这一发。
@@ -825,6 +830,19 @@ export class OpenAIClient implements StreamClient {
           // 模型这一轮再也看不到这些图了——必须让调用方有机会告诉用户，
           // 否则「模型没理我的截图」会被当成模型变笨。
           if (!imagesStripped) { imagesStripped = true; callbacks.onImageStripped?.({ removedCount: stripped.removedCount, uniqueUrlCount: stripped.uniqueUrlCount }) }
+        }
+      }
+
+      // provider 格式闸：字节不识的 image part 定点换占位（首轮即生效，不等
+      // 400 再剥）。每个 attempt 都跑——preserveReasoning/strip 的重建路径可能
+      // 把未净化的消息带回来；幂等，净化后返回原引用零成本。判定按引用比较——
+      // bmp→PNG 转码（模型仍可见）removedCount 也是 0，不能按剥图数门控。
+      const sanitizedImages = sanitizeOaiImageParts(wireMessages)
+      if (sanitizedImages.messages !== wireMessages) {
+        wireMessages = sanitizedImages.messages
+        if (!imageFormatSanitized && sanitizedImages.removedCount > 0) {
+          imageFormatSanitized = true
+          callbacks.onImageStripped?.({ removedCount: sanitizedImages.removedCount, uniqueUrlCount: sanitizedImages.uniqueUrlCount })
         }
       }
 

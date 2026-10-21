@@ -7,6 +7,7 @@ import { createTaskLedger, type TaskLedgerEvent } from './task-ledger.js'
 import { createOwnershipLedger } from './ownership-ledger.js'
 import { isTransientPlanDraftPath } from './plan-mode.js'
 import { createWorktreeBaseline, type BaselineSnapshot } from './worktree-baseline.js'
+import { candidateSnapshotRef } from './candidate-snapshot-ref.js'
 
 interface TaskState {
   version: 1
@@ -144,7 +145,12 @@ export function createPersistentTaskState(cwd: string, sessionId: string, fallba
     if (!verifications.length) return
     const current = fingerprint(root, fingerprintPaths(events, adopted, root))
     const snapshotCurrent = fingerprint(root, fingerprintPaths(events, adopted, root), true)
-    for (const event of verifications) if (!current || event.meta?.workspaceFingerprint !== (event.meta?.verificationPhase === 'isolated' ? snapshotCurrent : current)) event.meta = { ...event.meta, stale: true }
+    for (const event of verifications) {
+      const candidateFiles = event.meta?.candidateFiles
+      const expected = Array.isArray(candidateFiles) && candidateFiles.every(file => typeof file === 'string')
+        ? candidateSnapshotRef(root, candidateFiles as string[]) : event.meta?.verificationPhase === 'isolated' ? snapshotCurrent : current
+      if (!expected || event.meta?.workspaceFingerprint !== expected) event.meta = { ...event.meta, stale: true }
+    }
   } })
   const baseline = createWorktreeBaseline(saved?.baseline ?? fallback)
   const ownership = createOwnershipLedger({ baseline, taskLedger })
@@ -152,7 +158,7 @@ export function createPersistentTaskState(cwd: string, sessionId: string, fallba
   if (saved) {
     valid = saved.fingerprint !== null && saved.fingerprint === fingerprint(root, fingerprintPaths(saved.events, saved.adopted, root))
     for (const event of saved.events) {
-      taskLedger.record(event.type === 'verification' && !valid && event.meta?.verificationPhase !== 'isolated' ? { ...event, meta: { ...event.meta, stale: true } } : event)
+      taskLedger.record(event.type === 'verification' && !valid && event.meta?.verificationPhase !== 'isolated' && !Array.isArray(event.meta?.candidateFiles) ? { ...event, meta: { ...event.meta, stale: true } } : event)
     }
     ownership.autoOwnFromLedger()
     ownership.adoptFiles(saved.adopted)
@@ -175,10 +181,17 @@ export function createPersistentTaskState(cwd: string, sessionId: string, fallba
     // sensitive 保持判废（fail-closed）。
     if (event.type === 'file_write' && !isTransientPlanDraftPath(event.path, root)
       && (!event.path || classifyFingerprintPath(root, event.path) !== 'out-of-project')) {
-      for (const previous of taskLedger.getVerifications()) previous.meta = { ...previous.meta, stale: true }
+      for (const previous of taskLedger.getVerifications()) {
+        const candidateFiles = previous.meta?.candidateFiles
+        if (Array.isArray(candidateFiles) && event.path && !candidateFiles.some(file => typeof file === 'string' && resolve(root, file) === resolve(root, event.path!))) continue
+        previous.meta = { ...previous.meta, stale: true }
+      }
     }
     if (event.type === 'verification') {
-      const current = fingerprint(root, fingerprintPaths(taskLedger.getEvents(), adopted, root), event.meta?.verificationPhase === 'isolated')
+      const candidateFiles = event.meta?.candidateFiles
+      const current = Array.isArray(candidateFiles) && candidateFiles.every(file => typeof file === 'string')
+        ? candidateSnapshotRef(root, candidateFiles as string[])
+        : fingerprint(root, fingerprintPaths(taskLedger.getEvents(), adopted, root), event.meta?.verificationPhase === 'isolated')
       const captured = event.meta && 'workspaceFingerprint' in event.meta ? event.meta.workspaceFingerprint : current
       event = { ...event, meta: { ...event.meta, workspaceFingerprint: captured, stale: event.meta?.stale || !captured || captured !== current } }
     }

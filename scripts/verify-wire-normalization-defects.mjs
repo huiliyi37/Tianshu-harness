@@ -40,7 +40,7 @@ for (const name of ['package.json', 'tsconfig.json', 'node_modules', 'runtime-as
 for (const name of ['package.json', 'tsconfig.json', 'node_modules']) if (existsSync(join(root, 'desktop', name))) symlinkSync(join(root, 'desktop', name), join(mirror, 'desktop', name))
 function run(name, files) {
   const result = spawnSync('rtk', ['proxy', process.execPath, '--preserve-symlinks', '--import', 'tsx', '--test', '--test-concurrency=1', ...files], {
-    cwd: mirror, encoding: 'utf8', timeout: 60_000, maxBuffer: 8_000_000,
+    cwd: mirror, encoding: 'utf8', timeout: 60_000, maxBuffer: 8_000_000, windowsHide: true,
     env: { ...process.env, RIVET_HOME: join(temporary, `home-${name}`), RIVET_SESSION_DIR: join(temporary, `sessions-${name}`), RIVET_TEST: '1' },
   })
   writeFileSync(join(temporary, `${name}.log`), `${result.stdout ?? ''}\n${result.stderr ?? ''}`)

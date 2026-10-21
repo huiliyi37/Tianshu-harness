@@ -2,7 +2,7 @@ import { sessionProviderKey, snapshotSessionBinding } from './model/model-bindin
 import { buildReplacementAgent } from './agent/runtime-rebuild.js'
 import { loadUserInstructions } from './config/user-instructions.js'
 import { parseUserInstructionsSnapshot, type UserInstructionsSnapshot } from './prompt/user-instructions.js'
-import { resolveDeliveryImpact } from './agent/delivery-impact.js'
+import { resolveCandidateDeliveryImpact, resolveDeliveryImpact } from './agent/delivery-impact.js'
 /**
  * bootstrap.ts — 共享初始化层，由 T9 ANSI 唯一生产入口 src/main.ts 调用。
  *
@@ -85,6 +85,7 @@ import type { createOwnershipLedger } from './agent/ownership-ledger.js'
 import { createVerificationAttribution } from './agent/verification-attribution.js'
 import { createDeliveryGateV2 } from './agent/delivery-gate-v2.js'
 import { createVerificationSnapshotManager, reapOrphanSnapshots, reapOrphanHandsWorktrees } from './agent/verification-snapshot-manager.js'
+import { candidateSnapshotRef } from './agent/candidate-snapshot-ref.js'
 import { cleanupStaleHandsBranches } from './agent/worktree.js'
 import { initializePlugins } from './plugins/plugin-loader.js'
 import { loadProModule, proRegistry } from './api/pro-registry.js'
@@ -839,6 +840,7 @@ export function createInteractiveToolRegistry(
     // （TUI 与桌面 sidecar 共用本装配，详见 recaptureBaselineInto）。
     recaptureBaseline: (targetCwd) => recaptureBaselineInto(b1Baseline, b1TaskLedger, targetCwd),
     getCurrentSnapshotRef: () => b1SnapshotManager?.currentSnapshotRef() ?? undefined,
+    getCurrentSnapshotRefForFiles: files => candidateSnapshotRef(cwd, files) ?? undefined,
     sessionRegistry: refs.sessionRegistry ?? undefined,
     sessionId: refs.sessionId ?? undefined,
     reviewDepth: params?.reviewDepth ?? 0,
@@ -862,7 +864,9 @@ export function createInteractiveToolRegistry(
     meridianIndexer: refs.meridianIndexer,
     getTaskContract: () => refs.getTaskContract?.(),
     getImpactedTests: () => refs.getImpactedTests?.() ?? [],
-    resolveDeliveryImpact: (cwd, files) => resolveDeliveryImpact(cwd, files, refs.meridianIndexer),
+    resolveDeliveryImpact: (impactCwd, files, typecheckProof) => resolve(impactCwd) === resolve(cwd)
+      ? resolveDeliveryImpact(impactCwd, files, refs.meridianIndexer, typecheckProof)
+      : resolveCandidateDeliveryImpact(impactCwd, files, refs.meridianIndexer, typecheckProof),
     // P4 收束闸：PAL 收敛案件快照（闭包现读 store——B1Context 每次调用现构造，
     // hook 无法"写入"它；这是与其他 getter 一致的既有注入模式）
     getPalConvergedCases: () => refs.getProblemAttackStore?.()?.convergedCasesSnapshot() ?? [],

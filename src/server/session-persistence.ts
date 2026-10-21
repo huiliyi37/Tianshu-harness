@@ -801,10 +801,28 @@ export class FileSessionPersistence implements SessionPersistenceAdapter {
   saveArchive(sessionId: string, docId: string, source: { base64: string } | { srcPath: string }, fileName: string): string {
     // 调用方依赖返回路径真实存在（进句柄文本）——丢锁后抛错 fail-closed，不静默丢弃
     if (!this.writesAllowed()) { this.noteWriteRevoked(); throw new Error('Session store write access revoked (store lock lost)') }
-    const d = join(this.ensureDir(sessionId), 'documents')
-    if (!existsSync(d)) mkdirSync(d, { recursive: true })
     const ext = extname(fileName).toLowerCase().replace(/^\./, '')
     const safeExt = ARCHIVE_EXTS.has(ext) ? ext : 'bin'
+    return this.publishVerbatim(sessionId, docId, source, safeExt)
+  }
+
+  /** 文档附件原样落盘（句柄式，2026-10-21）：与 saveArchive 同机制（content-
+   *  addressed / tmp+rename / 0o444），但扩展名走 DOC_EXT_MIME 表（xlsx/docx/
+   *  pdf…）。扩展名必须保真——doc-extract 与 read_file 按扩展名分引擎，归一成
+   *  bin 就再也抽不出文本。与 saveDocument 分立：saveDocument 是随机 docId 的
+   *  UI 卡片回读副本（best-effort），本方法是 agent 句柄副本（进 prompt 路径）。 */
+  saveVerbatimDocument(sessionId: string, docId: string, source: { base64: string }, fileName: string): string {
+    if (!this.writesAllowed()) { this.noteWriteRevoked(); throw new Error('Session store write access revoked (store lock lost)') }
+    const ext = extname(fileName).toLowerCase().replace(/^\./, '')
+    const safeExt = DOC_EXT_MIME.has(ext) ? ext : 'bin'
+    return this.publishVerbatim(sessionId, docId, source, safeExt)
+  }
+
+  /** saveArchive / saveVerbatimDocument 共用的原子发布：已存在即幂等跳过，
+   *  tmp+rename 不发布半截文件，0o444 只读。返回 dest 绝对路径。 */
+  private publishVerbatim(sessionId: string, docId: string, source: { base64: string } | { srcPath: string }, safeExt: string): string {
+    const d = join(this.ensureDir(sessionId), 'documents')
+    if (!existsSync(d)) mkdirSync(d, { recursive: true })
     const dest = join(d, `${sanitize(docId)}.${safeExt}`)
     if (!existsSync(dest)) {
       const tmp = `${dest}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`

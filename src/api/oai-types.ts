@@ -1,4 +1,6 @@
 /** Local protocol metadata travels with its call through history and restore. */
+import { normalizeVisionImageDataUrl } from '../utils/image-bytes.js'
+
 export interface ToolCallProviderMetadata {
   gemini?: { thoughtSignature: string }
 }
@@ -118,6 +120,61 @@ export function isUserMessage(msg: OaiMessage): msg is OaiUserMessage {
 export const STRIPPED_IMAGE_PLACEHOLDER =
   '[Image removed to reduce payload size and no longer visible. '
   + 'Do not describe or reason about its contents from memory; ask the user to re-share it if you need to see it again.]'
+
+/** 格式闸剥图的占位文本（同款纪律：让模型知道「图不在了」）。与体积剥图分开
+ *  措辞——这条说明是格式问题，指引用户重发 PNG/JPEG 才有用。 */
+export const UNSUPPORTED_IMAGE_PLACEHOLDER =
+  '[Image removed: its format is not supported by vision providers (only png/jpeg/gif/webp are accepted). '
+  + 'Do not describe or reason about its contents from memory; ask the user to re-share it as PNG or JPEG.]'
+
+export interface SanitizedOaiMessages {
+  /** 定点替换掉非法 image part 的消息（无需改动时返回原数组引用）。 */
+  messages: OaiMessage[]
+  removedCount: number
+  uniqueUrlCount: number
+}
+
+/**
+ * provider 格式闸（fail-closed 兜底，2026-10-21 用户实报 DeepSeek 400）：把
+ * **字节**不是 png/jpeg/gif/webp 的 image_url part 定点换成占位文本；声明与
+ * 字节不符的以字节为准修正；白名单内的图原样保留。DeepSeek 对不识格式整
+ * 请求 400（invalid_request_error）——一张进历史的坏图会毒化后续每轮请求。
+ * 入口（context.addUserMessage / read_file）已做归一化，本闸兜 MCP 工具、
+ * 历史遗留会话与一切绕过入口的形态。与 stripOaiImageParts 的分工：那是
+ * 413/图片被拒后的整批剥离恢复，这是按格式定点清除。纯函数，不改入参。
+ */
+export function sanitizeOaiImageParts(messages: OaiMessage[]): SanitizedOaiMessages {
+  let removedCount = 0
+  const urls = new Set<string>()
+  let next: OaiMessage[] | undefined
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
+    if (!msg.content.some((p) => p.type === 'image_url')) continue
+    let content: OaiContentPart[] | undefined
+    for (let partIndex = 0; partIndex < msg.content.length; partIndex++) {
+      const part = msg.content[partIndex]!
+      if (part.type !== 'image_url') continue
+      const normalized = normalizeVisionImageDataUrl(part.image_url.url)
+      if (normalized.ok) {
+        if (normalized.change) {
+          content ??= msg.content.slice()
+          content[partIndex] = { type: 'image_url', image_url: { url: normalized.dataUrl } }
+        }
+        continue
+      }
+      content ??= msg.content.slice()
+      content[partIndex] = { type: 'text', text: UNSUPPORTED_IMAGE_PLACEHOLDER }
+      removedCount++
+      urls.add(part.image_url.url)
+    }
+    if (content) {
+      next ??= messages.slice()
+      next[i] = { ...msg, content }
+    }
+  }
+  return { messages: next ?? messages, removedCount, uniqueUrlCount: urls.size }
+}
 
 /** 请求里是否至少有一条用户消息带多模态 image_url part。
  *  retry 路径据此判断 image_strip 恢复还有没有牌可打。 */

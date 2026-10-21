@@ -28,7 +28,7 @@ import { scanDeliveryFilesAsync, type scanDeliveryFiles } from './delivery-reado
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { parseVerifyCommand, spawnVerifyArgv } from './verify-command.js'
-import { join, isAbsolute } from 'node:path'
+import { join, isAbsolute, relative, resolve } from 'node:path'
 import type { Tool, ToolCallParams, ToolResult, DelegationActivity } from '../tools/types.js'
 import { createDelegationActivityMapper } from '../tools/worker-activity-stream.js'
 import type { TaskLedger } from './task-ledger.js'
@@ -115,6 +115,7 @@ import { isUiFilePath, isVisualVerifyTool } from './hooks/render-verify-hook.js'
 import { findUnverifiedClaimRefs } from './hooks/external-claim-tracking-hook.js'
 import { isScoutFirewallEnabled } from '../config/scout-firewall-config.js'
 import { appendMemoryEntry, countSimilarMemoryEntries } from '../memory/unified-memory.js'
+import { openCandidateDeliveryTree, type CandidateDeliveryTree } from './candidate-delivery-tree.js'
 
 export interface B1Context {
   continuityStatus?: string
@@ -152,6 +153,11 @@ export interface B1Context {
    *  whose snapshotRef is stale (owned diff changed since they ran). Absent →
    *  no supersession (unchanged default). */
   getCurrentSnapshotRef?: () => string | undefined
+  /** Candidate-specific VSW snapshot for deliver_task(files=...). A full-session
+   *  snapshot is not interchangeable with a selected commit scope. */
+  getCurrentSnapshotRefForFiles?: (files: string[]) => string | undefined
+  /** Injectable candidate materializer; production uses an isolated Git worktree. */
+  prepareCandidateTree?: (cwd: string, files: readonly string[], signal?: AbortSignal) => Promise<CandidateDeliveryTree>
   /** True when a goal tracker is actively driving auto-continuation.
    *  When active, post-commit auto-review is suppressed (L1 nudge-only)
    *  to prevent child review workers from stalling the goal loop. */
@@ -207,7 +213,7 @@ export interface B1Context {
   /** W1 回归防线: Meridian blast-radius tests (EvidenceTracker.impactedTests).
    *  Absent → coverage check disabled (unchanged behavior). */
   getImpactedTests?: () => string[]
-  resolveDeliveryImpact?: (cwd: string, files: readonly string[]) => Promise<DeliveryImpact>
+  resolveDeliveryImpact?: (cwd: string, files: readonly string[], typecheckProof?: import('../repo/type-only-import.js').TypecheckProof) => Promise<DeliveryImpact>
   /** P4 收束闸：PAL 收敛案件快照（bootstrap 闭包现读 store）。收敛假设的
    *  targets 完全没进本次交付范围 → 弱 advisory 提示，绝不阻断。 */
   getPalConvergedCases?: () => import('./problem-attack-loop.js').ConvergedCaseEntry[]
@@ -423,7 +429,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
 ### 参数
 - commit: 设为 true 以请求限定范围提交的审批（默认：false）
 - message: 提交信息（commit=true 时必填）
-- files: 可选，要提交的已归属文件路径数组（子集）。省略时仅提交当前仍有变更的已归属文件。用此参数把逻辑单元分开提交。
+- files: 可选，本次交付候选的已归属文件路径数组（子集）。影响分析、验证门禁、报告和提交都按该集合计算；省略时仍使用当前全部已归属 dirty 文件。验证候选时把同一数组传给 run_tests(deliveryFiles=...)；纯 TypeScript 候选可先调用 run_tests(deliveryFiles=..., check="typecheck") 取得同树类型证明。
 - adopt: 提交前要认领归属的外部或共同归属文件路径数组。用于接管崩溃/冻结会话的工作。用户明确要求提交这些跨会话改动即足够，不要求用户说“接管”；文档或历史日志不是授权。要求 commit=true。被认领的文件会强制加入已归属集合，并纳入提交范围。
 - force: 设为 true 可在跨多个区域提交大量文件时覆盖内聚性门禁。谨慎使用。
 - learned: 本次会话确认的可复用模式数组（每条格式："模式描述——证据：路径或复现步骤"）。持久化到项目知识库，未来会话自动注入。只提交已验证的模式。
@@ -439,7 +445,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
           files: {
             type: 'array',
             items: { type: 'string' },
-            description: '可选，要提交的已归属文件子集。省略时仅提交当前仍有变更的已归属文件。用于把工作拆成独立的逻辑提交。',
+            description: '可选，本次交付候选的已归属文件子集；影响分析、门禁、报告和提交均使用该范围。省略时使用当前全部已归属 dirty 文件。',
           },
           adopt: {
             type: 'array',
@@ -494,21 +500,80 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
       ctx.ownership.autoOwnFromLedger()
       const currentDirtyFiles = ctx.getCurrentDirtyFiles?.(params.cwd) ?? await collectCurrentDirtyFiles(params.cwd)
       if (currentDirtyFiles) ctx.ownership.autoOwnFromBaseline(currentDirtyFiles)
+      const commit = params.input.commit === true
+      const requestedFiles = params.input.files as string[] | undefined
+      const adoptFiles = commit && ctx.autoCommit !== false ? params.input.adopt as string[] | undefined : undefined
+      const dirtySet = currentDirtyFiles ? new Set(currentDirtyFiles) : undefined
+      if (requestedFiles !== undefined && (!Array.isArray(requestedFiles) || requestedFiles.length === 0)) {
+        return { content: '❌ No files specified for commit. Provide non-empty files array or omit to use all owned files.', isError: true, errorKind: 'format_error' }
+      }
+      const adoptableExternal = new Set(ctx.ownership.getExternalFiles(currentDirtyFiles).filter(file => !dirtySet || dirtySet.has(file)))
+      const adoptableCoOwned = new Set(ctx.ownership.getCoOwnedFiles().filter(file => !dirtySet || dirtySet.has(file)))
+      if (adoptFiles?.length) {
+        const notAdoptable = adoptFiles.filter(file => !adoptableExternal.has(file) && !adoptableCoOwned.has(file))
+        if (notAdoptable.length > 0) {
+          return { content: `❌ Adopt: file(s) not in external or co-owned files: ${notAdoptable.join(', ')}. Only dirty external and co-owned files can be adopted.`, isError: true, errorKind: 'delivery_gate' }
+        }
+      }
+      const ownedSet = new Set(ctx.ownership.getOwnedFiles())
+      if (requestedFiles) {
+        const notOwned = requestedFiles.filter(file => !ownedSet.has(file) && !adoptFiles?.includes(file))
+        if (notOwned.length > 0) {
+          return { content: `❌ File(s) not in owned files: ${notOwned.join(', ')}. Cannot deliver non-owned files.`, isError: true, errorKind: 'delivery_gate' }
+        }
+        const notDirty = requestedFiles.filter(file => dirtySet && !dirtySet.has(file))
+        if (notDirty.length > 0) {
+          return { content: `❌ File(s) are not currently dirty: ${notDirty.join(', ')}. Cannot deliver clean files.`, isError: true, errorKind: 'delivery_gate' }
+        }
+      }
+      // A takeover is part of this delivery candidate even when `files` names
+      // only the previously owned subset. Validate before changing ownership.
+      const adopted = adoptFiles?.length ? ctx.ownership.adoptFiles(adoptFiles) : []
+      const scopeFiles = [...new Set(requestedFiles
+        ? [...requestedFiles, ...adopted]
+        : ctx.ownership.getOwnedFiles().filter(file => !dirtySet || dirtySet.has(file)))].sort()
+      const reportDirtyFiles = requestedFiles ? scopeFiles : currentDirtyFiles
+      let candidateTree: CandidateDeliveryTree | undefined
+      if (requestedFiles) {
+        try {
+          candidateTree = await (ctx.prepareCandidateTree ?? openCandidateDeliveryTree)(params.cwd, scopeFiles, params.abortSignal)
+          mark('candidate:snapshot-ready')
+        } catch (error) {
+          return { content: `❌ 候选快照不可用，交付未验证：${error instanceof Error ? error.message : String(error)}`, isError: true, errorKind: 'delivery_gate' }
+        }
+      }
+      try {
+      const currentSnapshotRef = requestedFiles
+        ? candidateTree!.ref
+        : ctx.getCurrentSnapshotRef?.()
       // W1 回归防线: feed Meridian blast radius into the gate. existsSync filters
       // deleted/renamed tests (static-analysis false positives) into "uncoverable".
-      const dirtySet = currentDirtyFiles ? new Set(currentDirtyFiles) : undefined
-      const scopeFiles = [...new Set([...ctx.ownership.getOwnedFiles(), ...ctx.ownership.getCoOwnedFiles()])].filter(file => !dirtySet || dirtySet.has(file))
-      const impact = ctx.resolveDeliveryImpact ? await ctx.resolveDeliveryImpact(params.cwd, scopeFiles) : undefined
-      if (impact && !impact.resolved) return { content: impact.reason ?? 'impact_unresolved', isError: true, errorKind: 'delivery_gate' }
+      const impactFiles = requestedFiles ? scopeFiles : [...new Set([...scopeFiles, ...ctx.ownership.getCoOwnedFiles()])].filter(file => !dirtySet || dirtySet.has(file))
+      const typecheckReceipt = requestedFiles && currentSnapshotRef !== 'candidate-ref-unavailable'
+        ? getEffectiveVerifications(ctx.taskLedger.getVerifications(), currentSnapshotRef).effective.find(evidence =>
+            evidence.kind === 'typecheck' && evidence.status === 'passed' && evidence.scope === 'full'
+            && evidence.candidateTypecheckComplete === true && evidence.snapshotRef === currentSnapshotRef
+            && JSON.stringify([...(evidence.candidateFiles ?? [])].sort()) === JSON.stringify(scopeFiles))
+        : undefined
+      const typecheckProof = typecheckReceipt && currentSnapshotRef ? { candidateRef: currentSnapshotRef, verifiedRef: typecheckReceipt.snapshotRef!, passed: true, complete: true, candidateFiles: scopeFiles } : undefined
+      const impactRoot = candidateTree?.path ?? params.cwd
+      if (candidateTree && !ctx.resolveDeliveryImpact) {
+        return { content: `❌ 提交候选 ${candidateTree.ref} 的影响分析不可用；验证义务未确认。`, isError: true, errorKind: 'delivery_gate' }
+      }
+      const impactStarted = Date.now()
+      const impact = ctx.resolveDeliveryImpact ? await ctx.resolveDeliveryImpact(impactRoot, impactFiles, typecheckProof) : undefined
+      if (impact && !impact.resolved) return { content: `❌ 提交候选 ${candidateTree?.ref ?? ''} 影响分析未完成：${impact.reason ?? 'impact_unresolved'}；未取得交付证明。`, isError: true, errorKind: 'delivery_gate' }
+      const impactMs = Date.now() - impactStarted
+      mark('candidate:impact-done')
       const impactedTests = impact?.requiredTests ?? ctx.getImpactedTests?.() ?? []
       const moduleCoverage = impactedTests.length > 0
         ? {
             impactedTests,
             repositoryRoot: params.cwd,
-            testExists: (p: string) => existsSync(isAbsolute(p) ? p : join(params.cwd, p)),
+            testExists: (p: string) => existsSync(isAbsolute(p) ? p : join(impactRoot, p)),
           }
         : undefined
-      const report = ctx.gate.getReport([], currentDirtyFiles, ctx.getCurrentSnapshotRef?.(), moduleCoverage)
+      const report = ctx.gate.getReport([], reportDirtyFiles, currentSnapshotRef, moduleCoverage)
       mark('report:done')
 
       // Cap file lists and filter external noise to keep the GREEN/YELLOW signal readable.
@@ -521,11 +586,23 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         return shown
       }
       const externalSplit = filterExternalNoise(report.externalFiles, params.cwd)
-      const pendingTests = assessImpactedTestCoverage(impactedTests, getEffectiveVerifications(ctx.taskLedger.getVerifications(), ctx.getCurrentSnapshotRef?.()).effective, path => existsSync(join(params.cwd, path)), params.cwd).uncovered
-      const verificationPlan = await buildDeliveryVerificationPlanAsync(params.abortSignal, params.cwd, impactedTests, pendingTests, impact?.advisoryTests.length ?? 0, ctx.taskLedger.getVerifications(), ctx.getCurrentSnapshotRef?.())
+      const pendingTests = assessImpactedTestCoverage(impactedTests, getEffectiveVerifications(ctx.taskLedger.getVerifications(), currentSnapshotRef).effective, path => existsSync(join(impactRoot, path)), params.cwd).uncovered
+      const planStarted = Date.now()
+      const verificationPlan = await buildDeliveryVerificationPlanAsync(params.abortSignal, impactRoot, impactedTests, pendingTests, impact?.advisoryTests.length ?? 0, ctx.taskLedger.getVerifications(), currentSnapshotRef, requestedFiles ? scopeFiles : undefined, candidateTree?.ref)
+      const planMs = Date.now() - planStarted
+      if (candidateTree) {
+        // Structured plans outlive the temporary worktree. Keep only live-root
+        // display paths; run_tests rebuilds the executable plan in its own snapshot.
+        verificationPlan.batches = verificationPlan.batches.map(batch => ({ ...batch, cwd: resolve(params.cwd, relative(candidateTree!.path, batch.cwd)), packageRoot: resolve(params.cwd, relative(candidateTree!.path, batch.packageRoot)) }))
+        if (!candidateTree.isCurrent()) {
+          return { content: '❌ 候选文件或 HEAD 在影响分析期间变化；旧验证与计划已失效，请重新运行 deliver_task。', isError: true, errorKind: 'delivery_gate' }
+        }
+      }
+      mark('candidate:plan-done')
       const lines: string[] = [
         `Delivery Gate: ${report.state}`,
         `Task: ${report.taskId}`,
+        ...(candidateTree ? [`Candidate: ${candidateTree.ref} · ${scopeFiles.length} files · snapshot ${candidateTree.buildMs}ms · impact ${impactMs}ms · plan ${planMs}ms`] : []),
         '',
         `Owned files (${report.ownedFileCount}):`,
         ...renderFileList(report.ownedFiles),
@@ -625,7 +702,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         ownedFiles: report.ownedFiles,
         coOwnedFiles: report.coOwnedFiles,
         externalFiles: report.externalFiles,
-        dirtyFiles: currentDirtyFiles ?? [...report.ownedFiles, ...report.coOwnedFiles, ...report.externalFiles],
+        dirtyFiles: reportDirtyFiles ?? [...report.ownedFiles, ...report.coOwnedFiles, ...report.externalFiles],
       })
       if (health.warningLines.length > 0) {
         lines.push('', 'Ownership health warnings:')
@@ -695,7 +772,6 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         lines.push('  If all recovered changes have been re-applied, this warning will clear on next deliver_task.')
       }
 
-      const commit = params.input.commit === true
       const message = params.input.message as string | undefined
 
       // Task completion audit: surface incomplete items prominently.
@@ -788,7 +864,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         if (converged.length > 0) {
           const deliveredFiles = [
             ...report.ownedFiles, ...report.coOwnedFiles,
-            ...(currentDirtyFiles ?? []),
+            ...(reportDirtyFiles ?? []),
           ]
           for (const c of converged) {
             const fileTargets = c.targets.filter(t => t.includes('/') || t.includes('.'))
@@ -928,7 +1004,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         if (isMechanicalFastPathEnabled(ctx.reviewConfig)) {
           mechanicalClass = classifyChange(
             report.ownedFiles,
-            await createGitDiffProviderAsync(params.cwd, report.ownedFiles, currentDirtyFiles ?? undefined, params.abortSignal),
+            await createGitDiffProviderAsync(params.cwd, report.ownedFiles, reportDirtyFiles ?? undefined, params.abortSignal),
           )
         }
 
@@ -972,7 +1048,7 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
             return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
           }
         }
-        const effectiveEvidence = getEffectiveVerifications(ctx.taskLedger.getVerifications(), ctx.getCurrentSnapshotRef?.()).effective
+        const effectiveEvidence = getEffectiveVerifications(ctx.taskLedger.getVerifications(), currentSnapshotRef).effective
         if (report.ownedFileCount > 0 && !mechanicalClass?.skipVerification
           && !effectiveEvidence.some(verification => verification.status === 'passed' && verification.scope !== 'unknown')) {
           lines.push('', '❌ Cannot commit: no applicable successful verification. Unknown or blocked checks do not prove validation; force=true does not waive this obligation.')
@@ -1010,79 +1086,23 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
             lines.push('', ...audit.lines)
           }
         }
-        // Adopt external files into owned set (cross-session takeover)
-        const adoptFiles = params.input.adopt as string[] | undefined
-        if (adoptFiles && Array.isArray(adoptFiles) && adoptFiles.length > 0) {
-          // Validate: adopted files must be external OR co-owned (shared ownership).
-          // Co-owned files can be adopted when the other session is done/crashed.
-          const externalSet = new Set(report.externalFiles)
-          const coOwnedSet = new Set(report.coOwnedFiles)
-          const adoptableSet = new Set([...externalSet, ...coOwnedSet])
-          const notAdoptable = adoptFiles.filter(f => !adoptableSet.has(f))
-          if (notAdoptable.length > 0) {
-            lines.push('', `❌ Adopt: file(s) not in external or co-owned files: ${notAdoptable.join(', ')}. Only external and co-owned files can be adopted.`)
-            return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
-          }
-          const adopted = ctx.ownership.adoptFiles(adoptFiles)
-          if (adopted.length > 0) {
-            const wasCoOwned = adopted.filter(f => coOwnedSet.has(f))
-            const wasExternal = adopted.filter(f => externalSet.has(f))
-            if (wasCoOwned.length > 0) lines.push('', `🔓 Adopted ${wasCoOwned.length} co-owned file(s) into exclusive ownership:`)
-            if (wasExternal.length > 0) lines.push('', `🔓 Adopted ${wasExternal.length} external file(s) into owned set:`)
-            for (const f of adopted) lines.push(`   ${f}`)
-            if (wasCoOwned.length > 0) lines.push('', '  ⚠️ These files were shared with another session. Verify the other session has finished before committing.')
-            if (wasExternal.length > 0) lines.push('', '  ⚠️ These files were modified by another session. Verify the changes are correct before committing.')
-            // Refresh report after adoption — the gate may change
-          }
-        } else if (adoptFiles && Array.isArray(adoptFiles) && adoptFiles.length === 0) {
-          // adopt: [] is equivalent to omitting adopt — no files to adopt, not an error.
-          // Previously this was treated as a user mistake, but callers (especially
-          // model-generated tool calls) may pass an explicit empty array to mean "no adoption".
+        if (adopted.length > 0) {
+          const wasCoOwned = adopted.filter(file => adoptableCoOwned.has(file))
+          const wasExternal = adopted.filter(file => adoptableExternal.has(file))
+          if (wasCoOwned.length > 0) lines.push('', `🔓 Adopted ${wasCoOwned.length} co-owned file(s) into exclusive ownership:`)
+          if (wasExternal.length > 0) lines.push('', `🔓 Adopted ${wasExternal.length} external file(s) into owned set:`)
+          for (const file of adopted) lines.push(`   ${file}`)
+          if (wasCoOwned.length > 0) lines.push('', '  ⚠️ These files were shared with another session. Verify the other session has finished before committing.')
+          if (wasExternal.length > 0) lines.push('', '  ⚠️ These files were modified by another session. Verify the changes are correct before committing.')
         }
 
-        const postAdoptionReport = adoptFiles && Array.isArray(adoptFiles) && adoptFiles.length > 0
-          ? ctx.gate.getReport([], currentDirtyFiles, ctx.getCurrentSnapshotRef?.(), moduleCoverage)
-          : report
-        if (adoptFiles?.length && postAdoptionReport.state === 'RED') {
-          // Mechanical fast-path also applies to the post-adoption gate
-          // (when no adoption happens, postAdoptionReport === report, and the
-          // bypass was already decided above — don't re-block).
-          const postAdoptionBypass = postAdoptionReport.attributionClass === 'unverified'
-            && mechanicalClass?.skipVerification
-          if (!postAdoptionBypass) {
-            lines.push('', '❌ Cannot commit: delivery gate is RED after adoption.')
-            if (postAdoptionReport.blockingReason) {
-              lines.push(`  Reason: ${postAdoptionReport.blockingReason}`)
-            }
-            if (postAdoptionReport.currentBlockingFailure) {
-              lines.push(`  Detail: ${postAdoptionReport.currentBlockingFailure}`)
-            }
-            lines.push('  → Run verification for the adopted files, then re-run deliver_task.')
-            return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
-          }
+        const filesToCommit = scopeFiles
+        if (candidateTree && !candidateTree.isCurrent()) {
+          lines.push('', '❌ Cannot commit: 候选文件或 HEAD 已变化；原候选验证和执行计划失效，请重新运行 deliver_task。')
+          return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
         }
-
-        // Resolve files to commit: subset from `files` param, or all owned
-        // Note: after adoption, use refreshed owned set from ledger (not stale report)
-        const requestedFiles = params.input.files as string[] | undefined
-        const currentOwnedFiles = ctx.ownership.getOwnedFiles()
-        let filesToCommit = currentDirtyFiles ? currentOwnedFiles.filter(file => currentDirtyFiles.includes(file)) : currentOwnedFiles
-
-        if (requestedFiles && Array.isArray(requestedFiles) && requestedFiles.length > 0) {
-          const ownedSet = new Set(currentOwnedFiles)
-          const notOwned = requestedFiles.filter(f => !ownedSet.has(f))
-          if (notOwned.length > 0) {
-            lines.push('', `❌ File(s) not in owned files: ${notOwned.join(', ')}. Cannot commit non-owned files.`)
-            return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
-          }
-          filesToCommit = requestedFiles
-        } else if (requestedFiles && Array.isArray(requestedFiles) && requestedFiles.length === 0) {
-          lines.push('', '❌ No files specified for commit. Provide non-empty files array or omit to commit all owned files.')
-          return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'format_error' }
-        }
-
         const commitVersion = await captureCommitVersionAsync(params.cwd, filesToCommit, { signal: params.abortSignal })
-        lines.push('', `Commit scope (${postAdoptionReport.state}): ${filesToCommit.join(', ') || '(none)'}`)
+        lines.push('', `Commit scope (${report.state}): ${filesToCommit.join(', ') || '(none)'}`)
         const commitConflictFiles = new Set(filesToCommit)
         const blockingClaimConflicts = claimConflicts.filter(conflict => commitConflictFiles.has(conflict.file))
         if (blockingClaimConflicts.length > 0 && !forceGate) {
@@ -1184,6 +1204,10 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
         mark('commit:before')
         const headBeforeHash = headBefore.status === 0 ? headBefore.stdout.trim() : null
 
+        if (candidateTree && !candidateTree.isCurrent()) {
+          lines.push('', '❌ Cannot commit: 提交前候选版本变化，已停止；请重新验证当前候选。')
+          return { verificationPlan, content: lines.join('\n'), isError: true, errorKind: 'delivery_gate' }
+        }
         const executor = ctx.commitOwnedFiles ?? ((cwd, files, msg) => commitScopedFiles({ cwd, files, message: msg, expectedVersion: commitVersion ?? undefined, signal: params.abortSignal }))
         const commitResult = await executor(params.cwd, filesToCommit, message)
         if (!commitResult.ok) {
@@ -1618,6 +1642,9 @@ export function createDeliverTaskTool(getB1Context: (params?: ToolCallParams) =>
       })
 
       return { verificationPlan, content: lines.join('\n') }
+      } finally {
+        candidateTree?.destroy()
+      }
     },
 
     requiresApproval(params: ToolCallParams): boolean {

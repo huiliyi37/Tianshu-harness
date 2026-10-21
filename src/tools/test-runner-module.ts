@@ -20,7 +20,7 @@ export function readTestPackageFile(cwd: string, file: string): string {
   try { return readFileSync(file, 'utf8') } catch {
     const pnp = join(testWorkspace(cwd).root, '.pnp.cjs')
     if (!existsSync(pnp)) throw new Error('package metadata unavailable')
-    return execFileSync(process.execPath, ['--require', pnp, '-e', `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(file)},'utf8'))`],
+    return execFileSync(process.execPath, ['--require', pnp, '-e', `require('node:fs').writeSync(1, require('node:fs').readFileSync(${JSON.stringify(file)},'utf8'))`],
       { cwd, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   }
 }

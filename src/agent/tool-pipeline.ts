@@ -31,6 +31,7 @@ import { shouldRunDiagnostics, filterDiagnosticsForEdit } from '../lsp/client.js
 import type { LspManager } from '../lsp/manager.js'
 import { startTraceEvent, finishTraceEvent, fingerprintToolCall, fingerprintToolClass, recordToolFingerprint, recordTraceEvent, offendingFingerprints, getDoomLoopThresholds } from './trace-store.js'
 import { summarizeRepairTelemetry } from './repair-pipeline.js'
+import { gitCommitStagesSensitiveDualView } from '../tools/sensitive-file-detector.js'
 import { extractErrorHead, generateToolSummary } from './tool-summary.js'
 import type { InterventionLevel } from './prediction-error.js'
 import { CONFIDENCE_THRESHOLDS, hasOutOfWorkspaceWriteTarget, isDestructiveGitAction, isSafeWriteOnly, requiresBashWriteApproval, requiresUnconditionalApproval } from './approval-risk.js'
@@ -74,6 +75,7 @@ import { patchTargetPaths, preWriteClaimPaths } from './pre-write-claims.js'
 import { normalizeClaimPath } from './claim-path.js'
 import { WRITE_TOOL_NAMES, extractWriteFilePaths } from '../tools/write-tool-helpers.js'
 import { snapshotOmissionNote } from '../tools/run-tests-snapshot-result.js'
+import { openCandidateDeliveryTree, type CandidateDeliveryTree } from './candidate-delivery-tree.js'
 
 /** Headless prefix on denial messages — a stable marker so worker-session's
  *  detectApprovalDeadlock can distinguish "gated by approval" from "bad JSON". */
@@ -761,6 +763,7 @@ async function executeToolUseInner(
   // 本次编辑的成功结果尾部——追加在对话末尾，不改写 system prompt / 工具
   // 定义 / 历史消息，前缀缓存零影响。
   let tddSuggestNote: string | null = null
+  let candidateSnapshot: CandidateDeliveryTree | undefined
 
   try {
     // Cerebellar Loop: read-before-edit gate
@@ -1106,6 +1109,17 @@ async function executeToolUseInner(
       && needsApproval
       && (approvalMode === 'manual' || approvalMode === 'auto-safe')
 
+    // bash `git commit` 暂存区敏感文件门（收编公开仓 PR #496）：风险分级（assessToolRisk）
+    // 只把 commit 记成 medium，sensorium/permissions.allow 都可能把它放行；这里升级为
+    // supervised/default 两档的模式无关不变量——与 requiresApproval 侧同口径双视图并检。
+    // yolo 档保持历史语义不收窄。
+    const bashCommit = tu.name === 'bash' && typeof tu.input.command === 'string'
+      ? tu.input.command
+      : ''
+    const bashCommitStagesSensitiveGate = bashCommit.length > 0
+      && (approvalMode === 'manual' || approvalMode === 'auto-safe')
+      && gitCommitStagesSensitiveDualView(deps.cwd, bashCommit)
+
     let shouldAsk = (unconditionalApproval && !yoloBypassesUnconditional)
       ? true
       : skipAllApproval
@@ -1116,8 +1130,10 @@ async function executeToolUseInner(
             ? true
             : bashWriteRequiresApproval
               ? true
-              : runtimeApprovalGate || computerUsePerAppGate
+              : bashCommitStagesSensitiveGate
                 ? true
+                : runtimeApprovalGate || computerUsePerAppGate
+                  ? true
                 : allowlisted
                   ? false
                   : canAutoApprove
@@ -1446,7 +1462,22 @@ async function executeToolUseInner(
     // decides; in the common single-clean-session case it returns null → params
     // stays unset → in-place single-phase verification (unchanged default). Any
     // failure here degrades to in-place — VSW must never break verification.
-    if (tu.name === 'run_tests' && deps.verificationSnapshotManager) {
+    if (tu.name === 'run_tests' && tu.input.deliveryFiles !== undefined) {
+      const files = tu.input.deliveryFiles
+      if (!Array.isArray(files) || files.length === 0 || files.some(file => typeof file !== 'string' || !file.trim())) {
+        params.candidateSnapshotError = 'deliveryFiles 必须是非空文件路径列表。'
+      } else {
+        try {
+          candidateSnapshot = await openCandidateDeliveryTree(deps.cwd, files as string[], params.abortSignal)
+          params.onOutput?.(`[提交候选 ${candidateSnapshot.ref}] 快照已就绪：${candidateSnapshot.files.length} 个文件，耗时 ${candidateSnapshot.buildMs}ms。\n`)
+          params.verificationSnapshot = { path: candidateSnapshot.path, snapshotRef: candidateSnapshot.ref, repositoryRoot: deps.cwd, candidateOnly: true }
+        } catch (error) {
+          candidateSnapshot?.destroy()
+          candidateSnapshot = undefined
+          params.candidateSnapshotError = `候选快照构建失败：${error instanceof Error ? error.message : String(error)}`
+        }
+      }
+    } else if (tu.name === 'run_tests' && deps.verificationSnapshotManager) {
       try {
         touchActivity(activityKey, `tool:${tu.name}:pre:snapshot`)
         const plan = await deps.verificationSnapshotManager.prepare([...(deps.ownershipLedger?.getOwnedFiles() ?? []), ...(deps.ownershipLedger?.getCoOwnedFiles() ?? [])])
@@ -1558,6 +1589,8 @@ async function executeToolUseInner(
       classify: (content) => resolveErrorKind(rawToolResult ?? undefined) ?? classifyFailure(content).class,
       isConcurrencySafe: toolDef?.isConcurrencySafe() ?? false,
    })
+    candidateSnapshot?.destroy()
+    candidateSnapshot = undefined
 
     if (shouldSampleToolInput && shouldEmitToolInputTrace(tu.name, beforeHookKeys, afterHookKeys, afterRepairKeys)) {
       touchActivity(activityKey, `tool:${tu.name}:post:trace`)
@@ -2166,6 +2199,7 @@ async function executeToolUseInner(
 
     return { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: starSig ? finalContent + starSig : finalContent, is_error: harnessResult.isError }, traceStore, importGraph, lastConflictCheckCount, checkpointCreated, latestRisk, endTurn: rawToolResult?.endTurn === true ? true : undefined, images: rawToolResult?.images, errorKind: harnessResult.isError ? resolveErrorKind(rawToolResult) : undefined, presentation: rawToolResult?.presentation }
  } catch (err) {
+    candidateSnapshot?.destroy()
     claimBoundary.rollback()
     if (err instanceof ApprovedInputBoundaryError) {
       latestRisk = err.risk

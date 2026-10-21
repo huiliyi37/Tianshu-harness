@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { formatDeliveryVerificationPlan, buildDeliveryVerificationPlan } from '../delivery-verification-plan.js'
+import { formatDeliveryVerificationPlan, buildDeliveryVerificationPlan, renderDeliveryVerificationPlan } from '../delivery-verification-plan.js'
 import { createDeliverTaskTool } from '../deliver-task.js'
 import { createTaskLedger } from '../task-ledger.js'
 import { createOwnershipLedger } from '../ownership-ledger.js'
@@ -13,6 +13,19 @@ import { createVerificationAttribution } from '../verification-attribution.js'
 import { createDeliveryGateV2 } from '../delivery-gate-v2.js'
 import { BASH_TOOL } from '../../tools/bash.js'
 import { buildBashVerification } from '../bash-verification.js'
+
+it('candidate plan carries deliveryFiles into each batch and omits live-tree shell commands', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'delivery-candidate-plan-'))
+  try {
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }))
+    writeFileSync(join(cwd, 'feature.test.mjs'), "import { test } from 'node:test'; test('ok', () => {})")
+    const plan = buildDeliveryVerificationPlan(cwd, ['feature.test.mjs'], ['feature.test.mjs'], 0, [], 'candidate-ref', ['feature.ts'])
+    const rendered = renderDeliveryVerificationPlan(plan, cwd).join('\n')
+    assert.deepEqual(plan.candidateFiles, ['feature.ts'])
+    assert.match(rendered, /run_tests\(files=\["feature.test.mjs"\], deliveryFiles=\["feature.ts"\]/)
+    assert.doesNotMatch(rendered, /cwd:/)
+  } finally { rmSync(cwd, { recursive: true, force: true }) }
+})
 
 it('actual delivery returns executable batches; all batches cover obligations and advisory never blocks', { skip: process.platform === 'win32' }, async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'delivery-batches-'))
@@ -38,6 +51,8 @@ it('actual delivery returns executable batches; all batches cover obligations an
     assert.equal(first.isError, true)
     assert.equal(commits, 0)
     assert.match(first.content, /required 24，已覆盖 0，剩余 24/)
+    assert.ok(first.content.indexOf('run_tests(files=') < first.content.indexOf('part-0.test.mjs: not_run'), 'the first executable batch precedes per-file reasons')
+    assert.match(first.content, /其余 16 个文件状态见 verificationPlan.pendingReasons/)
     const commands = first.verificationPlan!.batches.map(batch => batch.display)
     assert.equal(first.verificationPlan!.pending.length, 24)
     assert.equal(commands.length, 2)
@@ -65,6 +80,7 @@ it('nested packages get their own cwd; unsupported runners keep every pending ob
     assert.match(text, /advisory 9999 不阻断/)
     assert.match(text, /未生成可采证批命令.*义务保留：a.test.js/)
     assert.match(text, /run_tests\(files=\["nested\/b.test.mjs"\]\)/)
+    assert.ok(text.indexOf('未生成可采证批命令') < text.indexOf('run_tests(files='), 'unverifiable obligations are visible before batch commands')
     assert.equal(buildDeliveryVerificationPlan(cwd, required, required, 0).batches[0]!.cwd, join(cwd, 'nested'))
     assert.ok(!text.includes("node --test 'a.test.js'"))
   } finally { rmSync(cwd, { recursive: true, force: true }) }

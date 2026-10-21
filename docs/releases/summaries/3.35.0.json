@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "version": "3.35.0",
+  "date": "2026-10-21",
+  "fullNotesUrl": "https://github.com/huiliyi37/Tianshu-harness/releases/tag/v3.35.0",
+  "locales": {
+    "zh": {
+      "title": "表格原生预览、附件路径句柄与 TUI 全高视口",
+      "highlights": [
+        "桌面端原生预览 Excel 表格（xlsx/xls/ods，SheetJS 渲染，无需 LibreOffice）；文档附件随消息携带只读路径句柄，agent 可直接 read_file 读原文件，不再全盘搜索。",
+        "图片进模型历史前按字节归一格式：bmp 自动转 PNG，坏图定点换占位——单张图片不再把会话每轮请求毒化成 400。",
+        "TUI classic 全高视口（收编 PR #528）：指令摘要钉窗口顶部，窗口缩放后输入区保持贴底，/clear 只清显示不动历史。"
+      ]
+    },
+    "en": {
+      "title": "Native spreadsheet preview, attachment path handles, and a full-height TUI viewport",
+      "highlights": [
+        "The desktop app previews Excel files natively (xlsx/xls/ods via SheetJS, no LibreOffice needed); document attachments now carry a read-only path handle so the agent can read the original file directly instead of searching the disk.",
+        "Images entering the model history are normalized by byte magic: bmp is transcoded to PNG and corrupt images are replaced with a placeholder — one bad image no longer poisons every request with a 400.",
+        "Full-height classic TUI viewport (community PR #528): the prompt summary pins to the window top, the input area stays anchored to the bottom across resizes, and /clear resets the display without touching pager history."
+      ]
+    }
+  }
+}

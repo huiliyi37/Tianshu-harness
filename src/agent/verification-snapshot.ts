@@ -262,7 +262,14 @@ export async function createVerificationSnapshot(init: VerificationSnapshotInit)
     return overlay
   }
 
-  await build(init.ownedFiles)
+  try {
+    await build(init.ownedFiles)
+  } catch (error) {
+    // A failed overlay can leave an otherwise valid detached worktree behind.
+    // The caller receives no snapshot handle in this case, so clean it here.
+    await lock.withLockAsync(() => destroyAtAsync(init.baseCwd, path))
+    throw error
+  }
 
   return {
     path,

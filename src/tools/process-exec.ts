@@ -201,7 +201,7 @@ export function ownedProcessTreeAlive(pid: number): boolean {
     process.kill(process.platform === 'win32' ? pid : -pid, 0)
     if (process.platform !== 'win32') {
       try {
-        const states = execFileSync('ps', ['-o', 'stat=', '-g', String(pid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\s+/).filter(Boolean)
+        const states = execFileSync('ps', ['-o', 'stat=', '-g', String(pid)], { encoding: 'utf8', timeout: 1000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\s+/).filter(Boolean)
         if (states.length && states.every(state => state.startsWith('Z'))) return false
       } catch { /* The group may still exist; keep its protection on uncertainty. */ }
     }

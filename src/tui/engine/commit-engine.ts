@@ -46,6 +46,7 @@ export class CommitEngine {
    * 超过上限后最旧条目被自动丢弃（保留最近的，匹配 pager 实际可见范围）。
    */
   private buffer: RingBuffer<string>
+  private contentRevision = 0
 
   constructor(options: CommitEngineOptions) {
     this.stdout = options.stdout
@@ -57,6 +58,14 @@ export class CommitEngine {
   /** 返回 scrollback 完整文本（各条目以换行符连接，封顶后只含最近 N 条）。 */
   getContent(): string {
     return this.buffer.items().join('\n')
+  }
+
+  get revision(): number { return this.contentRevision }
+
+  /** 只读增量取数（投影的显示边界）；清空视口边界不影响 pager 历史。 */
+  getContentSince(revision: number): string {
+    const count = Math.max(0, this.contentRevision - revision)
+    return count ? this.buffer.items().slice(-count).join('\n') : ''
   }
 
   setOutputEnabled(enabled: boolean): void { this.outputEnabled = enabled }
@@ -80,6 +89,7 @@ export class CommitEngine {
     if (!content.endsWith('\n')) content += '\n'
     if (entry.trailingNewline) content += '\n'
     this.buffer.push(content.trimEnd())
+    this.contentRevision++
     if (this.outputEnabled) this.stdout.write(content)
   }
 
@@ -95,6 +105,7 @@ export class CommitEngine {
       const content = entry.ansi ?? enforceTextContract(entry.text)
       const line = content + (content.endsWith('\n') ? '' : '\n') + (entry.trailingNewline ? '\n' : '')
       this.buffer.push(line.trimEnd())
+      this.contentRevision++
       buf += line
     }
     if (this.outputEnabled) this.stdout.write(buf)

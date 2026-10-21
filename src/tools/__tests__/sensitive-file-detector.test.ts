@@ -1,12 +1,16 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import {
   detectSensitiveFile,
   detectSensitiveFileOnDisk,
   detectSensitiveGitAdd,
+  parseGitIndexCommits,
+  gitCommitStagesSensitive,
+  gitCommitStagesSensitiveDualView,
   AGGREGATE_ADD_MARKER,
 } from '../sensitive-file-detector.js'
 
@@ -303,6 +307,213 @@ describe('sensitive-file-detector', () => {
         assert.equal(detectSensitiveFileOnDisk(join(dir, 'README~1.MD')).sensitive, false)
       } finally {
         rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('parseGitIndexCommits', () => {
+    const base = { onlyFiles: false, repoArgs: [], uncertainRepo: false }
+    const indexCommit = { files: [], commitsIndex: true, stagesAllTracked: false, ...base }
+    it('bare / -m commit commits the whole index', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit'), [indexCommit])
+      assert.deepEqual(parseGitIndexCommits('git commit -m "wip"'), [indexCommit])
+    })
+
+    it('detects -a/--all (incl. combined -am) and skips the message value', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit -a -m "wip"'), [{ ...indexCommit, stagesAllTracked: true }])
+      assert.deepEqual(parseGitIndexCommits('git commit -am "wip"'), [{ ...indexCommit, stagesAllTracked: true }])
+      assert.deepEqual(parseGitIndexCommits('git commit --all'), [{ ...indexCommit, stagesAllTracked: true }])
+    })
+
+    it('does not mistake `-m .env` message for a file operand', () => {
+      // `git commit -m .env` 的 .env 是 message；按名检查会多一次审批但不漏判
+      assert.deepEqual(parseGitIndexCommits('git commit -m .env'), [indexCommit])
+    })
+
+    it('collects explicit pathspec/--only operands (bare pathspec = --only semantics)', () => {
+      assert.deepEqual(parseGitIndexCommits('git commit --only -- .env'),
+        [{ files: ['.env'], commitsIndex: false, stagesAllTracked: false, onlyFiles: true, repoArgs: [], uncertainRepo: false }])
+      // 实测：`git commit -m msg -- src/a.ts` 只提交列出的文件（已暂存的其余文件保持 staged）
+      assert.deepEqual(parseGitIndexCommits('git commit -m msg -- src/a.ts "src/b.ts"'),
+        [{ files: ['src/a.ts', 'src/b.ts'], commitsIndex: false, stagesAllTracked: false, onlyFiles: true, repoArgs: [], uncertainRepo: false }])
+    })
+
+    it('P1-3: --include commits the whole index, not just the listed files', () => {
+      const r = parseGitIndexCommits('git commit --include README.md -m fixture')
+      assert.equal(r.length, 1)
+      assert.equal(r[0]!.commitsIndex, true)
+      assert.equal(r[0]!.onlyFiles, false)
+      assert.deepEqual(r[0]!.files, ['README.md'])
+    })
+
+    it('P1-3: --author/--date values are not file operands (index check must not be skipped)', () => {
+      // 旧逻辑把 "John" 当成文件操作数 → files 非空 → 跳过暂存区检查（漏拦）
+      const r = parseGitIndexCommits('git commit --author "John Doe <j@x.com>" -m msg')
+      assert.deepEqual(r[0]!.files, [])
+      assert.equal(r[0]!.commitsIndex, true)
+      const r2 = parseGitIndexCommits('git commit --date "2026-01-01 00:00:00" --cleanup=strip -m msg')
+      assert.deepEqual(r2[0]!.files, [])
+      assert.equal(r2[0]!.commitsIndex, true)
+      // -t（--template 取值）合写形态：`git commit -at tpl -m msg` 的 tpl 不是文件
+      const r3 = parseGitIndexCommits('git commit -at tpl -m msg')
+      assert.deepEqual(r3[0]!.files, [])
+      assert.equal(r3[0]!.stagesAllTracked, true)
+    })
+
+    it('P1-2: retains the real repo location from -C/--git-dir/--work-tree', () => {
+      const r = parseGitIndexCommits('git -C sub commit -m x')
+      assert.deepEqual(r[0]!.repoArgs, ['-C', 'sub'])
+      assert.equal(r[0]!.uncertainRepo, false)
+      const r2 = parseGitIndexCommits('git --git-dir=/x/.git --work-tree=/x commit -m y')
+      assert.deepEqual(r2[0]!.repoArgs, ['--git-dir=/x/.git', '--work-tree=/x'])
+      const r3 = parseGitIndexCommits('git -C"/my repo" commit')
+      assert.deepEqual(r3[0]!.repoArgs, ['-C', '/my repo'])
+    })
+
+    it('P1-2: GIT_DIR env prefix is uncertain → conservative approval', () => {
+      const r = parseGitIndexCommits('GIT_DIR=/elsewhere/.git git commit -m x')
+      assert.equal(r.length, 1)
+      assert.equal(r[0]!.uncertainRepo, true)
+      // 无害环境变量不触发
+      const r2 = parseGitIndexCommits('FOO=bar git commit -m x')
+      assert.equal(r2[0]!.uncertainRepo, false)
+    })
+
+    it('handles git global opts and stops at shell separators', () => {
+      assert.deepEqual(parseGitIndexCommits('git -C sub commit -m x'),
+        [{ ...indexCommit, repoArgs: ['-C', 'sub'] }])
+      assert.deepEqual(parseGitIndexCommits('git add -A && git commit -m "wip"'), [indexCommit])
+      assert.equal(parseGitIndexCommits('echo hi').length, 0)
+    })
+
+    it('does not match obfuscated `git${IFS}commit` in the raw view (dual-view job)', () => {
+      assert.equal(parseGitIndexCommits('git${IFS}commit -m x').length, 0)
+    })
+  })
+
+  describe('gitCommitStagesSensitive (real git)', () => {
+    function makeRepo(): string {
+      const dir = mkdtempSync(join(tmpdir(), 'commit-gate-'))
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: dir })
+      execFileSync('git', ['config', 'user.name', 't'], { cwd: dir })
+      writeFileSync(join(dir, 'README.md'), 'hi')
+      execFileSync('git', ['add', '.'], { cwd: dir })
+      execFileSync('git', ['commit', '-qm', 'init'], { cwd: dir })
+      return dir
+    }
+
+    it('flags bare `git commit -m` when the index holds a sensitive file', () => {
+      const dir = makeRepo()
+      try {
+        writeFileSync(join(dir, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: dir })
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture'), true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('does not flag a clean index', () => {
+      const dir = makeRepo()
+      try {
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture'), false)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('P1-2: `git -C <B> commit` checks repo B, not the tool cwd (repo A)', () => {
+      const repoA = makeRepo() // 干净仓库：工具 cwd
+      const repoB = makeRepo()
+      try {
+        writeFileSync(join(repoB, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: repoB })
+        // 旧逻辑固定查 cwd（repoA）→ 漏拦；现在必须查到 repoB 的暂存区
+        assert.equal(gitCommitStagesSensitive(repoA, `git -C ${repoB} commit -m fixture`), true)
+        // 反向：repoB 干净、repoA 脏时，-C 指向干净仓库不应误报
+        assert.equal(gitCommitStagesSensitive(repoB, `git -C ${repoA} commit -m fixture`), false)
+      } finally {
+        rmSync(repoA, { recursive: true, force: true })
+        rmSync(repoB, { recursive: true, force: true })
+      }
+    })
+
+    it('P1-3: `git commit --include README.md` still inspects the index', () => {
+      const dir = makeRepo()
+      try {
+        writeFileSync(join(dir, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: dir })
+        // --include 会提交整个 index：只查 README.md 就跳过是漏拦
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit --include README.md -m fixture'), true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('P1-3: `--author` value is not a file operand; the index is still inspected', () => {
+      const dir = makeRepo()
+      try {
+        writeFileSync(join(dir, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: dir })
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit --author "Jane <j@x.com>" -m fixture'), true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('bare pathspec only commits the listed files (no index check needed)', () => {
+      const dir = makeRepo()
+      try {
+        writeFileSync(join(dir, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: dir })
+        // 只提交 README.md：暂存区的 .env 不入库 → 不拦
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture -- README.md'), false)
+        // 但列出敏感文件本身要拦
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit --only -- .env'), true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('directory and wildcard pathspecs inspect the files they select', () => {
+      const dir = makeRepo()
+      try {
+        mkdirSync(join(dir, 'config'))
+        writeFileSync(join(dir, 'config', '.env'), 'K=V')
+        execFileSync('git', ['add', 'config/.env'], { cwd: dir })
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture -- config'), true)
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture -- "config/*"'), true)
+        assert.equal(gitCommitStagesSensitive(dir, 'git commit -m fixture -- README.md'), false)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('uncertain repo location (GIT_DIR prefix) fails closed', () => {
+      const dir = makeRepo()
+      try {
+        assert.equal(gitCommitStagesSensitive(dir, 'GIT_DIR=/elsewhere/.git git commit -m x'), true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('dual view: obfuscated `git${IFS}-C <B> commit` still checks repo B', () => {
+      // raw 视图正则匹配不上 ${IFS}；normalizeBashCommand 又会剥掉 -C——
+      // 专用去混淆视图必须保留定位参数，否则在干净 cwd 下漏拦
+      const repoA = makeRepo()
+      const repoB = makeRepo()
+      try {
+        writeFileSync(join(repoB, '.env'), 'K=V')
+        execFileSync('git', ['add', '.env'], { cwd: repoB })
+        assert.equal(gitCommitStagesSensitiveDualView(repoA, `git\${IFS}-C ${repoB} commit -m fixture`), true)
+        assert.equal(gitCommitStagesSensitiveDualView(repoA, `g\\it -C ${repoB} commit -m fixture`), true)
+        // 干净仓库常规流不受影响
+        assert.equal(gitCommitStagesSensitiveDualView(repoA, 'git commit -m fixture'), false)
+      } finally {
+        rmSync(repoA, { recursive: true, force: true })
+        rmSync(repoB, { recursive: true, force: true })
       }
     })
   })

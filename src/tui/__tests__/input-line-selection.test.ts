@@ -35,12 +35,12 @@ describe('InputLine · 键盘选区（S1）', () => {
     assert.equal(input.selectionRange, null)
   })
 
-  it('文本输入折叠选区并正常插入', () => {
+  it('文本输入替换选区（对齐 codex / 常规编辑器）', () => {
     const input = new InputLine({ value: 'hello' })
     shiftKey(input, 'left')
     shiftKey(input, 'left')
     type(input, 'X')
-    assert.equal(input.value, 'helXlo')
+    assert.equal(input.value, 'helX')
     assert.equal(input.selectionRange, null)
   })
 

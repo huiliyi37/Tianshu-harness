@@ -19,9 +19,10 @@ export interface FrontendPreferences {
   appearanceSetup?: 'done'
 }
 
+// copyOnSelect 默认开：鼠标选中（输入框或全屏会话正文）松开即复制，对齐 codex 与多数终端的选中即复制。
 export const DEFAULT_FRONTEND_PREFERENCES: Readonly<FrontendPreferences> = Object.freeze({
   renderer: 'auto', keymap: 'standard', inputMode: 'single', mouse: true,
-  copyOnSelect: false, bindings: Object.freeze({}), welcome: 'full',
+  copyOnSelect: true, bindings: Object.freeze({}), welcome: 'full',
 })
 
 export function frontendPreferencesPath(): string {

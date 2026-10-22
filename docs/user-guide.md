@@ -558,6 +558,8 @@ tianshu --terminal-mode captured-pty
 | `Ctrl+X` `r` | leader 键：`Ctrl+X` 后接 `r` 开右侧面板 |
 | `Ctrl+X` `t` | leader 键：`Ctrl+X` 后接 `t` 展开 todo 全量回看 |
 | `↑` | 输入框为空且队列有 pending 时，取回最近一条排队 steer 消息编辑 |
+| `↑` / `↓` | 与 codex 一致：输入框为空，或内容是未改动的已召回历史且光标在开头/结尾时翻输入历史；编辑中的草稿永不被换走。其余情况按屏幕上的视觉行（含自动折行）上下移动并保持列，首行再按 `↑` 到开头、末行再按 `↓` 到结尾。`Ctrl+N` 仍可显式翻到下一条 |
+| 鼠标（全屏渲染） | 输入框内单击落光标、拖动选择、双击选词、三击选整行；松开即复制（`/settings` →「选中即复制」可关），`Ctrl+C` 也复制选区；选中后 `Backspace`/`Delete` 删除、直接输入或粘贴替换。经典渲染不接管鼠标（保留终端原生滚动与回滚），此时的鼠标选区属于终端自身，复制行为取决于终端设置（如 Windows Terminal 的 `copyOnSelect`） |
 | `@` | 触发文件/文件夹/符号补全（`Tab` 循环候选，退格整块删除） |
 | `Ctrl+V` | 粘贴剪贴板图片（自动转 base64 内联） |
 | `F1`–`F8` | 高频命令直绑：F1 /help · F2 /tasks · F3 /cache · F4 /cockpit · F5 /theme · F6 /model · F7 /permission · F8 /sessions |

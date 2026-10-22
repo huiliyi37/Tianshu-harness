@@ -1080,7 +1080,8 @@ export class TuiApp {
       if ((!this.frontend.isFullscreen && this.overlay.activeId() !== 'ui-history') || !this.workflow.preferences.mouse || this.editorActive) return
       mouse.handle(event, { session: this.frontend, line: this.inputLine, overlay: this.overlay, controller: this.overlayController,
         columns: this.columns, render: () => this.renderLive(), key: name => this.handleOverlayKey({ char: '', name }),
-        copy: () => this.copyFrontendSelection(), copyOnSelect: this.workflow.preferences.copyOnSelect, message: text => this.commitStatic(text) })
+        copy: () => this.copyFrontendSelection(), copyOnSelect: this.workflow.preferences.copyOnSelect, message: text => this.commitStatic(text),
+        copyComposer: () => this.copyComposerSelection() })
     })
     this.resize.onResize((cols, rows) => {
       this.columns = cols
@@ -1202,7 +1203,8 @@ export class TuiApp {
     this.input.onAnyKey((key) => {
       if (key.name !== 'tab') this.cancelFileCompletionQuery()
       if (this.editorActive) return
-      if (key.name === 'ctrl_c' && !this.approvalIntentController.approvalPending && !this.pendingPlanApproval && !this.pendingAskFlow && this.copyFrontendSelection()) return
+      if (key.name === 'ctrl_c' && !this.approvalIntentController.approvalPending && !this.pendingPlanApproval && !this.pendingAskFlow
+        && (this.copyFrontendSelection() || (!this.overlay.isActive() && this.copyComposerSelection()))) return
       if (this.overlay.activeId() === 'ui-history') {
         if (!this.frontend.handleHistoryKey(key)) this.deactivateOverlay()
         return
@@ -1756,6 +1758,16 @@ export class TuiApp {
     })
     if (this.overlay.isActive()) this.overlay.rerender()
     else this.renderLive()
+    return true
+  }
+  /** 输入框选区复制（鼠标松开 / Ctrl+C）：选区保留，随后可直接退格删除或输入替换。 */
+  private copyComposerSelection(): boolean {
+    const selection = this.inputLine.selectedText
+    if (!selection) return false
+    void copyTextToClipboard(selection, sequence => { if (!this.terminalRestored) this.stdout.write(sequence) }, { signal: this.clipboardAbort.signal }).then(method => {
+      if (this.terminalRestored || method === 'cancelled') return
+      this.commitStatic(`${method === 'native' ? '已复制' : '已发送复制请求'}（${selection.length}字符）`)
+    })
     return true
   }
   async setUIHistorySession(path: string, priorMessages = false): Promise<void> {

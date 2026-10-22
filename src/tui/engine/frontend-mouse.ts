@@ -49,14 +49,21 @@ export async function openFrontendTarget(target: string): Promise<void> {
   throw missing
 }
 
+/** 与 app 输入框渲染的 MAX_INPUT_DISPLAY_LINES 同值：命中换算必须用同一视窗。 */
+const COMPOSER_MAX_LINES = 12
+/** 连击判定窗口：同一格内此间隔内的按下计为双击 / 三击。 */
+const MULTI_CLICK_MS = 500
+
 export class FrontendMouse {
   private pressed?: { overlay: string; hit: OverlayMenuHit; field: string; x: number; y: number }
-  private composerPress?: { x: number; y: number }
+  private composerDrag?: { x: number; y: number; moved: boolean }
+  private lastClick?: { x: number; y: number; at: number; count: number }
   private copyPress?: { x: number; y: number; moved: boolean }
   handle(event: MousePress, host: {
     session: FrontendSession; line: InputLine; overlay: OverlayEngine; controller: OverlayController; columns: number
     render: () => void; key: (name: string) => void; copy: () => void; copyOnSelect: boolean; message: (text: string) => void
-  }): void {
+    copyComposer: () => void
+  }, now = Date.now()): void {
     const id = host.overlay.activeId()
     if (id && id !== 'ui-history') {
       if (event.type === 'wheel') { this.pressed = undefined; host.key(event.button & 1 ? 'down' : 'up'); return }
@@ -89,18 +96,35 @@ export class FrontendMouse {
     }
     const target = host.session.linkTargetAt(event)
     if (target) { void openFrontendTarget(target).catch(error => host.message(`打开失败：${error.message}`)); return }
+    // 输入框内：单击落光标，拖动选区，双击选词，三击选整行；松开时按「选中即复制」复制。
+    // 选区留在输入框里，随后 Backspace/Delete 删除、直接输入替换（对齐 codex 输入框）。
+    const width = Math.max(1, boxInnerWidth(host.columns))
     const hit = !id ? host.session.composerHit(event.x, event.y) : null
-    if (event.type === 'press') this.composerPress = hit ? { x: event.x, y: event.y } : undefined
-    if (event.type === 'move') this.composerPress = undefined
-    if (hit && event.type === 'release' && this.composerPress?.x === event.x && this.composerPress.y === event.y) {
+    if (hit && event.type === 'press' && (event.button & 3) === 0 && !event.ctrl) {
       host.session.closeHistory()
-      host.line.placeVisibleCaret(hit.line, hit.column, Math.max(1, boxInnerWidth(host.columns)), 12)
+      const last = this.lastClick
+      const count = last && last.x === event.x && last.y === event.y && now - last.at < MULTI_CLICK_MS ? last.count % 3 + 1 : 1
+      this.lastClick = { x: event.x, y: event.y, at: now, count }
+      host.line.selectVisible(hit.line, hit.column, width, COMPOSER_MAX_LINES, count === 3 ? 'line' : count === 2 ? 'word' : 'start')
+      this.composerDrag = { x: event.x, y: event.y, moved: false }
       host.render()
-    } else {
-      host.session.handleMouse(event)
-      if (event.type === 'release' && host.copyOnSelect) host.copy()
-      if (id) host.overlay.rerender()
+      return
     }
-    if (event.type === 'release') this.composerPress = undefined
+    if (this.composerDrag && (event.type === 'move' || event.type === 'release')) {
+      // 原地松开不扩展：否则双击/三击得到的词/行选区会被收缩回落点。
+      this.composerDrag.moved ||= event.x !== this.composerDrag.x || event.y !== this.composerDrag.y
+      const near = this.composerDrag.moved ? host.session.composerHitNearest(event.x, event.y) : null
+      if (near) host.line.selectVisible(near.line, near.column, width, COMPOSER_MAX_LINES, 'extend')
+      if (event.type === 'release') {
+        this.composerDrag = undefined
+        if (host.copyOnSelect && host.line.selectedText) host.copyComposer()
+      }
+      host.render()
+      return
+    }
+    if (event.type === 'press' && host.line.clearSelection()) host.render()
+    host.session.handleMouse(event)
+    if (event.type === 'release' && host.copyOnSelect) host.copy()
+    if (id) host.overlay.rerender()
   }
 }

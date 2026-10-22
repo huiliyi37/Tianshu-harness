@@ -74,13 +74,12 @@ describe('InputLine · fish 式 undo（P1-1）', () => {
     assert.equal(input.value, '')
   })
 
-  it('历史导航记为单元：undo 直接在历史条目上回退到草稿', () => {
+  it('历史导航记为单元：undo 直接在历史条目上回退到翻历史前', () => {
     const input = new InputLine({ history: ['old-cmd'] })
-    type(input, 'draft')
     input.handleKey('up', '', false, false)
     assert.equal(input.value, 'old-cmd')
     input.handleKey('ctrl_minus', '', true, false)
-    assert.equal(input.value, 'draft')
+    assert.equal(input.value, '')
   })
 
   it('外部 setValue（审批填充/补全）是独立单元', () => {
@@ -136,40 +135,42 @@ describe('InputLine · fish 式 undo（P1-1）', () => {
   })
 })
 
-describe('InputLine · 历史草稿暂存（P1-2）', () => {
-  it('上翻下翻往返：草稿原样恢复', () => {
+describe('InputLine · 历史草稿暂存（P1-2，↑/↓ 闸门对齐 codex）', () => {
+  it('有草稿时 ↑/↓ 只移动光标，草稿不被历史换走', () => {
     const input = new InputLine({ history: ['h1', 'h2'] })
     type(input, 'my draft')
     input.handleKey('up', '', false, false)
-    assert.equal(input.value, 'h1')
+    assert.equal(input.value, 'my draft')
+    assert.equal(input.cursor, 0)
     input.handleKey('down', '', false, false)
     assert.equal(input.value, 'my draft')
+    assert.equal(input.cursor, 'my draft'.length)
   })
 
-  it('多步翻历史后回到草稿', () => {
+  it('空输入框多步翻历史后回到空草稿', () => {
     const input = new InputLine({ history: ['h1', 'h2'] })
-    type(input, 'd')
     input.handleKey('up', '', false, false)
     input.handleKey('up', '', false, false)
     assert.equal(input.value, 'h2')
     input.handleKey('down', '', false, false)
     assert.equal(input.value, 'h1')
     input.handleKey('down', '', false, false)
-    assert.equal(input.value, 'd')
+    assert.equal(input.value, '')
   })
 
-  it('编辑历史条目后下翻，仍回到原始草稿（bash 语义）', () => {
-    const input = new InputLine({ history: ['h1'] })
-    type(input, 'orig')
+  it('编辑召回的历史条目后，↑/↓ 不再翻历史；Ctrl+N 仍可显式回到草稿', () => {
+    const input = new InputLine({ history: ['h1', 'h2'] })
     input.handleKey('up', '', false, false)
     type(input, 'x') // 编辑历史条目 h1 → h1x
-    input.handleKey('down', '', false, false)
-    assert.equal(input.value, 'orig')
+    input.handleKey('up', '', false, false)
+    assert.equal(input.value, 'h1x')
+    assert.equal(input.cursor, 0)
+    input.handleKey('ctrl_n', '', true, false)
+    assert.equal(input.value, '')
   })
 
   it('submit 后草稿暂存清空', () => {
     const input = new InputLine({ history: ['h1'] })
-    type(input, 'd')
     input.handleKey('up', '', false, false)
     input.handleKey('return', '', false, false) // submit h1
     assert.equal(input.value, '')

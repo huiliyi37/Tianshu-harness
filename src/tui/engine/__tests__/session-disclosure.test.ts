@@ -64,7 +64,8 @@ for (const platform of ['darwin', 'win32', 'linux'] as const) {
       await tick()
       stdin.dataHandler!('\x03')
       await tick()
-      assert.equal(copied.length, 2, '两次复制都应送到剪贴板')
+      // 选中即复制默认开：松开时复制 1 次，随后两次 Ctrl+C 各复制 1 次。
+      assert.equal(copied.length, 3, '松开与两次 Ctrl+C 都应送到剪贴板')
       assert.ok(copied.every(text => /COPYABLE_会话正文/.test(text)))
       assert.equal(exited, false, '重复复制不能当成双 Ctrl+C 退出')
       assert.equal(commands[0], platform === 'darwin' ? 'pbcopy' : platform === 'win32' ? 'powershell.exe' : 'xclip')

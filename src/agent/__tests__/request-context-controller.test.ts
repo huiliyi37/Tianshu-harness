@@ -130,7 +130,7 @@ test('self-hosted manual refresh uses the same generic budget as request prepara
 
 for (const enabled of [true, false]) {
   test(`self-hosted hard-budget recovery accepts a useful reclaim below 32K (discretionary enabled=${enabled})`, async () => {
-    const { controller, original, writes, build, messages } = selfHostedAgent(enabled)
+    const { controller, original, writes, build, messages, summaries } = selfHostedAgent(enabled)
     const before = buildContextBudget(build(), { windowTokens: 524_288, maxOutputTokens: 524_288, transportLimits: 'none' }, { requestId: 'before', revision: 0 })
     assert.equal(before.state, 'blocked')
     assert.ok(before.inputTokens - before.inputBudget < 32_768)
@@ -139,6 +139,8 @@ for (const enabled of [true, false]) {
     assert.ok(request.contextBudget!.inputTokens <= request.contextBudget!.inputBudget, 'the rebuilt request must fit')
     assert.equal(request.max_tokens, 256_000, 'recovery must not silently lower the configured output limit')
     assert.deepEqual(writes, ['archive', 'commit'])
+    assert.doesNotMatch(JSON.stringify(summaries[0]!.messages[1]!.content), /User-requested summary focus/,
+      'automatic recovery must not inherit a manual-only focus')
     for (const user of [original[0], original[2]]) {
       assert.ok(messages().some(message => JSON.stringify(message) === JSON.stringify(user)), 'human requirements survive verbatim')
     }
@@ -148,8 +150,9 @@ for (const enabled of [true, false]) {
 }
 
 test('explicit self-hosted compaction works below the hard limit even if discretionary compaction is off', async () => {
-  const { controller, original, writes, messages } = selfHostedAgent(false, 1_048_576)
-  assert.equal(await controller.compact(true), true)
+  const { controller, original, writes, messages, summaries } = selfHostedAgent(false, 1_048_576)
+  assert.equal(await controller.compact(true, 'explicit_user_compact', '保留认证复现步骤和未完成测试'), true)
+  assert.match(JSON.stringify(summaries[0]!.messages[1]!.content), /保留认证复现步骤和未完成测试/)
   assert.deepEqual(writes, ['archive', 'commit'])
   assert.ok(messages().some(message => JSON.stringify(message) === JSON.stringify(original[2])))
   assert.ok(messages().includes(controller.activeUserMessage!))

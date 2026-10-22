@@ -1115,6 +1115,44 @@ describe('/compact 轻量替身容忍（mock 无 config.promptEngine）', () => 
       mock.timers.reset()
     }
   })
+
+  it('forwards free-text focus to budget compaction and explains micro fallback limits', async () => {
+    const entries: string[] = []
+    let focus: string | undefined
+    const session = { getMessages: () => [], replaceMessages: () => {}, recordCompactEvent: () => {}, getTurnCount: () => 0,
+      getCompactEvents: () => [], getContextLedger: () => undefined, getCacheHitRate: () => 0 }
+    const base = makeCtx().agent as any
+    const agent = { ...base,
+      config: { ...base.config, promptEngine: { getRequestBudgetPolicy: () => ({ windowTokens: 128_000 }) } },
+      compactContext: async (value?: string) => { focus = value; return true },
+    }
+    await handleSlashCommand(makeCtx({ agent, session: session as any, parts: ['/compact', '保留认证复现', '和未完成测试'], pushStatic: entry => entries.push(entry.content) }))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(focus, '保留认证复现 和未完成测试')
+
+    entries.length = 0
+    mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      await handleSlashCommand(makeCtx({ session: session as any, parts: ['/compact', '保留认证复现'], pushStatic: entry => entries.push(entry.content) }))
+      assert.ok(entries.some(entry => entry.includes('无法应用你指定的摘要重点') && entry.includes('Micro-compacting')),
+        `无预算策略应明确提示重点未应用: ${entries.join(' | ')}`)
+      mock.timers.tick(8000)
+    } finally { mock.timers.reset() }
+  })
+
+  it('/compact status remains read-only', async () => {
+    let calls = 0
+    const entries: string[] = []
+    const base = makeCtx().agent as any
+    const agent = { ...base, config: { ...base.config, promptEngine: { getRequestBudgetPolicy: () => ({ windowTokens: 128_000 }) } },
+      compactContext: async () => { calls++; return true } }
+    const session = { getMessages: () => [{ role: 'user', content: 'keep me' }], getCompactEvents: () => [],
+      getContextLedger: () => undefined }
+    await handleSlashCommand(makeCtx({ agent, session: session as any, parts: ['/compact', 'status'], pushStatic: entry => entries.push(entry.content) }))
+    assert.equal(calls, 0)
+    assert.equal(entries.length, 1)
+    assert.match(entries[0]!, /Compact status/)
+  })
 })
 
 describe('/effort', () => {

@@ -463,7 +463,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
   } else {
     assert.ok(occupancy >= 600_000 && occupancy < 750_000,
       `the public entry must naturally reach the legacy partial-LLM ladder (occupancy=${occupancy})`)
-    const compact = () => entry === 'official' ? agent.compactContext()
+    const compact = () => entry === 'official' ? agent.compactContext('保留本次压缩重点')
       : agent.compaction.maybeCompact({ loopTurn: 0, failures: agent.compactFailures }).then(result => result.compacted)
     if (persistence === 'intent-append') {
       await assert.rejects(compact(), /历史.*变化/)

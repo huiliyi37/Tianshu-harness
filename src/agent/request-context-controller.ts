@@ -79,7 +79,7 @@ export class RequestContextController {
     this.record(buildContextBudget(visible, policy, { requestId: randomUUID(), revision: 0 }), true)
   }
 
-  async compact(force = false, reason: 'explicit_user_compact' | 'context_limit' = force ? 'explicit_user_compact' : 'context_limit'): Promise<boolean> {
+  async compact(force = false, reason: 'explicit_user_compact' | 'context_limit' = force ? 'explicit_user_compact' : 'context_limit', summaryFocus?: string): Promise<boolean> {
     const self = this.agent, budget = this.snapshot
     if (!force && (!budget || budget.inputTokens <= budget.inputBudget)) return false
     // This is explicit or hard-limit recovery, not discretionary ratio compaction.
@@ -105,6 +105,7 @@ export class RequestContextController {
       model: self.config.promptEngine.getModel(), signal, protectedUser: activeUser,
       targetTokens: budget ? Math.max(1_024, Math.floor(Math.min(budget.inputTokens, budget.inputBudget) * 0.7) - 16_384) : undefined,
       summaryPolicy, summaryMaxTokens: self.config.budgetSummaryMaxTokens,
+      summaryFocus,
       // Preserve the paid prefix under ordinary pressure, but do not reject a
       // useful emergency reclaim merely because it is smaller than the 32K cost floor.
       minReclaimTokens: force ? 1 : Math.min(32_768, Math.max(1, budget!.inputTokens - budget!.inputBudget)),

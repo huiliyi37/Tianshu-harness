@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildSummaryRequests, summaryRequestFits } from '../budget-summary-request.js'
+import { SUMMARY_ENVELOPE_INSTRUCTION } from '../compact-summary-envelope.js'
 import { buildContextBudget } from '../../context/request-budget.js'
 import type { StreamClient } from '../../api/stream-client.js'
 import type { RequestBudgetPolicy } from '../../context/request-budget.js'
@@ -37,6 +38,14 @@ test('provider preview overhead participates in chunk planning and final preflig
   for (const request of requests) assert.ok(summaryRequestFits(request, previewClient, policy))
   const changed: StreamClient = { ...client, previewContextRequest: request => ({ ...request, messages: [{ role: 'user', content: 'x'.repeat(40_000) }] }) }
   assert.equal(summaryRequestFits(requests[0]!, changed, policy), false, 'dispatch rechecks a changed preview')
+})
+
+test('summary focus is included as user content without changing the envelope instruction', () => {
+  const focus = '保留认证复现步骤和未完成测试'
+  const requests = buildSummaryRequests([{ type: 'text', text: '\n[message:3 role:tool]\nfailed auth' }], 'small', client, policy, 1024, focus)!
+  assert.equal(requests[0]!.messages[0]!.content, SUMMARY_ENVELOPE_INSTRUCTION)
+  assert.match(JSON.stringify(requests[0]!.messages[1]!.content), /保留认证复现步骤和未完成测试/)
+  assert.match(JSON.stringify(requests[0]!.messages[1]!.content), /\[message:3 role:tool\]/)
 })
 
 test('impossible windows, indivisible attachments and excessive chunks fail before any dispatch', () => {

@@ -16,6 +16,7 @@ export interface BudgetCompactionDeps {
   minReclaimTokens?: number
   summaryPolicy?: RequestBudgetPolicy
   summaryMaxTokens?: number
+  summaryFocus?: string
   archive: (messages: OaiMessage[]) => Promise<string | { id: string; images: string[] }>
   commit: (messages: OaiMessage[]) => Promise<void>
   protectedUser?: OaiMessage
@@ -113,7 +114,7 @@ async function compactBudgetHistoryImpl(messages: OaiMessage[], deps: BudgetComp
   const protectedUsers = new Set([...old.filter(m => m.role === 'user' && (!m.origin || m.origin === 'human' || m.origin === 'legacy_unknown') && (m.origin === 'human' || !isSystemReminder(m.content))), latestUser, deps.protectedUser].filter((m): m is OaiMessage => !!m))
   const protectedUser = old.filter(m => protectedUsers.has(m))
   const parts = summaryParts(old.map((message, index) => ({ message, index })).filter(({ message }) => !protectedUsers.has(message)))
-  const requests = buildSummaryRequests(parts, deps.model, deps.client, deps.summaryPolicy, deps.summaryMaxTokens)
+  const requests = buildSummaryRequests(parts, deps.model, deps.client, deps.summaryPolicy, deps.summaryMaxTokens, deps.summaryFocus)
   if (!requests) return false
   const summaries: string[] = []
   const signal = deps.signal ? AbortSignal.any([deps.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000)

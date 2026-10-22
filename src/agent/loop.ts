@@ -189,8 +189,8 @@ export class AgentLoop {
   prepareBudgetedRequest(build: () => import('../api/oai-types.js').OaiChatRequest, callbacks: AgentCallbacks): Promise<import('../api/oai-types.js').OaiChatRequest> {
     return this.requestContext.prepare(build, callbacks)
   }
-  compactContextBudget(force = false): Promise<boolean> { return this.requestContext.compact(force) }
-  async compactContext(): Promise<boolean> {
+  compactContextBudget(force = false, summaryFocus?: string): Promise<boolean> { return this.requestContext.compact(force, undefined, summaryFocus) }
+  async compactContext(summaryFocus?: string): Promise<boolean> {
     if (this.isRunning()) throw new Error('请等待当前任务结束后整理上下文')
     if (!this.requestContext.getBudgetPolicy()) throw new Error('无法确定模型上下文窗口，请检查模型的 contextWindow 配置后重试整理')
     this._running = true
@@ -199,7 +199,7 @@ export class AgentLoop {
       await this.cancelIdleCompaction()
       this.abortController = new AbortController()
       this.requestContext.refreshSnapshot()
-      const changed = await this.compactContextBudget(true)
+      const changed = await this.compactContextBudget(true, summaryFocus)
       this.requestContext.refreshSnapshot()
       return changed
     } finally { this._running = false; this.abortController = null }

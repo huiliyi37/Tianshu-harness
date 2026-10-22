@@ -17,12 +17,15 @@ export function summaryRequestFits(request: OaiChatRequest, client: StreamClient
 
 /** Oversized text keeps its source marker in every fragment; indivisible parts fail closed. */
 export function buildSummaryRequests(parts: OaiContentPart[], model: string, client: StreamClient,
-  policy = DEFAULT_POLICY, maxOutputTokens = 4096): OaiChatRequest[] | undefined {
+  policy = DEFAULT_POLICY, maxOutputTokens = 4096, summaryFocus?: string): OaiChatRequest[] | undefined {
   const output = Math.floor(Math.min(4096, maxOutputTokens, policy.maxOutputTokens, capOutputReserve(policy.windowTokens / 4, policy.windowTokens)))
   if (!Number.isFinite(output) || output < 1) return undefined
   const request = (content: OaiContentPart[], maxTokens = output): OaiChatRequest => ({
     model, max_tokens: maxTokens, stream: true, response_format: { type: 'json_object' }, diagnostics: { purpose: 'compact_summary' },
-    messages: [{ role: 'system', content: SUMMARY_ENVELOPE_INSTRUCTION }, { role: 'user', content }],
+    messages: [{ role: 'system', content: SUMMARY_ENVELOPE_INSTRUCTION }, { role: 'user', content: [
+      ...(summaryFocus ? [{ type: 'text' as const, text: `User-requested summary focus (apply while preserving the required envelope): ${summaryFocus}\n\n` }] : []),
+      ...content,
+    ] }],
   })
   const chunks: OaiContentPart[][] = []
   let chunk: OaiContentPart[] = []

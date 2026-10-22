@@ -52,7 +52,7 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/yes', description: '⚠ 同 /yolo——跳过所有权限确认并持久化为默认；off 退出。显式输入即视为确认', argsHint: 'off', tier: 'core' },
   { name: '/btw', description: '侧问 — 就当前会话问一句，不进对话历史', argsHint: '<问题>' },
   { name: '/queue', description: '排队一条消息到下轮——busy 时也可攒，回车随下条一并发送（无参预览队列）', argsHint: '<text>', tier: 'core' },
-  { name: '/compact', description: '压缩上下文：汇总工具输出、折叠已结讨论、保留关键决策。过半时主动用比等自动压缩更省 token', tier: 'core' },
+  { name: '/compact', description: '压缩上下文；可附重点，如 /compact 保留复现步骤与未完成测试。自动压缩不使用此重点', argsHint: '[重点 | status | llm | deep]', tier: 'core' },
   { name: '/connect', description: '连接模型服务商（选内置或自定义，填写 API 密钥）' },
   { name: '/login', description: 'OAuth 登录（codex 等订阅型服务商，浏览器完成授权；/connect 选 codex 后的下一步）', argsHint: '[provider]' },
   { name: '/disconnect', description: '断开服务商——整组删除该 key 注册的模型列表并清除密钥' },

@@ -551,6 +551,8 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       const sub = parts[1]?.toLowerCase()
       const msgs = ctx.session.getMessages()
       const beforeTokens = estimateOaiTokens(msgs)
+      const legacyStrategy = sub === 'llm' || sub === 'deep'
+      const focus = legacyStrategy ? '' : parts.slice(1).join(' ').trim()
 
       if (sub === 'status') {
         const compacts = ctx.session.getCompactEvents()
@@ -569,7 +571,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       // 320bdd0ee 同款的替身容忍；生产装配 promptEngine 恒在，行为不变）。
       if (ctx.agent.config?.promptEngine?.getRequestBudgetPolicy?.()) {
         setIsStreaming(true)
-        void ctx.agent.compactContext().then(changed => {
+        void ctx.agent.compactContext(focus || undefined).then(changed => {
           pushStatic(createLogEntry({ type: 'system', content: changed ? '上下文已整理，原始内容已归档。' : '未替换历史：当前没有足够的安全回收空间。' }))
         }, error => { pushStatic(createLogEntry({ type: 'system', content: String(error) })) }).finally(() => setIsStreaming(false))
         return true
@@ -583,7 +585,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       }
 
       // micro compact (default)
-      pushStatic(createLogEntry({ type: 'system', content: 'Micro-compacting conversation...' }))
+      pushStatic(createLogEntry({ type: 'system', content: focus
+        ? 'Micro-compacting conversation... 当前没有预算摘要策略，无法应用你指定的摘要重点；本次仅执行 micro compact。'
+        : 'Micro-compacting conversation...' }))
       const { messages: compacted, truncated } = microCompactOai(msgs, ctx.maxTokens, beforeTokens, new Map())
       ctx.session.replaceMessages(compacted)
       // 轻量测试替身没有 config.promptEngine——没有引擎也没有 appendix 基线可

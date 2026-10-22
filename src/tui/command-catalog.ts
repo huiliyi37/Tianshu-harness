@@ -85,7 +85,7 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/skill reject', displayOnly: true, description: '驳回并删除一个技能草稿' },
   { name: '/permission', description: '权限模式：监督 / 自动 / 全自动（无参弹选择器，持久化默认）', tier: 'core', hotkey: 'F7' },
   { name: '/mission', description: '天契 — 当前任务契约' },
-  { name: '/goal', description: '设定跨多轮的自主目标——agent 持续迭代直到达成或耗尽预算，输入框上方出现 GoalBar 显示进度', argsHint: '<目标> --max N' },
+  { name: '/goal', description: '查看或设定自主目标；pause/resume 暂停续跑，clear 清除，criteria 管理验收项，help 查看用法', argsHint: '[<目标>|status|pause|resume|clear|criteria|help]' },
   { name: '/goal-cancel', description: '终止当前正在跑的自主目标（别名 /cancel-goal）' },
   { name: '/goal-resume', description: '恢复一个被暂停或阻塞的目标' },
   { name: '/mcp', description: '查看 MCP 服务器连接状态+工具数。接外部工具后查健康度' },

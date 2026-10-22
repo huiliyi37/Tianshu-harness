@@ -104,6 +104,7 @@ import type { ChangeSet } from '../agent/review-discipline.js'
 import { HELP_TEXT } from './format/help-text.js'
 import { contractModels } from '../config/contract-models.js'
 import { handleEffortSlash, resolveActiveEffortChoices } from './effort-slash.js'
+import { GOAL_HELP_TEXT, normalizeGoalCriteriaArgs, parseGoalArgs, resolveGoalInvocation } from './goal-command.js'
 
 /**
  * Framework-agnostic mutable ref. Structurally compatible with React's
@@ -215,48 +216,6 @@ async function collectDirtyFiles(cwd: string): Promise<string[]> {
   } catch {
     return []
   }
-}
-
-interface ParsedGoalArgs {
-  goalText: string
-  maxIterations?: number
-  wallClockMs?: number
-  criteria?: string[]
-}
-
-/** 解析 /goal 命令行参数，支持 --max N / --budget M / --criteria '["..."]'
- *  其余部分合并为目标描述。 */
-function parseGoalArgs(parts: string[]): ParsedGoalArgs {
-  const out: ParsedGoalArgs = { goalText: '' }
-  const textParts: string[] = []
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i]!
-    if (p === '--max' && parts[i + 1]) {
-      const n = Number(parts[i + 1])
-      if (Number.isInteger(n) && n > 0) out.maxIterations = n
-      i++
-      continue
-    }
-    if (p === '--budget' && parts[i + 1]) {
-      const n = Number(parts[i + 1])
-      if (!Number.isNaN(n) && n > 0) out.wallClockMs = Math.round(n * 60000)
-      i++
-      continue
-    }
-    if (p === '--criteria' && parts[i + 1]) {
-      try {
-        const parsed = JSON.parse(parts[i + 1]!)
-        if (Array.isArray(parsed) && parsed.every((c: unknown) => typeof c === 'string')) {
-          out.criteria = parsed as string[]
-        }
-      } catch { /* ignore invalid JSON */ }
-      i++
-      continue
-    }
-    textParts.push(p)
-  }
-  out.goalText = textParts.join(' ').trim()
-  return out
 }
 
 /** 把 GoalTracker 状态持久化到会话目录（best-effort）。 */
@@ -1247,8 +1206,18 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     immediate: true,
     async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
-      const parsed = parseGoalArgs(parts.slice(1))
-      if (!parsed.goalText) {
+      const invocation = resolveGoalInvocation(parts.slice(1))
+      if (invocation.kind === 'help') {
+        pushStatic(createLogEntry({ type: 'system', content: GOAL_HELP_TEXT }))
+        setIsStreaming(false)
+        return true
+      }
+      if (invocation.kind === 'control') {
+        return await handleSlashCommand({ ...ctx, parts: [invocation.command, ...invocation.args] })
+      }
+      const parsed = parseGoalArgs(invocation.args, invocation.literal)
+      if (parsed.error) {
+        pushStatic(createLogEntry({ type: 'system', content: parsed.error, isError: true }))
         pushStatic(createLogEntry({ type: 'system', content: 'Usage: /goal <task description> [--max N] [--budget M] [--criteria \'["..."]\']\nSets a persistent goal. The agent will auto-continue until the goal is achieved or the budget is exhausted.\nCancel with /goal-cancel.' }))
         setIsStreaming(false)
         return true
@@ -1330,7 +1299,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   {
     name: '/goal-resume',
     immediate: true,
-    handler(ctx) {
+    async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
       const cmd = parts[0]!.toLowerCase()
       const tracker = ctx.goalTrackerRef?.current
@@ -1346,6 +1315,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         return true
       }
       tracker.resume('user')
+      await persistGoalState(ctx, tracker)
       const wallElapsed = Math.round(tracker.getWallClockElapsedMs() / 1000)
       pushStatic(createLogEntry({ type: 'system', content: `▶️ Goal resumed: ${tracker.getGoal()}\nIteration: ${tracker.getIteration()}/${tracker.getMaxIterations()} | ⏱ ${wallElapsed}s elapsed.` }))
       ctx.submitToAgent?.(`[GOAL RESUME] 继续执行目标: ${tracker.getGoal()}`)
@@ -1355,7 +1325,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   {
     name: '/goal-criteria',
     immediate: true,
-    handler(ctx) {
+    async handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
       const cmd = parts[0]!.toLowerCase()
       const tracker = ctx.goalTrackerRef?.current
@@ -1367,7 +1337,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       const subCmd = parts[1]?.toLowerCase()
       if (subCmd === 'set') {
         // /goal-criteria set <json array>
-        const jsonText = parts.slice(2).join(' ').trim()
+        const jsonText = normalizeGoalCriteriaArgs(parts.slice(1)).slice(1).join(' ').trim()
         if (!jsonText) {
           pushStatic(createLogEntry({ type: 'system', content: 'Usage: /goal-criteria set \'["criterion 1", "criterion 2"]\'' }))
           setIsStreaming(false)
@@ -1379,6 +1349,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
             throw new Error('Expected a JSON array of strings')
           }
           tracker.setSuccessCriteria(criteria as string[])
+          await persistGoalState(ctx, tracker)
           pushStatic(createLogEntry({ type: 'system', content: `✅ 验收项已更新（${(criteria as string[]).length} 项）:\n${(criteria as string[]).map((c, i) => `${i + 1}. ${c}`).join('\n')}` }))
         } catch (e) {
           pushStatic(createLogEntry({ type: 'system', content: `❌ 解析失败: ${(e as Error).message}` }))
@@ -3780,9 +3751,9 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
 
 export async function handleSlashCommand(ctx: SlashHandlerContext): Promise<boolean> {
   const cmd = ctx.parts[0]!.toLowerCase()
-  const command = TUI_SLASH_COMMANDS.find(c => c.name === cmd)
+  const command = TUI_SLASH_COMMANDS.find(c => c.name === cmd || c.aliases?.includes(cmd))
   if (!command) return false
-  return await command.handler(ctx)
+  return await command.handler(cmd === command.name ? ctx : { ...ctx, parts: [command.name, ...ctx.parts.slice(1)] })
 }
 
 /**

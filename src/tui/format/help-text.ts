@@ -42,7 +42,8 @@ export const HELP_TEXT = `天枢帮助
 /write-plan — Write current plan to file
 /ask — Enter/exit Ask mode (read-only Q&A)
 /interview <topic> — Deep interview before coding
-/goal <objective> [--max N] [--budget M] [--criteria '["..."]'] — Set autonomous goal
+/goal [<目标>|status|pause|resume|clear|criteria|help] — 查看或管理自主目标；原有独立命令仍可用
+/goal <目标> [--max N] [--budget M] [--criteria '["..."]'] — 设置目标（M 为分钟）；/goal -- <目标> 按字面设置
 /goal-status — Show current goal state
 /goal-pause — Pause active goal
 /goal-resume — Resume paused/blocked goal

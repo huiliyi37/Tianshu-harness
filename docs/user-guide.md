@@ -312,6 +312,8 @@ tianshu --resume abc123            # 恢复指定会话（短前缀即可）
 tianshu --resume                   # 启动后打开会话选择器
 ```
 
+会话内 `/resume` 无参数打开选择器，`Space` 按需预览会话记录。可用 `/resume 修复认证问题` 或 `/resume "修复认证问题"` 按完整标题恢复（忽略大小写）；多个同名会话会列出候选并拒绝误切。数字仍按 `/sessions` 中的序号解释；如果 ID 前缀本身全是数字，使用 `/resume --id 12345678` 明确指定 ID。完整 ID 优先于标题，非完整 ID 前缀在标题之后匹配。CLI 的 `--resume <id|前缀>` 继续沿用原有规则。
+
 ### Council（多视角审查）
 
 ```
@@ -617,7 +619,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | 命令 | 说明 |
 |------|------|
 | `/help` | 显示可用命令 |
-| `/sessions` `/resume <n>` | 列出/恢复已保存会话（恢复侧栏、待办、活动计划） |
+| `/sessions` `/resume [序号\|ID前缀\|完整标题]` | 列出/恢复已保存会话；无参打开选择器，Space 预览；重名时提示候选，`/resume --id <ID前缀>` 可明确选择数字前缀（恢复侧栏、待办、活动计划） |
 | `/fork` | 分叉当前会话（可选从某条消息起） |
 | `/handoff [备注]` | 写结构化交接文档（五章节）到按 sessionId + requestId 隔离的 `.rivet/HANDOFF-*.md` 并归档至 `<id>.handoff.md`（`<prev-session-handoff>` 自动注入新会话默认关闭，可通过 `RIVET_PREV_HANDOFF=1` 开启） |
 | `/init` | 交互式项目初始化：verify 声明 / skills / hooks 脚手架 |

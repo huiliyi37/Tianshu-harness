@@ -43,6 +43,68 @@ export function inputCaretAt(value: string, line: number, column: number, width:
   return value.length
 }
 
+/** One soft-wrapped composer row: graphemes with their cell columns (prefix excluded). */
+export interface InputVisualRow {
+  start: number
+  end: number
+  /** The caret may rest at `end` on this row only when a logical line ends there. */
+  endInclusive: boolean
+  cells: Array<{ offset: number; col: number; width: number }>
+}
+
+/** Same wrap rule as the hardware-cursor renderer, so ↑/↓ follow what the user sees. */
+export function inputVisualRows(value: string, width: number): InputVisualRow[] {
+  let segmenter: Intl.Segmenter | undefined
+  try { segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' }) } catch { /* code-point fallback */ }
+  const rows: InputVisualRow[] = []
+  let lineStart = 0
+  for (const logical of value.split('\n')) {
+    let row: InputVisualRow = { start: lineStart, end: lineStart, endInclusive: false, cells: [] }
+    let col = 0
+    let offset = lineStart
+    const parts = segmenter ? Array.from(segmenter.segment(logical), part => part.segment) : Array.from(logical)
+    for (const part of parts) {
+      const cells = Math.max(1, displayWidth(part, { ambiguousAsWide: ambiguousWideEnabled() }))
+      if (col > 0 && col + cells > width) {
+        rows.push(row)
+        row = { start: offset, end: offset, endInclusive: false, cells: [] }
+        col = 0
+      }
+      row.cells.push({ offset, col, width: cells })
+      col += cells
+      offset += part.length
+      row.end = offset
+    }
+    row.endInclusive = true
+    rows.push(row)
+    lineStart = offset + 1
+  }
+  return rows
+}
+
+/** Visual row and cell column of a buffer offset. */
+export function inputVisualPosition(rows: InputVisualRow[], offset: number): { row: number; col: number } {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!
+    if (offset < row.start || offset > row.end || (offset === row.end && !row.endInclusive)) continue
+    const cell = row.cells.find(c => c.offset === offset)
+    const last = row.cells.at(-1)
+    return { row: i, col: cell ? cell.col : last ? last.col + last.width : 0 }
+  }
+  return { row: Math.max(0, rows.length - 1), col: 0 }
+}
+
+/** Buffer offset nearest to a cell column on a visual row (never past a soft-wrap point).
+ *  A column inside a wide grapheme snaps to its nearer edge, so CJK/emoji keep the visual column. */
+export function inputOffsetAtVisual(rows: InputVisualRow[], rowIndex: number, col: number): number {
+  const row = rows[Math.max(0, Math.min(rowIndex, rows.length - 1))]
+  if (!row) return 0
+  const cell = row.cells.find(c => col < c.col + c.width / 2)
+  if (cell) return cell.offset
+  if (row.endInclusive || row.cells.length === 0) return row.end
+  return row.cells.at(-1)!.offset
+}
+
 interface VisualLine {
   text: string
   cursor: boolean

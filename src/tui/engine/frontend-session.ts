@@ -348,6 +348,14 @@ export class FrontendSession {
     if (!hit) return null
     return { line: hit.line, column: Math.max(0, x - 1 - hit.startCol) }
   }
+  /** 拖选越出输入框时贴到最近的输入行：上方取行首，下方取行尾。 */
+  composerHitNearest(x: number, y: number): { line: number; column: number } | null {
+    const hit = this.composerHit(x, y)
+    if (hit || !this.composer.length) return hit
+    const above = y < this.composer[0]!.y
+    const row = above ? this.composer[0]! : this.composer.at(-1)!
+    return { line: row.line, column: above ? 0 : Number.MAX_SAFE_INTEGER }
+  }
   private selectionBounds(selection: Selection): [SelectionPoint, SelectionPoint] {
     const { start, end } = selection
     return start.y < end.y || (start.y === end.y && start.x <= end.x) ? [start, end] : [end, start]

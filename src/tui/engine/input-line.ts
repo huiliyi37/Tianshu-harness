@@ -121,7 +121,7 @@ const PASTE_FOLD_MIN_CHARS = 1000
 const PASTE_MARKER_RE = /\[paste #(\d+) \+\d+ lines?\]/g
 
 import { ambiguousWideEnabled, displayWidth } from '../width.js'
-import { inputCaretAt, inputDisplayWidth, wrapInputLines, viewportWithCaret } from './input-layout.js'
+import { inputCaretAt, inputDisplayWidth, inputOffsetAtVisual, inputVisualPosition, inputVisualRows, wrapInputLines, viewportWithCaret } from './input-layout.js'
 
 /**
  * Grapheme 边界缓存：Intl.Segmenter 对整串分段是 O(n)，而 prevGrapheme/
@@ -237,6 +237,14 @@ export class InputLine {
   /** 粘滞换行模式（对齐公开仓 newlineMode）：开启后 Enter=插入换行。 */
   private _newlineMode = false
 
+  // ── ↑/↓ 导航（对齐 codex）──
+  /** 最近一次渲染的内容宽度（不含 `❯ ` 前缀）；↑/↓ 按同一软换行规则走视觉行。 */
+  private _layoutWidth = Infinity
+  /** 最近召回的历史条目原文；仅当输入框内容与之逐字相同时 ↑/↓ 才继续翻历史。 */
+  private _recalled: string | null = null
+  /** 连续 ↑/↓ 的目标列（跨短行时保持），其他按键复位。 */
+  private _preferredCol: number | null = null
+
   constructor(options: InputLineOptions = {}) {
     this._value = options.value ?? ''
     this._cursor = this._value.length
@@ -291,11 +299,58 @@ export class InputLine {
   }
 
   placeVisibleCaret(line: number, column: number, width: number, maxLines: number): void {
+    this.selectVisible(line, column, width, maxLines, 'caret')
+  }
+
+  /**
+   * 鼠标操作输入框（全屏渲染器）：caret=单击落点；start=按下并设锚点；extend=拖动扩展选区；
+   * word/line=双击选词、三击选整行。坐标与 placeVisibleCaret 同口径（显示行 + 内容列）。
+   */
+  selectVisible(line: number, column: number, width: number, maxLines: number, mode: 'caret' | 'start' | 'extend' | 'word' | 'line'): boolean {
     const wrapped = wrapInputLines(this._value, this._cursor, width)
     const view = viewportWithCaret(wrapped.lines, wrapped.cursorLine, maxLines)
-    if (view.lines[line]?.startsWith('… ')) return
-    const start = wrapped.cursorLine - view.caretLine
-    this.placeCaret(Math.max(0, start + line), column, Math.max(1, width - displayWidth('❯ ', { ambiguousAsWide: ambiguousWideEnabled() })), this._cursor)
+    if (view.lines[line]?.startsWith('… ')) return false
+    const row = Math.max(0, wrapped.cursorLine - view.caretLine + line)
+    const offset = this.snapToGrapheme(inputCaretAt(this._value, row, column, Math.max(1, width - displayWidth('❯ ', { ambiguousAsWide: ambiguousWideEnabled() })), this._cursor))
+    this.sealUndo()
+    this._preferredCol = null
+    let anchor: number | null = mode === 'extend' ? this._selAnchor ?? this._cursor : mode === 'start' ? offset : null
+    let cursor = offset
+    if (mode === 'line') {
+      anchor = this._value.lastIndexOf('\n', offset - 1) + 1
+      cursor = this._value.indexOf('\n', offset) < 0 ? this._value.length : this._value.indexOf('\n', offset)
+    } else if (mode === 'word') {
+      const bounds = this.graphemeBounds()
+      const kind = (at: number): UndoKind | null => {
+        const end = boundaryAfter(bounds, at)
+        const text = this._value.slice(at, end)
+        return end < 0 || text === '\n' ? null : classifyInsert(text)
+      }
+      const at = offset >= this._value.length ? boundaryBefore(bounds, offset) : offset
+      const target = kind(at)
+      anchor = at
+      cursor = target ? boundaryAfter(bounds, at) : at
+      const run = target !== null && target !== 'insert-other'
+      while (run && anchor > 0 && kind(boundaryBefore(bounds, anchor)) === target) anchor = boundaryBefore(bounds, anchor)
+      while (run && cursor < this._value.length && kind(cursor) === target) cursor = boundaryAfter(bounds, cursor)
+    }
+    this._selAnchor = anchor
+    this._cursor = cursor
+    this.onChangeCallback?.(this._value, this._cursor)
+    return true
+  }
+
+  /** 选区原文（折叠粘贴标记展开为原文）；无选区为 null。 */
+  get selectedText(): string | null {
+    const r = this.selectionRange
+    return r ? this.expandPastes(this._value.slice(r.start, r.end)) : null
+  }
+
+  /** 取消选区（外部选区接管时调用）；原本有选区时返回 true。 */
+  clearSelection(): boolean {
+    const had = this.selectionRange !== null
+    this.collapseSelection()
+    return had
   }
 
   /** 启用/停用 vim 键位。停用或启用时都复位到 insert 模式，避免残留 normal 态吞字符。 */
@@ -338,6 +393,7 @@ export class InputLine {
     const ambiguousAsWide = ambiguousWideEnabled()
     const prefixWidth = inputDisplayWidth('❯ ', ambiguousAsWide)
     const softwareCursor = options.softwareCursor ?? false
+    if (options.maxWidth !== undefined) this._layoutWidth = Math.max(1, options.maxWidth - prefixWidth)
     if (!this._value) {
       const marker = softwareCursor ? "█" : ""
       return { lines: [`❯ ${marker}${this._placeholder}`], caret: { line: 0, col: prefixWidth } }
@@ -381,6 +437,8 @@ export class InputLine {
    *  命中折叠阈值的长粘贴收纳为原子标记 `[paste #N +M lines]`（原文旁路存储）。 */
   insertText(text: string): void {
     if (!text) return
+    // 粘贴覆盖选区（常规编辑器语义）；vim visual 的选区由其自身命令处理。
+    if (this._vimMode !== 'visual' && this.selectionRange) this.deleteSelection()
     const lineCount = text.split('\n').length
     if (lineCount > PASTE_FOLD_MIN_LINES || text.length > PASTE_FOLD_MIN_CHARS) {
       const id = ++this._pasteSeq
@@ -540,6 +598,7 @@ export class InputLine {
    * 处理按键。返回处理后的文本值（如果需要渲染）。
    */
   handleKey(name: string, char: string, ctrl: boolean, meta: boolean, shift = false): InputLineEvent | null {
+    if (name !== 'up' && name !== 'down') this._preferredCol = null
     // ── 全局键 ─────────────────────────────────────────────────
     if (name === 'return' && (shift || meta)) {
       return this.insertChar('\n')
@@ -592,8 +651,14 @@ export class InputLine {
     if (meta && char === 'w') return this.copySelection()
     if (meta && char === 'y') return this.yankClipboard()
     if (ctrl && name === 'ctrl_k' && this.selectionRange) return this.cutSelection()
-    if (!ctrl && !meta && (name === 'backspace' || name === 'delete') && this.selectionRange) {
+    // 有选区时：删除类键（含词删/行删）删整个选区；insert 态输入可打印字符替换选区（对齐 codex）。
+    const hadSelection = this.selectionRange !== null
+    if (hadSelection && (name === 'backspace' || name === 'delete' || ['ctrl_h', 'ctrl_w', 'ctrl_u', 'ctrl_d'].includes(name))) {
       return this.deleteSelection()
+    }
+    if (hadSelection && !ctrl && !meta && this._vimMode === 'insert' && char && !/[\x00-\x1f\x7f]/.test(char)) {
+      this.deleteSelection()
+      return this.insertChar(char)
     }
     this.collapseSelection()
 
@@ -633,8 +698,8 @@ export class InputLine {
       case 'right': return this.moveRight()
       case 'home': return this.moveHome()
       case 'end': return this.moveEnd()
-      case 'up': return this.moveUpOrHistory()
-      case 'down': return this.moveDownOrHistory()
+      case 'up': return this.moveVertical(-1, hadSelection)
+      case 'down': return this.moveVertical(1, hadSelection)
 
       default: break
     }
@@ -761,6 +826,7 @@ export class InputLine {
     this._redoChars = 0
     this.sealUndo()
     this._draft = null
+    this._recalled = null
     this._pastes.clear()
     this._selAnchor = null // 内部剪贴板随会话保留（常规剪贴板语义）
     this._visualLineWise = false
@@ -954,52 +1020,51 @@ export class InputLine {
     return pos
   }
 
-  /** Up：多行且不在首行时上移一行，否则取上一条历史。 */
-  private moveUpOrHistory(): InputLineEvent | null {
-    if (this._value.includes('\n')) {
-      // 多行：方向键专注行间导航，到首行原地停，不翻历史（防误触——
-      // 多行编辑时光标频繁停在首行，按上想继续编辑却跳走）。
-      // 多行时翻历史用 Ctrl+N（下一条）/ Ctrl+R（历史搜索）；Ctrl+P 已让位
-      // 给命令面板，多行时上一条历史经 Ctrl+R 全屏搜索可达。
-      const { line, col } = this.getLineCol(this._cursor)
-      if (line > 0) {
-        this.sealUndo()
-        this._cursor = this.posFromLineCol(line - 1, col)
-        return { type: 'change', value: this._value, cursor: this._cursor }
-      }
-      return null
+  /**
+   * ↑/↓（对齐 codex）：仅当输入框为空，或内容是未改动的已召回历史且光标在首/尾时翻历史——
+   * 编辑中的草稿永不被方向键换走。其余情况按软换行后的视觉行移动并保持目标列；
+   * 首行再按 ↑ 回到开头、末行再按 ↓ 到结尾（下一次 ↑/↓ 才可能翻历史）。
+   * 有选区时只移动光标（codex 同口径）。
+   */
+  private moveVertical(dir: -1 | 1, hadSelection = false): InputLineEvent | null {
+    const atEdge = this._cursor === 0 || this._cursor === this._value.length
+    if (!hadSelection && (this._value === '' || (atEdge && this._recalled === this._value))) {
+      const ev = dir < 0 ? this.historyPrev() : this.historyNext()
+      if (ev) return ev
     }
-    return this.historyPrev()
+    const rows = inputVisualRows(this._value, this._layoutWidth)
+    const pos = inputVisualPosition(rows, this._cursor)
+    const target = pos.row + dir
+    let next: number
+    if (target < 0 || target >= rows.length) {
+      next = target < 0 ? 0 : this._value.length
+      this._preferredCol = null
+    } else {
+      this._preferredCol ??= pos.col
+      next = this.snapToGrapheme(inputOffsetAtVisual(rows, target, this._preferredCol))
+    }
+    if (next === this._cursor) return null
+    this.sealUndo()
+    this._cursor = next
+    return { type: 'change', value: this._value, cursor: this._cursor }
   }
 
-  /** Down：多行时专注行间导航（末行原地停，不翻历史）；单行取下一条历史。 */
-  private moveDownOrHistory(): InputLineEvent | null {
-    if (this._value.includes('\n')) {
-      const { line, col } = this.getLineCol(this._cursor)
-      const lastLine = this._value.split('\n').length - 1
-      if (line < lastLine) {
-        this.sealUndo()
-        this._cursor = this.posFromLineCol(line + 1, col)
-        return { type: 'change', value: this._value, cursor: this._cursor }
-      }
-      return null
-    }
-    return this.historyNext()
+  /** 落点吸附到合法 grapheme 边界（折叠粘贴标记内部不可停留）。 */
+  private snapToGrapheme(offset: number): number {
+    const bounds = this.graphemeBounds()
+    return bounds.includes(offset) ? offset : boundaryBefore(bounds, offset)
   }
 
   // ── History ──────────────────────────────────────────────────
 
   private historyPrev(): InputLineEvent | null {
-    if (this._history.length === 0) return null
+    if (this._historyIdx >= this._history.length - 1) return null
     this.recordUndo('replace')
-    if (this._historyIdx === -1) {
-      // P1-2：首次上翻暂存在输草稿，回到 historyNext(-1) 时恢复（shell 式往返）。
-      this._draft = this._value
-      this._historyIdx = 0
-    }
-    else if (this._historyIdx < this._history.length - 1) this._historyIdx++
-    else { this.sealUndo(); return null }
+    // P1-2：首次上翻暂存在输草稿，回到 historyNext(-1) 时恢复（shell 式往返）。
+    if (this._historyIdx === -1) this._draft = this._value
+    this._historyIdx++
     this._value = this._history[this._historyIdx] ?? ''
+    this._recalled = this._value
     this._cursor = this._value.length
     this.onChangeCallback?.(this._value, this._cursor)
     return { type: 'change', value: this._value, cursor: this._cursor }
@@ -1013,9 +1078,11 @@ export class InputLine {
       this._historyIdx = -1
       this._value = this._draft ?? ''
       this._draft = null
+      this._recalled = null
     } else {
       this._historyIdx--
       this._value = this._history[this._historyIdx] ?? ''
+      this._recalled = this._value
     }
     this._cursor = this._value.length
     this.onChangeCallback?.(this._value, this._cursor)
@@ -1041,8 +1108,8 @@ export class InputLine {
       case 'ctrl_f': return this.moveRight()
       case 'home': return this.moveHome()
       case 'end': return this.moveEnd()
-      case 'up': return this.historyPrev()
-      case 'down': return this.historyNext()
+      case 'up': return this.moveVertical(-1)
+      case 'down': return this.moveVertical(1)
       case 'ctrl_minus':
       case 'ctrl_z': return this.undo()
       case 'ctrl_y': return this.redo()

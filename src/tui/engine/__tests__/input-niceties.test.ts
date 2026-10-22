@@ -2,7 +2,7 @@
  * T9 输入框文本输入打磨测试（Block D）。
  *
  * D1: CJK/emoji 光标按 grapheme 步进（一次跨一个用户字符）。
- * D2: 多行 Up/Down 行内导航，单行/边界回退到历史。
+ * D2: 多行 Up/Down 行内导航；仅空输入框或未改动的召回历史才翻历史（对齐 codex）。
  * D3: `\`+Enter 续行后光标落在换行符之后。
  */
 
@@ -53,12 +53,13 @@ describe('D2 · multi-line Up/Down', () => {
     assert.equal(input.cursor, 4)
   })
 
-  it('single-line Up falls back to history', () => {
-    let historyValue: string | null = null
-    const input = new InputLine({ value: 'current', history: ['prev1'], onChange: (v) => { historyValue = v } })
+  it('single-line Up on a draft moves to the start instead of replacing it with history', () => {
+    const input = new InputLine({ value: 'current', history: ['prev1'] })
     input.handleKey('up', '', false, false)
-    assert.equal(input.value, 'prev1', '单行 Up 走历史')
-    assert.equal(historyValue, 'prev1')
+    assert.equal(input.value, 'current', '编辑中的草稿不被历史换走')
+    assert.equal(input.cursor, 0)
+    input.handleKey('up', '', false, false)
+    assert.equal(input.value, 'current', '光标已在开头仍不翻历史（codex 同口径）')
   })
 
   it('Up preserves a grapheme column without splitting a ZWJ emoji', () => {

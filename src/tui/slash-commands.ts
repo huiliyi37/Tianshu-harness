@@ -547,11 +547,12 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
       const cmd = parts[0]!.toLowerCase()
-      const sub = parts[1]?.toLowerCase()
+      const literalFocus = parts[1] === '--'
+      const sub = !literalFocus && parts.length === 2 ? parts[1]?.toLowerCase() : undefined
       const msgs = ctx.session.getMessages()
       const beforeTokens = estimateOaiTokens(msgs)
       const legacyStrategy = sub === 'llm' || sub === 'deep'
-      const focus = legacyStrategy ? '' : parts.slice(1).join(' ').trim()
+      const focus = legacyStrategy ? '' : parts.slice(literalFocus ? 2 : 1).join(' ').trim()
 
       if (sub === 'status') {
         const compacts = ctx.session.getCompactEvents()

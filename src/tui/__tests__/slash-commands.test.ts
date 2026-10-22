@@ -1126,9 +1126,16 @@ describe('/compact 轻量替身容忍（mock 无 config.promptEngine）', () => 
       config: { ...base.config, promptEngine: { getRequestBudgetPolicy: () => ({ windowTokens: 128_000 }) } },
       compactContext: async (value?: string) => { focus = value; return true },
     }
-    await handleSlashCommand(makeCtx({ agent, session: session as any, parts: ['/compact', '保留认证复现', '和未完成测试'], pushStatic: entry => entries.push(entry.content) }))
-    await new Promise(resolve => setImmediate(resolve))
-    assert.equal(focus, '保留认证复现 和未完成测试')
+    for (const [args, expected] of [
+      [['保留认证复现', '和未完成测试'], '保留认证复现 和未完成测试'],
+      [['llm', 'migration', 'details'], 'llm migration details'],
+      [['status', 'of', 'pending', 'tests'], 'status of pending tests'],
+      [['--', 'status'], 'status'],
+    ] as const) {
+      await handleSlashCommand(makeCtx({ agent, session: session as any, parts: ['/compact', ...args], pushStatic: entry => entries.push(entry.content) }))
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(focus, expected)
+    }
 
     entries.length = 0
     mock.timers.enable({ apis: ['setTimeout'] })

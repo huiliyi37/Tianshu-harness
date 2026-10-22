@@ -108,7 +108,7 @@ export const HELP_TEXT = `天枢帮助
 
 上下文、诊断与环境
 
-/compact [status|llm] — Micro-compact context (/compact status for stats)
+/compact [status|重点] — 整理当前上下文；重点用于本次摘要，status 查看占用；-- 后按字面指定重点
 /context [pin|claims|antibodies|conflicts|reload|export|import] — Context ledger
 /memory [text|add|search|forget] — Session memory entries
 /debug [prompt|fingerprint|cache|context-payload|mcp] — Debug info

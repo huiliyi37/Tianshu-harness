@@ -680,7 +680,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 
 | 命令 | 说明 |
 |------|------|
-| `/compact [重点]` | 立即压缩上下文；重点用于本次结构化摘要，如 `/compact 保留复现步骤和未完成测试`。自动压缩不继承此重点；`/compact status` 只读，`llm` / `deep` 保持兼容 |
+| `/compact [重点]` | 立即压缩上下文；重点用于本次结构化摘要，如 `/compact 保留复现步骤和未完成测试`。自动压缩不继承此重点；单独 `status` 只读、单独 `llm` / `deep` 保持兼容；`/compact -- status` 把 status 当作重点 |
 | `/context` | 显示上下文账本：健康度、tokens、回合、声明 |
 | `/evidence` | 显示证据摘要（读取/修改的文件、测试） |
 | `/memory` | 记忆概览；`/memory add <内容>` 写入项目知识，`/memory search <关键词>` 检索 |

@@ -1842,25 +1842,41 @@ describe('/handoff 命令', () => {
 
   it('注入 submitToAgent 时提交交接指令并登记归档任务', async () => {
     let submitted = ''
-    let registered: { src: string; dest: string } | undefined
+    let registered: { sourcePath: string; destinationPath: string } | undefined
     const ctx = makeCtx({
       parts: ['/handoff', '重点记下缓存方案'],
       submitToAgent: (prompt: string) => { submitted = prompt },
-      onHandoffStart: (src: string, dest: string) => { registered = { src, dest } },
+      onHandoffStart: (request) => { registered = request },
       currentSessionId: 'sess-handoff-001',
     })
     const handled = await handleSlashCommand(ctx)
     assert.equal(handled, true)
-    // 交接指令指向项目内 .rivet/HANDOFF.md（工作区内免审批）。
-    // 期望与实现同源构造：实现把 projectPath 归一为正斜杠（跨平台输出恒为 POSIX 形态），
-    // 期望同步归一——Windows 上裸 join 会产出 \cwd\... 形态，不归一即失配（#189 族）。
-    const handoffPath = join('/cwd', '.rivet', 'HANDOFF.md').replaceAll('\\', '/')
-    assert.ok(submitted.includes(handoffPath), `prompt 含项目内路径: ${submitted.slice(0, 200)}`)
+    assert.match(submitted, /\.rivet\/HANDOFF-sess-handoff-001-[0-9a-f-]+\.md/i)
+    assert.match(submitted, /绝不能覆盖/)
     assert.match(submitted, /## 任务目标/)
     assert.match(submitted, /用户补充指示：重点记下缓存方案/)
     // 归档任务：src=项目内文档，dest=会话目录 <id>.handoff.md
-    assert.equal(registered?.src, handoffPath)
-    assert.ok(registered?.dest.includes('sess-handoff-001.handoff.md'), `dest: ${registered?.dest}`)
+    assert.ok(registered?.sourcePath && submitted.includes(registered.sourcePath.replaceAll('\\', '/')))
+    assert.ok(registered?.destinationPath.includes('sess-handoff-001.handoff.md'), `dest: ${registered?.destinationPath}`)
+  })
+
+  it('两个交错会话的 handler 注册不同完整身份源文件', async () => {
+    const requests: Array<{ sourcePath: string; destinationPath: string }> = []
+    for (const sessionId of ['session-full-id-A', 'session-full-id-B']) {
+      await handleSlashCommand(makeCtx({
+        parts: ['/handoff'],
+        submitToAgent: () => {},
+        onHandoffStart: request => requests.push(request),
+        currentSessionId: sessionId,
+      }))
+    }
+    assert.equal(requests.length, 2)
+    assert.notEqual(requests[0]!.sourcePath, requests[1]!.sourcePath)
+    for (const [index, sessionId] of ['session-full-id-A', 'session-full-id-B'].entries()) {
+      assert.ok(requests[index]!.sourcePath.includes(sessionId), `源路径保留完整 sessionId：${requests[index]!.sourcePath}`)
+      assert.match(requests[index]!.sourcePath, /[0-9a-f-]{36}\.md$/i, '请求源文件带 UUID requestId')
+      assert.ok(requests[index]!.destinationPath.endsWith(`${sessionId}.handoff.md`))
+    }
   })
 })
 

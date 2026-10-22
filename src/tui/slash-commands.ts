@@ -42,7 +42,7 @@ import { formatVolatilePayloadReport } from '../context/payload-diagnostic.js'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { basename, join, resolve } from 'node:path'
-import { buildHandoffPrompt } from './handoff.js'
+import { buildHandoffPrompt, createHandoffRequest } from './handoff.js'
 import { ensureVerifyDeclaration, renderRivetMdStack, upsertStackSection } from '../bootstrap/verify-declaration.js'
 import { exportsDir } from '../config/paths.js'
 import { listPlans, rejectPlan, resolvePlanOptionLabel, resolvePlanRef, stripCopiedTitleSuffix } from '../plan/plan-store.js'
@@ -191,9 +191,8 @@ export interface SlashHandlerContext {
   /** Submit a prompt directly to the agent pipeline, bypassing slash routing.
    *  Used by commands that need to transform the input before sending (e.g. /goal). */
   submitToAgent?: (prompt: string) => void
-  /** /handoff 发起时登记归档任务（src=项目内 .rivet/HANDOFF.md，dest=会话目录 <id>.handoff.md）——
-   *  TUI 在交接 turn 完成后把 src 拷贝归档到 dest（loadPrevHandoff 注入管线认 dest）。 */
-  onHandoffStart?: (src: string, dest: string) => void
+  /** /handoff 发起时登记唯一源文件与会话归档目标。 */
+  onHandoffStart?: (request: import('./handoff.js').HandoffRequest) => void
   /** Mutable ref to the current GoalTracker. Set when /goal creates a tracker;
    *  read by deliver_task's B1Context for auto-review gating. */
   goalTrackerRef?: { current: import('../agent/goal-tracker.js').GoalTracker | null }
@@ -1015,13 +1014,12 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         return true
       }
       // 项目内 .rivet/ 在工作区内（auto-safe 免审批）；会话目录在工作区外会触发路径审批。
-      // projectPath 归一正斜杠：它进入给模型的交接指令文本与归档登记（跨平台期望
-      // 一致；Windows 的 join 产出反斜杠会泄漏平台分隔符——fs 两种都接受）。
-      const projectPath = join(agent.cwd, '.rivet', 'HANDOFF.md').replaceAll('\\', '/')
+      // projectPath 归一正斜杠供提示词使用；底层文件系统也接受 Windows 原生路径。
       const archivePath = join(getSessionDir(agent.cwd), `${ctx.currentSessionId}.handoff.md`)
-      // 归档登记：交接 turn 完成后 TUI 把项目内文档拷贝归档到会话目录
-      // （loadPrevHandoff 注入管线认 <id>.handoff.md）。
-      ctx.onHandoffStart?.(projectPath, archivePath)
+      const request = createHandoffRequest(agent.cwd, ctx.currentSessionId, archivePath)
+      const projectPath = request.sourcePath.replaceAll('\\', '/')
+      // 归档登记：完成、中断或失败时均清理 pending 并给出归档结果。
+      ctx.onHandoffStart?.({ ...request, sourcePath: projectPath })
       ctx.submitToAgent(buildHandoffPrompt(projectPath, note))
       return true
     },
@@ -3899,7 +3897,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
           })()
         : undefined,
       submitToAgent: (prompt: string) => { app.submitText(prompt) },
-      onHandoffStart: (src: string, dest: string) => { app.pendingHandoffCopy = { src, dest, sinceMs: Date.now() } },
+      onHandoffStart: (request) => { app.pendingHandoffCopy = request },
       goalTrackerRef: ctx.refs.goalTrackerRef,
       reviewGateRef: ctx.refs.reviewGateRef,
       surfacePush: (id: string) => { app.activateOverlay(id) },

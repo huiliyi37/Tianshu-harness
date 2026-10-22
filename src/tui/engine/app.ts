@@ -121,7 +121,7 @@ import {
   type AskUserQuestionItem,
 } from '../../tools/ask-user-question.js'
 import { type AskQuestionPanelData } from '../format/ask-question-panel.js'
-import { HANDOFF_NUDGE_RATIO, formatHandoffNudge } from '../handoff.js'
+import { HANDOFF_NUDGE_RATIO, completeHandoffRequest, formatHandoffNudge, type HandoffRequest } from '../handoff.js'
 import { STAR_GENESIS } from '../../agent/star-genesis-data.js'
 import {
   delegationObjectiveFromInput,
@@ -134,7 +134,7 @@ import { notifySequence } from './terminal-notify.js'
 import { extractAtToken, getCompletions, applyCompletion } from '../file-completer.js'
 import stringWidth from 'string-width'
 import { resolve } from 'node:path'
-import { existsSync, copyFileSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { parseMentions } from '../mention-parser.js'
 import { parseMissionDraft, shouldPreviewContract, formatContractPreview, type MissionDraft } from '../mission-draft.js'
 import { truncateToDisplayWidth, displayWidth, ambiguousWideEnabled } from '../width.js'
@@ -731,9 +731,8 @@ export class TuiApp {
    * returnTo 记录退出 pager 后回哪个面板（审批卡 / plan-picker）。
    */
   private planPreview: { slug: string; draftPath?: string; returnTo?: 'approval' | 'plan-picker' } | null = null
-  /** /handoff 登记的归档任务：交接 turn 完成（isFinal）后把项目内 .rivet/HANDOFF.md
-   *  拷贝归档到会话目录 <id>.handoff.md（loadPrevHandoff 注入管线认的位置）。 */
-  pendingHandoffCopy: { src: string; dest: string; sinceMs: number } | undefined = undefined
+  /** 当前会话尚待完成归档的唯一 /handoff 请求。 */
+  pendingHandoffCopy: HandoffRequest | undefined = undefined
   /** 60% 交接提醒每会话至多一次。 */
   private handoffNudgeShown = false
   /** Goal 计划倒计时自动批准（2026-07-24，与 sidecar 同语义）：
@@ -5737,19 +5736,7 @@ export class TuiApp {
         this.commitStatic(color('  ⚠ 输出已达 token 上限，内容被截断，已有输出保留在对话中。发送「继续」让模型接着输出。', this.theme.muted))
       }
 
-      // /handoff 归档：交接 turn 产出项目内文档后，拷贝到会话目录 <id>.handoff.md
-      // （loadPrevHandoff 注入管线认的位置）。注入默认关闭（并行会话安全，
-      // 2026-09-22 产品决策），RIVET_PREV_HANDOFF=1 可显式开启。
-      if (this.pendingHandoffCopy) {
-        const { src, dest, sinceMs } = this.pendingHandoffCopy
-        try {
-          if (existsSync(src) && statSync(src).mtimeMs > sinceMs) {
-            copyFileSync(src, dest)
-            this.commitStatic(`✦ 交接文档已写入 ${src} 并归档 ${dest}（默认不注入新会话；RIVET_PREV_HANDOFF=1 可开启）。`)
-          }
-        } catch { /* best-effort：归档失败不阻断会话 */ }
-        this.pendingHandoffCopy = undefined
-      }
+      this.finalizePendingHandoff()
 
       // 60% 交接提醒（每会话至多一次）：到达 HANDOFF_NUDGE_RATIO 时建议先 /handoff 再开新会话。
       if (!this.handoffNudgeShown) {
@@ -5808,7 +5795,22 @@ export class TuiApp {
     return 0
   }
 
+  private finalizePendingHandoff(outcome: 'completed' | 'interrupted' | 'failed' = 'completed'): void {
+    const request = this.pendingHandoffCopy
+    if (!request) return
+    this.pendingHandoffCopy = undefined
+    try {
+      const result = completeHandoffRequest(request)
+      this.commitStatic(outcome === 'completed'
+        ? result.message
+        : `${outcome === 'interrupted' ? '⏹ 交接请求已中断。' : '✗ 交接请求已失败。'} ${result.message}`)
+    } catch (error) {
+      this.commitStatic(`⚠ 交接归档处理失败：${error instanceof Error ? error.message : String(error)}。项目源文件如已生成会保留。`)
+    }
+  }
+
   private handleError(error: Error): void {
+    this.finalizePendingHandoff('failed')
     this.rejectPendingApprovals()
     this.agentBusy = false
     this.decisions.setBusy(false)
@@ -6111,6 +6113,7 @@ export class TuiApp {
       })
       this.state.committedCount++
     })
+    this.finalizePendingHandoff('interrupted')
     // Watchdog auto-resubmit so the agent continues without waiting for the
     // user to type "continue". Cap/quota/progress bookkeeping all happened
     // inside policy.onStall() above — here we only act on its verdict.

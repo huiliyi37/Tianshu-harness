@@ -288,7 +288,7 @@ Plan Mode 内置星域委派——复杂计划自动调用 `delegate_task` 从�
 
 长会话上下文会涨，到一定程度继续跑不如开新会话。天枢用「交接 → 恢复」闭环把会话间的上下文无损传递，并保住前缀缓存。
 
-**交接 `/handoff [备注]`** —— agent 带全上下文写一份结构化交接文档到项目内 `.rivet/HANDOFF.md`（工作区内、免审批），turn 完成后自动归档到会话目录 `<id>.handoff.md`。文档写给一个**完全没有上下文的新会话**看，固定五章节：
+**交接 `/handoff [备注]`** —— agent 带全上下文写一份结构化交接文档到项目内 `.rivet/HANDOFF-<sessionId>-<requestId>.md`（工作区内、免审批；完整会话 ID 与请求 UUID 隔离并行写入），turn 完成后自动归档到兼容路径 `<id>.handoff.md`。已有源文件和归档不会被覆盖；未生成或归档失败时 TUI 会明确反馈，项目源文件保留供手动处理。文档写给一个**完全没有上下文的新会话**看，固定五章节：
 
 - **任务目标** — 用户原话级的一句话目标 + 明确的非目标
 - **已完成** — 每条带证据：改动文件（`file:line`）、跑过的验证命令与结果、提交哈希
@@ -296,7 +296,7 @@ Plan Mode 内置星域委派——复杂计划自动调用 `delegate_task` 从�
 - **下一步** — 按优先级排列、每条是可立即执行的动作
 - **坑** — 绝对不要再踩的坑，每条一句话说清后果
 
-> 上下文占用 ≥60% 时，resume 首屏与会话中各提醒一次「先 `/handoff` 再开新会话」——交接文档写入 `.rivet/HANDOFF.md` 并归档到 `<id>.handoff.md`，新会话可直接读取（`<prev-session-handoff>` 自动注入默认关闭以保障并行会话安全，设 `RIVET_PREV_HANDOFF=1` 可开启自动注入），比整段回连省前缀重建成本。退出时也会备注缓存成本（TTL 内继承锚点 ≈ 只读缓存价；过期则全量重建一次前缀）。桌面端 plus 面板有「交接」入口。
+> 上下文占用 ≥60% 时，resume 首屏与会话中各提醒一次「先 `/handoff` 再开新会话」——交接源文件使用独立请求路径并归档到 `<id>.handoff.md`，新会话可直接读取（`<prev-session-handoff>` 自动注入默认关闭以保障并行会话安全，设 `RIVET_PREV_HANDOFF=1` 可开启自动注入），比整段回连省前缀重建成本。退出时也会备注缓存成本（TTL 内继承锚点 ≈ 只读缓存价；过期则全量重建一次前缀）。桌面端 plus 面板有「交接」入口。
 
 **恢复 `--continue` / `--resume` / `/resume`** —— 恢复已有会话时：
 
@@ -619,7 +619,7 @@ tianshu config set-approval auto-safe       # 持久化默认档位
 | `/help` | 显示可用命令 |
 | `/sessions` `/resume <n>` | 列出/恢复已保存会话（恢复侧栏、待办、活动计划） |
 | `/fork` | 分叉当前会话（可选从某条消息起） |
-| `/handoff [备注]` | 写结构化交接文档（五章节）到 `.rivet/HANDOFF.md` 并归档至 `<id>.handoff.md`（`<prev-session-handoff>` 自动注入新会话默认关闭，可通过 `RIVET_PREV_HANDOFF=1` 开启） |
+| `/handoff [备注]` | 写结构化交接文档（五章节）到按 sessionId + requestId 隔离的 `.rivet/HANDOFF-*.md` 并归档至 `<id>.handoff.md`（`<prev-session-handoff>` 自动注入新会话默认关闭，可通过 `RIVET_PREV_HANDOFF=1` 开启） |
 | `/init` | 交互式项目初始化：verify 声明 / skills / hooks 脚手架 |
 | `/doctor` | 环境健康检查 + bash 工具用的哪个 shell |
 | `/logs [open [desktop]]` | 本会话日志落点（会话 / 缓存 / 六维 / 桌面 sidecar），含写入门控与回收说明；`open` 在文件管理器中打开 |

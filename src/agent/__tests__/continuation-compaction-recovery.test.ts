@@ -698,7 +698,7 @@ async function verifyCompactionRecovery(context: TestContext, entry: 'automatic'
       assert.equal(summaryBodies.length, 1, 'local recovery must not retry the failed compaction model request')
       assert.equal(bodies.length, 2)
       assert.equal(client.getMainPrefixProof!()!.cacheGenerationId, published.cacheGenerationId, 'old-state recovery must retain the original generation')
-      await agent.run('A second valid request after the local storage recovery.', callbacks)
+      await agent.run('Next.', callbacks)
       await agent.drainPersistWrites()
       await persist!.drainFrozenSnapshots()
       assert.deepEqual(errors.map(error => error.message), [])

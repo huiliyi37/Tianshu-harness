@@ -18,6 +18,7 @@ import { distillSkillDraft, persistSkillDraft, listSkillDrafts } from '../../age
 import type { LogEntry } from '../log-state.js'
 import { addPendingReviewFiles, peekPendingReview, __resetPostCommitReviewPending } from '../../agent/post-commit-review-pending.js'
 import { makeTestDir, cleanupTestDir } from './_test-tmp.js'
+import { SessionPersist } from '../../agent/session-persist.js'
 
 function makeCtx(overrides?: Partial<SlashHandlerContext>): SlashHandlerContext {
   return {
@@ -373,6 +374,175 @@ describe('/resume 无参行为（会话选择器）', () => {
     const handled = await handleSlashCommand(ctx)
     assert.equal(handled, true)
     assert.ok(captured.includes('用法'), `应打用法提示: ${captured}`)
+  })
+})
+
+
+describe('/resume 参数检索与恢复 (ID前缀/序号/精确名称/--id)', () => {
+  let tempDir: string
+  const originalSessionDir = process.env.RIVET_SESSION_DIR
+
+  before(async () => {
+    tempDir = makeTestDir('resume-test-')
+    process.env.RIVET_SESSION_DIR = tempDir
+    SessionPersist.invalidateListCache()
+
+    // 预置几个会话
+    // 会话 1: 数字前缀 ID "10243859-0001", 标题 "Fix parser bug" (多词)
+    // 会话 2: ID "abcd2222-0002", 标题 "Feature auth"
+    // 会话 3: ID "abcd3333-0003", 标题 "Feature auth" (重名标题，用于测试非唯一匹配歧义)
+    // 会话 4: ID "wxyz4444-0004", 标题 "Solo Task"
+    const seed = async (id: string, title: string, updatedAt: number) => {
+      const p = new SessionPersist(id, tempDir)
+      await p.appendOaiWithChecksum({ role: 'user', content: title })
+      p.initMetadata({ model: 'deepseek-v4' })
+      p.updateMetadata({ title, updatedAt })
+      await p.flushSessionBuffer()
+    }
+    await seed('10243859-0001', 'Fix parser bug', 1700000000000)
+    await seed('abcd2222-0002', 'Feature auth', 1700000001000)
+    await seed('abcd3333-0003', 'Feature auth', 1700000002000)
+    await seed('wxyz4444-0004', 'Solo Task', 1700000003000)
+    SessionPersist.invalidateListCache()
+  })
+
+  after(() => {
+    cleanupTestDir(tempDir)
+    if (originalSessionDir !== undefined) {
+      process.env.RIVET_SESSION_DIR = originalSessionDir
+    } else {
+      delete process.env.RIVET_SESSION_DIR
+    }
+    SessionPersist.invalidateListCache()
+  })
+
+  it('精确匹配多词标题切换成功 (/resume Fix parser bug 与引号格式)', async () => {
+    let switchedTo = ''
+    const ctx = makeCtx({
+      parts: ['/resume', 'Fix', 'parser', 'bug'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      onSessionSwitch: (id: string) => {
+        switchedTo = id
+        return { ok: true, messageCount: 1 }
+      },
+    })
+    const handled = await handleSlashCommand(ctx)
+    assert.equal(handled, true)
+    assert.equal(switchedTo, '10243859-0001', '多词标题应成功匹配')
+
+    // 带引号的标题
+    switchedTo = ''
+    const ctxQuoted = makeCtx({
+      parts: ['/resume', '"Fix', 'parser', 'bug"'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      onSessionSwitch: (id: string) => {
+        switchedTo = id
+        return { ok: true, messageCount: 1 }
+      },
+    })
+    await handleSlashCommand(ctxQuoted)
+    assert.equal(switchedTo, '10243859-0001', '带引号多词标题应成功匹配')
+  })
+
+  it('非唯一标题匹配时明确拒绝并展示候选列表', async () => {
+    let switchedTo = ''
+    let captured = ''
+    const ctx = makeCtx({
+      parts: ['/resume', 'Feature', 'auth'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+      onSessionSwitch: (id: string) => {
+        switchedTo = id
+        return { ok: true }
+      },
+    })
+    const handled = await handleSlashCommand(ctx)
+    assert.equal(handled, true)
+    assert.equal(switchedTo, '', '非唯一标题匹配时不应发生切换')
+    assert.ok(captured.includes('匹配多个会话'), `应提示非唯一匹配: ${captured}`)
+    assert.ok(captured.includes('abcd2222'), `候选列表应包含 abcd2222: ${captured}`)
+    assert.ok(captured.includes('abcd3333'), `候选列表应包含 abcd3333: ${captured}`)
+  })
+
+  it('显式 --id 绕过纯数字序号歧义 (/resume --id 1024)', async () => {
+    let switchedTo = ''
+    const ctx = makeCtx({
+      parts: ['/resume', '--id', '1024'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      onSessionSwitch: (id: string) => {
+        switchedTo = id
+        return { ok: true }
+      },
+    })
+    const handled = await handleSlashCommand(ctx)
+    assert.equal(handled, true)
+    assert.equal(switchedTo, '10243859-0001', '--id 1024 应作为 ID 前缀解析')
+  })
+
+  it('原数字序号、前缀与越界/未找到等语义保持不变', async () => {
+    let switchedTo = ''
+    // 序号 1（最新会话是 wxyz4444-0004）
+    const ctx1 = makeCtx({
+      parts: ['/resume', '1'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      onSessionSwitch: (id: string) => { switchedTo = id; return { ok: true } },
+    })
+    await handleSlashCommand(ctx1)
+    assert.equal(switchedTo, 'wxyz4444-0004', '序号 1 应匹配最新会话')
+
+    // 序号越界
+    let captured = ''
+    const ctxOver = makeCtx({
+      parts: ['/resume', '999'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    await handleSlashCommand(ctxOver)
+    assert.ok(captured.includes('序号超出范围'), `越界应提示超出范围: ${captured}`)
+
+    // 纯数字在无 --id 时当作序号：1024 越界
+    captured = ''
+    const ctxNum = makeCtx({
+      parts: ['/resume', '1024'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    await handleSlashCommand(ctxNum)
+    assert.ok(captured.includes('序号超出范围'), `未带 --id 时纯数字应按序号处理: ${captured}`)
+
+    // ID 前缀歧义
+    captured = ''
+    const ctxAmb = makeCtx({
+      parts: ['/resume', 'abcd'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    await handleSlashCommand(ctxAmb)
+    assert.ok(captured.includes('匹配多个会话'), `歧义前缀应提示: ${captured}`)
+
+    // 未找到
+    captured = ''
+    const ctxNone = makeCtx({
+      parts: ['/resume', 'nonexistent-xyz'],
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+    })
+    await handleSlashCommand(ctxNone)
+    assert.ok(captured.includes('未找到匹配会话'), `未找到应提示: ${captured}`)
+  })
+
+  it('切换失败时不破坏当前会话', async () => {
+    let captured = ''
+    const ctx = makeCtx({
+      parts: ['/resume', '1'],
+      currentSessionId: 'current-session-id',
+      agent: { ...makeCtx().agent, cwd: tempDir } as any,
+      pushStatic: (entry: LogEntry) => { captured += `${entry.content}\n` },
+      onSessionSwitch: () => ({ ok: false, error: '磁盘快照已损坏' }),
+    })
+    await handleSlashCommand(ctx)
+    assert.ok(captured.includes('切换失败: 磁盘快照已损坏'), `应输出失败原因: ${captured}`)
+    assert.equal(ctx.currentSessionId, 'current-session-id', '当前会话 ID 不变')
   })
 })
 

@@ -14,6 +14,7 @@ import { getCapsuleByStar, listCapsuleStars } from '../agent/seed-capsule-store.
 import { microCompactOai, estimateOaiTokens } from '../compact/micro.js'
 import { rollbackToCheckpoint, getRollbackPreview } from '../agent/checkpoint.js'
 import { runResumePreflightOai } from '../context/resume-preflight.js'
+import { resolveSessionRef, formatSessionRefMessage } from '../agent/session-ref.js'
 import { trustProject, untrustProject, isProjectTrusted, listTrustedProjects, isTrustPromptDismissed } from '../config/project-trust.js'
 import { getTheme, setTheme, getActiveThemeName, THEMES, listCustomThemes } from './theme.js'
 import {
@@ -118,6 +119,7 @@ export interface MutableRefLike<T> {
 
 export interface SlashHandlerContext {
   parts: string[]
+  rawInput?: string
   config: Config
   agent: AgentLoop
   session: SessionContext
@@ -2531,46 +2533,32 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
     immediate: true,
     handler(ctx) {
       const { parts, pushStatic, setIsStreaming } = ctx
-      const cmd = parts[0]!.toLowerCase()
-      const arg = parts[1]
-      if (!arg) {
-        // 无参 = 打开会话选择器（对齐 Claude Code /resume）；无选择器注入时退化为用法提示。
-        if (ctx.openSessionPicker) {
-          ctx.openSessionPicker()
-        } else {
-          pushStatic(createLogEntry({ type: 'system', content: '用法: /resume <id前缀 或 序号>。用 /sessions 查看会话列表。' }))
-        }
+      const rawArg = ctx.rawInput
+        ? ctx.rawInput.replace(/^\/resume\b/i, '').trim()
+        : parts.slice(1).join(' ').trim()
+
+      if (!rawArg) {
+        if (ctx.openSessionPicker) ctx.openSessionPicker()
+        else pushStatic(createLogEntry({ type: 'system', content: '用法: /resume [id前缀 或 序号 或 名称] [--id <id>]。用 /sessions 查看会话列表。' }))
         setIsStreaming(false)
         return true
       }
 
-      // 序号(兼容旧习惯)或 id 前缀 → 解析为完整 id。
-      const ordered = SessionPersist.listMainSessions(ctx.agent.cwd)
-      let targetId: string | null = null
-      if (/^\d+$/.test(arg)) {
-        const idx = parseInt(arg, 10) - 1
-        if (idx < 0 || idx >= ordered.length) {
-          pushStatic(createLogEntry({ type: 'system', content: `序号超出范围(共 ${ordered.length} 个会话)。用 /sessions 查看。` }))
-          setIsStreaming(false)
-          return true
-        }
-        targetId = ordered[idx]!.id
-      } else {
-        const resolved = SessionPersist.resolveSessionId(ctx.agent.cwd, arg)
-        if (!resolved) {
-          pushStatic(createLogEntry({ type: 'system', content: `未找到匹配会话: "${arg}"。用 /sessions 查看会话列表。` }))
-          setIsStreaming(false)
-          return true
-        }
-        if ('ambiguous' in resolved) {
-          const cands = resolved.ambiguous.map(id => `  ${id.slice(0, 12)}`).join('\n')
-          pushStatic(createLogEntry({ type: 'system', content: `前缀 "${arg}" 匹配多个会话,请用更长前缀:\n${cands}` }))
-          setIsStreaming(false)
-          return true
-        }
-        targetId = resolved.id
+      const refResult = resolveSessionRef(ctx.agent.cwd, rawArg)
+      if (refResult.kind === 'empty' && ctx.openSessionPicker) {
+        ctx.openSessionPicker()
+        setIsStreaming(false)
+        return true
       }
 
+      const errMsg = formatSessionRefMessage(refResult)
+      if (errMsg) {
+        pushStatic(createLogEntry({ type: 'system', content: errMsg }))
+        setIsStreaming(false)
+        return true
+      }
+
+      const targetId = (refResult as { id: string }).id
       if (targetId === ctx.currentSessionId) {
         pushStatic(createLogEntry({ type: 'system', content: `已经在会话 ${targetId.slice(0, 8)} 中。` }))
         setIsStreaming(false)
@@ -2585,7 +2573,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         } else {
           pushStatic(createLogEntry({
             type: 'system',
-            content: `🔄 已切换到会话 ${targetId.slice(0, 8)}: 载入 ${res.messageCount ?? 0} 条消息(将重建前缀缓存)${res.repaired ? ' · 已修复孤儿工具调用' : ''}。`,
+            content: `🔄 已切换到会话 ${targetId.slice(0, 8)}: 载入 ${res.messageCount ?? 0} 条消息(将重建前缀缓存)${res.repaired ? ' · 已修复孤儿工具调用' : ''}。` ,
           }))
         }
         setIsStreaming(false)
@@ -2596,8 +2584,6 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       const p = new SessionPersist(targetId, ctx.agent.cwd)
       const preflight = runResumePreflightOai(p.loadOai())
       ctx.session.replaceMessages(preflight.messages)
-      // 轻量测试替身没有 config.promptEngine——没有引擎也没有 appendix 基线可
-      // 重置，跳过即等价（与 320bdd0ee 同款替身容忍；生产装配 promptEngine 恒在）。
       ctx.agent.config?.promptEngine?.resetAppendixBaseline?.()
       if (preflight.repaired) p.compactOai(preflight.messages)
       pushStatic(createLogEntry({ type: 'system', content: `已恢复会话 ${targetId.slice(0, 8)} (${preflight.messages.length} 条消息, apiSafe=${preflight.safe})` }))
@@ -3822,6 +3808,7 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
 
     return {
       parts,
+      rawInput: trimmed,
       config: ctx.config,
       agent: ctx.agent,
       session: ctx.session,

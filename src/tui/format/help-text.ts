@@ -87,7 +87,7 @@ export const HELP_TEXT = `天枢帮助
 /leave [symbol] <summary> — Leave your mark in the starmap as you depart
 /queue <text> — 排队一条消息到下轮（无参预览队列）；busy 时也可攒，回车随下条一并发送
 /btw <问题> — 侧问：就当前会话问一句，回答显示在浮层，不进对话历史
-/resume [id|序号] — 继续一个历史会话（无参打开选择器；/sessions 看列表）
+/resume [id|序号|名称] — 继续一个历史会话（支持 --id 与多词标题；无参打开选择器）
 /remember <要记住的事> — 把一句话写进项目长期记忆（跨会话生效，新会话自动携带）；无参查看最近记忆
 /chat — 兼容旧命令（模式已由消息内容自动检测，无需手动切换）
 /task — 任务模式（已废弃：意图自动检测；子代理面板用 /tasks）

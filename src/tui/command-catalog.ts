@@ -71,7 +71,7 @@ export const COMMAND_CATALOG: readonly CommandMeta[] = [
   { name: '/new', description: '开新会话——重置上下文但不重启进程（项目记忆/配置/工作目录保留）。旧会话存档，/resume 可回访', tier: 'core' },
   { name: '/clear', description: '清屏（只清当前显示，不删会话历史）', tier: 'core' },
   { name: '/sessions', description: '列出所有历史会话——找历史/继续之前的工作', tier: 'core', hotkey: 'F8' },
-  { name: '/resume', description: '继续一个历史会话（无参打开选择器；/sessions 看列表）', argsHint: '[id|序号]', tier: 'core' },
+  { name: '/resume', description: '继续一个历史会话（无参打开选择器；/sessions 看列表）', argsHint: '[id|序号|名称]', tier: 'core' },
   { name: '/undo', description: '撤销文件改动——回到检查点快照。无参预览最近 / 数字选快照 / preview 看文件清单', argsHint: '[N|preview]', tier: 'core' },
   { name: '/rollback', description: '检查点回滚（两阶段）：无参预览将还原/删除的文件，再 /rollback confirm 执行。与 /undo 不同——/undo 按本会话快照撤销，/rollback 回到 git 检查点', argsHint: '[confirm|cancel]' },
   { name: '/evidence', description: '显示上一轮的证据链——agent 的结论是基于哪些文件/命令得出的' },

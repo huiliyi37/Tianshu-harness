@@ -129,10 +129,12 @@ describe('/goal unified entry', () => {
   })
 
   it('natural language containing a control word remains a goal', async () => {
-    const state = makeCtx(['/goal', 'pause', 'the', 'deployment'])
-    await handleSlashCommand(state.ctx)
-    assert.equal(state.trackerRef.current?.getGoal(), 'pause the deployment')
-    assert.match(state.submitted.join('\n'), /pause the deployment/)
+    for (const objective of ['pause the deployment', 'criteria for a successful release']) {
+      const state = makeCtx(['/goal', ...objective.split(' ')])
+      await handleSlashCommand(state.ctx)
+      assert.equal(state.trackerRef.current?.getGoal(), objective)
+      assert.equal(state.submitted.length, 1)
+    }
   })
 
   it('ordinary objective names cannot be mistaken for inherited object properties', async () => {

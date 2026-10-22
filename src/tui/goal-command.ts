@@ -19,7 +19,9 @@ export function resolveGoalInvocation(args: string[]): GoalInvocation {
   if (args[0] === '--') return { kind: 'start', args: args.slice(1), literal: true }
   const first = args[0]!.toLowerCase()
   if (args.length === 1 && (first === 'help' || first === '--help')) return { kind: 'help' }
-  if (first === 'criteria') return { kind: 'control', command: '/goal-criteria', args: args.slice(1) }
+  if (first === 'criteria' && (args.length === 1 || args[1]?.toLowerCase() === 'set')) {
+    return { kind: 'control', command: '/goal-criteria', args: args.slice(1) }
+  }
   if (args.length === 1 && Object.hasOwn(CONTROL_COMMANDS, first)) {
     return { kind: 'control', command: CONTROL_COMMANDS[first]!, args: [] }
   }

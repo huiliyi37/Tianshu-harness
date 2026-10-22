@@ -71,7 +71,9 @@ describe('handoff archive lifecycle', () => {
     mkdirSync(protectedTarget.destinationPath)
     assert.equal(completeHandoffRequest(protectedTarget).status, 'archive-exists')
 
-    const failed = createHandoffRequest(root, 'session-b', join(root, 'missing-parent', 'archive.md'), 'request-copy-error')
+    const blockedParent = join(root, 'blocked-parent')
+    writeFileSync(blockedParent, 'not a directory')
+    const failed = createHandoffRequest(root, 'session-b', join(blockedParent, 'archive.md'), 'request-copy-error')
     writeFileSync(failed.sourcePath, 'output')
     assert.equal(completeHandoffRequest(failed).status, 'copy-failed')
     assert.equal(readFileSync(failed.sourcePath, 'utf8'), 'output')

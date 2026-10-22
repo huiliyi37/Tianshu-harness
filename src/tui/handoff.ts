@@ -8,9 +8,10 @@
  * - 上下文占用 ≥ HANDOFF_NUDGE_RATIO 时提醒用户先交接再开新会话。
  */
 
-import { copyFileSync, constants, existsSync, linkSync, lstatSync, renameSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { writeFileAtomicSync } from '../fs-atomic.js'
 
 export interface HandoffRequest {
   requestId: string
@@ -37,7 +38,7 @@ export function createHandoffRequest(
   return { requestId, sourcePath, destinationPath }
 }
 
-/** 校验本次专属源文件并排他归档；失败时保留项目源文件与既有归档。 */
+/** 校验本次专属源文件并原子归档；失败时保留项目源文件与既有归档。 */
 export function completeHandoffRequest(request: HandoffRequest): HandoffArchiveResult {
   if (!existsSync(request.sourcePath)) {
     return { status: 'not-generated', message: `⚠ 交接文档未生成，本次未归档。预期文件：${request.sourcePath}` }
@@ -52,35 +53,22 @@ export function completeHandoffRequest(request: HandoffRequest): HandoffArchiveR
   }
 
   const destination = request.destinationPath
-  const temp = `${destination}.pending-${request.requestId}`
   const backup = `${destination}.previous-${request.requestId}`
-  const backupTemp = `${backup}.pending`
-  let tempCreated = false
-  let backupTempCreated = false
   try {
     const destinationExists = existsSync(destination)
     if (destinationExists && !lstatSync(destination).isFile()) {
       return { status: 'archive-exists', message: `⚠ 交接归档目标不是普通文件，未更改：${destination}。项目源文件保留于 ${request.sourcePath}` }
     }
-    if (existsSync(temp) || existsSync(backup) || existsSync(backupTemp)) {
-      return { status: 'copy-failed', message: `⚠ 交接归档临时路径已存在，未更改任何归档：${destination}。项目源文件保留于 ${request.sourcePath}` }
+    if (existsSync(backup)) {
+      return { status: 'copy-failed', message: `⚠ 交接归档版本已存在，未更改任何归档：${destination}。项目源文件保留于 ${request.sourcePath}` }
     }
 
     if (destinationExists) {
       // 保存上一份程序管理的 canonical；它在新版本提交前始终保持可用。
-      copyFileSync(destination, backupTemp, constants.COPYFILE_EXCL)
-      backupTempCreated = true
-      linkSync(backupTemp, backup)
-      unlinkSync(backupTemp)
-      backupTempCreated = false
+      writeFileAtomicSync(backup, readFileSync(destination))
     }
 
-    copyFileSync(request.sourcePath, temp, constants.COPYFILE_EXCL)
-    tempCreated = true
-    if (destinationExists) renameSync(temp, destination)
-    else linkSync(temp, destination)
-    if (!destinationExists) unlinkSync(temp)
-    tempCreated = false
+    writeFileAtomicSync(destination, readFileSync(request.sourcePath))
     return {
       status: destinationExists ? 'updated' : 'archived',
       message: destinationExists
@@ -88,9 +76,7 @@ export function completeHandoffRequest(request: HandoffRequest): HandoffArchiveR
         : `✦ 交接文档已归档至 ${destination}（项目源文件保留于 ${request.sourcePath}；默认不注入新会话）。`,
     }
   } catch (error) {
-    if (tempCreated && existsSync(temp)) unlinkSync(temp)
-    if (backupTempCreated && existsSync(backupTemp)) unlinkSync(backupTemp)
-    return { status: 'copy-failed', message: `⚠ 交接文档已生成，但归档失败，已有归档保持有效。项目源文件保留于 ${request.sourcePath}；请检查后手动复制至 ${destination}。${error instanceof Error ? `原因：${error.message}` : ''}` }
+    return { status: 'copy-failed', message: `⚠ 交接文档已生成，但归档失败，未替换任何已有归档。项目源文件保留于 ${request.sourcePath}；请检查后手动复制至 ${destination}。${error instanceof Error ? `原因：${error.message}` : ''}` }
   }
 }
 

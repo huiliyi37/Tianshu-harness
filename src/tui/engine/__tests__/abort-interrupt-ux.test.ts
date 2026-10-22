@@ -10,8 +10,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ReadStream, WriteStream } from 'node:tty'
 import { TuiApp } from '../app.js'
+import { createHandoffRequest } from '../../handoff.js'
 import { MockOut, MockIn } from './_harness.js'
 
 function makeApp() {
@@ -35,6 +39,29 @@ test('中断后 scrollback 出现 "⏹ Interrupted" 提示', async () => {
   await tick()
   const plain = stripAnsi(out.chunks.join(''))
   assert.ok(plain.includes('⏹ Interrupted'), `应有可见中断提示: ${plain.slice(0, 120)}`)
+})
+
+test('普通 onAbort 收尾归档已生成 handoff、清 pending 并反馈结果', () => {
+  const { app, out } = makeApp()
+  const root = mkdtempSync(join(tmpdir(), 'rivet-handoff-abort-'))
+  try {
+    const sessionDir = join(root, 'session-store')
+    mkdirSync(join(root, '.rivet'), { recursive: true })
+    mkdirSync(sessionDir, { recursive: true })
+    const request = createHandoffRequest(root, 'session-aborted', join(sessionDir, 'session-aborted.handoff.md'))
+    writeFileSync(request.sourcePath, 'handoff before abort')
+    app.pendingHandoffCopy = request
+
+    app.callbacks.onAbort()
+
+    assert.equal(app.pendingHandoffCopy, undefined, '中断 callback 必须清掉 pending')
+    assert.equal(readFileSync(request.destinationPath, 'utf8'), 'handoff before abort')
+    assert.equal(readFileSync(request.sourcePath, 'utf8'), 'handoff before abort', '中断归档不删除项目源')
+    assert.match(out.chunks.join(''), /交接请求已中断/)
+    assert.match(out.chunks.join(''), /已归档至/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('中断解析挂起的审批为拒绝并复位审批态', async () => {

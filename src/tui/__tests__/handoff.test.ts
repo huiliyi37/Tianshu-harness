@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HANDOFF_NUDGE_RATIO, buildHandoffPrompt, formatHandoffNudge } from '../handoff.js'
@@ -35,6 +35,19 @@ describe('handoff archive lifecycle', () => {
     assert.equal(readFileSync(a.sourcePath, 'utf8'), 'A handoff', '项目源文件保留')
   })
 
+  it('同一会话重复交接原子更新 canonical 并保留旧版本', () => {
+    const first = begin('same-session', 'request-first')
+    const second = begin('same-session', 'request-second')
+    writeFileSync(first.sourcePath, 'first handoff')
+    writeFileSync(second.sourcePath, 'second handoff')
+    assert.equal(completeHandoffRequest(first).status, 'archived')
+    assert.equal(completeHandoffRequest(second).status, 'updated')
+    assert.equal(readFileSync(first.destinationPath, 'utf8'), 'second handoff')
+    assert.equal(readFileSync(`${second.destinationPath}.previous-${second.requestId}`, 'utf8'), 'first handoff')
+    assert.equal(readFileSync(first.sourcePath, 'utf8'), 'first handoff')
+    assert.equal(readFileSync(second.sourcePath, 'utf8'), 'second handoff')
+  })
+
   it('reports missing generation and leaves any pre-existing shared handoff untouched', () => {
     const shared = join(root, '.rivet', 'HANDOFF.md')
     mkdirSync(join(root, '.rivet'), { recursive: true })
@@ -44,13 +57,19 @@ describe('handoff archive lifecycle', () => {
     assert.equal(readFileSync(shared, 'utf8'), 'old user handoff')
   })
 
-  it('reports archive copy failure and never overwrites an existing session archive', () => {
+  it('updates a managed canonical while preserving its prior version and reports copy failure', () => {
     const request = begin('session-a', 'request-copy-failure')
     writeFileSync(request.sourcePath, 'new output')
     writeFileSync(request.destinationPath, 'existing archive')
-    assert.equal(completeHandoffRequest(request).status, 'archive-exists')
+    assert.equal(completeHandoffRequest(request).status, 'updated')
     assert.equal(readFileSync(request.sourcePath, 'utf8'), 'new output')
-    assert.equal(readFileSync(request.destinationPath, 'utf8'), 'existing archive')
+    assert.equal(readFileSync(request.destinationPath, 'utf8'), 'new output')
+    assert.equal(readFileSync(`${request.destinationPath}.previous-${request.requestId}`, 'utf8'), 'existing archive')
+
+    const protectedTarget = begin('session-c', 'request-protected-target')
+    writeFileSync(protectedTarget.sourcePath, 'output')
+    mkdirSync(protectedTarget.destinationPath)
+    assert.equal(completeHandoffRequest(protectedTarget).status, 'archive-exists')
 
     const failed = createHandoffRequest(root, 'session-b', join(root, 'missing-parent', 'archive.md'), 'request-copy-error')
     writeFileSync(failed.sourcePath, 'output')
@@ -63,6 +82,18 @@ describe('handoff archive lifecycle', () => {
     writeFileSync(request.sourcePath, 'user data')
     assert.throws(() => createHandoffRequest(root, 'session-a', request.destinationPath, 'same-request'), /拒绝覆盖/)
     assert.equal(readFileSync(request.sourcePath, 'utf8'), 'user data')
+  })
+
+  it('空文件和目录都不会被当作有效 handoff 归档', () => {
+    const empty = begin('session-empty', 'request-empty')
+    writeFileSync(empty.sourcePath, '')
+    assert.equal(completeHandoffRequest(empty).status, 'invalid-source')
+    assert.equal(existsSync(empty.destinationPath), false)
+
+    const directory = begin('session-dir', 'request-dir')
+    mkdirSync(directory.sourcePath)
+    assert.equal(completeHandoffRequest(directory).status, 'invalid-source')
+    assert.equal(existsSync(directory.destinationPath), false)
   })
 })
 

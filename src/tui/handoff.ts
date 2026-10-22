@@ -8,7 +8,7 @@
  * - 上下文占用 ≥ HANDOFF_NUDGE_RATIO 时提醒用户先交接再开新会话。
  */
 
-import { copyFileSync, constants, existsSync } from 'node:fs'
+import { copyFileSync, constants, existsSync, linkSync, lstatSync, renameSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -18,7 +18,7 @@ export interface HandoffRequest {
   destinationPath: string
 }
 
-export type HandoffArchiveStatus = 'archived' | 'not-generated' | 'archive-exists' | 'copy-failed'
+export type HandoffArchiveStatus = 'archived' | 'updated' | 'not-generated' | 'invalid-source' | 'archive-exists' | 'copy-failed'
 
 export interface HandoffArchiveResult {
   status: HandoffArchiveStatus
@@ -42,14 +42,55 @@ export function completeHandoffRequest(request: HandoffRequest): HandoffArchiveR
   if (!existsSync(request.sourcePath)) {
     return { status: 'not-generated', message: `⚠ 交接文档未生成，本次未归档。预期文件：${request.sourcePath}` }
   }
-  if (existsSync(request.destinationPath)) {
-    return { status: 'archive-exists', message: `⚠ 交接文档已生成，但归档目标已存在，未覆盖：${request.destinationPath}。项目源文件保留于 ${request.sourcePath}` }
-  }
   try {
-    copyFileSync(request.sourcePath, request.destinationPath, constants.COPYFILE_EXCL)
-    return { status: 'archived', message: `✦ 交接文档已归档至 ${request.destinationPath}（项目源文件保留于 ${request.sourcePath}；默认不注入新会话）。` }
+    const sourceStat = lstatSync(request.sourcePath)
+    if (!sourceStat.isFile() || sourceStat.size === 0) {
+      return { status: 'invalid-source', message: `⚠ 交接源不是非空普通文件，未归档：${request.sourcePath}` }
+    }
   } catch {
-    return { status: 'copy-failed', message: `⚠ 交接文档已生成，但归档失败。项目源文件保留于 ${request.sourcePath}；请检查归档目录后手动复制至 ${request.destinationPath}` }
+    return { status: 'not-generated', message: `⚠ 交接文档不可读取，本次未归档。预期文件：${request.sourcePath}` }
+  }
+
+  const destination = request.destinationPath
+  const temp = `${destination}.pending-${request.requestId}`
+  const backup = `${destination}.previous-${request.requestId}`
+  const backupTemp = `${backup}.pending`
+  let tempCreated = false
+  let backupTempCreated = false
+  try {
+    const destinationExists = existsSync(destination)
+    if (destinationExists && !lstatSync(destination).isFile()) {
+      return { status: 'archive-exists', message: `⚠ 交接归档目标不是普通文件，未更改：${destination}。项目源文件保留于 ${request.sourcePath}` }
+    }
+    if (existsSync(temp) || existsSync(backup) || existsSync(backupTemp)) {
+      return { status: 'copy-failed', message: `⚠ 交接归档临时路径已存在，未更改任何归档：${destination}。项目源文件保留于 ${request.sourcePath}` }
+    }
+
+    if (destinationExists) {
+      // 保存上一份程序管理的 canonical；它在新版本提交前始终保持可用。
+      copyFileSync(destination, backupTemp, constants.COPYFILE_EXCL)
+      backupTempCreated = true
+      linkSync(backupTemp, backup)
+      unlinkSync(backupTemp)
+      backupTempCreated = false
+    }
+
+    copyFileSync(request.sourcePath, temp, constants.COPYFILE_EXCL)
+    tempCreated = true
+    if (destinationExists) renameSync(temp, destination)
+    else linkSync(temp, destination)
+    if (!destinationExists) unlinkSync(temp)
+    tempCreated = false
+    return {
+      status: destinationExists ? 'updated' : 'archived',
+      message: destinationExists
+        ? `✦ 交接文档已更新 ${destination}；旧版本保留于 ${backup}（项目源文件保留于 ${request.sourcePath}）。`
+        : `✦ 交接文档已归档至 ${destination}（项目源文件保留于 ${request.sourcePath}；默认不注入新会话）。`,
+    }
+  } catch (error) {
+    if (tempCreated && existsSync(temp)) unlinkSync(temp)
+    if (backupTempCreated && existsSync(backupTemp)) unlinkSync(backupTemp)
+    return { status: 'copy-failed', message: `⚠ 交接文档已生成，但归档失败，已有归档保持有效。项目源文件保留于 ${request.sourcePath}；请检查后手动复制至 ${destination}。${error instanceof Error ? `原因：${error.message}` : ''}` }
   }
 }
 

@@ -34,4 +34,3 @@ export function collectChangedFiles(session: RunSummarySession): string[] {
     }
     return [...files]
   }
-

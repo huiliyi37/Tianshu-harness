@@ -39,4 +39,3 @@ export async function prepareManagedTarget(
   const prepared = await prepareRuntimeContext({ ...selected, config, auth, signal }, `${providerName}:${spec.model.id}`, 'agent', undefined, { reusePrepared: !!initialSelection && !!ownedOfficialAuth, signal })
   return { context: prepared, spec: { provider: prepared.provider, model: prepared.model, apiKey: prepared.apiKey, auth: prepared.auth }, ownedOfficialAuth: ownedOfficialAuth ?? prepared.auth }
 }
-

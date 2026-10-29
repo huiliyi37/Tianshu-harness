@@ -1,40 +1,103 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { hostname, platform } from 'node:os'
-import ts from 'typescript'
-import { requestDeviceCode } from '../account.js'
-import type { nativeDeviceMetadata } from '../device-metadata.js'
+import { nativeDeviceMetadata } from '../device-metadata.js'
 
-function fixture(system: string, name: string | Error): typeof nativeDeviceMetadata {
-  const source = readFileSync(new URL('../device-metadata.ts', import.meta.url), 'utf8')
-  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-  const exports: { nativeDeviceMetadata?: typeof nativeDeviceMetadata } = {}
-  new Function('require', 'exports', compiled)((id: string) => {
-    assert.equal(id, 'node:os')
-    return { platform: () => system, hostname: () => { if (name instanceof Error) throw name; return name } }
-  }, exports)
-  return exports.nativeDeviceMetadata!
+function nativeFixture(system: NodeJS.Platform, name = '研发工作站') {
+  return { platform: () => system, hostname: () => name }
 }
 
-for (const [system, expected] of [['win32', 'windows'], ['darwin', 'macos'], ['linux', 'linux']]) {
-  test(`native login metadata preserves ${system} instead of guessing from the browser`, () => {
-    assert.deepEqual(fixture(system!, '天枢工作站')(undefined, 'desktop'), { deviceName: '天枢工作站', platform: expected, clientKind: 'desktop' })
-  })
+function expectedPlatform(): string {
+  switch (platform()) {
+    case 'win32': return 'windows'
+    case 'darwin': return 'macos'
+    case 'linux': return 'linux'
+    default: return 'unknown'
+  }
 }
 
-test('native metadata cleans controls and bounds Unicode names without splitting code points', () => {
-  const metadata = fixture('darwin', 'Fallback')
-  assert.equal(metadata('  工作站\u0000\n  ').deviceName, '工作站')
-  assert.equal(Array.from(metadata('😀'.repeat(140)).deviceName!).length, 128)
-  assert.deepEqual(fixture('other', new Error('unavailable'))(), { deviceName: null, platform: 'unknown', clientKind: 'cli' })
+test('device metadata distinguishes Windows, macOS and Linux independently of the authorizing browser', () => {
+  for (const [system, expected] of [['win32', 'windows'], ['darwin', 'macos'], ['linux', 'linux']] as const) {
+    const metadata = nativeDeviceMetadata(undefined, 'desktop', nativeFixture(system))
+    assert.equal(metadata.platform, expected)
+    assert.equal(metadata.deviceName, '研发工作站')
+    assert.equal(metadata.clientKind, 'desktop')
+  }
 })
 
-test('the actual device-create request sends OS, native hostname, purpose and fingerprint together', async () => {
-  let payload: Record<string, unknown> | undefined
-  await requestDeviceCode({ deviceFingerprint: 'fixture-device', clientKind: 'desktop', tuiVersion: '4.0', fetchImpl: async (_url, init) => {
-    payload = JSON.parse(String(init?.body)) as Record<string, unknown>
-    return Response.json({ deviceCode: 'fixture', userCode: '123456', expiresIn: 300, pollInterval: 5, verifyUrl: 'https://fixture.invalid/authorize' })
-  } })
-  assert.deepEqual(payload, { tuiVersion: '4.0', deviceName: hostname(), platform: ({ win32: 'windows', darwin: 'macos', linux: 'linux' } as Record<string, string>)[platform()] ?? 'unknown', clientKind: 'desktop', deviceFingerprint: 'fixture-device', purpose: 'client-login' })
+test('device metadata reads the actual native hostname and operating system by default', () => {
+  const metadata = nativeDeviceMetadata()
+  assert.equal(metadata.platform, expectedPlatform())
+  assert.equal(metadata.deviceName, Array.from(hostname().trim()).slice(0, 128).join(''))
+  assert.equal(metadata.clientKind, 'cli')
+})
+
+test('a custom device name is preserved and avoids another hostname lookup', () => {
+  let hostnameReads = 0
+  const metadata = nativeDeviceMetadata('  我的 Mac\u0000  ', 'desktop', {
+    platform: () => 'darwin',
+    hostname: () => { hostnameReads++; throw new Error('must not be read') },
+  })
+  assert.equal(metadata.deviceName, '我的 Mac')
+  assert.equal(hostnameReads, 0)
+})
+
+test('blank custom names fall back to the native hostname', () => {
+  for (const name of ['', ' \r\n\u0000 ']) {
+    assert.equal(nativeDeviceMetadata(name, 'cli', nativeFixture('win32', 'Fixture-PC')).deviceName, 'Fixture-PC')
+  }
+})
+
+test('device names preserve Unicode, replace lone surrogates and enforce the backend limit without splitting emoji', () => {
+  assert.equal(nativeDeviceMetadata('工作站\ud800A\udc00', 'cli', nativeFixture('linux')).deviceName, '工作站\uFFFDA\uFFFD')
+  assert.equal(nativeDeviceMetadata('😀'.repeat(150), 'cli', nativeFixture('linux')).deviceName, '😀'.repeat(128))
+})
+
+test('unavailable hostname and unsupported native OS remain unknown instead of being invented', () => {
+  const metadata = nativeDeviceMetadata(undefined, 'desktop', {
+    platform: () => 'aix',
+    hostname: () => { throw new Error('unavailable') },
+  })
+  assert.equal(metadata.deviceName, null)
+  assert.equal(metadata.platform, 'unknown')
+})
+
+test('actual login requests include native device metadata and keep the persistent fingerprint and purpose unchanged', async () => {
+  const { requestDeviceCode } = await import('../account.js')
+  const sent: Record<string, unknown>[] = []
+  for (const clientKind of ['cli', 'desktop'] as const) {
+    const result = await requestDeviceCode({
+      clientKind,
+      deviceFingerprint: 'hardware-fixture-20261029',
+      tuiVersion: '4.0-fixture',
+      fetchImpl: async (_url, init) => {
+        sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return Response.json({ deviceCode: 'metadata-fixture', userCode: '123456', expiresIn: 300, pollInterval: 5, verifyUrl: 'https://tianshuharness.com/auth/device' })
+      },
+    })
+    const body = sent.at(-1)
+    assert.equal(body?.deviceName, Array.from(hostname().trim()).slice(0, 128).join(''))
+    assert.equal(body?.platform, expectedPlatform())
+    assert.equal(body?.clientKind, clientKind)
+    assert.equal(body?.deviceFingerprint, 'hardware-fixture-20261029')
+    assert.equal(body?.purpose, 'client-login')
+    assert.equal(body?.tuiVersion, '4.0-fixture')
+    assert.equal(result.verifyUrl, 'https://tianshuharness.com/auth/device?code=123456')
+  }
+})
+
+test('older login callers retain compatibility while receiving CLI and native defaults', async () => {
+  const { requestDeviceCode } = await import('../account.js')
+  let sent: Record<string, unknown> = {}
+  await requestDeviceCode({
+    deviceName: '  Fixture Desktop\n ',
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({ deviceCode: 'metadata-fixture', userCode: '123456', verifyUrl: 'https://tianshuharness.com/auth/device' })
+    },
+  })
+  assert.equal(sent.deviceName, 'Fixture Desktop')
+  assert.equal(sent.clientKind, 'cli')
+  assert.equal(sent.platform, expectedPlatform())
+  assert.equal(sent.deviceFingerprint, null)
 })

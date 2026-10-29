@@ -10,11 +10,14 @@ import { requestDeviceCode } from '../../auth/account.js'
 import { buildAccountRoutesFor } from '../account-routes.js'
 import { createRouter } from '../index.js'
 import { setNetworkConfig } from '../../config/manager.js'
+import { getGlobalDispatcher, ProxyAgent, setGlobalDispatcher } from 'undici'
 
 test('actual account route follows saved proxy changes and NO_PROXY without restarting', async () => {
   const home = mkdtempSync(join(tmpdir(), 'account-network-'))
   const keys = ['RIVET_HOME', 'RIVET_CONFIG_PATH', 'RIVET_ACCOUNT_API', 'RIVET_NO_SYSTEM_PROXY', 'NO_PROXY', 'no_proxy']
   const previous = keys.map(key => process.env[key])
+  const previousDispatcher = getGlobalDispatcher()
+  let globalProxy: ProxyAgent | undefined
   const sockets = new Set<Socket>()
   let tunnels = 0, requests = 0, upstreamStatus = 200
   const upstream = createServer((req, res) => {
@@ -75,6 +78,8 @@ test('actual account route follows saved proxy changes and NO_PROXY without rest
     assert.equal(tunnels, 1, 'must use the newly saved proxy')
     cfg.network.noProxy = '*'
     writeFileSync(process.env.RIVET_CONFIG_PATH, JSON.stringify(cfg))
+    globalProxy = new ProxyAgent(cfg.network.proxy)
+    setGlobalDispatcher(globalProxy)
     assert.equal((await route('POST', '/account/device', {}, auth)).status, 200)
     assert.equal(tunnels, 1, 'updated bypass must apply to cancellation and the new request')
     upstreamStatus = 401
@@ -82,6 +87,8 @@ test('actual account route follows saved proxy changes and NO_PROXY without rest
     assert.equal(failed.status, 502)
     assert.deepEqual(failed.body, { error: 'account-device-service-auth' })
   } finally {
+    setGlobalDispatcher(previousDispatcher)
+    await globalProxy?.destroy()
     for (const socket of sockets) socket.destroy()
     await Promise.all([new Promise<void>(resolve => upstream.close(() => resolve())), new Promise<void>(resolve => proxy.close(() => resolve()))])
     keys.forEach((key, i) => { if (previous[i] === undefined) delete process.env[key]; else process.env[key] = previous[i] })

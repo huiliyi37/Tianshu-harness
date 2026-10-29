@@ -127,6 +127,7 @@ const CATALOG_META: Record<string, CatalogMeta> = {
     label: 'MiniMax',
     wire: { useMaxCompletionTokens: true },
     notes: [
+      'MiniMax-M3.1-Flash: 1M context, multimodal (image/video)',
       'MiniMax-M3: 1M context, multimodal (image/video)',
       'Uses max_completion_tokens instead of max_tokens',
       'Thinking block: {type: adaptive} + reasoning_split',

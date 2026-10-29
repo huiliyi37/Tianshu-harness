@@ -245,15 +245,36 @@ describe('provider presets', () => {
     assert.equal(resolveEffortSupported('kimi', kimi, code.capabilities), true, 'K2.8 的 low/high/max 档位放行')
   })
 
-  it('官方视频输入声明：stepfun step-5-preview + MiniMax-M3（声明式，尚无投喂通道）', () => {
+  it('MiniMax preset exposes the current fleet, global endpoint, and model-specific effort support', () => {
+    const preset = PROVIDER_PRESETS.minimax
+    const provider = preset.provider
+    assert.equal(preset.defaultModelId, 'MiniMax-M3.1-Flash')
+    assert.equal(provider.baseUrl, 'https://api.minimax.io/v1')
+    assert.deepEqual(provider.models.map(model => model.id), ['MiniMax-M3.1-Flash', 'MiniMax-M3'])
+
+    const flash = provider.models[0]!
+    assert.equal(flash.contextWindow, 1_000_000)
+    assert.equal(flash.reasoningEffort, 'max')
+    assert.equal(flash.supportsVision, true)
+    assert.equal(flash.supportsVideo, true)
+    assert.deepEqual(flash.pricing, { input: 0.15, output: 0.6, cacheRead: 0.015 })
+    assert.equal(resolveEffortSupported('minimax', provider, flash.capabilities), true)
+
+    const m3 = provider.models[1]!
+    assert.equal(m3.contextWindow, 1_000_000)
+    assert.equal(m3.supportsVision, true)
+    assert.equal(m3.supportsVideo, true)
+    assert.deepEqual(m3.pricing, { input: 0.3, output: 1.2, cacheRead: 0.06 })
+    assert.equal(resolveEffortSupported('minimax', provider, m3.capabilities), false)
+  })
+
+  it('official video input declarations remain available for current multimodal models', () => {
     const step = PROVIDER_PRESETS.stepfun.provider.models.find(m => m.id === 'step-5-preview')!
     assert.equal(step.supportsVision, true)
     assert.equal(step.supportsVideo, true, '官方：原生文本/图片/视频输入')
     const mm = PROVIDER_PRESETS.minimax.provider.models.find(m => m.id === 'MiniMax-M3')!
     assert.equal(mm.supportsVision, true)
     assert.equal(mm.supportsVideo, true, '官方多模态 Chat 输入：文本/图片/视频')
-    const mm27 = PROVIDER_PRESETS.minimax.provider.models.find(m => m.id === 'MiniMax-M2.7')!
-    assert.equal(mm27.supportsVideo, undefined, 'M2.x 纯文本档不得声明视频')
   })
 
   // 官方默认档是 DeepSeek 4.1 Flash，实际模型名 deepseek-flash，并排在列表首位。

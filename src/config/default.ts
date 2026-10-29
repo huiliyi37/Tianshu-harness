@@ -212,7 +212,7 @@ export const DEFAULT_CONFIG: Config = {
   },
   workers: {
     profiles: {
-      cheap: { provider: 'minimax', model: 'MiniMax-M2.7' },
+      cheap: { provider: 'minimax', model: 'MiniMax-M3.1-Flash' },
       'cheap-flash': { provider: 'deepseek', model: 'deepseek-flash' },
       capable: { provider: 'deepseek', model: 'deepseek-v4-pro' },
       mimo: { provider: 'mimo', model: 'mimo-v2.6-pro' },

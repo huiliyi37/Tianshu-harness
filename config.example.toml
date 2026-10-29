@@ -25,6 +25,42 @@ contextWindow = 1_000_000
 maxTokens = 64000
 reasoningEffort = "high"
 
+[provider.minimax]
+name = "minimax"
+base_url = "https://api.minimax.io/v1"
+api_key_env = "MINIMAX_API_KEY"
+thinking = "enabled"
+max_tokens = 64000
+
+[[provider.minimax.models]]
+id = "MiniMax-M3.1-Flash"
+contextWindow = 1_000_000
+maxTokens = 64000
+reasoningEffort = "max"
+
+[[provider.minimax.models]]
+id = "MiniMax-M3"
+contextWindow = 1_000_000
+maxTokens = 64000
+
+[provider.minimax-cn]
+name = "minimax-cn"
+base_url = "https://api.minimaxi.com/v1"
+api_key_env = "MINIMAX_API_KEY"
+thinking = "enabled"
+max_tokens = 64000
+
+[[provider.minimax-cn.models]]
+id = "MiniMax-M3.1-Flash"
+contextWindow = 1_000_000
+maxTokens = 64000
+reasoningEffort = "max"
+
+[[provider.minimax-cn.models]]
+id = "MiniMax-M3"
+contextWindow = 1_000_000
+maxTokens = 64000
+
 [agent]
 approval = "suggest"
 maxTurns = 50

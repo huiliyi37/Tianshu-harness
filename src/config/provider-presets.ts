@@ -489,13 +489,13 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
   minimax: {
     key: 'minimax',
     label: 'MiniMax',
-    description: 'MiniMax：M2.7 均衡档（默认）与 M3 多模态档（1M 上下文）',
-    defaultModelId: 'MiniMax-M2.7',
+    description: 'MiniMax M3.1 Flash (default) and M3 multimodal models with 1M context',
+    defaultModelId: 'MiniMax-M3.1-Flash',
     keyUrl: 'https://platform.minimaxi.com/',
     provider: {
       name: 'minimax',
       apiKeyEnv: 'MINIMAX_API_KEY',
-      baseUrl: 'https://api.minimaxi.com/v1',
+      baseUrl: 'https://api.minimax.io/v1',
       protocol: 'openai',
       capabilities: {
         cacheControl: false,
@@ -503,17 +503,21 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
         toolJsonBug: false,
         prefixCache: 'deepseek-native',
         prefixCompletion: false,
+        effortFormat: 'reasoning_effort',
       },
       thinking: 'enabled',
       maxTokens: 64000,
       models: [
         {
-          id: 'MiniMax-M2.7',
-          description: 'MiniMax M2.7：均衡档，204.8K 上下文',
-          contextWindow: 204_800,
+          id: 'MiniMax-M3.1-Flash',
+          description: 'MiniMax M3.1 Flash: 1M context with image and video input',
+          contextWindow: 1_000_000,
           maxTokens: 64000,
-          tier: 'balanced',
-          pricing: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.3 },
+          reasoningEffort: 'max',
+          tier: 'strong',
+          supportsVision: true,
+          supportsVideo: true,
+          pricing: { input: 0.15, output: 0.6, cacheRead: 0.015 },
         },
         {
           id: 'MiniMax-M3',
@@ -523,7 +527,8 @@ export const PROVIDER_PRESETS: Record<ProviderPresetKey, ProviderPreset> = {
           tier: 'strong',
           supportsVision: true,
           supportsVideo: true, // 官方：MiniMax-M3 多模态 Chat 输入支持文本/图片/视频
-          pricing: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.3 },
+          capabilities: { effortFormat: 'none' },
+          pricing: { input: 0.3, output: 1.2, cacheRead: 0.06 },
         },
       ],
       unsupported: [],

@@ -76,4 +76,16 @@ describe('config.example.json 的每个键都必须是真实存在的旋钮', ()
     assert.ok(top.length > 0, 'config.example.json 顶层为空')
     assert.ok(top.every(key => key !== 'cache'), '`cache` 顶层块不该回来：schema 里没有这个键')
   })
+
+  it('documents both MiniMax regions with the current model fleet', () => {
+    const example = JSON.parse(readFileSync(EXAMPLE_PATH, 'utf-8')) as {
+      provider: { providers: Record<string, { baseUrl?: string; models?: Array<{ id: string }> }> }
+    }
+    const providers = example.provider.providers
+    assert.equal(providers.minimax?.baseUrl, 'https://api.minimax.io/v1')
+    assert.equal(providers['minimax-cn']?.baseUrl, 'https://api.minimaxi.com/v1')
+    const expected = ['MiniMax-M3.1-Flash', 'MiniMax-M3']
+    assert.deepEqual(providers.minimax?.models?.map(model => model.id), expected)
+    assert.deepEqual(providers['minimax-cn']?.models?.map(model => model.id), expected)
+  })
 })

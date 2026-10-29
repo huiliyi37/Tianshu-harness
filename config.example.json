@@ -7,6 +7,56 @@
       },
       "deepseek": {
         "apiKeyEnv": "DEEPSEEK_API_KEY"
+      },
+      "minimax": {
+        "name": "minimax",
+        "apiKeyEnv": "MINIMAX_API_KEY",
+        "baseUrl": "https://api.minimax.io/v1",
+        "protocol": "openai",
+        "thinking": "enabled",
+        "maxTokens": 64000,
+        "models": [
+          {
+            "id": "MiniMax-M3.1-Flash",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "reasoningEffort": "max",
+            "supportsVision": true,
+            "supportsVideo": true
+          },
+          {
+            "id": "MiniMax-M3",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "supportsVision": true,
+            "supportsVideo": true
+          }
+        ]
+      },
+      "minimax-cn": {
+        "name": "minimax-cn",
+        "apiKeyEnv": "MINIMAX_API_KEY",
+        "baseUrl": "https://api.minimaxi.com/v1",
+        "protocol": "openai",
+        "thinking": "enabled",
+        "maxTokens": 64000,
+        "models": [
+          {
+            "id": "MiniMax-M3.1-Flash",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "reasoningEffort": "max",
+            "supportsVision": true,
+            "supportsVideo": true
+          },
+          {
+            "id": "MiniMax-M3",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "supportsVision": true,
+            "supportsVideo": true
+          }
+        ]
       }
     }
   },

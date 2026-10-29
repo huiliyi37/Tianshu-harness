@@ -13,15 +13,12 @@
  */
 
 import { isRuntimeLeanAspect } from '../config/runtime-lean.js'
+import { authorizeModelRequest, captureModelAuthorization, checkModelAuthorization, checkOfficialResponse, officialStreamFailure } from '../api/request-authorization.js'
+import { createManagedAccountAuth, prepareModelRuntime, resolveModelRuntime, resolveProviderForModel, isOfficialProvider } from '../models/model-runtime.js'
+import { OfficialError } from '../models/official-contract.js'
+import type { EmbeddingProvider, RemoteEmbeddingOptions, EmbeddingConfig } from './embedding-types.js'
+export type { EmbeddingProvider, RemoteEmbeddingOptions, EmbeddingConfig } from './embedding-types.js'
 
-export interface EmbeddingProvider {
-  /** Stable id for cache invalidation when the model changes. */
-  readonly id: string
-  /** True when embeddings can actually be produced (key/endpoint present). */
-  isAvailable(): boolean
-  /** Embed a batch of texts. Returns one vector per input, in order. */
-  embed(texts: string[]): Promise<number[][]>
-}
 
 /** Per-request timeout for the embeddings endpoint. A hung provider would
  *  otherwise stall indexing indefinitely; embeddings are a strict upgrade, so
@@ -32,15 +29,6 @@ function embeddingTimeoutMs(): number {
   return Number.isFinite(v) && v > 0 ? v : 30_000
 }
 
-export interface RemoteEmbeddingOptions {
-  baseUrl: string
-  apiKey: string
-  model: string
-  /** Injected for tests; defaults to global fetch. */
-  fetchImpl?: typeof fetch
-  /** Max texts per request. */
-  batchSize?: number
-}
 
 /** OpenAI-compatible `/embeddings` provider. */
 export class RemoteEmbeddingProvider implements EmbeddingProvider {
@@ -50,8 +38,10 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
   private model: string
   private fetchImpl: typeof fetch
   private batchSize: number
+  private readonly options: RemoteEmbeddingOptions
 
   constructor(opts: RemoteEmbeddingOptions) {
+    this.options = { ...opts }
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '')
     this.apiKey = opts.apiKey
     this.model = opts.model
@@ -61,15 +51,22 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
   }
 
   isAvailable(): boolean {
-    return Boolean(this.baseUrl && this.apiKey && this.model)
+    return Boolean(this.model && (this.options.requestAuth || this.options.prepareRequestAuth || this.baseUrl && this.apiKey))
+  }
+
+  async checkAccess(): Promise<void> {
+    if (this.options.checkAccess) await this.options.checkAccess()
+    else if (this.options.requestAuth) await checkModelAuthorization(this.options.requestAuth)
   }
 
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return []
+    const requestAuth = captureModelAuthorization(this.options.prepareRequestAuth ? await this.options.prepareRequestAuth() : this.options.requestAuth, this.model)
+    try {
     const out: number[][] = []
     for (let i = 0; i < texts.length; i += this.batchSize) {
       const batch = texts.slice(i, i + this.batchSize)
-      const res = await this.fetchImpl(`${this.baseUrl}/embeddings`, {
+      const wire = await authorizeModelRequest(requestAuth, 'embedding', `${this.baseUrl}/embeddings`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -78,16 +75,21 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
         body: JSON.stringify({ model: this.model, input: batch }),
         signal: AbortSignal.timeout(embeddingTimeoutMs()),
       })
+      const res = await this.fetchImpl(wire.url, wire.init).catch(error => { throw officialStreamFailure(requestAuth, error) })
+      await checkOfficialResponse(requestAuth, res)
       if (!res.ok) {
         throw new Error(`embeddings request failed: ${res.status}`)
       }
       const json = await res.json() as { data?: Array<{ embedding: number[]; index?: number }> }
       const data = json.data ?? []
+      if (requestAuth && (!Array.isArray(data) || data.length !== batch.length || data.some(item => !Array.isArray(item?.embedding) || !item.embedding.length || item.embedding.some(value => !Number.isFinite(value))))) throw new Error('Invalid embedding response')
       // Preserve input order (API returns an `index` field).
       const ordered = [...data].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      if (requestAuth && ordered.some((item, index) => item.index !== index)) throw new Error('Invalid embedding response')
       for (const d of ordered) out.push(d.embedding)
     }
     return out
+    } catch (error) { throw officialStreamFailure(requestAuth, error) }
   }
 }
 
@@ -98,12 +100,6 @@ export class NullEmbeddingProvider implements EmbeddingProvider {
   async embed(): Promise<number[][]> { return [] }
 }
 
-export interface EmbeddingConfig {
-  baseUrl?: string
-  apiKey?: string
-  model?: string
-  fetchImpl?: typeof fetch
-}
 
 /**
  * Build the default embedding provider from explicit config, falling back to
@@ -115,6 +111,22 @@ export interface EmbeddingConfig {
 export function createEmbeddingProvider(opts: EmbeddingConfig = {}): EmbeddingProvider {
   const env = process.env
   if (env.RIVET_NO_EMBEDDINGS === '1' || isRuntimeLeanAspect('embeddings')) return new NullEmbeddingProvider()
+
+  if (opts.managed) {
+    const { deps } = opts.managed
+    const input = { ...opts.managed.input }
+    const auth = input.auth ?? input.prepared?.auth ?? createManagedAccountAuth(deps)
+    const selected = resolveProviderForModel(input, input.modelId, input.targetProvider)
+    if (!selected || 'error' in selected || !isOfficialProvider(selected.provider)) throw new OfficialError('model_unavailable', 409, false)
+    return new RemoteEmbeddingProvider({ baseUrl: selected.provider.baseUrl, apiKey: '', model: selected.modelId, fetchImpl: opts.fetchImpl,
+      checkAccess: async () => { await prepareModelRuntime({ ...input, auth, purpose: 'embedding' }, deps) },
+      prepareRequestAuth: async () => {
+        const runtime = await resolveModelRuntime({ ...input, auth, purpose: 'embedding' }, deps)
+        if (!runtime.requestAuth) throw new OfficialError('auth_required', 401, false)
+        return runtime.requestAuth
+      },
+    })
+  }
 
   const baseUrl = opts.baseUrl
     ?? env.RIVET_EMBEDDING_BASE_URL

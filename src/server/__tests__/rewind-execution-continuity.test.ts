@@ -33,16 +33,17 @@ function productionFacade(agent: AgentLoop, rebuild: (model: string) => AgentLoo
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   const evaluate = new Function('agent', 'spec', 'stores', 'ctx', 'reload', 'shared', 'sessionId', 'isModelSpecUsable',
-    'rewindAgentSession', 'waitForAgentRewind', 'resolveModelSpecWithReload', 'assembleAgentLoop',
-    'cwd', 'registry', 'allowedTools', 'buildReplacementAgent', code)
+    'rewindAgentSession', 'waitForAgentRewind', 'prepareManagedTarget', 'assembleAgentLoop',
+    'cwd', 'registry', 'allowedTools', 'buildReplacementAgent', 'ownedOfficialAuth', code)
   const resolve = (_context: unknown, model: string) => ({ apiKey: 'fixture', provider: { name: 'fixture' }, model: { id: model } })
   return evaluate(agent, { ...resolve({}, 'fixture'), apiKey: unconfigured ? '' : 'fixture' },
     { historyRestore: { restored: agent.session.getMessages().length }, refs: { coordinator: null },
       claimStore: { async flushWrites() {} }, persist: { updateMetadata() {}, appendModelSwitch() {} } },
     {}, () => ({}), undefined, 'rewind-fixture', isModelSpecUsable,
-    Reflect.get(loopFactory, 'rewindAgentSession'), Reflect.get(loopFactory, 'waitForAgentRewind'), resolve,
+    Reflect.get(loopFactory, 'rewindAgentSession'), Reflect.get(loopFactory, 'waitForAgentRewind'),
+    async (context: unknown, model: string) => ({ context, spec: resolve(context, model) }),
     (_context: unknown, _cwd: string, _sessionId: string, _stores: unknown, spec: { model: { id: string } }) => rebuild(spec.model.id),
-    '/controlled-fixture', undefined, undefined, buildReplacementAgent) as ManagedAgent
+    '/controlled-fixture', undefined, undefined, buildReplacementAgent, undefined) as ManagedAgent
 }
 
 function syntheticHistory(engine: PromptEngine): OaiMessage[] {
@@ -304,7 +305,7 @@ test('rewind followed by model switch keeps the durable barrier and authorizes t
   const setup = await fixture()
   context.after(() => { setup.frozenMock.mock.restore(); setup.restoreRebuildMocks.forEach(restore => restore()) })
   assert.equal(setup.manager.rewind(setup.id, 58), true)
-  assert.equal(setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
+  assert.equal(await setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
   assert.equal(setup.rebuilt.length, 1)
   const modelSwitchOrder = setup.order.slice()
   const run = setup.facade.run('synthetic switched-model task', {} as AgentCallbacks)
@@ -332,7 +333,7 @@ test('rewind write failure survives model switch across run, flush, and shutdown
   const failure = new Error('synthetic switched-runtime rewind write failure')
   setup.state.writeError = failure
   assert.equal(setup.manager.rewind(setup.id, 58), true)
-  assert.equal(setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
+  assert.equal(await setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
   const run = setup.facade.run('must not send after switch', {} as AgentCallbacks)
   void run.catch(() => {})
   await new Promise<void>(resolve => setImmediate(resolve))
@@ -367,7 +368,7 @@ test('consecutive rewinds across model rebuild serialize old and new persistence
   const setup = await fixture()
   context.after(() => { setup.frozenMock.mock.restore(); setup.restoreRebuildMocks.forEach(restore => restore()) })
   assert.equal(setup.manager.rewind(setup.id, 58), true)
-  assert.equal(setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
+  assert.equal(await setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
   assert.equal(setup.manager.rewind(setup.id, 48), true)
   const run = setup.facade.run('synthetic twice-rewound switched-model task', {} as AgentCallbacks)
   void run.catch(() => {})
@@ -406,7 +407,7 @@ test('model rebuild during durable checkpoint I/O recommits authorization for th
   assert.equal(setup.manager.rewind(setup.id, 48), true)
   await new Promise<void>(resolve => setImmediate(resolve))
   assert.deepEqual(models, ['fixture'])
-  assert.equal(setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
+  assert.equal(await setup.facade.switchModel!('fixture-next'), 'fixture:fixture-next')
   const run = setup.facade.run('checkpoint raced a model rebuild', {} as AgentCallbacks)
   await new Promise<void>(resolve => setImmediate(resolve))
   assert.equal(setup.requests.length, 1)

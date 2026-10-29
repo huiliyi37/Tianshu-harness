@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import { WorkerTerminalPolicy } from './worker-terminal-policy.js'
 import { clampReadConcurrency } from '../config/read-concurrency.js'
 import { reportFailureKind, isReportChannelError, type ReportDiagnostic, recordReportFailure } from './worker-report-repair.js'
@@ -86,6 +87,9 @@ export interface WorkerRuntimeDecision {
 }
 
 export interface WorkerSessionConfig {
+  automaticMemoryReview?: boolean
+  runtimeSubmission?: import('../models/model-runtime.js').ModelSubmission
+  runtimeContext?: import('../models/model-runtime.js').ResolveModelInput
   externalHookParent?: { runtimeId: string; runId: string }
   externalHookHost?: import('../hooks/external-hook-types.js').ExternalHookHostPort
   routeReason?: string
@@ -254,6 +258,7 @@ export interface WorkerTranscript {
 }
 
 export interface WorkerSessionRun {
+  officialFailure?: OfficialError
   prefixProof?: ContinuationPrefixProof
   result: WorkerResult
   transcript: WorkerTranscript
@@ -476,6 +481,7 @@ async function runOnce(
     onError: (error) => {
       transcript.errors.push(error.message)
       streamError = error
+      if (error instanceof OfficialError) throw error
     },
     onAbort: () => {
       transcript.errors.push('Worker aborted')
@@ -740,6 +746,9 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
     firstMain = false
   }, usageEvidence)
   const agent = new AgentLoop({
+    automaticMemoryReview: config.runtimeContext?.provider.auth?.type === 'tianshu-account' ? false : config.automaticMemoryReview,
+    runtimeSubmission: config.runtimeSubmission,
+    prepareModelSubmission: config.runtimeSubmission?.prepare,
     inputOrigin: 'worker_task',
     externalHookHost: config.externalHookHost,
     externalHookParent: config.externalHookParent,
@@ -839,8 +848,8 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
   }
   const wasAborted = (): boolean => abortLatched || (config.abortSignal?.aborted ?? false)
 
+  const transcript = emptyTranscript()
   try {
-    const transcript = emptyTranscript()
     const runAgent = async (input: string): Promise<{ text: string; submitted: boolean }> => {
       submission.report = undefined
       const text = await runOnceWithTransientRetry(agent, input, transcript, config.onActivity, steerDrain, config.onNestedDelegation)
@@ -848,6 +857,7 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
     }
     let initialRun: { text: string; submitted: boolean }
     try { initialRun = await runAgent(prompt) } catch (error) {
+      if (error instanceof OfficialError) throw error
       const reason = error instanceof Error ? error.message : String(error)
       return { result: { ...buildBlockedWorkerResult(config.order, reason, isLocalWorkerPolicyError(error) ? 'policy_short_circuit' : 'worker_crash'), failureStage: isLocalWorkerPolicyError(error) ? 'continuity' : 'transport', terminalFailure: true, artifacts: [{ kind: 'note', title: 'Partial output', content: transcript.text }] }, transcript, session, usage: sessionUsage() }
     }
@@ -965,6 +975,7 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
           usage: sessionUsage(),
         }
       } catch (error) {
+        if (error instanceof OfficialError) throw error
         const message = error instanceof Error ? error.message : String(error)
         transcript.errors.push(message)
         mbox?.escalate(`Parse failed (attempt ${attempt + 1}): ${message.slice(0, 100)}`)
@@ -1021,8 +1032,13 @@ async function runWorkerSessionImpl(config: WorkerSessionConfig): Promise<Worker
       session,
       usage: sessionUsage(),
     }
+  } catch (error) {
+    if (!(error instanceof OfficialError)) throw error
+    return { officialFailure: error, result: buildBlockedWorkerResult(config.order, error.code), transcript, session, usage: sessionUsage(), checkpoint: { partialResult: transcript.text, turnIndex: 0, completedTools: [...transcript.toolUses] } }
   } finally {
     await agent.config.externalHookRuntime?.close()
+    agent.stopFsWatcher()
+    agent.stopConfigWatcher()
     clearTimeout(timer)
     if (softTimer) clearTimeout(softTimer)
     if (onParentAbort && config.abortSignal) {

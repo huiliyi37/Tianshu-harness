@@ -8,8 +8,8 @@ export function createReportClientFactory(
   params: Omit<Parameters<typeof createProviderClient>[2], 'maxTokens'>,
 ): () => StreamClient {
   return () => {
-    const client = createProviderClient({ ...provider, thinking: 'disabled', maxRetries: 0 }, capabilities, {
-      ...params, maxTokens: 16_384, thinkingBudget: undefined, reasoningEffort: undefined,
+    const client = createProviderClient(provider.auth?.type === 'tianshu-account' ? provider : { ...provider, thinking: 'disabled', maxRetries: 0 }, capabilities, {
+      ...params, maxTokens: 16_384, thinkingBudget: undefined, reasoningEffort: provider.auth?.type === 'tianshu-account' ? 'off' : undefined,
     })
     client.setThinking?.('disabled')
     return client

@@ -14,6 +14,8 @@ import { hasModelsListEndpoint } from '../api/endpoint-map.js'
 import { matchModelIds } from '../api/model-id-matcher.js'
 import { toModelDescriptors } from '../config/provider-cli.js'
 import type { ModelConfig, ProviderProtocol } from '../config/schema.js'
+import { loadConfig } from '../config/manager.js'
+import { isOfficialProvider } from '../models/model-runtime.js'
 
 export interface TestKeyResult {
   /** true = 端点连通 + key 有效（/models 或最小补全探测通过）；false = 探测失败。 */
@@ -103,6 +105,11 @@ export async function probeForTestKey(opts: EndpointRequestOptions & {
   probeModel?: string
 }): Promise<TestKeyResult> {
   opts = { ...opts, deadline: opts.deadline ?? Date.now() + (opts.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS) }
+  const stored = opts.providerName ? loadConfig().provider.providers[opts.providerName] : undefined
+  if (stored && isOfficialProvider(stored)) {
+    const report = await probeProvider({ ...opts, skipCompletion: true })
+    return report.modelsOk ? { ok: true, models: report.models } : mapError(report)
+  }
   const keyless = !opts.apiKey
   if (!hasModelsListEndpoint(opts.providerName, opts.baseUrl)) {
     // 端点结构上就没有列表——没有模型 id 时无法给 key 下任何结论，如实报专门

@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import { workerDeliverySchema } from '../agent/work-order.js'
 import { z } from 'zod'
 import { deriveWorkOrderId, type CoordinatorRun, type DelegationRequest } from '../agent/coordinator.js'
@@ -432,6 +433,7 @@ export function createDelegateBatchTool(
         // 用户取消不是批次失败：补完终态后 rethrow（统一捏成 AbortError 形态，
         // 管道的 [interrupted] 特判只认 name）——吞掉会把 Esc 记成持续性失败，
         // 还附「不要重试」的误导文案。与 delegate-task 同款修复。
+        if (err instanceof OfficialError) throw err
         const isAbort = params.abortSignal?.aborted === true
           || (err instanceof Error && err.name === 'AbortError')
           || msg.includes('Delegation aborted')

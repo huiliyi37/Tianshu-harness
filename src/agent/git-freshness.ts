@@ -1,5 +1,6 @@
 import { spawnGit } from '../tools/spawn-git.js'
 import { track } from '../tools/process-tracker.js'
+import { gitStateStamp } from '../tools/git-state-stamp.js'
 
 /**
  * Execute a short-lived git command and capture its stdout.
@@ -33,7 +34,10 @@ function gitSpawn(
 
     // Abort/error can precede close; only close permits cwd cleanup on Windows.
     child.once('error', () => { failed = true })
-    child.once('close', () => resolve(failed || signal?.aborted ? '' : stdout.trim()))
+    child.once('close', (_code, sig) => {
+      if (failed || sig) probeTainted.add(cwd) // 超时 / 被杀：结果不可信，不得进缓存
+      resolve(failed || signal?.aborted ? '' : stdout.trim())
+    })
   })
 }
 
@@ -97,14 +101,21 @@ export async function getGitChangeRate(
   lookback = 5,
   signal?: AbortSignal,
 ): Promise<number> {
+  // HEAD / index 没动 → 变更率不可能变：复用上次结果，不起子进程。每轮都 spawn 最多 6 个
+  // git，在 Windows 上 spawn 本身是同步创建进程，12 个会话并发时单次可堵事件循环 3 秒
+  //（2026-10-21 现场 CPU 采样，见 tools/git-state-stamp.ts）。
+  const stamp = gitStateStamp(cwd)
+  const hit = stamp ? rateCache.get(`${cwd}\0${lookback}`) : undefined
+  if (hit && hit.stamp === stamp) return hit.rate
+  probeTainted.delete(cwd)
   const changed = await getChangedFileCount(cwd, lookback, signal)
-  if (changed === 0) return 0
-
-  const total = await getTrackedFileCount(cwd, signal)
-  if (total === 0) return 0
-
-  return Math.min(1, changed / total)
+  const total = changed === 0 ? 0 : await getTrackedFileCount(cwd, signal)
+  const rate = changed === 0 || total === 0 ? 0 : Math.min(1, changed / total)
+  if (stamp && !signal?.aborted && !probeTainted.has(cwd) && gitStateStamp(cwd) === stamp) rateCache.set(`${cwd}\0${lookback}`, { stamp, rate })
+  return rate
 }
+const rateCache = new Map<string, { stamp: string; rate: number }>()
+const probeTainted = new Set<string>()
 
 /**
  * Apply exponential moving average smoothing to a change rate signal.

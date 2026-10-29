@@ -1,9 +1,11 @@
-import type { ProviderConfig } from '../config/schema.js'
+import { providerSchema, type ProviderConfig } from '../config/schema.js'
 import { findModelInKey, findModelOwner } from '../config/provider-keys.js'
 import { resolveApiKey, resolveCredentialKey } from '../api/factory.js'
 import { createAuthProvider } from '../auth/registry.js'
 import type { ProviderNetwork } from '../api/provider-network.js'
 import { userConfigPath } from '../config/paths.js'
+import { getPreparedModel, isOfficialProvider } from '../models/model-runtime.js'
+import { OfficialError } from '../models/official-contract.js'
 
 /** Serializable identity only; credentials never cross the worker protocol. */
 export interface ModelBindingRef {
@@ -36,6 +38,20 @@ export class ModelBindingUnavailable extends Error {
 
 export function sessionProviderKey(providers: Record<string, ProviderConfig>, provider: ProviderConfig): string {
   const entries = Object.entries(providers)
+  if (isOfficialProvider(provider)) {
+    const model = provider.models[0]?.id
+    if (!model) throw new ModelBindingUnavailable('provider_deleted')
+    let prepared: ReturnType<typeof getPreparedModel>
+    try { prepared = getPreparedModel(provider, model) }
+    catch { throw new ModelBindingUnavailable('provider_deleted') }
+    const candidates = entries.filter(([providerKey]) => {
+      try {
+        return resolveModelBinding(providers, { provider: providerKey, model, baseUrl: prepared.provider.baseUrl }, undefined, provider).provider === prepared.provider
+      } catch { return false }
+    })
+    if (candidates.length !== 1) throw new ModelBindingUnavailable('provider_deleted')
+    return candidates[0]![0]
+  }
   const identities = entries.filter(([, configured]) => configured === provider)
   const sameCredentials = (left: Pick<ProviderConfig, 'keyRef' | 'apiKey' | 'apiKeyEnv'>, right: Pick<ProviderConfig, 'keyRef' | 'apiKey' | 'apiKeyEnv'>) =>
     left.keyRef === right.keyRef && left.apiKey === right.apiKey && left.apiKeyEnv === right.apiKeyEnv
@@ -54,13 +70,24 @@ export function sessionProviderKey(providers: Record<string, ProviderConfig>, pr
 }
 
 /** Exact lookup, with the same model-owner and credential rules as main sessions. */
-export function resolveModelBinding(providers: Record<string, ProviderConfig>, target: ModelBindingRef, network?: ProviderNetwork) {
+export function resolveModelBinding(providers: Record<string, ProviderConfig>, target: ModelBindingRef, network?: ProviderNetwork, ownedProvider?: ProviderConfig) {
   const configured = providers[target.provider]
   if (!configured) throw new ModelBindingUnavailable('provider_deleted', target)
   const found = target.keyId
     ? findModelInKey(configured, target.keyId, target.model)
     : findModelOwner(configured, target.model)
   if (!found) throw new ModelBindingUnavailable('model_deleted', target)
+  if (isOfficialProvider(configured)) {
+    const authority = ownedProvider ?? configured
+    if (!isOfficialProvider(authority) || authority.name !== configured.name) throw new OfficialError('auth_required', 401, false)
+    const prepared = getPreparedModel(authority, found.model.id)
+    if (configured.baseUrl !== prepared.provider.baseUrl && !providerSchema.safeParse(configured).success) throw new OfficialError('auth_required', 401, false)
+    if (found.model.managed && found.model.managed.bindingId !== prepared.model.managed?.bindingId) throw new OfficialError('model_unavailable', 409, false)
+    if (target.keyId !== undefined || target.baseUrl !== undefined && target.baseUrl !== prepared.provider.baseUrl) throw new OfficialError('model_unavailable', 409, false)
+    return { provider: prepared.provider, apiKey: '', auth: undefined, spec: prepared.model, ref: {
+      provider: target.provider, model: prepared.modelId, baseUrl: prepared.provider.baseUrl,
+    } satisfies ModelBindingRef }
+  }
   const provider = { ...configured, ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}) }
   let apiKey = ''
   let auth: ReturnType<typeof createAuthProvider> | undefined
@@ -92,6 +119,10 @@ export function modelBindingAvailability(providers: Record<string, ProviderConfi
 
 /** Identify the key already used by the root user session, including duplicate model IDs. */
 export function snapshotSessionBinding(provider: ProviderConfig, model: string, apiKey: string, providerKey = provider.name): ModelBindingRef {
+  if (isOfficialProvider(provider)) {
+    const prepared = getPreparedModel(provider, model)
+    return { provider: providerKey, model: prepared.modelId, baseUrl: prepared.provider.baseUrl }
+  }
   const owner = provider.keys?.find(key => {
     if (!findModelInKey(provider, key.id, model)) return false
     try {

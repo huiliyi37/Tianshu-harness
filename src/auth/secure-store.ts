@@ -33,7 +33,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
 
@@ -116,28 +116,40 @@ function plaintextCipher(): SecretCipher {
 // ── 平台密钥库 ────────────────────────────────────────────────────────
 
 function keychainKey(create: boolean): Buffer | null {
+  const accountHome = userInfo().homedir
+  const keychainEnv = { ...process.env, HOME: accountHome, CFFIXED_USER_HOME: accountHome }
   const account = process.env.USER || process.env.USERNAME || userInfo().username || 'rivet'
   const args = ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account, '-w']
   try {
-    const out = execFileSync('security', args, { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim()
+    const out = execFileSync('security', args, { encoding: 'utf8', timeout: 10_000, windowsHide: true, env: keychainEnv }).trim()
     const key = Buffer.from(out, 'hex')
     if (key.length === 32) return key
   } catch {
     /* 未找到 → 下面创建 */
   }
   if (!create) return null
+  let defaultPath: string
+  try {
+    const value = execFileSync('security', ['default-keychain', '-d', 'user'], {
+      encoding: 'utf8', timeout: 10_000, windowsHide: true, env: keychainEnv,
+    }).trim()
+    defaultPath = value.startsWith('"') ? JSON.parse(value) : value
+    if (!defaultPath || !statSync(defaultPath).isFile()) throw new Error('default keychain missing')
+  } catch {
+    throw new Error('Default keychain unavailable; credential creation blocked')
+  }
   const fresh = randomBytes(32)
   try {
     execFileSync(
       'security',
       ['add-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account, '-w', fresh.toString('hex')],
-      { encoding: 'utf8', timeout: 10_000, windowsHide: true }
+      { encoding: 'utf8', timeout: 10_000, windowsHide: true, env: keychainEnv }
     )
     return fresh
   } catch {
     // Another process may have created the item. Never replace an existing key.
     try {
-      const key = Buffer.from(execFileSync('security', args, { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim(), 'hex')
+      const key = Buffer.from(execFileSync('security', args, { encoding: 'utf8', timeout: 10_000, windowsHide: true, env: keychainEnv }).trim(), 'hex')
       if (key.length === 32) return key
     } catch {}
     warnOnce(

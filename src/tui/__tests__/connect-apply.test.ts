@@ -14,7 +14,7 @@ it('the CLI commit callback persists and switches through the provider-aware hel
   const main = readFileSync(new URL('../../main.ts', import.meta.url), 'utf8')
   assert.match(main, /persistConnectCommit\(commit\)/)
   assert.match(main, /resolveConnectRuntimeSelection\(commit, fresh,\s*\{\s*provider: ctx\.provider\.name, model: ctx\.agent\.config\.promptEngine\.getModel\(\)/)
-  assert.match(main, /switchAgentRuntime\(ctx, selection\.model, selection\.provider\)/)
+  assert.match(main, /await switchPreparedAgentRuntime\(ctx, selection\.model, selection\.provider\)/)
   const bootstrap = readFileSync(new URL('../../bootstrap.ts', import.meta.url), 'utf8')
   assert.match(bootstrap, /import \{ resolveProviderForModel,.* from '\.\/bootstrap\/model-resolution\.js'/)
 })

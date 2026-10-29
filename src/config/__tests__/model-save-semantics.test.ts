@@ -67,7 +67,7 @@ describe('model save semantics: id-only, selection-only', () => {
       'append 必须保留前几批；整组替换会让连续保存只剩最后一批')
     assert.equal(models[0]!.contextWindow, 900_000)
     assert.equal(models[0]!.maxTokens, 128_000)
-    assert.deepEqual(models[0]!.pricing, { input: 1, output: 2 }, 'append 合并不得丢 pricing')
+    assert.deepEqual(models[0]!.pricing, { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }, 'append 合并不得丢 pricing 或省略的既有缓存费率')
     assert.equal(models[0]!.tier, 'strong', 'append 合并不得丢 tier')
   })
 

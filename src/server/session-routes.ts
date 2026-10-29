@@ -1,6 +1,8 @@
+import { planSummary, sendReplayTimeSliced } from './session-route-presentation.js'
 import { activateRequiredTools } from '../workflows/required-tools.js'
 import { buildToolSurfaceRoutes } from './tool-surface-routes.js'
 import { buildHandoffRoutes } from './handoff-routes.js'
+import { persistArchivesForPrompt } from './session-archives.js'
 import { mkdir as mkdirAsync } from 'node:fs/promises'
 import { validHookTimeout } from '../hooks/hooks-config.js'
 import { writeFileAtomicDurableAsync } from '../fs-atomic.js'
@@ -44,6 +46,9 @@ import { validateWorkspaceRoots } from './workspace-roots.js'
  *   POST   /github/prs/:number/merge                   merge a PR (confirm-gated)
  *   POST   /github/prs/:number/push-fix                push auto-fix diff to PR head (confirm-gated)
  */
+import { OfficialError } from '../models/official-contract.js'
+import { resolveSessionAutoDefault } from './session-auto-default.js'
+import { loadConfig } from '../config/manager.js'
 import { buildDocumentRoutes, documentVersion } from './file-document.js'
 import { RAW_PREVIEW_MIME } from './file-preview-mime.js'
 import { buildGitWorkbenchRoutes, serveFileRoute } from './git-workbench-routes.js'
@@ -53,11 +58,11 @@ import { boundedEventPage } from './event-page.js'
 import { buildGitReviewRoutes } from './git-review-jobs.js'
 import { buildSkillRuntimeRoutes } from './skill-runtime-routes.js'
 import { normalizeRolloverConfig } from '../agent/goal-tracker.js'
-import { decodeRouteParam, type RouteHandler } from './index.js'
+import { attachRetainedSessionReceipt, decodeRouteParam, type RouteHandler } from './index.js'
 import { allowedCorsOrigin } from './cors.js'
 import type { SseConnectionRegistry } from './sse-registry.js'
 import { SseStream } from './sse-stream.js'
-import type { RuntimeSessionManager, SessionArchiveEventRef, SessionArchiveRef } from './session-manager.js'
+import type { RuntimeSessionManager } from './session-manager.js'
 import { buildSessionSnapshot, isImportableSnapshot } from './session-snapshot.js'
 import type { Artifact } from '../artifact/types.js'
 import type { SessionRegistry } from '../agent/session-registry.js'
@@ -75,7 +80,7 @@ import { parseUsageRows } from '../cache/usage-aggregator.js'
 import { getRollbackPreview, rollbackToCheckpoint, makeOwnershipGuard } from '../agent/checkpoint.js'
 import { rankFiles, listDirEntries } from './file-list.js'
 import { cachedProjectFiles } from './file-context-routes.js'
-import { validateImagesPayload, validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, buildArchiveHandleText, persistDocumentsForPrompt, type SessionArchivePayload } from './attachment-validation.js'
+import { validateImagesPayload, validateDocumentsPayload, extractDocumentsToText, validateArchivesPayload, persistDocumentsForPrompt } from './attachment-validation.js'
 import {
   MAX_ARCHIVES,
   MAX_DOCUMENTS,
@@ -110,6 +115,9 @@ import { SessionPersist } from '../agent/session-persist.js'
 export type ArtifactKind = 'plan' | 'task-list' | 'walkthrough' | 'diff' | 'screenshot' | 'test-result' | 'markdown' | 'html'
 
 type SessionRouteDependencies = {
+  prepareOfficialSession?: (modelRef: string, signal?: AbortSignal) => Promise<{ id: string; resolveAutoDefault?(cwd: string): { modelRef: string; kind: 'official' | 'known-byok'; available: boolean } | undefined; commit(): void; dispose(): void }>
+  prepareModelListing?: () => Promise<readonly import('./session-manager.js').ModelOption[]>
+
   searchSessionTranscripts?: typeof searchSessionTranscripts
   /**
    * B4（2026-09-07 审查）：模型切换失败附因的 config 刷新源。解析走
@@ -216,79 +224,8 @@ function decodeSlug(raw: string): string {
   try { return decodeURIComponent(raw) } catch { return raw }
 }
 
-/** Plan list entry — summary only (no markdown body), createdAt as epoch ms. */
-function planSummary(p: PlanDocument) {
-  return {
-    slug: p.slug,
-    completion: p.completion,
-    title: p.title,
-    status: p.status,
-    path: p.path,
-    createdAt: p.createdAt instanceof Date ? p.createdAt.getTime() : p.createdAt,
-    approvedAt: p.approvedAt instanceof Date ? p.approvedAt.getTime() : p.approvedAt,
-    options: p.options,
-    model: p.model,
-    modelTier: p.modelTier,
-  }
-}
-
-const REPLAY_SLICE_EVENTS = 200
-const REPLAY_SLICE_MS = 4
-
-async function sendReplayTimeSliced(
-  res: import('node:http').ServerResponse,
-  sse: SseStream,
-  events: ReadonlyArray<{ type: string }>,
-): Promise<void> {
-  const canCork = typeof res.cork === 'function'
-  let index = 0
-  while (index < events.length && !sse.isClosed()) {
-    const startedAt = performance.now()
-    let sent = 0
-    if (canCork) res.cork()
-    try {
-      while (
-        index < events.length &&
-        sent < REPLAY_SLICE_EVENTS &&
-        (sent === 0 || performance.now() - startedAt < REPLAY_SLICE_MS)
-      ) {
-        const event = events[index]!
-        sse.send(event.type, event)
-        index++
-        sent++
-        if (sse.isClosed()) break
-      }
-    } finally {
-      if (canCork) res.uncork()
-    }
-    if (index < events.length && !sse.isClosed()) {
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
-  }
-}
-
 /** 导入快照的体积上限：快照是纯文本对话（无工具面），5MB 已远超正常分享件。 */
 const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
-
-/** 压缩包附件三处入口（POST /sessions、/prompt、/queue）共用的「持久化 +
- *  句柄文本」管线：原样落盘（服务端不解压），句柄文本与 docTexts 同位前置
- *  进 prompt；eventRefs 是 user 事件的小引用形态（{id,name,bytes}——
- *  savedPath/sha256 只进句柄文本，不进事件流）。refs 留给拒绝路径
- *  （run busy / queue 预算超限）做 discardArchives 孤儿回收。 */
-async function persistArchivesForPrompt(
-  manager: RuntimeSessionManager,
-  sessionId: string,
-  archives: SessionArchivePayload[] | undefined,
-): Promise<{ refs: SessionArchiveRef[]; eventRefs: SessionArchiveEventRef[]; handleText: string } | { error: string } | undefined> {
-  if (!archives?.length) return undefined
-  const persisted = await manager.persistArchives(sessionId, archives)
-  if ('error' in persisted) return { error: persisted.error }
-  return {
-    refs: persisted.refs,
-    eventRefs: persisted.refs.map(({ id, name, bytes }) => ({ id, name, bytes })),
-    handleText: persisted.refs.map((ref) => buildArchiveHandleText(ref)).join('\n\n---\n\n'),
-  }
-}
 
 /** 文档附件「原样落盘 + 句柄文本」管线已沿接缝落在 attachment-validation.ts
  * （persistDocumentsForPrompt）——本文件只做三处路由接线（prompt/create/queue）。 */
@@ -319,10 +256,26 @@ export function buildSessionRoutes(
     ...buildGitReviewRoutes(manager, apiToken),
     // 技能 Python 运行时（issue #523）：preview→confirm 两段式 + operationId 落盘。
     ...buildSkillRuntimeRoutes(manager, apiToken),
-    'POST /sessions': withAuth(async (body) => {
+    'POST /sessions': withAuth(async (body, _params, _headers, res) => {
+      const allowed = new Set(['cwd', 'workspaceRoots', 'workspaceMode', 'title', 'prompt', 'missionId', 'approvalMode', 'isolatedWorktree', 'model', 'domain', 'reasoningEffort', 'planMode', 'askMode', 'planAutoApproveUi', 'images', 'documents', 'archives', 'officialAccountAction', 'modelSelection', 'mode', 'reworkGate', 'exUltra', 'skillCreation', 'initialComposerDraft', 'toolPreset', 'requiredTools'])
+      const invalid = { status: 400, body: { error: 'invalid_request', code: 'invalid_request' } }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !allowed.has(key))) return invalid
+      const raw = body as Record<string, unknown>
+      for (const key of ['cwd', 'title', 'prompt', 'missionId', 'model', 'domain']) if (raw[key] !== undefined && typeof raw[key] !== 'string') return invalid
+      for (const key of ['isolatedWorktree', 'planAutoApproveUi']) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') return invalid
+      if (raw.officialAccountAction !== undefined && (raw.officialAccountAction !== 'new-session' || typeof raw.model !== 'string' || !raw.model.trim())) return invalid
+      if (raw.modelSelection !== undefined && (raw.modelSelection !== 'auto' || typeof raw.model !== 'string' || !raw.model.trim())) return invalid
+      const controller = new AbortController()
+      const disconnect = () => { if (!res?.writableEnded) controller.abort() }
+      res?.once('close', disconnect)
+      try {
+
+      // DEBUG instrumentation (RIVET_DEBUG_RENDER=1): logs createSession latency
+      // so we can tell session-creation bottlenecks (loadConfig, worktree setup)
+      // from SSE/stream issues. See docs/dev/render-debug-playbook.md.
       const __dbg = process.env.RIVET_DEBUG_RENDER === '1'
       const __t0 = __dbg ? Date.now() : 0
-      const data = (body ?? {}) as { cwd?: string; workspaceRoots?: unknown; workspaceMode?: unknown; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; reasoningEffort?: unknown; planMode?: unknown; askMode?: unknown; planAutoApproveUi?: unknown; images?: unknown; documents?: unknown; archives?: unknown }
+      const data = (body ?? {}) as { officialAccountAction?: 'new-session'; modelSelection?: 'auto'; cwd?: string; workspaceRoots?: unknown; workspaceMode?: unknown; title?: string; prompt?: string; missionId?: string; approvalMode?: unknown; isolatedWorktree?: unknown; model?: string; domain?: string; reasoningEffort?: unknown; planMode?: unknown; askMode?: unknown; planAutoApproveUi?: unknown; images?: unknown; documents?: unknown; archives?: unknown }
       // issue #147 — 非法 workspaceMode 显式 400（静默降级会让客户端以为用了默认工作区）。
       if (data.workspaceMode !== undefined && !isSessionWorkspaceMode(data.workspaceMode)) return { status: 400, body: { error: 'Invalid "workspaceMode" (explicit|default|scratch)' } }
       if (data.approvalMode !== undefined && !isApprovalMode(data.approvalMode)) {
@@ -367,12 +320,47 @@ export function buildSessionRoutes(
         catch (error) { return { status: 400, body: { error: (error as Error).message } } }
         if (data.isolatedWorktree === true && workspaceRoots.length > 1) return { status: 400, body: { error: 'Isolated Worktree supports a single folder only' } }
       }
+      const defaultChanged = new Error('default_model_changed')
       let skillInvoked: string | undefined
       let requiredTools: readonly string[] = []
       let rec: ReturnType<RuntimeSessionManager['createSession']>
-      try { rec = manager.createSession({
+      let prepared: Awaited<ReturnType<NonNullable<SessionRouteDependencies['prepareOfficialSession']>>> | undefined
+      let rollback: ReturnType<RuntimeSessionManager['captureCreationRollback']>
+      let createdRecordId: string | undefined
+      const checkAutoDefault = (cwd: string) => {
+        if (data.modelSelection !== 'auto') return
+        try {
+          if (prepared?.resolveAutoDefault) {
+            const actual = prepared.resolveAutoDefault(cwd)
+            if (!actual?.available || actual.modelRef !== data.model?.trim() || (actual.kind === 'official') !== !!prepared) throw defaultChanged
+          } else {
+            const config = loadConfig({ cwd })
+            const actual = resolveSessionAutoDefault(cwd, { config, provider: config.provider.providers[config.provider.default]!, apiKey: '' })
+            if (!actual || actual.modelRef !== data.model?.trim() || actual.kind !== 'known-byok' || prepared || !actual.available && !config.agent.defaultModel) throw defaultChanged
+          }
+        } catch { throw defaultChanged }
+      }
+      const cleanup = () => {
+        if (!rollback) return {}
+        const outcome = rollback()
+        rollback = undefined
+        if (outcome === 'deleted' || outcome === 'retained-idle' || outcome === 'missing' && !manager.getSession(createdRecordId!)) prepared?.dispose()
+        return outcome.startsWith('retained') ? { sessionId: createdRecordId, cleanup: 'retained' as const } : {}
+      }
+      try {
+        if (data.officialAccountAction) {
+          if (!dependencies.prepareOfficialSession) throw new OfficialError('service_error')
+          prepared = await dependencies.prepareOfficialSession(data.model!.trim(), controller.signal)
+          controller.signal.throwIfAborted()
+          if (manager.getSession(prepared.id)) throw new OfficialError('service_error')
+        }
+        rec = manager.createSession({
         ...creation.input,
-        preparePrompt: prepareSessionPrompt(data.prompt, resolved => { prompt = resolved.prompt; requiredTools = resolved.requiredTools ?? []; skillInvoked = resolved.skillInvoked }),
+        ...(prepared ? { id: prepared.id } : {}),
+        preparePrompt: cwd => {
+          checkAutoDefault(cwd)
+          prepareSessionPrompt(data.prompt, resolved => { prompt = resolved.prompt; requiredTools = resolved.requiredTools ?? []; skillInvoked = resolved.skillInvoked })(cwd)
+        },
         cwd: data.cwd,
         workspaceRoots,
         workspaceMode: data.workspaceMode as SessionWorkspaceMode | undefined,
@@ -393,10 +381,15 @@ export function buildSessionRoutes(
         // P1b：客户端自报「我有自动批准倒计时 UI」。缺省即 fail-closed，
         // 不武装定时器——宿主看不见倒计时就不该被静默自动批准。
         planAutoApproveUi: data.planAutoApproveUi === true,
-      }) } catch (error) {
-        if (error instanceof SlashPromptError) return { status: 400, body: { error: error.message } }
-        throw error
-      }
+      })
+        createdRecordId = rec.id
+        if (prepared || data.modelSelection === 'auto') rollback = manager.captureCreationRollback(rec.id)
+        checkAutoDefault(rec.cwd)
+        if (prepared) {
+          if (rec.id !== prepared.id) throw new OfficialError('service_error')
+          controller.signal.throwIfAborted()
+          prepared.commit()
+        }
       const activation = await activateRequiredTools(requiredTools, name => manager.enableTool(rec.id, name))
       if (!activation.ok) return { status: 409, body: { error: activation.error, id: rec.id } }
       if (prompt && /@computer\b/i.test(prompt)) await manager.enableTool(rec.id, 'computer_use')
@@ -405,15 +398,25 @@ export function buildSessionRoutes(
       // 文档同址：persistDocumentsForPrompt 落盘（单文档失败降级无句柄，不 400），
       // 抽取改读落盘副本，块首句柄带 savedPath。
       const archivePersist = await persistArchivesForPrompt(manager, rec.id, archivesCheck.archives)
-      if (archivePersist && 'error' in archivePersist) return { status: 400, body: { error: archivePersist.error } }
+      if (archivePersist && 'error' in archivePersist) return { status: 400, body: { error: archivePersist.error, ...cleanup() } }
       const docPersist = persistDocumentsForPrompt(manager, rec.id, docsCheck.documents)
       const docTexts = docsCheck.documents?.length ? await extractDocumentsToText(docsCheck.documents, docPersist?.saved) : ''
       const attachmentTexts = [docTexts, archivePersist?.handleText].filter((s) => s)
       if (attachmentTexts.length > 0) prompt = `${attachmentTexts.join('\n\n---\n\n')}\n\n${prompt ?? ''}`
+      if (prepared) controller.signal.throwIfAborted()
       if (prompt?.trim()) manager.run(rec.id, prompt, imagesCheck.images, false, undefined, { skillInvoked, documents: docsCheck.documents, documentRefs: docPersist?.refs, archiveRefs: archivePersist?.eventRefs, promptText })
+      rollback = undefined
       rec = manager.getSession(rec.id) ?? rec
       if (__dbg) console.log(`[createSession] +${Date.now() - __t0}ms id=${rec.id} cwd=${data.cwd}`)
       return { status: 201, body: rec }
+      } catch (error) {
+        const retained = cleanup()
+        if (error === defaultChanged) { if (!createdRecordId) prepared?.dispose(); return { status: 409, body: { error: 'default_model_changed', ...retained } } }
+        if (error instanceof OfficialError) return { status: error.status, body: { error: error.publicError(), ...retained } }
+        if (error instanceof SlashPromptError) return { status: 400, body: { error: error.message, ...retained } }
+        throw retained.sessionId ? attachRetainedSessionReceipt(error, { sessionId: retained.sessionId, cleanup: 'retained' }) : error
+      }
+      } finally { res?.off('close', disconnect) }
     }, apiToken),
 
     // RPA 录制蒸馏 — 桌面端把录制 JSONL 交来，组装蒸馏 prompt 并开一次性
@@ -657,8 +660,9 @@ export function buildSessionRoutes(
 
     // ── PlusMenu: model picker ──
     // Read — selectable models across all providers, current one flagged.
-    'GET /sessions/:id/models': withAuth((_body, params) => {
-      const models = manager.listModels(params!.id!)
+    'GET /sessions/:id/models': withAuth(async (_body, params) => {
+      const preparedModels = await dependencies.prepareModelListing?.()
+      const models = manager.listModels(params!.id!, preparedModels)
       if (!models) return { status: 404, body: { error: 'Session not found' } }
       return { status: 200, body: { models } }
     }, apiToken),
@@ -674,6 +678,7 @@ export function buildSessionRoutes(
       try {
         switched = await manager.switchModel(params!.id!, modelId)
       } catch (error) {
+        if (error instanceof OfficialError) return { status: error.status, body: { error: error.publicError() } }
         const historyBlocked = isLocalWorkerPolicyError(error)
         return { status: 409, body: {
           code: historyBlocked ? 'history_recovery_required' : 'model_initialization_failed',
@@ -1341,30 +1346,28 @@ export function buildSessionRoutes(
       // 实测 2026092226d3821a1ce6：求和 62,685,972 vs 末值 3,327,234，而权威账本
       // meta.tokenUsage.prompt = 3,325,173 与 cache-log 主请求累计逐字节吻合）。
       // 逐字段取「最后一个非零值」：累计量单调不减，缺字段的畸形帧不该把已有值清零。
-      let mainInput = 0
-      let mainOutput = 0
-      let mainCacheRead = 0
-      let mainCacheWrite = 0
-      let mainReasoning = 0
+      let mainInput = 0, mainOutput = 0, mainReasoning = 0
+      let mainCacheRead = 0, mainCacheWrite = 0
       const mainModel = rec.model
       const mainProvider = mainModel
         ? (providers[config?.provider.default ?? '']?.models.some(model => model.id === mainModel)
           ? config?.provider.default
           : Object.entries(providers).find(([, provider]) => provider.models?.some(model => model.id === mainModel))?.[0])
         : undefined
-      let mainCost = 0
-
+      let mainCost = 0, mainCostKnown = true
       for (const ev of events.events) {
         if (ev.type === 'turn_complete') {
           const data = ev.data as { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; reasoning_tokens?: number } }
           if (data.usage) {
+            const pricing = findUsagePricing(providers, mainProvider, mainModel, ev.ts)
+            mainCostKnown &&= !!pricing
             mainCost += computeUsageCost({
               input_tokens: Math.max(0, (data.usage.input_tokens ?? mainInput) - mainInput),
               output_tokens: Math.max(0, (data.usage.output_tokens ?? mainOutput) - mainOutput),
               cache_read_input_tokens: Math.max(0, (data.usage.cache_read_input_tokens ?? mainCacheRead) - mainCacheRead),
               cache_creation_input_tokens: Math.max(0, (data.usage.cache_creation_input_tokens ?? mainCacheWrite) - mainCacheWrite),
               reasoning_tokens: Math.max(0, (data.usage.reasoning_tokens ?? mainReasoning) - mainReasoning),
-            }, findUsagePricing(providers, mainProvider, mainModel, ev.ts)).total
+            }, pricing).total
             mainInput = data.usage.input_tokens ?? mainInput
             mainOutput = data.usage.output_tokens ?? mainOutput
             mainCacheRead = data.usage.cache_read_input_tokens ?? mainCacheRead
@@ -1502,12 +1505,15 @@ export function buildSessionRoutes(
       const mainTotalTokens = mainInput + mainOutput
       try {
         const rows = parseUsageRows(readFileSync(join(sessionsDir(rec.cwd), id, 'cache-log.jsonl'), 'utf8'))
-        if (rows.length) mainCost = rows.reduce((cost, row) => cost + computeUsageCost({
-          input_tokens: row.input, output_tokens: row.output,
-          cache_read_input_tokens: row.cacheRead, cache_creation_input_tokens: row.cacheCreate,
-        }, findUsagePricing(providers, row.provider ?? mainProvider, row.model, row.t)).total, 0)
+        if (rows.length) {
+          const prices = rows.map(row => findUsagePricing(providers, row.provider ?? mainProvider, row.model, row.t))
+          mainCostKnown = prices.every(Boolean)
+          mainCost = rows.reduce((cost, row, index) => cost + computeUsageCost({
+            input_tokens: row.input, output_tokens: row.output,
+            cache_read_input_tokens: row.cacheRead, cache_creation_input_tokens: row.cacheCreate,
+          }, prices[index]).total, 0)
+        }
       } catch { /* Missing historical ledger: snapshot estimate remains available. */ }
-
       const mainSession = mainTotalTokens > 0 ? {
         inputTokens: mainInput,
         outputTokens: mainOutput,
@@ -1517,7 +1523,7 @@ export function buildSessionRoutes(
         totalTokens: mainTotalTokens,
         model: mainModel,
         provider: mainProvider,
-        cost: mainCost,
+        cost: mainCost, costKnown: mainCostKnown && Number.isFinite(mainCost),
       } : null
 
       const totalCacheRead = workerCacheRead + (mainSession?.cacheReadTokens ?? 0)
@@ -1535,7 +1541,7 @@ export function buildSessionRoutes(
         body: {
           totals: {
             workers: workers.size,
-            costKnown: workerList.every(w => w.costKnown),
+            costKnown: mainCostKnown && Number.isFinite(mainCost + workerCost) && workerList.every(w => w.costKnown && Number.isFinite(w.cost)),
             inputTokens: totalInputTokens,
             outputTokens: workerOutput + (mainSession?.outputTokens ?? 0),
             cacheReadTokens: totalCacheRead,

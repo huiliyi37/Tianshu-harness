@@ -85,5 +85,6 @@ export function findModelPricing(
   if (!providerName || !modelId) return undefined
   const provider = providers[providerName]
   if (!provider) return undefined
+  if (provider.auth?.type === 'tianshu-account') return undefined
   return provider.models.find(m => m.id === modelId)?.pricing
 }

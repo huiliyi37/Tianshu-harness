@@ -5,6 +5,7 @@
  */
 
 import type { StreamClient, StreamCallbacks } from './stream-client.js'
+import { OfficialError } from '../models/official-contract.js'
 import type { OaiChatRequest } from './oai-types.js'
 import { type ErrorCategory, classifyApiError } from './error-classifier.js'
 import { withProviderRequirement, assertExecutionAccess } from './execution-continuity.js'
@@ -72,6 +73,7 @@ export class FallbackStreamClient implements StreamClient {
     } catch (err) {
       assertExecutionAccess()
       lastError = err
+      if (err instanceof OfficialError) throw err
       if (signal?.aborted) throw err
       if (this.activeClient.getMainPrefixProof?.() || this.activeClient.getExecutionPolicy?.().singleAttempt) throw err
 
@@ -95,6 +97,7 @@ export class FallbackStreamClient implements StreamClient {
       } catch (err) {
         assertExecutionAccess()
         lastError = err
+        if (err instanceof OfficialError) throw err
         if (signal?.aborted) throw err
 
         const classified = classifyApiError(err)

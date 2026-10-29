@@ -14,6 +14,7 @@ import { rankSearchCandidates } from './search-salience.js'
 import { isFilesystemMetadata } from '../utils/file-metadata.js'
 import { toPosixPath } from '../path-format.js'
 import { WorkspaceFileReader } from './workspace-file-reader.js'
+import { OfficialError } from '../models/official-contract.js'
 
 /** Cap on chunks embedded in one pass to bound first-search latency/cost. */
 const MAX_EMBED_CHUNKS = 4000
@@ -339,6 +340,7 @@ export class SemanticIndex {
    */
   async ensureVectors(): Promise<number> {
     if (!this.provider.isAvailable()) return 0
+    await this.provider.checkAccess?.()
     this.vectors.providerId = this.provider.id
     const refs = this.index.getChunkRefs()
     const pending = refs
@@ -348,6 +350,7 @@ export class SemanticIndex {
     if (pending.length === 0) { this.vectorsDirty = false; return 0 }
     try {
       const embeddings = await this.provider.embed(pending.map(p => p.text))
+      await this.provider.checkAccess?.()
       let n = 0
       for (let i = 0; i < pending.length && i < embeddings.length; i++) {
         const vec = embeddings[i]
@@ -356,7 +359,8 @@ export class SemanticIndex {
       if (n > 0) this.persistVectors()
       this.vectorsDirty = false
       return n
-    } catch {
+    } catch (error) {
+      if (error instanceof OfficialError) throw error
       return 0
     }
   }
@@ -369,6 +373,7 @@ export class SemanticIndex {
   async searchHybrid(query: string, limit = 10): Promise<{ hits: SearchHit[]; backend: 'bm25' | 'hybrid' }> {
     const bm25Hits = this.index.search(query, Math.max(limit, 20))
     if (!this.provider.isAvailable()) return { hits: rankSearchCandidates(bm25Hits, query, limit), backend: 'bm25' }
+    await this.provider.checkAccess?.()
 
     try {
       if (this.vectorsDirty || this.vectors.size === 0) await this.ensureVectors()
@@ -376,6 +381,7 @@ export class SemanticIndex {
       if (!queryVec || queryVec.length === 0 || this.vectors.size === 0) {
         return { hits: rankSearchCandidates(bm25Hits, query, limit), backend: 'bm25' }
       }
+      await this.provider.checkAccess?.()
       const vectorHits = this.vectors.search(queryVec, Math.max(limit, 20))
 
       // Resolve any fused id back to a SearchHit. BM25 hits carry full metadata;
@@ -402,7 +408,8 @@ export class SemanticIndex {
         if (hits.length >= limit) break
       }
       return { hits: rankSearchCandidates(hits, query, limit), backend: 'hybrid' }
-    } catch {
+    } catch (error) {
+      if (error instanceof OfficialError) throw error
       return { hits: rankSearchCandidates(bm25Hits, query, limit), backend: 'bm25' }
     }
   }

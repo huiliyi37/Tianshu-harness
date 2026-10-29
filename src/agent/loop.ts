@@ -2,6 +2,7 @@ import { describeToolSurface } from './tool-surface.js'
 import { observeAgentRuntimeRun } from './runtime-run-observation.js'
 import { publishFactHandoff } from './fact-handoff.js'
 import { liveHandoffInput } from './live-handoff.js'
+import { scheduleIdleCompactionTimer } from './idle-compaction-scheduler.js'
 import { isContinuityMaintenance } from './continuity-recovery.js'
 import { withExecutionContinuity } from '../api/execution-continuity.js'
 import { CourseEpisodes } from './course-episodes.js'
@@ -181,12 +182,6 @@ export type { ApprovalMode, AgentConfig, AgentCallbacks }
 export type AgentRunOutcome = 'completed' | 'skipped-already-running'
 
 export { formatActivePlanPointer }
-
-/** Debounce before an idle compaction pass fires after a turn settles.
- *  60s：典型「读完回答→打下一条」节奏在 20–60s 内，过短的 debounce 会让快速
- *  追问频繁 abort 进行中的 LLM 压缩（浪费已花的压缩 tokens）；真正离开的场景
- *  60s 后依然远早于用户回来。可用 RIVET_IDLE_COMPACTION_MS 覆盖。 */
-const IDLE_COMPACTION_DELAY_MS = 60_000
 
 export class AgentLoop {
   readonly requestContext = new RequestContextController(this)
@@ -2690,7 +2685,9 @@ export class AgentLoop {
     this._pendingAbort = false
     this._watchdogAborted = false
     this.abortController = new AbortController()
+    const submissionSignal = this.abortController.signal
     const lifecycle = this.runLifecycle = new RunLifecycle()
+    let settleSubmission: (() => void) | undefined
     this.config.externalHookRuntime?.beginRun(lifecycle.id)
     // 晚到注册闸门（回流自 3.14alpha 71872ed9f，缓存碎裂根修）：MCP/插件/LSP 的
     // 异步注册未清零时先等（8s 封顶，挂死的 MCP 不阻塞会话）——晚到的 tools 变化
@@ -2708,6 +2705,9 @@ export class AgentLoop {
       // Drain idle history rewrites before this run mutates the session.
       await waitForAgentRewind(this)
       await this.cancelIdleCompaction()
+      const preparing = this.config.prepareModelSubmission?.(submissionSignal)
+      settleSubmission = this.config.runtimeSubmission?.onSettlement()
+      await preparing
 
       // Zen 相位 turn 边界：首消息分诊（单行短消息跳过禅）+ 步数预算计数。
       // 用原始 userInput（图片桥接改写前的文本）——短消息判定应贴近用户原意。
@@ -2739,6 +2739,7 @@ export class AgentLoop {
       return 'completed' as const
     } finally {
       lifecycle.close()
+      settleSubmission?.()
       this._running = false
       this.scheduleIdleCompaction()
     } })
@@ -2752,15 +2753,11 @@ export class AgentLoop {
    */
   scheduleIdleCompaction(): void {
     if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null }
-    if (!this.config.compact?.enabled) return
-    if (process.env['RIVET_IDLE_COMPACTION'] === '0') return
-    const delayMs = Number(process.env['RIVET_IDLE_COMPACTION_MS']) || IDLE_COMPACTION_DELAY_MS
-    this._idleTimer = setTimeout(() => {
+    this._idleTimer = scheduleIdleCompactionTimer(this.config.compact?.enabled, () => {
       this._idleTimer = null
       if (this._running) return
       void this.runIdleCompaction()
-    }, delayMs)
-    this._idleTimer.unref?.()
+    })
   }
 
   /**

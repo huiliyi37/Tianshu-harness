@@ -199,6 +199,46 @@ test('serve.ts：listen 后立即异步预热宿主探针（reg query / where）
   assert.match(between, /void Promise\.all\(\[prewarmResolvedEnv\(\), prewarmShellProbes\(\)\]\)\s*\.then\(\(\) => timing\.mark\('host-probes'\)\)/)
 })
 
+test('official-account startup prewarms the agent without a personal provider key', async () => {
+  const readinessStart = serveSrc.indexOf('const serveConfigured = () => {')
+  const readinessEnd = serveSrc.indexOf('\n  const loopLagForHealth', readinessStart)
+  const warmStart = serveSrc.indexOf('warmup = scheduleDeferredWarmup(')
+  const warmEnd = serveSrc.indexOf('\n  return {', warmStart)
+  assert.ok(readinessStart >= 0 && readinessEnd > readinessStart && warmStart >= 0 && warmEnd > warmStart)
+  const initialize = new Function('ctx', 'ownsSessionStore', 'captureOfficialIdentity', 'scheduleDeferredWarmup', 'timing', 'warmPluginToolsCache', 'pluginToolsWarmup', 'loadServeAgent', 'resolveServeWarmDelayMs', `let warmup; ${serveSrc.slice(readinessStart, readinessEnd)}; ${serveSrc.slice(warmStart, warmEnd)}; return { warmup, configured: serveConfigured() };`)
+  for (const scenario of [
+    { name: 'official-only', configured: false, owned: true, account: true, locked: false, shouldWarm: true },
+    { name: 'personal-provider', configured: true, owned: true, account: false, locked: false, shouldWarm: true },
+    { name: 'setup-only', configured: false, owned: true, account: false, locked: false, shouldWarm: false },
+    { name: 'locked-account', configured: false, owned: true, account: false, locked: true, shouldWarm: false },
+    { name: 'non-owner', configured: false, owned: false, account: true, locked: false, shouldWarm: false },
+  ]) {
+    let active = true
+    let fired = false
+    let assemblyLoads = 0
+    let scheduled: (() => void) | undefined
+    const result = initialize(
+      { configured: scenario.configured, config: { plugins: {} } },
+      scenario.owned,
+      () => { if (scenario.locked) throw Error('locked'); return scenario.account ? {} : null },
+      (callback: () => void) => {
+        scheduled = callback
+        return { cancel() { active = false }, fireNow() { if (active && !fired) { fired = true; scheduled?.() } } }
+      },
+      { mark() {} },
+      () => {},
+      async () => {},
+      async () => { assemblyLoads++ },
+      () => 2000,
+    )
+    assert.equal(assemblyLoads, 0, `${scenario.name}: do not block listen on the agent graph`)
+    result.warmup.fireNow()
+    result.warmup.fireNow()
+    await Promise.resolve()
+    assert.equal(assemblyLoads, scenario.shouldWarm ? 1 : 0, scenario.name)
+  }
+})
+
 test('serve.ts：阶段时间线覆盖 start / pro-module / rehydrate / routes / listen / host-probes / warm-start / plugins-warm / serve-agent-loaded / mcp', () => {
   for (const phase of ['start', 'pro-module', 'rehydrate', 'routes', 'listen', 'host-probes', 'warm-start', 'plugins-warm', 'serve-agent-loaded', 'mcp']) {
     assert.match(serveSrc, new RegExp(`timing\\.mark\\('${phase}'`), `缺阶段 ${phase}`)
@@ -209,7 +249,7 @@ test('serve.ts：阶段时间线覆盖 start / pro-module / rehydrate / routes /
     /timing\.mark\('start', formatServeStartExtra\(process\.pid, performance\.now\(\), performance\.nodeTiming\?\.bootstrapComplete\)\)/,
     'start 行要带进程启动到 runServe 的耗时',
   )
-  assert.match(serveSrc, /timing\.mark\('rehydrate', `sessions=\$\{sessions\.listAllSessions\(\)\.length\}`\)/)
+  assert.match(serveSrc, /timing\.mark\('rehydrate', `sessions=\$\{rehydratedSessions\.length\}`\)/)
   // 旧的 RIVET_SERVE_TIMING === '1' 门控 listen 行已并入阶段标记
   assert.doesNotMatch(serveSrc, /\[serve-timing\] listen ready/)
 })

@@ -5,6 +5,20 @@ import { ApiKeyAuth } from '../api-key.js'
 import { OAuthAuth } from '../oauth-auth.js'
 
 describe('createAuthProvider', () => {
+  it('creates managed account auth without exposing legacy static credentials', async () => {
+    const auth = createAuthProvider(
+      { type: 'tianshu-account' },
+      {},
+      'synthetic-unusable-fallback',
+    )
+    try {
+      assert.equal(auth instanceof ApiKeyAuth, false)
+      assert.equal(auth.isAuthenticated(), false)
+      await assert.rejects(auth.getHeaders(), /auth_required/)
+      await assert.rejects(auth.authenticate(), /auth_required/)
+    } finally { auth.dispose() }
+  })
+
   it('creates ApiKeyAuth for api-key config', () => {
     const auth = createAuthProvider(
       { type: 'api-key', keyEnv: 'TEST_API_KEY' },

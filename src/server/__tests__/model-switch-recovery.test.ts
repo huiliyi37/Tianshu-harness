@@ -71,12 +71,12 @@ function switchFixture() {
     getSessionDomain() { return state.model },
   }
   const { facade, readSpec } = new Function('agent', 'spec', 'stores', 'ctx', 'reload', 'shared', 'sessionId',
-    'resolveModelSpecWithReload', 'assembleAgentLoop', 'cwd', 'registry', 'allowedTools', 'buildReplacementAgent', 'runtimeNoticeHandler', code)(
+    'prepareManagedTarget', 'assembleAgentLoop', 'cwd', 'registry', 'allowedTools', 'buildReplacementAgent', 'ownedOfficialAuth', 'runtimeNoticeHandler', code)(
     agent, { provider: { name: 'fixture' }, model: { id: 'old' } },
     { refs, persist: { updateMetadata() {}, appendModelSwitch() {} } }, {}, reload, undefined, 'fixture-id',
-    (_ctx: unknown, model: string, actualReload: unknown) => {
+    async (context: unknown, model: string, actualReload: unknown) => {
       state.reloadSeen = actualReload === reload
-      return { provider: { name: 'fixture' }, model: { id: model } }
+      return { context, spec: { provider: { name: 'fixture' }, model: { id: model } } }
     },
     (_ctx: unknown, _cwd: string, _id: string, _stores: unknown, spec: { model: { id: string } }) => {
       refs.coordinator = { shutdown() { state.candidateShutdown++ } }
@@ -88,9 +88,9 @@ function switchFixture() {
   return { facade, readSpec, engine, proof, state, refs, oldCoordinator }
 }
 
-test('failed model rebuild preserves the old execution proof, coordinator and idle runtime; retry succeeds', () => {
+test('failed model rebuild preserves the old execution proof, coordinator and idle runtime; retry succeeds', async () => {
   const fixture = switchFixture()
-  assert.throws(() => fixture.facade.switchModel!('new'), /synthetic constructor failure/)
+  await assert.rejects(async () => fixture.facade.switchModel!('new'), /synthetic constructor failure/)
   assert.equal(fixture.engine.getExecutionSnapshot(), fixture.proof)
   assert.equal(fixture.refs.coordinator, fixture.oldCoordinator)
   assert.equal(fixture.refs.claimTrackerRef.current, 'old-claims')
@@ -99,15 +99,15 @@ test('failed model rebuild preserves the old execution proof, coordinator and id
   assert.equal(fixture.state.oldShutdown, 0)
   assert.equal(fixture.state.candidateShutdown, 1)
   fixture.state.fail = false
-  assert.equal(fixture.facade.switchModel!('new'), 'fixture:new')
+  assert.equal(await fixture.facade.switchModel!('new'), 'fixture:new')
   assert.equal(fixture.state.oldShutdown, 1)
   assert.equal(fixture.state.canceled, 1)
 })
 
-test('managed model switch resolves against the injected live configuration', () => {
+test('managed model switch resolves against the injected live configuration', async () => {
   const fixture = switchFixture()
   fixture.state.fail = false
-  fixture.facade.switchModel!('new')
+  await fixture.facade.switchModel!('new')
   assert.equal(fixture.state.reloadSeen, true)
 })
 
@@ -118,48 +118,48 @@ function capturingStderr(): { writes: string[]; restore(): void } {
   return { writes, restore: () => { process.stderr.write = original } }
 }
 
-test('a mounted tool the replacement cannot restore is disclosed instead of silently dropped', () => {
+test('a mounted tool the replacement cannot restore is disclosed instead of silently dropped', async () => {
   const fixture = switchFixture()
   const sink = capturingStderr()
   try {
     fixture.state.fail = false
     fixture.state.mounted = ['galaxy']
     fixture.state.mountStatus = 'not-extended'
-    fixture.facade.switchModel!('new')
+    await fixture.facade.switchModel!('new')
   } finally { sink.restore() }
   assert.equal(sink.writes.length, 1, sink.writes.join(''))
   assert.match(sink.writes[0]!, /galaxy/)
   assert.match(sink.writes[0]!, /not-extended/)
 })
 
-test('restored mounts stay quiet', () => {
+test('restored mounts stay quiet', async () => {
   const fixture = switchFixture()
   const sink = capturingStderr()
   try {
     fixture.state.fail = false
     fixture.state.mounted = ['galaxy', 'computer_use']
     fixture.state.mountStatus = 'mounted'
-    fixture.facade.switchModel!('new')
+    await fixture.facade.switchModel!('new')
   } finally { sink.restore() }
   assert.deepEqual(sink.writes, [])
 })
 
-test('notice transport failures do not undo a successful replacement', () => {
+test('notice transport failures do not undo a successful replacement', async () => {
   const fixture = switchFixture()
   fixture.state.fail = false
   fixture.state.mounted = ['galaxy']; fixture.state.mountStatus = 'disabled'
   fixture.facade.setRuntimeNoticeHandler!(() => { throw Error('notice sink unavailable') })
-  assert.equal(fixture.facade.switchModel!('new'), 'fixture:new')
+  assert.equal(await fixture.facade.switchModel!('new'), 'fixture:new')
   assert.equal(fixture.state.oldShutdown, 1)
   assert.equal(fixture.readSpec().model.id, 'new')
 })
 
-test('mount restoration reports actual published visibility rather than assuming status means success', () => {
+test('mount restoration reports actual published visibility rather than assuming status means success', async () => {
   for (const [status, visible, noticeCount] of [['gating-off', false, 1], ['mounted', false, 1], ['not-extended', true, 0]] as const) {
     const fixture = switchFixture(), notices: string[] = []
     fixture.state.fail = false; fixture.state.mounted = ['galaxy']; fixture.state.mountStatus = status; fixture.state.visible = visible
     fixture.facade.setRuntimeNoticeHandler!(message => notices.push(message))
-    assert.equal(fixture.facade.switchModel!('new'), 'fixture:new')
+    assert.equal(await fixture.facade.switchModel!('new'), 'fixture:new')
     assert.equal(notices.length, noticeCount, `${status}/${visible}`)
   }
 })

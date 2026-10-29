@@ -1,3 +1,6 @@
+import { getPreparedModel, isOfficialProvider } from '../models/model-runtime.js'
+import { isModelRequestAuthorizer, type ModelRequestAuthorizer } from './request-authorization.js'
+import { OfficialError } from '../models/official-contract.js'
 import { OpenAIClient } from './openai-client.js'
 import { CodexClient } from './codex-client.js'
 import { AnthropicClient } from './anthropic-client.js'
@@ -20,6 +23,7 @@ import type { ProviderNetwork } from './provider-network.js'
 
 /** Runtime parameters that vary per-model or per-call, not stored in config */
 export interface RuntimeParams {
+  requestAuth?: ModelRequestAuthorizer
   network?: ProviderNetwork
   singleAttempt?: boolean
   credentialScope?: string
@@ -66,6 +70,7 @@ export interface CredentialSlots {
  * or deleting/re-entering the key in the desktop UI).
  */
 export function resolveApiKey(provider: ProviderConfig): string {
+  if (isOfficialProvider(provider)) return ''
   const cred = { name: provider.name, keyRef: provider.keyRef, apiKey: provider.apiKey, apiKeyEnv: provider.apiKeyEnv }
   // 顺序保真：凭据链全部落空才判 keyless 豁免。预设 keyless（ollama）若用户显式
   // 配了 key（带鉴权的本地代理 / 远程端点），旧行为用该 key——豁免前置会静默丢弃
@@ -133,6 +138,14 @@ export function createProviderClient(
   capabilities: ProviderCapabilities,
   params: RuntimeParams,
 ): StreamClient {
+  const official = isOfficialProvider(provider)
+  if (official) {
+    const prepared = getPreparedModel(provider, params.model)
+    if (!isModelRequestAuthorizer(params.requestAuth, prepared)) throw new OfficialError('auth_required', 401, false)
+    provider = prepared.provider
+    capabilities = prepared.capabilities
+    params = { ...params, apiKey: '', auth: undefined, maxTokens: Math.min(params.maxTokens, prepared.model.maxTokens) }
+  }
   proRegistry.assertProviderAccess(provider.name)
   const effective = params.singleAttempt ? { ...provider, maxRetries: 0 } : provider
   return withExecutionContinuity(createRawProviderClient(effective, capabilities, params), {
@@ -149,11 +162,12 @@ function createRawProviderClient(
   capabilities: ProviderCapabilities,
   params: RuntimeParams,
 ): StreamClient {
+  const official = isOfficialProvider(provider)
   // Wire quirks for this endpoint: catalog entry rules + host-keyed rules.
   // Host lookup matters because OpenCode Go's Anthropic-protocol endpoint is
   // registered under `name: 'anthropic'` — a name-only lookup would miss its
   // mandatory session header and every request would 400 MissingSessionID.
-  const wire = resolveProviderWire(provider.name, provider.baseUrl)
+  const wire = official ? undefined : resolveProviderWire(provider.name, provider.baseUrl)
   // 空串/空白 sessionId 等同没传：否则 `??` 放行空值、客户端又用真值判断，
   // 结果是既不发头也不触发兜底——一个静默缺头请求。
   const explicitSessionId = params.sessionId?.trim() ? params.sessionId : undefined
@@ -161,14 +175,14 @@ function createRawProviderClient(
 
   // Pro 注册的 client 工厂优先（协议非 OpenAI/Anthropic 兼容时由 pro 模块提供）。
   // 开源构建注册表恒空 → 恒 miss → 走原路径，行为与现状完全一致。
-  const proFactory = proRegistry.getClientFactory(provider.name)
+  const proFactory = official ? undefined : proRegistry.getClientFactory(provider.name)
   if (proFactory) return proFactory(provider, capabilities, params)
 
   // Codex OAuth uses the Responses API, not chat/completions
   if (provider.auth?.type === 'oauth' && provider.auth.provider === 'codex') {
     return new CodexClient({
       network: { ...params.network, proxy: provider.proxy ?? params.network?.proxy },
-      sessionId: params.sessionId, providerName: provider.name,
+      sessionId: params.sessionId, providerName: isOfficialProvider(provider) ? 'tianshu-official' : provider.name,
     retryBudget: params.retryBudget,
       baseUrl: provider.baseUrl,
       model: params.model,
@@ -184,6 +198,7 @@ function createRawProviderClient(
   // client above; the two converge in a later wave.
   if (provider.protocol === 'openai-responses') {
     return new ResponsesClient({
+      requestAuth: params.requestAuth,
       sessionId: params.sessionId,
     retryBudget: params.retryBudget,
       // Same normalization as the OpenAI branch: users paste full request URLs
@@ -205,7 +220,7 @@ function createRawProviderClient(
       maxRetries: provider.maxRetries,
       retry: provider.retry,
       proxy: provider.proxy,
-      providerName: provider.name,
+      providerName: official ? 'tianshu-official' : provider.name,
     })
   }
 
@@ -227,6 +242,7 @@ function createRawProviderClient(
       : undefined
 
     return new AnthropicClient({
+      requestAuth: params.requestAuth,
     retryBudget: params.retryBudget,
       baseUrl: provider.baseUrl,
       apiKey: params.apiKey,
@@ -258,6 +274,7 @@ function createRawProviderClient(
   // stays the terminal branch.
   if (provider.protocol === 'gemini') {
     return new GeminiClient({
+      requestAuth: params.requestAuth,
       retryBudget: params.retryBudget,
       // No OpenAI-style request-path tail to strip here, but normalizeBaseUrl
       // also trims trailing slashes users paste along with the console URL.
@@ -274,11 +291,12 @@ function createRawProviderClient(
       maxRetries: provider.maxRetries,
       retry: provider.retry,
       proxy: provider.proxy,
-      providerName: provider.name,
+      providerName: official ? 'tianshu-official' : provider.name,
     })
   }
 
   return new OpenAIClient({
+      requestAuth: params.requestAuth,
     retryBudget: params.retryBudget,
     // 用户在 Base URL 里粘贴 curl 全文（`…/v1/chat/completions`）或留个尾斜杠
     // 是常态。发送路径拼的是 `${baseUrl}/chat/completions`，不归一化就会出现
@@ -317,7 +335,7 @@ function createRawProviderClient(
     reasoningEffort: params.reasoningEffort,
     sessionId,
     sessionHeader: wire?.sessionHeader,
-    providerName: provider.name,
+    providerName: official ? 'tianshu-official' : provider.name,
     // 401/403 报错里点名 key 的环境变量，用户知道去哪检查。
     apiKeyEnv: provider.apiKeyEnv,
     // Preserved-thinking protocol family: table-driven capability, not provider
@@ -326,7 +344,7 @@ function createRawProviderClient(
     // deepseek-native prefix-cache strategy (GLM/longcat share the cache
     // strategy but have independent reasoning — they must NOT get this).
     preservedThinkingProtocol: capabilities.preservedThinkingProtocol ?? false,
-    providerProfile: getProviderProfile(provider.name, modelContextWindow(provider, params.model), provider.protocol),
+    providerProfile: official ? undefined : getProviderProfile(provider.name, modelContextWindow(provider, params.model), provider.protocol),
     wireContext: params.wireContext,
     unsupported: provider.unsupported.length > 0
       ? provider.unsupported

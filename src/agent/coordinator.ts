@@ -1,3 +1,5 @@
+import type { ModelSubmission } from '../models/model-runtime.js'
+import { OfficialError } from '../models/official-contract.js'
 import { WorkerTerminalPolicy } from './worker-terminal-policy.js'
 import { upgradeAbortedDelivery } from './abort-delivery.js'
 import type { ModelTarget } from '../config/schema.js'
@@ -98,7 +100,7 @@ import { PrewarmCache } from './prewarm.js'
 import { StigmergyStore } from '../context/stigmergy.js'
 import { batchPrewarm } from './prewarm-file.js'
 import type { RuntimeCoordinatorSnapshot } from './runtime-self-model.js'
-import { deriveCandidateModels, type CandidateModel } from './candidate-models.js'
+import { deriveCandidateModels, resolveCandidateModels, type CandidateModel } from './candidate-models.js'
 import { persistWorkerResult } from './worker-result-store.js'
 
 /** 等槽 waiter：角色决定它能吃哪个池的槽位。 */
@@ -326,7 +328,7 @@ export type WorkerRuntimeFactory = (
   order: WorkOrder,
   card: ModelCapabilityCard,
   workerRegistry: ToolRegistry,
-) => WorkerSessionConfig
+) => WorkerSessionConfig | Promise<WorkerSessionConfig>
 
 export interface WorkerRouteConfig {
   profiles: Record<string, { provider: string; model: string }>
@@ -348,10 +350,11 @@ export interface DelegationCoordinatorConfig {
    *  无候选池，DP 副本不轮换（旧行为）。 */
   providers?: Record<string, ProviderConfig>
   /** S4：显式候选模型提供者（测试/定制装配用）。缺省 → 用 providers 推导。 */
+  runtimeSubmission?: ModelSubmission
   allowAutomaticModelRotation?: () => boolean
   getCandidateModels?: () => Array<{ provider: string; model: string }>
   runtimeFactory: WorkerRuntimeFactory
-  selectModel?: (order: WorkOrder) => ModelCapabilityCard | undefined
+  selectModel?: (order: WorkOrder, signal?: AbortSignal) => ModelCapabilityCard | undefined | Promise<ModelCapabilityCard | undefined>
   routing?: WorkerRouteConfig
   runWorker?: (config: WorkerSessionConfig) => Promise<WorkerSessionRun>
   runHands?: (config: HandsSessionConfig) => Promise<HandsSessionRun>
@@ -744,7 +747,20 @@ export class DelegationCoordinator {
   private readonly activeDelegations = new Set<Promise<CoordinatorRun>>()
 
   constructor(private config: DelegationCoordinatorConfig) {
-    this.runWorker = config.runWorker ?? runWorkerSession
+    const runWorker = config.runWorker ?? runWorkerSession
+    this.runWorker = async workerConfig => {
+      const run = await runWorker(workerConfig)
+      if (run.officialFailure) {
+        const checkpoint = run.checkpoint?.partialResult ? run.checkpoint : workerConfig.checkpoint ?? (workerConfig.priorMessages?.length ? {
+          turnIndex: run.checkpoint?.turnIndex ?? 0,
+          partialResult: JSON.stringify(workerConfig.priorMessages).slice(-8000),
+          completedTools: run.checkpoint?.completedTools ?? [],
+        } : run.checkpoint)
+        this.captureAbortCheckpoint(workerConfig.order, checkpoint, run.result)
+        throw run.officialFailure
+      }
+      return run
+    }
     this.runHands = config.runHands ?? runHandsSession
     this.state = new CoordinatorState(config.maxWorkers)
     this.collaboration = config.collaboration ? new CollaborationProtocol(config.collaboration) : null
@@ -1594,6 +1610,12 @@ export class DelegationCoordinator {
    *  「用户配了哪几家」，不过滤会把副本派到没有 key 的提供商上（必然失败且
    *  归因困难）。推导结果 memo 一次：DP 每副本各调一次，而 OAuth 判定要读
    *  token 文件；候选池随 coordinator 实例的生命周期固定，换模型会重建。 */
+  async resolveCandidateModels(signal?: AbortSignal, pinnedSubmission?: ModelSubmission): Promise<CandidateModel[]> {
+    if (this.config.allowAutomaticModelRotation && !this.config.allowAutomaticModelRotation()) return []
+    if (this.config.getCandidateModels) return this.config.getCandidateModels()
+    return resolveCandidateModels(this.config.providers, pinnedSubmission ?? this.config.runtimeSubmission, signal)
+  }
+
   getCandidateModels(): Array<{ provider: string; model: string }> {
     if (this.config.allowAutomaticModelRotation && !this.config.allowAutomaticModelRotation()) return []
     if (this.config.getCandidateModels) return this.config.getCandidateModels()
@@ -1810,6 +1832,7 @@ export class DelegationCoordinator {
       const results = [this.identifyDispatchResult(order, workerFailureResult(order, error))]
       policy.finish(order, results)
       persistWorkerNonExecution(order, nonce, results, 'blocked')
+      if (error instanceof OfficialError) throw error
       return { status: 'completed', order, results, packet: await buildPrimaryWorkerPacket(results, this.config.artifactStore) }
     } finally {
       releaseTask()
@@ -1928,7 +1951,7 @@ export class DelegationCoordinator {
     // client is built by runtimeFactory from order.modelOverride); synthesize
     // one when the override model isn't in the primary provider's cards.
     let selected = this.config.selectModel
-      ? this.config.selectModel(order) ?? this.selectModelForTask(task, preferredTier)
+      ? await this.config.selectModel(order, parentSignal) ?? this.selectModelForTask(task, preferredTier)
       : order.modelOverride && 'model' in order.modelOverride
         ? this.cardForModelOverride(order.modelOverride.model)
         : this.selectModelForTask(task, preferredTier, order.profile)
@@ -1975,7 +1998,7 @@ export class DelegationCoordinator {
       debugLog(`[worker-tools] initial catalog excludes unavailable tools: ${missingTools.join(', ')}`)
     }
     const workerRegistry = filterToolRegistry(this.config.baseToolRegistry, presentTools)
-    let workerConfig = this.config.runtimeFactory(order, selected, workerRegistry)
+    let workerConfig = await this.config.runtimeFactory(order, selected, workerRegistry)
     if (order.scope.reviewSnapshot) {
       if (order.profile !== 'reviewer' || role === 'hands') throw new Error('Review snapshots require the read-only reviewer profile')
       workerConfig.cwd = reviewSnapshotCwd(order.scope.reviewSnapshot)
@@ -2381,6 +2404,7 @@ export class DelegationCoordinator {
         this.registerWorkerArtifacts(order)
       }
     } catch (error) {
+      if (error instanceof OfficialError) throw error
       // Physarum health: worker run threw (API/runtime fault, not task outcome).
       // Caller-initiated aborts are not the provider's fault — skip those.
       const msg = error instanceof Error ? error.message : String(error)
@@ -2553,7 +2577,10 @@ export class DelegationCoordinator {
   ): Promise<CoordinatorRun> {
     // P1-7: per-call abort signal passed down as parameter — never mutated on
     // the shared config (save/restore raced across concurrent calls).
-    const batchParentSignal = abortSignal ?? this.config.abortSignal
+    const parentSignal = abortSignal ?? this.config.abortSignal
+    const refusalAbort = new AbortController()
+    const batchParentSignal = parentSignal ? AbortSignal.any([parentSignal, refusalAbort.signal]) : refusalAbort.signal
+    let officialFailure: OfficialError | undefined
     // P1-7: per-wave mailbox — fresh instance per delegateBatch call so
     // concurrent waves (background worker + main batch) never interleave mail.
     const batchMailbox = new InMemoryMailbox()
@@ -2727,6 +2754,7 @@ export class DelegationCoordinator {
     const policyLabel = typeof policy === 'object' ? `quorum k=${policy.k}` : policy
 
     const processNext = async (): Promise<void> => {
+      if (officialFailure) return
       const order = queue.dequeue()
       if (!order) return
       queue.markInFlight(order)
@@ -2768,6 +2796,7 @@ export class DelegationCoordinator {
           }
         }
       } catch (error) {
+        if (error instanceof OfficialError) { officialFailure ??= error; refusalAbort.abort(error) }
         const failure = this.identifyDispatchResult(order, this.policyCancelledIds.has(order.parentTurnId)
           ? buildPolicyCancelledResult(order, policyLabel)
           : workerFailureResult(order, error, { failureReason: classifyWorkerError(error) }))
@@ -2787,6 +2816,7 @@ export class DelegationCoordinator {
       inflight.push(processNext())
     }
     await Promise.all(inflight)
+    if (officialFailure) throw officialFailure
 
     // A3: drain any orders that could never be scheduled because a dependency
     // failed (or itself ended up blocked). processNext stops dequeuing these, so

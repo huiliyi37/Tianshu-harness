@@ -22,6 +22,11 @@
  * 不管的话，配了代理的用户（官网反代正是为他们存在）会卡在「等待授权」转圈。
  * 所以这里在发送请求时读取当前网络设置，并注入带 dispatcher 的 fetch。
  */
+import { refreshAccountSession } from '../auth/refresh.js'
+import { accountStamp, sameAccount, logoutRefreshPending } from '../auth/token-store.js'
+import { createOfficialMembershipService, membershipBridgeAuthorized, ownMembershipLifecycle, type OfficialMembershipService } from '../auth/official-membership-license.js'
+import { createOfficialModelBroker } from '../auth/official-model-auth.js'
+import { OfficialError } from '../models/official-contract.js'
 import type { RouteHandler } from './index.js'
 import { withAuth } from './routes.js'
 import { createAccountFetch } from './account-network.js'
@@ -40,6 +45,7 @@ import type {
   DeviceCreateResult,
   DevicePollResult,
   FetchInjection,
+  FetchLike,
   RequestDeviceCodeOpts,
   StellarIdentity,
 } from '../auth/account.js'
@@ -63,7 +69,7 @@ export interface AccountApi {
   refreshAccountTokenWithStatus?(refreshToken: string, opts?: FetchInjection): Promise<{ poll: DevicePollResult | null; code: AccountSyncResult['code'] }>
   refreshAccountToken?(refreshToken: string, opts?: FetchInjection): Promise<DevicePollResult | null>
   accountStore(rivetHome: string): TokenStore
-  saveAccountToken(store: TokenStore, poll: DevicePollResult): TokenData
+  saveAccountToken(store: TokenStore, poll: DevicePollResult, login?: { intent: string; deviceId: string }): TokenData
   /** 读本人星籍（PostgREST + 用户 JWT，RLS 收口）。失败回 null，不抛。 */
   fetchStellarIdentity(accessToken: string, opts?: FetchInjection): Promise<StellarIdentity | null>
   saveAccountIdentity(store: TokenStore, token: TokenData, identity: StellarIdentity): TokenData
@@ -87,6 +93,9 @@ export interface AccountApi {
 }
 
 export interface AccountRoutesDeps {
+  fetchImpl?: FetchLike
+  membership?: OfficialMembershipService
+  membershipBridgeToken?: string
   onSessionChanged?: () => void
   /** 共享 Bearer token；缺省即 fail-closed（全 401）。 */
   apiToken?: string
@@ -155,7 +164,7 @@ const ACTIVATE_STATUS: Record<ActivateAccountLicenseCode, number> = {
 
 export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, RouteHandler> {
   const api = deps.account ?? defaultAccountApi()
-  const fetchImpl = createAccountFetch(() => {
+  const fetchImpl = deps.fetchImpl ?? createAccountFetch(() => {
     const network = deps.getNetwork?.() ?? { proxy: deps.proxyUrl, noProxy: deps.noProxy }
     return { proxyUrl: network.proxy || undefined, noProxy: network.noProxy || undefined }
   })
@@ -163,7 +172,32 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
   // 认证规则漂移出第二份就是安全洞。
   const guard = (handler: RouteHandler): RouteHandler => withAuth(handler, deps.apiToken)
 
+  const membershipBroker = createOfficialModelBroker({ home: deps.rivetHome, fetchImpl })
+  const membership = deps.membership ?? createOfficialMembershipService({ home: deps.rivetHome, broker: membershipBroker })
+  const privateMembership = (activate: boolean): RouteHandler => guard(async (body, _params, headers) => {
+    if (!membershipBridgeAuthorized(headers, deps.membershipBridgeToken)) return { status: 401, body: { error: 'Unauthorized' }, headers: { 'Cache-Control': 'no-store' } }
+    const requestId = activate && body && typeof body === 'object' && !Array.isArray(body) ? (body as { requestId?: unknown }).requestId : 'membership-current'
+    try {
+      if (!activate && body !== undefined && body !== null && (typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0)) throw new OfficialError('invalid_request')
+      if (activate) {
+        if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId) || Object.keys(body as object).join() !== 'requestId') throw new OfficialError('invalid_request')
+        const identity = membership.captureIdentity()
+        if (!identity) throw new OfficialError('auth_required')
+        await membership.activate(identity, requestId)
+      }
+      const current = membership.readCurrent()
+      if (!current) throw new OfficialError('entitlement_unavailable', 403, false)
+      return { status: 200, body: { version: 1, requestId, data: current }, headers: { 'Cache-Control': 'no-store' } }
+    } catch (error) {
+      const failure = error instanceof OfficialError ? error : new OfficialError('service_error')
+      return { status: failure.status, body: { version: 1, requestId: typeof requestId === 'string' ? requestId : 'membership-invalid', error: failure.publicError() }, headers: { 'Cache-Control': 'no-store' } }
+    }
+  })
+  const activateMembership = privateMembership(true)
+  ownMembershipLifecycle(activateMembership, membership)
+
   let activeDeviceCode: string | undefined
+  let loginIntent: { id: string; deviceId: string } | undefined
   const cancelRemote = async () => {
     const code = activeDeviceCode
     activeDeviceCode = undefined
@@ -183,10 +217,12 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       return Promise.resolve(lastRefresh.ok)
     }
     const started = generation
+    const captured = store.load()
+    const capturedStamp = captured ? accountStamp(captured) : undefined
     let activeToken = accessToken
     const current = () => {
       const fresh = store.load()
-      return generation === started && fresh?.accessToken === activeToken ? fresh : null
+      return generation === started && fresh?.accessToken === activeToken && sameAccount(capturedStamp, accountStamp(fresh)) ? fresh : null
     }
     const identityTask = async () => {
       const cached = api.cachedAccountIdentity(store.load())
@@ -203,8 +239,10 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       const profile = await api.fetchAccountProfileSnapshot(activeToken, { fetchImpl })
       const fresh = current()
       if (!profile || !fresh) return false
-      const cached = api.cachedAccountProfile(fresh)
-      api.saveAccountProfile(store, fresh, { ...profile, founding: profile.unconfirmed?.includes('founding') ? profile.founding ?? cached?.founding ?? null : profile.founding, avatarUrl: profile.unconfirmed?.includes('avatar') ? cached?.avatarUrl ?? null : profile.avatarUrl, account: cached?.account })
+      store.patchAccount(fresh, latest => {
+        const cached = api.cachedAccountProfile(latest)
+        return { ...latest, profile: { ...profile, founding: profile.unconfirmed?.includes('founding') ? profile.founding ?? cached?.founding ?? null : profile.founding, avatarUrl: profile.unconfirmed?.includes('avatar') ? cached?.avatarUrl ?? null : profile.avatarUrl, account: cached?.account } }
+      })
       return !profile.unconfirmed?.length
     }
     const contactTask = async () => {
@@ -213,44 +251,43 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       const account = await api.fetchAccountProfile(activeToken, { fetchImpl })
       const fresh = current()
       if (!account || !fresh) return false
-      const cached = api.cachedAccountProfile(fresh)
-      api.saveAccountProfile(store, fresh, { avatarUrl: cached?.avatarUrl ?? null, founding: cached?.founding ?? null,
-        fetchedAt: Date.now(), account, unconfirmed: cached?.unconfirmed ?? (cached ? undefined : ['avatar', 'founding']) })
+      store.patchAccount(fresh, latest => {
+        const cached = api.cachedAccountProfile(latest)
+        return { ...latest, profile: { avatarUrl: cached?.avatarUrl ?? null, founding: cached?.founding ?? null, fetchedAt: Date.now(), account, unconfirmed: cached?.unconfirmed ?? (cached ? undefined : ['avatar', 'founding']) } }
+      })
       return true
     }
     const promise = (async () => {
       const before = current()
       if (!before) return false
       if (before.expiresAt <= Date.now() + 60_000 && before.refreshToken && api.refreshAccountToken) {
-        const renewal = api.refreshAccountTokenWithStatus ? await api.refreshAccountTokenWithStatus(before.refreshToken, { fetchImpl }) : undefined
-        const rotated = renewal ? renewal.poll : await api.refreshAccountToken(before.refreshToken, { fetchImpl })
-        const fresh = current()
-        if (!rotated?.accessToken || !fresh) {
-          if (!fresh && rotated?.accessToken) { try { await api.revokeAccountSession?.(rotated.accessToken, { fetchImpl }) } catch {} }
-          if (fresh) {
-            if (renewal) store.save({ ...fresh, accountSync: mergeAccountSnapshot(cachedAccountSync(fresh), { code: renewal.code, elapsedMs: 0 }) } as TokenData)
-            lastRefresh = { accessToken: activeToken, at: Date.now(), ok: false }
-          }
+        const renewal = await refreshAccountSession(store, before, { fetchImpl, revoke: async credential => await api.revokeAccountSession?.(credential, { fetchImpl }) ?? false, renew: async credential => api.refreshAccountTokenWithStatus
+          ? api.refreshAccountTokenWithStatus(credential, { fetchImpl })
+          : { poll: await api.refreshAccountToken!(credential, { fetchImpl }), code: 'ok' } })
+        const fresh = renewal.token
+        if (renewal.code !== 'ok' || !fresh || !sameAccount(capturedStamp, accountStamp(fresh))) {
+          if (fresh && sameAccount(capturedStamp, accountStamp(fresh))) store.patchAccount(fresh, latest => ({ ...latest, accountSync: mergeAccountSnapshot(cachedAccountSync(latest), { code: renewal.code === 'account_changed' ? 'auth_required' : renewal.code, elapsedMs: 0 }) } as TokenData))
+          lastRefresh = { accessToken: activeToken, at: Date.now(), ok: false }
           return false
         }
-        store.save({ ...fresh, accessToken: rotated.accessToken, refreshToken: rotated.refreshToken,
-          expiresAt: Date.now() + (rotated.expiresIn ?? 3600) * 1000 })
-        activeToken = rotated.accessToken
+        activeToken = fresh.accessToken
         if (refreshJob?.accessToken === accessToken) refreshJob.accessToken = activeToken
       }
       if (api.fetchAccountSnapshot) {
         const result = await api.fetchAccountSnapshot(activeToken, { fetchImpl })
         const fresh = current()
         if (!fresh) return false
-        const accountSync = mergeAccountSnapshot(cachedAccountSync(fresh), result)
-        const snapshot = accountSync.snapshot
+        const committed = store.patchAccount(fresh, latest => {
+          const accountSync = mergeAccountSnapshot(cachedAccountSync(latest), result)
+          const identity = result.snapshot?.identity, profile = result.snapshot?.profile
+          return { ...latest, accountSync,
+            ...(identity && confirmedAccountPart(identity) ? { identity: identity.data ? { ...identity.data, fetchedAt: identity.fetchedAt! } : undefined } : {}),
+            ...(profile && confirmedAccountPart(profile) && profile.data ? { profile: { ...profile.data, fetchedAt: profile.fetchedAt!, unconfirmed: [] } } : {}),
+          }
+        })
+        if (!committed || !sameAccount(capturedStamp, accountStamp(committed))) return false
+        const snapshot = cachedAccountSync(committed)?.snapshot
         const identity = result.snapshot?.identity
-        const profile = result.snapshot?.profile
-        const next = { ...fresh, accountSync,
-          ...(identity && confirmedAccountPart(identity) ? { identity: identity.data ? { ...identity.data, fetchedAt: identity.fetchedAt! } : undefined } : {}),
-          ...(profile && confirmedAccountPart(profile) && profile.data ? { profile: { ...profile.data, fetchedAt: profile.fetchedAt!, unconfirmed: [] } } : {}),
-        }
-        store.save(next)
         const parts = result.snapshot ? [result.snapshot.identity, result.snapshot.profile, result.snapshot.entitlements] : []
         const ok = result.code === 'ok' && parts.every(confirmedAccountPart)
         lastRefresh = { accessToken: activeToken, fromToken: accessToken, at: Date.now(), ok, partial: !ok && parts.some(confirmedAccountPart) }
@@ -271,7 +308,7 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
     return promise
   }
 
-  const pollOnce = async (deviceCode: string, started: number) => {
+  const pollOnce = async (deviceCode: string, started: number, intent: { id: string; deviceId: string }) => {
     let poll: DevicePollResult
     try {
       poll = await api.checkDeviceOnce(deviceCode, { fetchImpl })
@@ -285,18 +322,20 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
     if (poll.status !== 'approved') return { status: 200, body: { status: poll.status } }
     const store = api.accountStore(deps.rivetHome)
     try {
-      const saved = api.saveAccountToken(store, poll)
+      const saved = api.saveAccountToken(store, poll, { intent: intent.id, deviceId: intent.deviceId })
       try { deps.onSessionChanged?.() } catch {}
       void refreshAccount(store, saved.accessToken, true)
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === 'account_changed') { try { if (poll.accessToken) await api.revokeAccountSession?.(poll.accessToken, { fetchImpl }) } catch {}; return { status: 409, body: { error: 'account_changed' } } }
       return { status: 500, body: { error: 'could not save account login' } }
     }
     if (activeDeviceCode === deviceCode) activeDeviceCode = undefined
-    // Approval acknowledges durable credentials, never optional network metadata.
     return { status: 200, body: { status: 'approved' } }
   }
 
   return {
+    'POST /account/activate-model-membership': activateMembership,
+    'GET /account/model-membership-current': privateMembership(false),
     'POST /account/profile': guard(async body => {
       const input = (body ?? {}) as AccountProfileUpdate & { expectedUserId?: unknown }
       if (typeof input.expectedUserId !== 'string' || !input.expectedUserId || input.expectedUserId.length>128 || typeof input.name !== 'string' || input.name.trim().length > 24 || (input.avatar !== undefined && input.avatar !== null && (typeof input.avatar !== 'string' || input.avatar.length > 192 * 1024))) return { status: 400, body: { error: 'invalid_profile' } }
@@ -324,13 +363,15 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       const started = ++generation
       polls.clear()
       await cancelRemote()
+      if (started !== generation) return { status: 409, body: { error: 'authorization superseded' } }
       const input = (body ?? {}) as { deviceName?: unknown; deviceFingerprint?: unknown }
       const deviceName = typeof input.deviceName === 'string' && input.deviceName ? input.deviceName : undefined
       let deviceFingerprint: string
       try { deviceFingerprint = accountDeviceFingerprint(deps.rivetHome, input.deviceFingerprint) }
       catch { return { status: 400, body: { error: 'device identity unavailable or invalid' } } }
+      loginIntent = { id: api.accountStore(deps.rivetHome).beginLogin(deviceFingerprint), deviceId: deviceFingerprint }
       try {
-        const created = await api.requestDeviceCode({ deviceName, deviceFingerprint, fetchImpl })
+        const created = await api.requestDeviceCode({ deviceName, deviceFingerprint, clientKind: 'desktop', fetchImpl })
         if (started !== generation) {
           try { await api.cancelDeviceCode?.(created.deviceCode, { fetchImpl }) } catch {}
           return { status: 409, body: { error: 'authorization superseded' } }
@@ -353,11 +394,12 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       const previous = polls.get(deviceCode)
       if (previous) return previous.promise
       if (polls.size >= 128) return { status: 429, body: { error: 'too many authorization attempts' } }
-      const receipt = { generation, expiresAt: Date.now() + 300_000, promise: pollOnce(deviceCode, generation) }
+      const deviceId = loginIntent?.deviceId ?? accountDeviceFingerprint(deps.rivetHome)
+      const intent = loginIntent ?? { id: api.accountStore(deps.rivetHome).beginLogin(deviceId), deviceId }
+      loginIntent = intent
+      const receipt = { generation, expiresAt: Date.now() + 300_000, promise: pollOnce(deviceCode, generation, intent) }
       polls.set(deviceCode, receipt)
       const result = await receipt.promise
-      // Only retain approved receipts, so a lost response or duplicate request can
-      // recover without consuming the one-use device grant a second time.
       if ((result.body as { status?: string })?.status !== 'approved' && polls.get(deviceCode) === receipt) polls.delete(deviceCode)
       return result
     }),
@@ -438,6 +480,8 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
     'POST /account/cancel': guard(async () => {
       generation++
       polls.clear()
+      api.accountStore(deps.rivetHome).cancelLogin(loginIntent?.id)
+      loginIntent = undefined
       const remoteCancelled = await cancelRemote()
       return { status: 200, body: { ok: true, remoteCancelled } }
     }),
@@ -447,12 +491,15 @@ export function buildAccountRoutes(deps: AccountRoutesDeps): Record<string, Rout
       refreshJob = undefined
       lastRefresh = undefined
       const store = api.accountStore(deps.rivetHome)
-      const credential = store.load()?.accessToken
-      store.clear()
+      const loggedOut = store.clearAccount()
+      membership.clear()
       try { deps.onSessionChanged?.() } catch {}
+      const credential = loggedOut?.accessToken
+      loginIntent = undefined
       await cancelRemote()
       let remoteRevoked = !credential
       try { if (credential) remoteRevoked = await api.revokeAccountSession?.(credential, { fetchImpl }) ?? false } catch {}
+      if (logoutRefreshPending(loggedOut, store)) remoteRevoked = false
       return { status: 200, body: { ok: true, remoteRevoked } }
     }),
   }

@@ -14,6 +14,8 @@ import { color } from '../engine/ansi.js'
 import type { RivetTheme } from '../theme.js'
 import { formatTokens } from '../../utils/pricing.js'
 import type { CacheUsageAggregate, DayUsage } from '../../cache/usage-aggregator.js'
+import type { OfficialCustomerView } from '../../models/official-contract.js'
+import { formatCustomerQuotaBar } from './official-quota.js'
 
 export type CachePeriod = 'today' | '7d' | '30d'
 
@@ -42,7 +44,8 @@ export interface CachePanelSession {
 
 export interface CachePanelOfficial {
   status: 'loading' | 'unavailable' | 'ready'
-  source?: 'platform' | 'balance'
+  source?: 'platform' | 'balance' | 'tianshu'
+  customerView?: OfficialCustomerView
   /** 元（platform 返回的 cost_in_cents 已在数据层 /100） */
   todayCost?: number
   monthCost?: number
@@ -85,6 +88,7 @@ export function formatOfficialUsageBadge(
   theme: RivetTheme,
 ): string | null {
   if (official.status !== 'ready') return null
+  if (official.source === 'tianshu') return official.customerView ? color(formatCustomerQuotaBar(official.customerView), theme.success) : null
   const tint = phase === 'peak' ? theme.muted : theme.success
   const cur = official.currency ?? 'CNY'
   const balance = official.balance
@@ -130,7 +134,7 @@ export function renderCachePanel(
   theme: RivetTheme,
 ): string[] {
   const out: string[] = []
-  out.push(color(' 缓存面板 · DeepSeek', theme.brandColor, { bold: true })
+  out.push(color(data.official.source === 'tianshu' ? ' 缓存面板 · 天枢' : ' 缓存面板 · DeepSeek', theme.brandColor, { bold: true })
     + color('   本地口径 read/input · 官方口径 hit/(hit+miss)', theme.dim))
   out.push('')
 
@@ -183,9 +187,9 @@ export function renderCachePanel(
           + ` 账单口径 ${color(formatRate(t.billedHitRate), rateColor(t.billedHitRate, theme))}`
         : ''),
     )
-    out.push(
+    if (t.cost !== null) out.push(
       `  成本 ¥${formatYuan(t.cost)}`
-      + (t.savings > 0 ? `   缓存节省 ${color(`¥${formatYuan(t.savings)}`, theme.success)}` : ''),
+      + (t.savings !== null && t.savings > 0 ? `   缓存节省 ${color(`¥${formatYuan(t.savings)}`, theme.success)}` : ''),
     )
 
     if (t.prefixStableRate !== undefined) out.push(color(`  客户端前缀稳定率 ${formatRate(t.prefixStableRate)}（${t.prefixSamples} 次观测）`, theme.dim))
@@ -217,7 +221,7 @@ export function renderCachePanel(
           color(`  ${m.model.slice(0, nameWidth).padEnd(nameWidth)}`, theme.secondary)
           + ` 输入 ${formatTokens(m.input).padStart(7)}`
           + `  命中 ${color(formatRate(m.hitRate).padStart(6), rateColor(m.hitRate, theme))}`
-          + `  ¥${formatYuan(m.cost)}`,
+          + (m.cost === null ? color('  成本暂不可查', theme.dim) : `  ¥${formatYuan(m.cost)}`),
         )
       }
     }
@@ -225,12 +229,14 @@ export function renderCachePanel(
   out.push('')
 
   // ── 官方区 ─────────────────────────────────────────────
-  out.push(sectionTitle('官方 · platform.deepseek.com', theme))
+  out.push(sectionTitle(data.official.source === 'tianshu' ? '天枢 · 额度状态' : '官方 · platform.deepseek.com', theme))
   const o = data.official
   if (o.status === 'loading') {
     out.push(color('  查询中…', theme.muted))
   } else if (o.status === 'unavailable') {
     out.push(color(`  ${o.hint ?? '未检测到 DeepSeek 凭证。'}`, theme.muted))
+  } else if (o.source === 'tianshu') {
+    out.push(color(`  ${o.customerView ? formatCustomerQuotaBar(o.customerView) : '额度暂不可查'}`, theme.success))
   } else if (o.source === 'platform') {
     const cur = o.currency ?? 'CNY'
     const parts: string[] = []

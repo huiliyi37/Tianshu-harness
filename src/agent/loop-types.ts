@@ -29,6 +29,9 @@ export type ApprovalMode = 'auto-accept' | 'auto-safe' | 'manual' | 'dangerously
 export interface AgentConfig {
   latencyReasoningSupported?: boolean
   latencyPromptExperiment?: boolean
+  automaticMemoryReview?: boolean
+  runtimeSubmission?: import('../models/model-runtime.js').ModelSubmission
+  prepareModelSubmission?: (signal: AbortSignal) => Promise<void>
   saveSkillDraft?: import('../skills/skill-creation.js').SkillDraftWriter
   executionToolAllowlist?: readonly string[]
   inputOrigin?: import('./input-origin.js').InputOrigin

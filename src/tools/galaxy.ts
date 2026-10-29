@@ -1,3 +1,5 @@
+import { quorumOriginalPassed } from './galaxy-quorum-note.js'
+import type { ModelSubmission } from '../models/model-runtime.js'
 /**
  * galaxy tool — 星河集群派发。
  *
@@ -49,6 +51,7 @@ export interface GalaxyCoordinator {
   getRuntimeSnapshot?: () => RuntimeCoordinatorSnapshot
   /** S4：DP 副本 A/B 候选模型池。缺省 undefined → DP 副本全部走默认路由
    *  （与旧行为一致，不轮换）。 */
+  resolveCandidateModels?: (signal?: AbortSignal, pinnedSubmission?: ModelSubmission) => Promise<Array<{ provider: string; model: string }>>
   getCandidateModels?: () => Array<{ provider: string; model: string }>
   /** 星河路由学习（收编 #5）：结算时沉淀路由事实、proposal 时召回胜率。
    *  缺省 undefined → 路由学习关闭（现状行为）。 */
@@ -353,17 +356,6 @@ interface GalaxyDataParallelGroup {
   quorumK: number
 }
 
-/** 从聚合注记提取组内原始通过数。quorum 组未达 k 时通过成员被聚合降级为
- *  failed（组结论不可采信），status 统计已抹平原始通过数——它只存在于
- *  我们自己的 risks 注记里（格式见 aggregation.ts applyQuorum）。 */
-function quorumOriginalPassed(risks: readonly string[]): number | undefined {
-  for (const r of risks) {
-    const m = /^quorum: group .* not reached — (\d+)\/\d+ passed/.exec(r)
-    if (m) return Number(m[1])
-  }
-  return undefined
-}
-
 /** 检测所有 DP 组 quorum 是否达成。返回未达成的组名列表（空 = 全部达成）。 */
 /** 组 quorum 通过数：聚合后的 status 已编码组判定（组未达 k → 成员全
  *  failed），原始通过数在组失败时从 risks 注记恢复（格式见 aggregation.ts
@@ -626,6 +618,8 @@ export function createGalaxyTool(coordinator: GalaxyCoordinator): Tool {
     },
 
     async execute(params: ToolCallParams): Promise<ToolResult> {
+      const pinnedSubmission = params.modelSubmission?.capture()
+      let candidatePool: Array<{ provider: string; model: string }> | undefined
       const parsed = galaxyInputSchema.safeParse(params.input)
       if (!parsed.success) {
         return {
@@ -821,7 +815,9 @@ export function createGalaxyTool(coordinator: GalaxyCoordinator): Tool {
             // proposal 选择「同任务形状下性价比最高」的模型。
             let modelOverride = dim.modelOverride
             if (isDataParallel && modelOverride === undefined && replicaIndex > 0) {
-              const candidates = coordinator.getCandidateModels?.() ?? []
+              const candidates = candidatePool ??= coordinator.resolveCandidateModels
+                ? await coordinator.resolveCandidateModels(params.abortSignal, pinnedSubmission)
+                : coordinator.getCandidateModels?.() ?? []
               if (candidates.length > 0) {
                 const candidate = candidates[(replicaIndex - 1) % candidates.length]!
                 modelOverride = { provider: candidate.provider, model: candidate.model }

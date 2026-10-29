@@ -1,4 +1,8 @@
+import { buildRunSummary, collectChangedFiles } from './session-run-summary.js'
 import { toolMountNotice } from '../workflows/required-tools.js'
+import { captureSessionCreationRollback } from './session-creation-rollback.js'
+import { enrichSessionRecord, operationModelView } from './session-model-view.js'
+import { OfficialError } from '../models/official-contract.js'
 import { cleanupArchivedWorktree } from './archive-worktree.js'
 import { manageContinuityRecovery } from './session-continuity-recovery.js'
 import { buildWorkerLog, type WorkerLogOptions, type WorkerLog } from './worker-log.js'
@@ -14,6 +18,7 @@ import { hasLiveDelegation } from './session-delegation-state.js'
 import { SessionQueueRecovery, findOrphanedApprovals, findOrphanedQueueEntries, updateQueueLedger } from './session-recovery.js'
 import { DelegationStateIndex } from '../workers/delegation-state.js'
 import { withWorkspaceRoots } from '../tools/workspace-context.js'
+import { trustProjectIfAutonomous, startAfterProjectOverview, refreshOverviewAfterRun } from './session-project-context.js'
 import { validateWorkspaceRoots } from './workspace-roots.js'
 import { createHash } from 'node:crypto'
 /**
@@ -550,6 +555,7 @@ export type AgentFactory = (
  * and the sessionDir (for save/restore/delete of goal state) to wire goal mode.
  */
 export interface GoalHandles {
+  runtimeSubmission?: import('../models/model-runtime.js').ModelSubmission
   currentModelRef?: string
   /** The RuntimeRefs.goalTrackerRef — same object the update_goal and
    *  deliver_task tool closures close over. Mutating .current here keeps the
@@ -967,6 +973,7 @@ interface DelegateCapabilitySlot {
 }
 
 interface ActiveRunSettlement {
+  officialFailure?: OfficialError
   settled: boolean
   claimsReleased: boolean
   promise: Promise<void>
@@ -1094,6 +1101,8 @@ const ABORT_RECONCILE_RETRY_DELAY_MS = 50
 const ABORT_RECONCILE_MAX_RETRIES = 120
 
 interface InternalSession {
+  creationRollbackWorkSeen?: boolean
+  creationRollbackClosing?: boolean
   record: SessionRecord
   /** Lazily built on first run; null for rehydrated/idle sessions. */
   agent: ManagedAgent | null
@@ -1483,6 +1492,7 @@ export class RuntimeSessionManager {
       models: id => {
         const handles = this.resolveGoalHandles?.(id)
         return handles?.allProviders ? {
+          submission: handles.runtimeSubmission,
           providers: handles.allProviders as import('./session-title.js').TitleModels['providers'],
           current: handles.currentModelRef ?? this.sessions.get(id)?.record.model ?? opts.defaultModelId,
           cheap: handles.cheapProfile,
@@ -2708,6 +2718,7 @@ export class RuntimeSessionManager {
     if (input.domain) sessionDomain = input.domain
 
     const session: InternalSession = {
+      creationRollbackWorkSeen: false,
       record: {
         ...(input.initialComposerDraft ? { initialComposerDraft: input.initialComposerDraft } : {}),
         ...(input.skillCreation ? { skillCreation: input.skillCreation } : {}),
@@ -2795,11 +2806,18 @@ export class RuntimeSessionManager {
     }
     return { ...session.record }
   }
+  captureCreationRollback(id: string) {
+    return captureSessionCreationRollback(id, this.sessions, () => this.archiveSession(id), () => this.deleteSession(id))
+  }
+
 
   async submitRun(id: string, prompt: string, images: string[] | undefined, requestId: string, opts?: { skillInvoked?: string; documents?: SessionDocumentInput[]; documentRefs?: SessionDocumentRef[]; archiveRefs?: SessionArchiveEventRef[]; promptText?: string }) {
-    if (!this.sessions.has(id)) return { ok: false as const, code: 'not_found' }
+    const captured = this.sessions.get(id)
+    if (!captured) return { ok: false as const, code: 'not_found' }
+    if (captured.creationRollbackClosing) return { ok: false as const, code: 'busy' }
+    captured.creationRollbackWorkSeen = true
     if (!this.runLedger) return { ok: this.run(id, prompt, images, false, undefined, opts), code: 'busy' }
-    const receipt = await this.runLedger.accept(id, requestId, { prompt, images, documents: opts?.documents?.map((d) => d.name), archives: opts?.archiveRefs?.map((a) => a.name), promptText: opts?.promptText }, receipt => this.run(id, prompt, images, false, receipt, opts))
+    const receipt = await this.runLedger.accept(id, requestId, { prompt, images, documents: opts?.documents?.map((d) => d.name), archives: opts?.archiveRefs?.map((a) => a.name), promptText: opts?.promptText }, receipt => this.sessions.get(id) === captured && this.run(id, prompt, images, false, receipt, opts))
     return { ok: receipt.state !== 'rejected', code: 'busy', receipt }
   }
 
@@ -2844,7 +2862,8 @@ export class RuntimeSessionManager {
     opts?: { skillInvoked?: string; documents?: SessionDocumentInput[]; documentRefs?: SessionDocumentRef[]; archiveRefs?: SessionArchiveEventRef[]; promptText?: string; origin?: import('../agent/input-origin.js').InputOrigin },
   ): boolean {
     const session = this.sessions.get(id)
-    if (this.updateRestartPreparing || !session || session.running) return false
+    if (this.updateRestartPreparing || !session || session.running || session.creationRollbackClosing) return false
+    session.creationRollbackWorkSeen = true
     if (session.record.skillCreation) session.record.skillCreation.started = true
     session.record.initialComposerDraft = undefined
     // 阶段 2 — 逻辑 runId：恢复台账用它把多次尝试归到同一逻辑运行。
@@ -3007,6 +3026,7 @@ export class RuntimeSessionManager {
       }
       this.persistRecord(session)
       // Only human submissions trigger a bounded title attempt.
+      let unsubscribeTitle: (() => void) | undefined
       if (!recovery && !wasAutoResubmit && opts?.origin !== 'runtime_command' && !id.startsWith('worker-')) {
         const first = session.events.find(e => e.type === 'user')?.data
         const input = session.record.titleInput ?? titleInput(
@@ -3014,7 +3034,9 @@ export class RuntimeSessionManager {
             : typeof first?.promptText === 'string' ? first.promptText : typeof first?.text === 'string' ? first.text : '',
           [...documentRefs, ...archiveRefs].map(d => d.name).concat(images?.length ? ['Image'] : []),
         )
-        void this.titles.generate(id, input)
+        const submission = this.resolveGoalHandles?.(id)?.runtimeSubmission
+        if (submission) unsubscribeTitle = submission.afterPrepare(() => { unsubscribeTitle?.(); void this.titles.generate(id, input) })
+        else void this.titles.generate(id, input)
       }
       this.bindPlanModeChange(session, agent, runGeneration)
       const callbacks = this.buildCallbacks(session, journalWrite)
@@ -3039,6 +3061,7 @@ export class RuntimeSessionManager {
       if (opts?.skillInvoked) agent.markSkillInvoked?.(opts.skillInvoked)
       void withActivityRun(id, attemptId, () => withWorkspaceRoots(session.record.workspaceRoots ?? [session.record.cwd], () => agent.run(prompt, callbacks, images, { origin: opts?.origin ?? (recovery || wasAutoResubmit ? 'runtime_command' : 'human') }), id))
         .catch((err: unknown) => {
+          if (err instanceof OfficialError) runSettlement.officialFailure = err
           if (!ownsDurability()) return
           if (session.record.status === 'running') {
             session.record.status = 'failed'
@@ -3047,6 +3070,7 @@ export class RuntimeSessionManager {
           }
         })
         .finally(async () => {
+          unsubscribeTitle?.()
           if (runSettlement.settled) return
           await Promise.all(journalWrites)
           if (ownsDurability() && !storageFailed) {
@@ -3119,6 +3143,7 @@ export class RuntimeSessionManager {
             this.scheduleQueueLaneFlush(session)
             if (session.record.archived) this.unloadSession(session)
             session.reviewFollowup?.settled()
+            refreshOverviewAfterRun({ sessionId: id, cwd: session.record.cwd })
           } finally {
             runSettlement.resolve()
           }
@@ -3156,6 +3181,7 @@ export class RuntimeSessionManager {
       }
     }
 
+    const hasUserEvents = session.events.some(event => event.type === 'user')
     const ensure = () => {
       const agentOrPromise = this.ensureAgent(session)
       if (agentOrPromise && typeof (agentOrPromise as Promise<ManagedAgent>).then === 'function') {
@@ -3166,6 +3192,10 @@ export class RuntimeSessionManager {
         void Promise.resolve(startWithAgent(agentOrPromise as ManagedAgent)).catch(failEnsure)
       }
     }
+    const startAfterOverview = () => startAfterProjectOverview({ sessionId: id, cwd: session.record.cwd, forkedFromId: session.record.forkedFromId, recovery, autoResubmit: wasAutoResubmit, hasUserEvents }, () => {
+      if (!ownsDurability() || session.record.status === 'aborted') { failEnsure(new Error('Cancelled')); return }
+      try { ensure() } catch (error) { failEnsure(error) }
+    }, session.preparationController?.signal)
     if (this.recoveryJournal) {
       void this.recoveryJournal.beginRun({
         sessionId: id, runId, attemptId, watermark: 0, autoResume: wasAutoResubmit,
@@ -3174,10 +3204,10 @@ export class RuntimeSessionManager {
         runId = checkpoint.runId
         session.record.runId = runId
         if (!ownsDurability() || session.record.status === 'aborted') { failEnsure(new Error('Cancelled')); return }
-        try { ensure() } catch (error) { failEnsure(error) }
+        startAfterOverview()
       }, (error) => { storageFailure(); failEnsure(error) })
     } else {
-      try { ensure() } catch (error) { failEnsure(error) }
+      startAfterOverview()
     }
     return true
   }
@@ -3336,7 +3366,10 @@ export class RuntimeSessionManager {
     if (session.record.skillCreation) return { ok: false, reason: 'unsupported' }
     const objective = input.objective?.trim()
     if (!objective) return { ok: false, reason: 'invalid' }
+    if (session.creationRollbackClosing) return { ok: false, reason: 'limit' }
+    session.creationRollbackWorkSeen = true
     const agent = await this.ensureAgentAsync(session)
+    if (this.sessions.get(id) !== session || session.creationRollbackClosing) return { ok: false, reason: 'not_found' }
     if (this.updateRestartPreparing) return { ok: false, reason: 'limit' }
     if (typeof agent.delegateWorker !== 'function') return { ok: false, reason: 'unsupported' }
     const aborts = session.backgroundAborts ?? (session.backgroundAborts = new Map())
@@ -3398,8 +3431,13 @@ export class RuntimeSessionManager {
     return session.record
   }
 
+  private trustIfAutonomous(session: InternalSession): void {
+    trustProjectIfAutonomous(session.record.cwd, session.approvalMode ?? this.globalApprovalMode, session.record.id)
+  }
+
   private ensureAgent(session: InternalSession): ManagedAgent | Promise<ManagedAgent> {
     if (session.agent) return session.agent
+    this.trustIfAutonomous(session)
     const inflight = this.agentBuilds.get(session.record.id)
     if (inflight) return inflight
     this.ensureJobs(session)
@@ -3676,11 +3714,11 @@ export class RuntimeSessionManager {
    * one. Returns undefined when the session is missing. Empty when no provider
    * model source was injected (tests).
    */
-  listModels(id: string): ModelEntry[] | undefined {
+  listModels(id: string, preparedModels?: readonly ModelOption[]): ModelEntry[] | undefined {
     const session = this.sessions.get(id)
     if (!session) return undefined
     const current = session.record.model
-    const all = this.listModelsFn?.() ?? []
+    const all = preparedModels ?? this.listModelsFn?.() ?? []
     // 多 key：记录形态三态——三段式 provider:keyId:modelId（新切换产物）精确到 key；
     // 两段式 / 裸 id（旧会话、未迁移 provider）兜底匹配。兜底分支多个条目同时命中时
     // （同 provider 双 key 挂同 wire id）首个匹配胜出——对齐 resolveModelSpec「扫首个
@@ -3871,6 +3909,7 @@ export class RuntimeSessionManager {
     if (!session) return false
     session.approvalMode = mode
     session.record.approvalMode = mode
+    this.trustIfAutonomous(session)
     try { session.agent?.setApprovalMode?.(mode) } catch { /* non-fatal */ }
     // 免审批档：改档同时收口**已经在等**的那次审批（见 approveAllPending 注释）。
     // 顺序在 agent.setApprovalMode 之后——恢复执行的工具要按新档位评估后续 gate。
@@ -3896,6 +3935,7 @@ export class RuntimeSessionManager {
     let applied = 0
     for (const session of this.sessions.values()) {
       if (session.approvalMode) continue
+      this.trustIfAutonomous(session)
       if (!session.agent) continue
       try {
         session.agent.setApprovalMode?.(mode)
@@ -4074,7 +4114,7 @@ export class RuntimeSessionManager {
       // the session's own client when no cheap profile is configured.
       let completion: Parameters<typeof extractGoalCriteria>[1] | null = null
       if (handles.cheapProfile && handles.allProviders) {
-        const cheap = buildCheapClient(handles.cheapProfile, handles.allProviders as Parameters<typeof buildCheapClient>[1], id)
+        const cheap = buildCheapClient(handles.cheapProfile, handles.allProviders as Parameters<typeof buildCheapClient>[1], id, handles.runtimeSubmission)
         if (cheap) completion = completionFromClient(cheap.client, cheap.model)
       }
       if (!completion) return // no cheap client → leave generic criteria default
@@ -4730,7 +4770,7 @@ export class RuntimeSessionManager {
   runAndWait(
     id: string,
     prompt: string,
-  ): Promise<{ status: SessionStatus; summary: string; changedFiles: string[]; haltedApp?: string }> {
+  ): Promise<{ status: SessionStatus; summary: string; changedFiles: string[]; haltedApp?: string; officialFailure?: OfficialError }> {
     const s = this.sessions.get(id)
     if (!s || s.running) {
       return Promise.resolve({ status: 'failed', summary: 'session missing or busy', changedFiles: [] })
@@ -4745,6 +4785,7 @@ export class RuntimeSessionManager {
       return Promise.resolve({ status: 'failed', summary: 'run settlement unavailable', changedFiles: [] })
     }
     return settlement.promise.then(() => ({
+      officialFailure: settlement.officialFailure,
       status: s.record.status,
       summary: this.buildRunSummary(s),
       changedFiles: this.collectChangedFiles(s),
@@ -4753,74 +4794,24 @@ export class RuntimeSessionManager {
     }))
   }
 
-  private buildRunSummary(session: InternalSession): string {
-    // 无人值守 fail-closed 中止：原因优先于末段 assistant 文本（可行动性更高）。
-    if (session.unattendedHaltReason) {
-      return `[unattended halt] ${session.unattendedHaltReason}`
-    }
-    // Last assistant text run is the closest thing to a result summary.
-    for (let i = session.events.length - 1; i >= 0; i--) {
-      const e = session.events[i]!
-      if (e.type === 'text_delta') {
-        const text = String(e.data.text ?? '').trim()
-        if (text) return text.slice(0, 500)
-      }
-    }
-    return `status=${session.record.status}`
-  }
-
-  private collectChangedFiles(session: InternalSession): string[] {
-    const files = new Set<string>()
-    for (const e of session.events) {
-      if (e.type !== 'tool_use') continue
-      const name = String(e.data.name ?? '')
-      if (name !== 'edit_file' && name !== 'write_file' && name !== 'apply_patch') continue
-      const input = e.data.input as Record<string, unknown> | undefined
-      const path = input && typeof input.path === 'string' ? input.path : null
-      if (path) files.add(path)
-    }
-    return [...files]
-  }
+  private buildRunSummary(session: InternalSession): string { return buildRunSummary(session) }
+  private collectChangedFiles(session: InternalSession): string[] { return collectChangedFiles(session) }
 
   listSessions(): SessionRecord[] {
+    const models = operationModelView(this.listModelsFn)
     return [...this.sessions.values()]
       .filter((s) => !s.record.archived)
-      .map((s) => this.enrichRecord(s))
+      .map((s) => this.enrichRecord(s, models))
   }
 
   listAllSessions(): SessionRecord[] {
-    return [...this.sessions.values()].map((s) => this.enrichRecord(s))
+    const models = operationModelView(this.listModelsFn)
+    return [...this.sessions.values()].map((s) => this.enrichRecord(s, models))
+  }
+  private enrichRecord(session: InternalSession, models: () => ModelOption[] = () => this.listModelsFn?.() ?? []): SessionRecord {
+    return enrichSessionRecord(session, models, modelOptionMatches, resolveDomainPersona)
   }
 
-  /** Enrich a session record with live context usage when the agent is awake. */
-  private enrichRecord(s: InternalSession): SessionRecord {
-    const record = { ...s.record }
-    if (s.agent) {
-      try { record.contextTokens = s.agent.getEstimatedTokens?.() } catch { /* non-fatal */ }
-      try { record.contextBudget = s.agent.getContextBudget?.() ?? record.contextBudget } catch { /* non-fatal */ }
-      try { record.contextWindow = s.agent.getContextWindow?.() } catch { /* non-fatal */ }
-    }
-    // agent 缺失（懒创建/idle 释放/重启装填）时 contextWindow 没有事件通道兜底
-    // （协议里没有事件携带它），桌面 ContextRing 的分母随之丢失、切会话后进度环
-    // 空转。窗口是静态模型配置，按 record.model 从模型清单回落即可，判据与
-    // listModels 的 current 判定同源（首个命中胜出）。
-    if (record.contextWindow === undefined) {
-      try {
-        const all = this.listModelsFn?.() ?? []
-        record.contextWindow = all.find((m) => modelOptionMatches(record.model, m))?.contextWindow
-      } catch { /* non-fatal */ }
-    }
-    if (s.agent) {
-      // Prefer the user's explicit effort selection (including 'auto') over the
-      // agent's current concrete level, so the desktop chip reflects the mode
-      // the user actually set.
-      try { record.reasoningEffort = s.reasoningEffort ?? s.agent.getReasoningEffort?.() } catch { /* non-fatal */ }
-    }
-    const persona = resolveDomainPersona(record.domain)
-    record.domainGlyph = persona.glyph
-    record.domainAccent = persona.accent
-    return record
-  }
 
   getSession(id: string): SessionRecord | undefined {
     const s = this.sessions.get(id)
@@ -6431,6 +6422,7 @@ export class RuntimeSessionManager {
       },
       onError: (err) => {
         if (!isActive()) return
+        if (err instanceof OfficialError && session.activeRunSettlement) { session.activeRunSettlement.officialFailure = err; session.record.status = 'failed' }
         this.append(session, 'error', { error: redactText(err.message), ...this.failureFields(err) })
       },
       onStreamInterrupted: () => {

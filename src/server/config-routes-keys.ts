@@ -30,12 +30,16 @@ import {
 } from '../config/provider-key-store.js'
 import { probeForTestKey } from './provider-probe-adapter.js'
 import { endpointNetworkInput } from './endpoint-network-input.js'
+import { isOfficialProvider } from '../models/model-runtime.js'
 
 function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
   return async (body, params, headers, res) => {
     if (!isAuthorizedRequest({ body, headers }, apiToken)) {
       return { status: 401, body: { error: 'Unauthorized' } }
     }
+    const name = decodeRouteParam(params?.name)
+    const provider = name ? loadConfig().provider.providers[name] : undefined
+    if (provider && isOfficialProvider(provider)) return { status: 403, body: { error: 'official_provider_read_only' } }
     return handler(body, params, headers, res)
   }
 }

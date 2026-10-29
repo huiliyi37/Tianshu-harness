@@ -1,3 +1,14 @@
+export { restoreHistoryMessages, describeRestore } from './history-restore.js'
+export type { HistoryRestoreInfo } from './history-restore.js'
+export { buildDelegateSummary } from './delegate-summary.js'
+import { providerHasUsableAuth, isModelSpecUsable } from './model-spec-policy.js'
+export { providerHasUsableAuth, isModelSpecUsable, unconfiguredSpecMessage } from './model-spec-policy.js'
+import { resolveSessionAutoDefault } from './session-auto-default.js'
+import { isSessionWorkspaceMode, resolveSessionWorkspace, sessionScratchRoot } from './workspace.js'
+import { captureOfficialIdentity, withCurrentOfficialIdentity, getOfficialCatalog, getOfficialGatewayOrigin } from '../auth/official-model-auth.js'
+import { OfficialError, type OfficialIdentityRef } from '../models/official-contract.js'
+import { createManagedAccountAuth, defaultModelRuntimeDeps, getPreparedModel, isOfficialProvider, prepareRuntimeContext, resolveProviderForModel, type ModelRuntimeDeps } from '../models/model-runtime.js'
+import { buildOfficialModelRoutesFor } from './official-model-routes.js'
 import { ExternalHookHost } from '../hooks/external-hook-host.js'
 import { buildUpdateRestartRoutes } from './update-restart-routes.js'
 import { disposeAllBrowserContexts } from './browser-contexts.js'
@@ -12,7 +23,7 @@ import { disposeSessionFilePreviews } from './file-open-routes.js'
  */
 import { randomUUID } from 'node:crypto'
 import { join, dirname } from 'node:path'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
 import { assertSecureBind, readServeTlsArgs, resolveLanDirect } from './serve-transport.js'
 import type { ServerOptions as TlsServerOptions } from 'node:https'
 import { startServer } from './index.js'
@@ -87,16 +98,11 @@ import { isRuntimeLeanAspect, resolveSessionPoolOptions } from '../config/runtim
 import { isProFeatureEnabled } from '../config/pro-license.js'
 import { setTargetConventions, applyConfiguredGitBashPath, prewarmShellProbes } from '../platform.js'
 import { prewarmResolvedEnv } from '../tools/resolved-env.js'
-import { isKeylessProviderEntry } from '../config/provider-presets.js'
-import { resolveApiKey, resolveCredentialKey } from '../api/factory.js'
+import { resolveApiKey } from '../api/factory.js'
 import { findModelInKey, findModelOwner, resolveModelRef } from '../config/provider-keys.js'
 import { contractModels } from '../config/contract-models.js'
-import type { OaiMessage } from '../api/oai-types.js'
-import { findRecentUnrecordedWrites, formatDiskReconciliationNote, shouldReconcileDisk } from '../context/write-evidence-probe.js'
 import { createAuthProvider } from '../auth/registry.js'
 import type { AuthProvider } from '../auth/types.js'
-import type { SessionPersist } from '../agent/session-persist.js'
-import type { SessionContext } from '../agent/context.js'
 import { buildOpenFileRoute } from './open-file-route.js'
 import { installStallObserver } from '../agent/stall-observer.js'
 import { SessionRegistry } from '../agent/session-registry.js'
@@ -138,7 +144,7 @@ export function resolveServeContext(loader: () => Config = loadConfig): ServeCon
   let auth: AuthProvider | undefined
   let apiKey = ''
   let configured = true
-  if (provider.auth?.type === 'oauth') {
+  if (provider.auth?.type === 'oauth' || provider.auth?.type === 'tianshu-account') {
     try {
       auth = createAuthProvider(provider.auth, process.env, provider.apiKey, { ...config.network, proxy: provider.proxy ?? config.network.proxy })
       if (!auth.isAuthenticated()) configured = false
@@ -199,6 +205,7 @@ export function refreshServeContext(ctx: ServeContext): void {
 }
 export interface ResolvedModelSpec {
   provider: ProviderConfig
+  providerName?: string
   apiKey: string
   auth?: AuthProvider
   model: { id: string; maxTokens: number; contextWindow: number; reasoningEffort?: ModelConfig['reasoningEffort']; capabilities?: ModelConfig['capabilities'] }
@@ -215,89 +222,12 @@ export interface ResolvedModelSpec {
  * 则只查该 provider。`provider:keyId:modelId` 钉到具体 key。
  */
 export function resolveModelSpec(ctx: ServeContext, modelId: string): ResolvedModelSpec | null {
-  // 消歧义统一走 disambiguateKeyPrefix（provider-keys.ts）——它把「中间段是不是
-  // keyId」的判据收成单一事实源。此前 serve 与 main.ts 各写一份，main.ts 那侧漂了
-  // 很久（`ollama:qwen3:32b` 被当成 keyId → 模型/凭据双错），两侧注释却都写着「同语义」。
-  const { provider: pinnedProvider, keyId: pinnedKeyId, modelRef } =
-    resolveModelRef(ctx.config.provider.providers, modelId)
-  if (!modelRef) return null
-  const entries = pinnedProvider
-    ? (() => {
-        const prov = ctx.config.provider.providers[pinnedProvider]
-        return prov ? [[pinnedProvider, prov] as const] : []
-      })()
-    : Object.entries(ctx.config.provider.providers)
-  for (const [provName, prov] of entries) {
-    // 多 key：模型归属 key（provider → keys → models）。keyId 前缀走精确槽查找，
-    // 否则取第一个命中的 key；未迁移 provider 单池回退（owner=null → 沿用
-    // provider 级链，行为与迁移前一致）。
-    const owner = pinnedKeyId ? findModelInKey(prov, pinnedKeyId, modelRef) : findModelOwner(prov, modelRef)
-    if (!owner) continue
-    const found = owner.model
-    const ownerKey = owner.owner
-    let provider = ctx.provider
-    let apiKey = ctx.apiKey
-    let auth = ctx.auth
-    if (prov.auth?.type === 'oauth') {
-      if (provName !== ctx.provider.name) {
-        // B5（2026-09-07 审查）：oauth 分支此前命中即 return，不查可用凭据——
-        // 未认证 oauth provider 排在前面会截胡裸别名（返回不可用 spec，下游
-        // 请求时才 401），与下方「无 key provider 跳过继续扫」的穿透修复意图
-        // 不对称。用 isAuthenticated() 判凭据，未认证同样 continue。
-        const oauth = createAuthProvider(prov.auth, process.env, prov.apiKey, { ...ctx.config.network, proxy: prov.proxy ?? ctx.config.network?.proxy })
-        if (!oauth.isAuthenticated()) continue
-        provider = prov
-        apiKey = ''
-        auth = oauth
-      }
-    } else {
-      // provider 级链：未迁移 provider 与其槽位全空的 key 都走它，与迁移前一致。
-      const providerLevelKey = (): string | undefined =>
-        prov.apiKey
-        ?? process.env[prov.apiKeyEnv ?? '']
-        ?? (() => { try { return resolveApiKey(prov) } catch { return undefined } })()
-      // key 配了任一凭据槽 → 只用它（keyRef 实时读 secrets；解析失败即 fail-closed，
-      // 绝不静默改用别的 key 或 provider 级凭据——多账号并行下用错 key 比拿不到
-      // key 更糟）。
-      let provKey: string | undefined
-      if (ownerKey && (ownerKey.keyRef || ownerKey.apiKey || ownerKey.apiKeyEnv)) {
-        try {
-          provKey = resolveCredentialKey({
-            name: provName,
-            keyRef: ownerKey.keyRef,
-            apiKey: ownerKey.apiKey,
-            apiKeyEnv: ownerKey.apiKeyEnv,
-          })
-        } catch { provKey = undefined }
-      } else {
-        provKey = providerLevelKey()
-      }
-      // 无 key 的 provider 跳过继续扫（2026-09-06 修复）：裸模型名/别名在多
-      // provider 间撞名是常态（opus/sonnet/glm 在内置与自定义间大量重复），
-      // 此前这里直接 return null 放弃整个扫描——撞上排在前面的无 key provider
-      // 就永远到不了真正带 key 的目标（自定义模型「切不了」的实锤根因之一，
-      // 探针四场景验证）。带 provider: 前缀的精确查找不受影响（只查一个）。
-      if (!provKey) continue
-      // Always adopt the freshly-resolved key — also for the snapshot's own
-      // provider. Keeping `ctx.apiKey` there returned an EMPTY key whenever the
-      // server started unconfigured and the key arrived later (env/config),
-      // making the resolved spec unusable even though provKey was right here.
-      provider = prov
-      apiKey = provKey
-      auth = undefined
-    }
-    return {
-      provider,
-      apiKey,
-      auth,
-      model: {
-        id: found.id,
-        maxTokens: found.maxTokens,
-        contextWindow: found.contextWindow,
-        reasoningEffort: found.reasoningEffort,
-      },
-      ...(ownerKey?.id ? { keyId: ownerKey.id } : {}),
-    }
+  const { provider: pinned } = resolveModelRef(ctx.config.provider.providers, modelId)
+  for (const name of Object.keys(ctx.config.provider.providers)) {
+    if (pinned && name !== pinned) continue
+    const selected = resolveProviderForModel(ctx, modelId, name)
+    if (!selected || 'error' in selected || (selected.auth && !selected.auth.isAuthenticated())) continue
+    return { provider: selected.provider, providerName: selected.providerName, apiKey: selected.apiKey, auth: selected.auth, model: selected.model, keyId: selected.keyId }
   }
   return null
 }
@@ -357,27 +287,7 @@ export function resolveModelSpecWithReload(
  * resolveModelSpec 本身不动——其 fail-closed 解析细节已测试覆盖，此 helper 只
  * 供枚举过滤，语义与其可用分支一致。
  */
-export function providerHasUsableAuth(provName: string, prov: ProviderConfig): boolean {
-  if (isKeylessProviderEntry(provName, prov)) return true
-  if (prov.auth?.type === 'oauth') {
-    try {
-      return createAuthProvider(prov.auth, process.env, prov.apiKey).isAuthenticated()
-    } catch {
-      return false
-    }
-  }
-  // 多 key（PR-3）：顶层槽或任一把 key 的槽能解出凭据即算可用——只看顶层会让
-  // 「凭据只挂在第 2 把 key 上」的 provider 从 picker 里消失。
-  try {
-    if (resolveApiKey(prov).length > 0) return true
-  } catch { /* 顶层链落空，继续看 key 池 */ }
-  return (prov.keys ?? []).some(key => {
-    if (!(key.keyRef || key.apiKey || key.apiKeyEnv)) return false
-    try {
-      return resolveCredentialKey({ name: provName, keyRef: key.keyRef, apiKey: key.apiKey, apiKeyEnv: key.apiKeyEnv }).length > 0
-    } catch { return false }
-  })
-}
+
 
 /** Enumerate every selectable model across all usable providers. */
 export function listAllModels(ctx: ServeContext): {
@@ -389,8 +299,9 @@ export function listAllModels(ctx: ServeContext): {
   description?: string
   keyId?: string
   keyLabel?: string
-  /** 会话内调档能否真正上线（桌面 EffortMenu / TUI 选择器据此禁用假动作）。 */
+
   effortSupported: boolean
+  authType?: 'oauth' | 'tianshu-account'
 }[] {
   const out: {
     id: string
@@ -402,13 +313,11 @@ export function listAllModels(ctx: ServeContext): {
     keyId?: string
     keyLabel?: string
     effortSupported: boolean
+    authType?: 'oauth' | 'tianshu-account'
   }[] = []
   for (const [provName, prov] of Object.entries(ctx.config.provider.providers)) {
-    // 只列可用 provider——无 key 云端 / 未认证 oauth 的预设模型不进 picker。
     if (!providerHasUsableAuth(provName, prov)) continue
     const providerLabel = resolvePresetLabel(provName) ?? provName
-    // 多 key（PR-3）：逐 key 列出，条目带 keyId/keyLabel 供撞名区分；未迁移
-    // provider 走 contractModels（= 顶层快照）。
     if (prov.keys && prov.keys.length > 0) {
       for (const key of prov.keys) {
         for (const m of key.models) {
@@ -421,7 +330,8 @@ export function listAllModels(ctx: ServeContext): {
             description: m.description,
             keyId: key.id,
             ...(key.label ? { keyLabel: key.label } : {}),
-            effortSupported: resolveEffortSupported(provName, prov, m.capabilities),
+            effortSupported: modelEffortSupported(provName, prov, m),
+            ...(prov.auth?.type === 'oauth' || prov.auth?.type === 'tianshu-account' ? { authType: prov.auth.type } : {}),
           })
         }
       }
@@ -435,7 +345,8 @@ export function listAllModels(ctx: ServeContext): {
         providerLabel,
         contextWindow: m.contextWindow,
         description: m.description,
-        effortSupported: resolveEffortSupported(provName, prov, m.capabilities),
+        effortSupported: modelEffortSupported(provName, prov, m),
+            ...(prov.auth?.type === 'oauth' || prov.auth?.type === 'tianshu-account' ? { authType: prov.auth.type } : {}),
       })
     }
   }
@@ -455,6 +366,9 @@ export function listAllModelsWithReload(
   ctx: ServeContext,
   reload: () => ServeContext = resolveServeContext,
 ): ReturnType<typeof listAllModels> {
+  const listing = modelListingViews.get(ctx)
+  if (listing) return listAllModels(listing.context)
+  if (isOfficialProvider(ctx.provider)) return listAllModels(ctx)
   try {
     return listAllModels(reload())
   } catch {
@@ -462,148 +376,111 @@ export function listAllModelsWithReload(
   }
 }
 
-/**
- * Restore prior OAI conversation messages from disk into a SessionContext.
- *
- * Mirrors the TUI bootstrap path (`persist.loadOai()` + `replaceMessages()`):
- * when the Rust shell spawns a fresh sidecar, RuntimeSessionManager rehydrates
- * session records + event logs from disk, but the agent's LLM message stack
- * lives in a separate file (`~/.rivet/sessions/<slug>/<id>.jsonl`). Without
- * this call, a user continuing a prior session after restart sees full UI
- * history (from the event log) but the model receives an empty context.
- *
- * For brand-new sessions the file doesn't exist yet → loadOai() returns [] →
- * no-op. Called once per session in buildSessionStores, before the mutation
- * listener is wired (so replaceMessages doesn't trigger a redundant disk write).
- */
-export interface HistoryRestoreInfo {
-  /** Number of prior OAI messages loaded into the context (0 = none/new session). */
-  restored: number
-  /** Set when the session file existed but could not be read at all (IO error). */
-  error?: string
-  /**
-   * 观测（PLAN §4 恢复设计第 2 步）：检查点转录水位与恢复出的消息数是否对齐。
-   * `undefined` = 无从比较（无检查点水位 / IO 失败）。**只观测**：不影响恢复结果。
-   */
-  transcriptAligned?: boolean
-  /** 检查点记录的转录水位（观测字段）。 */
-  expectedTranscriptWatermark?: number
-  /**
-   * 结构化恢复中被注入「结果未知」的工具（PLAN §4 第 3 步）；UI 侧据此在时间线
-   * 标「待确认」。默认模式恒为空/缺失。
-   */
-  uncertainTools?: Array<{ id: string; name: string }>
+
+
+export function resolveManagedTargetSelection(ctx: ServeContext, modelId: string | undefined, reload: (() => ServeContext) | undefined, fallbackToDefault: boolean): { context: ServeContext; spec: ResolvedModelSpec } | null {
+  let effective = ctx
+  let spec = modelId ? resolveModelSpec(effective, modelId) : null
+  if (reload) {
+    try {
+      const fresh = reload()
+      if (!spec && (modelId || fresh.configured)) effective = fresh
+      else effective = { ...effective, config: fresh.config }
+    } catch {  }
+    if (!spec && modelId) spec = resolveModelSpec(effective, modelId)
+  }
+  if (!spec) {
+    if (modelId && !fallbackToDefault) return null
+    spec = { provider: effective.provider, apiKey: effective.apiKey, auth: effective.auth, model: { id: effective.model.id, maxTokens: effective.model.maxTokens, contextWindow: effective.model.contextWindow, reasoningEffort: effective.model.reasoningEffort, capabilities: effective.model.capabilities } }
+  }
+  const selected = { ...effective, provider: spec.provider, model: spec.model, apiKey: spec.apiKey, auth: spec.auth, configured: isModelSpecUsable(spec) }
+  return { context: selected, spec }
 }
 
-export function restoreHistoryMessages(
-  persist: SessionPersist,
-  session: SessionContext,
-  cwd?: string,
-  expectedTranscriptWatermark?: number,
-): HistoryRestoreInfo {
-  // loadOai already skips corrupt lines; the catch covers hard IO failures
-  // (unreadable file, permissions) so a broken history file degrades to an
-  // empty-context session instead of making the session unbuildable. The
-  // caller surfaces the mismatch (UI has history / model has none) to the user.
-  let messages: OaiMessage[]
+function modelEffortSupported(name: string, provider: ProviderConfig, model: import('../config/schema.js').ModelConfig): boolean {
+  if (!isOfficialProvider(provider)) return resolveEffortSupported(name, provider, model.capabilities)
   try {
-    messages = persist.loadOai()
-  } catch (err) {
-    return { restored: 0, error: (err as Error)?.message ?? String(err) }
-  }
-  // 2026-09-08 disk reconciliation: after a crash the workspace may be ahead of
-  // the transcript. Disclose recently modified files the history never mentions
-  // so the resumed model verifies instead of blindly rewriting finished work.
-  const meta = cwd ? persist.loadMetadata() : undefined
-  if (cwd && messages.length > 0 && shouldReconcileDisk(meta)) {
-    const sinceMs = meta.updatedAt ? meta.updatedAt - 10 * 60 * 1000 : undefined
-    const recent = findRecentUnrecordedWrites(cwd, messages, { sinceMs })
-    const note = formatDiskReconciliationNote(recent)
-    if (note) messages = [...messages, { role: 'user', content: note }]
-  }
-  if (messages.length > 0) {
-    session.replaceMessages(messages)
-  }
-  return describeRestore(persist, messages.length, expectedTranscriptWatermark)
+    const prepared = getPreparedModel(provider, model.id)
+    if (!prepared.capabilities.supportsThinking) return false
+    return resolveEffortSupported(name, prepared.provider, prepared.model.capabilities)
+  } catch { return false }
 }
 
-/**
- * 恢复信息收口（PLAN §4 第 2/3 步）：结构化注入的待确认工具 + 转录水位对齐观测。
- *
- * **两条恢复路径都必须走这里**：同步的 restoreHistoryMessages，以及桌面端的异步
- * 预取路径（buildManagedAgentAsync 自己 loadOaiAsync，拿到 messages 后走本函数收口）。
- * 否则会出现「模型已经收到『结果未知』的注入，UI 却收不到待确认提示、水位检查也没
- * 跑」——观察者与模型看到的事实不一致。
- */
-export function describeRestore(
-  persist: SessionPersist,
-  restored: number,
-  expectedTranscriptWatermark?: number,
-): HistoryRestoreInfo {
-  const uncertain = persist.getLastInjectedUncertain()
-  // 水位若高于恢复出的消息数，说明检查点引用了转录里已不存在的历史（丢失/被裁剪）。
-  // 当前只记警告（只观测、不改结果），供观测期核对水位定义。
-  if (expectedTranscriptWatermark !== undefined && restored < expectedTranscriptWatermark) {
-    console.warn(
-      `[recovery] 转录水位不对齐：检查点=${expectedTranscriptWatermark} 实际=${restored}`
-      + `（仅观测，不影响恢复）`,
-    )
-    return {
-      restored,
-      transcriptAligned: false,
-      expectedTranscriptWatermark,
-      ...(uncertain.length > 0 ? { uncertainTools: uncertain } : {}),
+const officialProviderId = 'tianshu-official'
+
+async function withOfficialProviderView(snapshot: ServeContext, identity = captureOfficialIdentity(), signal?: AbortSignal, readCatalog: ModelRuntimeDeps['getCatalog'] = getOfficialCatalog): Promise<ServeContext> {
+  const existing = snapshot.config.provider.providers[officialProviderId]
+  if (!identity || existing && !isOfficialProvider(existing)) return snapshot
+  const origin = getOfficialGatewayOrigin()
+  const catalog = await readCatalog(identity, 'agent', signal)
+  signal?.throwIfAborted()
+  const models = catalog.models.flatMap(model => {
+    const bindings = model.bindings.length === 1 ? model.bindings : model.bindings.filter(binding => binding.stream)
+    if (bindings.length !== 1) return []
+    return [{ id: model.id, description: model.displayName, contextWindow: model.contextWindow!, maxTokens: model.maxOutputTokens!, managed: { bindingId: bindings[0]!.id }, supportsVision: model.capabilities?.vision === true }]
+  })
+  const provider: ProviderConfig = { name: officialProviderId, auth: { type: 'tianshu-account' }, baseUrl: origin, protocol: 'openai', capabilities: { cacheControl: false, stripParams: [], toolJsonBug: false, prefixCache: 'none', prefixCompletion: false }, models, thinking: 'enabled', maxTokens: 4096, unsupported: [] }
+  return { ...snapshot, config: { ...snapshot.config, provider: { ...snapshot.config.provider, providers: { ...snapshot.config.provider.providers, [officialProviderId]: provider } } } }
+}
+
+const modelListingViews = new WeakMap<ServeContext, { generation: number; context: ServeContext; modelRefs: readonly string[] }>()
+
+export async function prepareOfficialServeContext(context: ServeContext, modelRef: string, identity: OfficialIdentityRef, signal: AbortSignal | undefined, deps: ModelRuntimeDeps): Promise<ServeContext & { autoDefaultModelRefs: readonly string[] }> {
+  let preparing = true
+  let catalogJob: ReturnType<ModelRuntimeDeps['getCatalog']> | undefined
+  const ownedDeps: ModelRuntimeDeps = { ...deps, captureIdentity: () => identity, async getCatalog(requestedIdentity, purpose, requestSignal) {
+    requestSignal?.throwIfAborted()
+    if (!preparing || requestedIdentity !== identity || purpose !== 'agent') return deps.getCatalog(requestedIdentity, purpose, requestSignal)
+    catalogJob ??= deps.getCatalog(identity, purpose, requestSignal)
+    const catalog = await catalogJob
+    requestSignal?.throwIfAborted()
+    return structuredClone(catalog)
+  } }
+  try {
+    const snapshot = await withOfficialProviderView(context, identity, signal, ownedDeps.getCatalog)
+    const target = resolveProviderForModel(snapshot, modelRef)
+    if (!target || 'error' in target || !isOfficialProvider(target.provider)) throw new OfficialError('invalid_request')
+    const autoDefaultModelRefs = Object.entries(snapshot.config.provider.providers).flatMap(([name, provider]) => isOfficialProvider(provider) ? contractModels(provider).map(model => `${name}:${model.id}`) : [])
+    const prepared = await prepareRuntimeContext({ ...snapshot, auth: createManagedAccountAuth(ownedDeps) }, modelRef, 'agent', ownedDeps, { signal })
+    return { ...prepared, autoDefaultModelRefs }
+  } finally { preparing = false; catalogJob = undefined }
+}
+
+export async function prepareServeModelListing(ctx: ServeContext, reload: () => ServeContext = resolveServeContext): Promise<void> {
+  let snapshot = ctx
+  try { snapshot = reload() } catch {  }
+  let providers = { ...snapshot.config.provider.providers }
+  for (const [name, provider] of Object.entries(providers)) {
+    if (isOfficialProvider(provider)) providers[name] = { ...provider, models: [...contractModels(provider)], keys: undefined }
+  }
+  snapshot = { ...snapshot, config: { ...snapshot.config, provider: { ...snapshot.config.provider, providers } } }
+  if (isOfficialProvider(snapshot.provider)) snapshot.provider = providers[snapshot.provider.name] ?? snapshot.provider
+  const state = { generation: (modelListingViews.get(ctx)?.generation ?? 0) + 1, context: snapshot, modelRefs: [] as readonly string[] }
+  modelListingViews.set(ctx, state)
+  const identity = captureOfficialIdentity()
+  try { snapshot = await withOfficialProviderView(snapshot, identity) } catch {  }
+  if (modelListingViews.get(ctx) !== state) return
+  providers = snapshot.config.provider.providers
+  state.context = snapshot
+  state.modelRefs = Object.entries(providers).flatMap(([name, provider]) => isOfficialProvider(provider) ? contractModels(provider).map(model => `${name}:${model.id}`) : [])
+  if (!Object.values(providers).some(isOfficialProvider)) return
+  const auth = createManagedAccountAuth()
+  if (!auth.isAuthenticated()) return
+  for (const [name, provider] of Object.entries(providers)) {
+    if (!isOfficialProvider(provider)) continue
+    for (const model of contractModels(provider)) {
+      try {
+        const prepared = await prepareRuntimeContext({ ...snapshot, auth }, `${name}:${model.id}`, 'probe')
+        if (modelListingViews.get(ctx) === state && identity) withCurrentOfficialIdentity(identity, () => { state.context = { ...snapshot, config: prepared.config } })
+        return
+      } catch (error) {
+        if (modelListingViews.get(ctx) !== state) return
+        if (error instanceof OfficialError && error.code === 'account_changed') throw error
+        if (!(error instanceof OfficialError) || !['model_unavailable', 'capability_unknown'].includes(error.code)) return
+      }
     }
   }
-  return {
-    restored,
-    ...(expectedTranscriptWatermark !== undefined
-      ? { transcriptAligned: true, expectedTranscriptWatermark }
-      : {}),
-    ...(uncertain.length > 0 ? { uncertainTools: uncertain } : {}),
-  }
 }
-
-export function isModelSpecUsable(spec: ResolvedModelSpec): boolean {
-  return spec.apiKey !== '' || !!spec.auth
-}
-
-/** Actionable message when a session is asked to run without a usable key —
- *  shown instead of letting the request hit the provider and 401. */
-export function unconfiguredSpecMessage(spec: ResolvedModelSpec): string {
-  const provider = spec.provider.name
-  const envHint = spec.provider.apiKeyEnv
-    ? ` The provider is configured to read its key from the \`${spec.provider.apiKeyEnv}\` environment variable, which is not set in this process (a common cause after a sidecar restart). Set it and relaunch, or store the key inline via Settings.`
-    : ' Configure it in Settings (or run `rivet config setup`).'
-  return `No usable API key for provider "${provider}" — the request was not sent.${envHint}`
-}
-
-
-export function buildDelegateSummary(
-  input: { objective: string },
-  run: import('../agent/coordinator.js').CoordinatorRun,
-): string {
-  const result = run.results[0]
-  const statusLabel = result?.status === 'passed' ? '完成'
-    : result?.status === 'blocked' ? '受阻'
-    : result?.status === 'escalated' ? '已升级'
-    : result?.status === 'failed' ? '失败'
-    : run.status === 'skipped' ? '已跳过' : '完成'
-  const lines: string[] = []
-  lines.push(`子代理任务「${input.objective}」${statusLabel}。`)
-  const changed = result?.changedFiles ?? []
-  if (changed.length > 0) {
-    lines.push('', '变更文件：')
-    for (const f of changed.slice(0, 20)) lines.push(`- ${f}`)
-    if (changed.length > 20) lines.push(`- …其余 ${changed.length - 20} 个`)
-  }
-  if (result?.summary) {
-    lines.push('', '子代理总结：', result.summary.slice(0, 1200))
-  }
-  lines.push('', '请审查以上结果，确认无误后继续。')
-  return lines.join('\n')
-}
-
 
 export interface RunServeOptions {
   tls?: TlsServerOptions
@@ -889,7 +766,19 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     : undefined
   // 执行后端选择：默认进程内执行；RIVET_EXECUTION_BACKEND=isolated 时走闭源
   // 进程隔离适配器（缺产物时回退进程内，绝不因闭源目录缺席而启动失败）。
+  const officialSessionContexts = new Map<string, ServeContext>()
+  const restoredSessions = new Set<string>()
+  const knownSessions = new Set<string>()
   const buildGatewayAgent: AgentFactory = async (cwd, sessionId, approvalMode, modelId, allowedTools, signal) => {
+    const assemblyStartedAt = performance.now()
+    const markAssemblyPhase = (phase: string) => {
+      if (process.env.RIVET_SERVE_TIMING === '1') timing.mark(phase, `elapsedMs=${Math.round(performance.now() - assemblyStartedAt)} wallMs=${Date.now()}`)
+    }
+    timing.mark('model-agent-start')
+    const capturedContext = sessionId ? officialSessionContexts.get(sessionId) : undefined
+    if (sessionId && restoredSessions.has(sessionId) && !capturedContext && modelId?.startsWith(`${officialProviderId}:`)) throw new OfficialError('account_changed')
+    const initialSelection = resolveManagedTargetSelection(capturedContext ?? ctx, modelId, specReload, true)!
+    if (sessionId && restoredSessions.has(sessionId) && !capturedContext && isOfficialProvider(initialSelection.spec.provider)) throw new OfficialError('account_changed')
     // 首个会话可能早于延迟预热到点——立刻拉响（幂等），并给插件快照一个有界
     // 等待窗：agent chunk import 本身就要几百 ms，插件扫描通常在其内落定；
     // 超窗则按既有语义无插件装配，绝不让一个卡住的插件 import 拖死会话创建。
@@ -901,6 +790,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
         new Promise<void>((resolve) => { setTimeout(resolve, PLUGIN_WARM_WAIT_CAP_MS).unref() }),
       ]),
     ])
+    timing.mark('model-agent-graph-ready', `duration=${Math.round(performance.now() - assemblyStartedAt)}ms`)
     // Capture the goal-handles resolver on first load (dynamic import is
     // cached, so this runs once). Used by resolveGoalHandles below.
     if (!goalHandlesResolve && typeof agentMod.resolveGoalHandles === 'function') {
@@ -916,11 +806,14 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     signal?.throwIfAborted()
     // PLAN §4 恢复设计第 2 步（只观测）：把检查点的转录水位带进恢复路径，
     // 由 restoreHistoryMessages 记录「检查点水位 vs 实际恢复条数」的对齐情况。
+    markAssemblyPhase('model-recovery-load-start')
     const expectedTranscriptWatermark = sessionId
       ? (await recoveryJournal?.load(sessionId))?.transcriptWatermark
       : undefined
-    return agentMod.buildManagedAgentAsync([
-      ctx,        cwd ?? process.cwd(),
+    markAssemblyPhase('model-recovery-load-ready')
+    markAssemblyPhase('model-managed-build-start')
+    const managed = await agentMod.buildManagedAgentAsync([
+      capturedContext ?? ctx, cwd ?? process.cwd(),
       sessionId ?? randomUUID(),
       sessionRegistry,
       approvalMode,
@@ -928,7 +821,10 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       specReload,
       modelId,
       allowedTools,
-    ], signal, expectedTranscriptWatermark)
+    ], signal, expectedTranscriptWatermark, initialSelection)
+    markAssemblyPhase('model-managed-build-ready')
+    timing.mark('model-agent-ready', `duration=${Math.round(performance.now() - assemblyStartedAt)}ms`)
+    return managed
   }
   const executionBackend = await resolveExecutionBackend(buildGatewayAgent, { externalHookHost,
     hookBinding: (cwd, sessionId) => ({ cwd, sessionId, getPluginHooks: pluginHooksSnapshot,
@@ -940,7 +836,15 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     runLedger: ownsSessionStore ? new RunLedger(join(desktopDir(), 'run-ledgers')) : undefined,
     recoveryJournal,
     globalApprovalMode: ctx.config.agent.approval as import('../agent/loop-types.js').ApprovalMode,
-    createAgent: executionBackend.createAgent,
+    createAgent: (...args) => {
+      const [, id, , requested] = args
+      if (executionBackend.kind !== 'in-process' && id && restoredSessions.has(id) && !officialSessionContexts.has(id)) {
+        if (requested?.startsWith(`${officialProviderId}:`)) throw new OfficialError('account_changed')
+        const target = resolveManagedTargetSelection(ctx, requested, specReload, true)
+        if (target && isOfficialProvider(target.spec.provider)) throw new OfficialError('account_changed')
+      }
+      return executionBackend.createAgent(...args)
+    },
     defaultCwd: process.cwd(),
     persistence,
     maxLoadedSessions: sessionPool.maxLoadedSessions,
@@ -977,15 +881,29 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       return Number.isFinite(n) && n >= 0 ? n : undefined
     })(),
     missionStore,
-    onSessionsChanged: (reason) => serverEvents.publish('sessions_changed', reason),
+    onSessionsChanged: (reason) => {
+      if (typeof sessions !== 'undefined') {
+        const currentSessionIds = new Set<string>()
+        for (const record of sessions.listAllSessions()) {
+          currentSessionIds.add(record.id)
+          if (reason === 'external' && !knownSessions.has(record.id)) { restoredSessions.add(record.id) }
+          knownSessions.add(record.id)
+        }
+        for (const id of knownSessions) if (!currentSessionIds.has(id)) { knownSessions.delete(id); restoredSessions.delete(id); officialSessionContexts.delete(id) }
+      }
+      serverEvents.publish('sessions_changed', reason)
+    },
   })
 
   // 构造函数内已完成 rehydrate（persistence 存在时）——此处的会话数即盘上恢复量。
-  timing.mark('rehydrate', `sessions=${sessions.listAllSessions().length}`)
+  const rehydratedSessions = sessions.listAllSessions()
+  for (const record of rehydratedSessions) { restoredSessions.add(record.id); knownSessions.add(record.id) }
+  timing.mark('rehydrate', `sessions=${rehydratedSessions.length}`)
 
   // Wave 3 (内存回收): idle release / archive / hardDelete 都经 manager 释放
   // stores——晚绑定到 serve-agent 的 forgetSessionStores（动态 import 后捕获）。
   sessions.setStoresForgetter((sessionId) => {
+    if (!sessions.getSession(sessionId)) { officialSessionContexts.delete(sessionId); restoredSessions.delete(sessionId); knownSessions.delete(sessionId) }
     try { storesForgetter?.(sessionId) } catch { /* best-effort */ }
   })
 
@@ -1050,7 +968,39 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   // B4：reloadConfig 注入——模型切换 409 附因与解析侧同源（resolveServeContext
   // 重读磁盘最新 config；409 低频失败路径，reload 成本可接受）。
   Object.assign(routes, buildSessionRoutes(sessions, apiToken, () => sessionRegistry, ctx.config, {
+    prepareOfficialSession: async (modelRef, signal) => {
+      const preparationStartedAt = performance.now()
+      timing.mark('model-prepare-start')
+      if (executionBackend.kind !== 'in-process') throw new OfficialError('service_error')
+      const fresh = specReload ? specReload() : ctx
+      const requested = resolveProviderForModel(fresh, modelRef)
+      if (!modelRef.startsWith(`${officialProviderId}:`) && (!requested || 'error' in requested || !isOfficialProvider(requested.provider))) throw new OfficialError('invalid_request')
+      const identity = captureOfficialIdentity()
+      if (!identity) throw new OfficialError('auth_required')
+      const deps: ModelRuntimeDeps = { ...defaultModelRuntimeDeps, captureIdentity: () => identity }
+      const prepared = await prepareOfficialServeContext(fresh, modelRef, identity, signal, deps)
+      timing.mark('model-prepare-ready', `duration=${Math.round(performance.now() - preparationStartedAt)}ms`)
+      signal?.throwIfAborted()
+      const id = randomUUID()
+      let disposed = false, committed = false
+      const captured = { ...prepared, configured: true }
+      return { id, resolveAutoDefault(cwd: string) {
+        if (disposed) throw new OfficialError('service_error')
+        signal?.throwIfAborted()
+        return resolveSessionAutoDefault(cwd, { ...captured, config: loadConfig({ cwd }) }, { identity, providers: captured.config.provider.providers, modelRefs: prepared.autoDefaultModelRefs })
+      }, commit() {
+        if (committed) return
+        if (disposed || officialSessionContexts.has(id)) throw new OfficialError('service_error')
+        signal?.throwIfAborted()
+        withCurrentOfficialIdentity(identity, () => { officialSessionContexts.set(id, captured); committed = true })
+      }, dispose() { disposed = true; if (officialSessionContexts.get(id) === captured) { officialSessionContexts.delete(id); if (sessions.getSession(id)) restoredSessions.add(id) } } }
+    },
     reloadConfig: () => resolveServeContext().config,
+    prepareModelListing: async () => {
+      const listingContext = { ...ctx }
+      await prepareServeModelListing(listingContext, specReload ?? (() => ctx))
+      return listAllModelsWithReload(listingContext)
+    },
     sseRegistry,
   }))
 
@@ -1087,6 +1037,65 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     // file-context 路由的 cwd 工作区守卫（与 #221 同族）：只接受已注册工作区。
     knownWorkspaces: () => registeredWorkspaces(sharedRuntime.sessions ?? undefined),
   }))
+
+  const configuredDefaultRoute = routes['GET /config/default-model']!
+  routes['GET /config/default-model'] = async (...args) => {
+    const params = args[1] ?? {}
+    const result = await configuredDefaultRoute(...args)
+    if (result.status !== 200 || Object.keys(params).length === 0) return result
+    if (params.scope !== 'welcome' || Object.keys(params).some(key => !['scope', 'cwd', 'workspaceMode'].includes(key)) || params.cwd !== undefined && !params.cwd.trim() || params.workspaceMode !== undefined && !isSessionWorkspaceMode(params.workspaceMode)) return { status: 400, body: { error: 'invalid_request' } }
+    const unknown = { ...result, body: { ...(result.body as object), effective: { status: 'unknown' } } }
+    try {
+      const workspaceConfig = loadConfig().workspace
+      let workspace
+      do {
+        workspace = resolveSessionWorkspace({ requested: params.cwd, mode: params.workspaceMode as 'explicit' | 'default' | 'scratch' | undefined, processCwd: sessions.getDefaultCwd(), configDefaultDir: workspaceConfig.defaultDir, scratchRoot: workspaceConfig.scratchDir ?? sessionScratchRoot(profileRivetHome()), sessionId: randomUUID() })
+      } while (workspace.managed && existsSync(workspace.path))
+      let cwd = workspace.path
+      if (workspace.source === 'config-default') {
+        try { if (!statSync(cwd).isDirectory()) cwd = sessions.getDefaultCwd() } catch { cwd = sessions.getDefaultCwd() }
+      }
+      const config = loadConfig({ cwd })
+      const snapshot = { ...ctx, config }
+      let selected = resolveSessionAutoDefault(cwd, snapshot)
+      const explicit = config.agent.defaultModel
+      const explicitProvider = explicit ? config.provider.providers[explicit.split(':')[0]!] : undefined
+      const officialDefault = explicit && (explicitProvider ? isOfficialProvider(explicitProvider) : explicit.startsWith(`${officialProviderId}:`))
+      if (!selected?.available && (!explicit || officialDefault)) {
+        const identity = captureOfficialIdentity()
+        if (identity) {
+          const listing = { ...snapshot }
+          await prepareServeModelListing(listing, () => snapshot)
+          const view = modelListingViews.get(listing)
+          const providers = view?.context.config.provider.providers ?? {}
+          selected = resolveSessionAutoDefault(cwd, { ...snapshot, config: loadConfig({ cwd }) }, { identity, providers, modelRefs: view?.modelRefs ?? [] })
+        }
+      }
+      if (!selected) return unknown
+      const { modelRef, kind, available, provider, model } = selected
+      return { ...result, body: { ...(result.body as object), effective: { status: 'resolved', modelRef, kind, available, model: { id: model.id, description: model.description, supportsVision: model.supportsVision, supportsVideo: model.supportsVideo, effortSupported: modelEffortSupported(provider.name, provider, model) } } } }
+    } catch { return unknown }
+  }
+
+  const configuredProvidersRoute = routes['GET /config/providers']!
+  routes['GET /config/providers'] = async (...args) => {
+    const result = await configuredProvidersRoute(...args)
+    if (result.status !== 200) return result
+    const listingContext = { ...ctx }
+    await prepareServeModelListing(listingContext, specReload ?? (() => ctx))
+    const view = modelListingViews.get(listingContext)?.context
+    const body = result.body as { providers: Array<{ name: string; [key: string]: unknown }>; [key: string]: unknown }
+    const providers = body.providers.map(entry => {
+      const provider = view?.config.provider.providers[entry.name]
+      if (!provider || !isOfficialProvider(provider)) return entry
+      return { ...entry, authType: 'tianshu-account', officialAvailable: providerHasUsableAuth(entry.name, provider), models: contractModels(provider).map(model => ({ ...model, effortSupported: modelEffortSupported(entry.name, provider, model) })), effortSupported: contractModels(provider).some(model => modelEffortSupported(entry.name, provider, model)) }
+    })
+    const provider = view?.config.provider.providers[officialProviderId]
+    if (provider && isOfficialProvider(provider) && !providers.some(p => p.name === officialProviderId) && providerHasUsableAuth(officialProviderId, provider)) {
+      providers.unshift({ name: officialProviderId, label: '天枢官方', baseUrl: provider.baseUrl, protocol: provider.protocol, isDefault: false, userSaved: false, keyStatus: { source: 'none' }, authType: 'tianshu-account', officialAvailable: true, keyless: false, effortSupported: contractModels(provider).some(model => modelEffortSupported(officialProviderId, provider, model)), models: contractModels(provider).map(model => ({ ...model, effortSupported: modelEffortSupported(officialProviderId, provider, model) })), keys: [], isPreset: false, allowProFallback: false })
+    }
+    return { ...result, body: { ...body, providers } }
+  }
 
   // Environment route: host toolchain availability (python, uv, git, node) for setup UI.
   Object.assign(routes, buildEnvRoute(apiToken))
@@ -1161,10 +1170,13 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   // from a healthy sidecar. In ephemeral/test mode (no registry wired) it reads
   // true so existing single-session behavior is unchanged.
   const registryReady = () => (opts.ephemeral ? true : sessionRegistry !== undefined)
-  const serveConfigured = () => ctx.configured
+  const serveConfigured = () => {
+    if (ctx.configured) return true
+    try { return captureOfficialIdentity() !== null } catch { return false }
+  }
   const loopLagForHealth = () => loopHealth.snapshot()
   // 账号路由（桌面端 device flow）；主体、代理注入与测试在 account-routes.ts。
-  Object.assign(routes, buildAccountRoutesFor(apiToken, ctx.config, () => tokenLedgerService?.accountChanged()))
+  Object.assign(routes, buildAccountRoutesFor(apiToken, ctx.config, () => tokenLedgerService?.accountChanged()), buildOfficialModelRoutesFor(apiToken, ctx.config))
   Object.assign(routes, buildProfileRoutes(sessions, apiToken))
   Object.assign(routes, buildProfileLibraryRoutes({ rivetHome: profileRivetHome(), apiToken }))
 
@@ -1189,7 +1201,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
   const greetingApiKey = deepseekProvider?.apiKey ?? ctx.apiKey
   Object.assign(
     routes,
-    buildGreetingRoute(greetingBaseUrl, greetingApiKey, () => getGreetingConfig(), apiToken),
+    buildGreetingRoute(greetingBaseUrl, greetingApiKey, () => getGreetingConfig(), apiToken, { config: ctx.config, provider: ctx.provider, apiKey: ctx.apiKey, auth: ctx.auth, modelId: ctx.model.id, purpose: 'greeting' }),
   )
 
   // Settings intent (Wave 3，回流自 3.14alpha)：自然语言 → 设置动作的 LLM 兜底。
@@ -1297,7 +1309,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
       .then(() => timing.mark('serve-agent-loaded'))
       .catch(() => { /* createAgent 路径会带着真实错误重试 */ })
   }, resolveServeWarmDelayMs())
-  if (!ctx.configured || !ownsSessionStore) warmup.cancel()
+  if (!serveConfigured() || !ownsSessionStore) warmup.cancel()
   return {
     port,
     /** 本实例坐标（内存真源）——--json 握手输出用，不回读发现文件（双实例竞态）。 */
@@ -1306,6 +1318,7 @@ export async function runServe(opts: RunServeOptions = {}): Promise<RunningServe
     scheduler,
     shared: sharedRuntime,
     close: (cb) => {
+      officialSessionContexts.clear(); restoredSessions.clear(); knownSessions.clear()
       const hookDrain = externalHookHost.shutdown()
       warmup?.cancel()
       // 发现文件先清（pid 校验在 clearServerInfo 内）——优雅排空可能持续数秒，

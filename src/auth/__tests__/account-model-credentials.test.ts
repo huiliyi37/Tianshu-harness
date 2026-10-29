@@ -29,8 +29,11 @@ test('account re-login during a locked Keychain never replaces the key for saved
     let locked = false
     const originalKey = Buffer.alloc(32, 7).toString('hex')
     let storedKey = originalKey
+    const keychainPath = join(f.dir, 'fixture.keychain-db')
+    writeFileSync(keychainPath, '')
     childProcess.execFileSync = ((file: string, args: string[]) => {
       assert.equal(file, 'security', 'never call the real OS key store')
+      if (args[0] === 'default-keychain') return JSON.stringify(keychainPath)
       if (args[0] === 'find-generic-password') {
         if (locked) throw new Error('Keychain locked')
         return storedKey

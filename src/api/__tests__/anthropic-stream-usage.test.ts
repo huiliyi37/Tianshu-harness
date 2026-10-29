@@ -67,6 +67,7 @@ test('issue #468: relay final usage replaces message_start placeholders and reac
     output: usage.output_tokens, sidePath: false,
   }], { resolvePricing: () => ({ input: 4, output: 12, cacheRead: 0.4 }) })
   assert.equal(aggregate.totals.hitRate, 99.2)
+  assert.ok(typeof aggregate.totals.savings === 'number')
   assert.ok(aggregate.totals.savings > 0)
 })
 

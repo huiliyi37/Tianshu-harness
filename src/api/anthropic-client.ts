@@ -1,13 +1,14 @@
 import { withNativeRequestAudit } from './native-request-audit.js'
 import { ProviderToolProgress } from './tool-input-progress.js'
 import { requestAuditContext } from './call-audit.js'
+import { anthropicBodyHasImages } from './anthropic-payload.js'
 import type { StreamClient, StreamCallbacks } from './stream-client.js'
 import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { stripOaiImageParts } from './oai-types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { ToolNameProtocolError } from './tool-call-name.js'
 import { parseRetryAfterMs } from './error-classifier.js'
-import { fetchWithTimeout } from './fetch-timeout.js'
+import { fetchModelWithTimeout, captureModelAuthorization, applyOfficialRequestPolicy, officialStreamFailure, officialStreamCallbacks, type ModelRequestAuthorizer } from './request-authorization.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { parseJsonObjectWithEscapeRepair } from './json-escape-repair.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
@@ -25,6 +26,7 @@ import { proveCanonicalSource, type NativeSourceBoundaries } from './continuatio
 import { recordNativeCacheLayout } from './native-continuation.js'
 
 export interface AnthropicClientConfig {
+  requestAuth?: ModelRequestAuthorizer
   baseUrl: string
   apiKey: string
   model: string
@@ -130,20 +132,6 @@ interface AnthropicRequestBody {
  * [anchors…, assistant(handoff), user(原文), user(task-anchor appendix)]
  * 天然含连续 assistant / 连续 user。
  */
-/**
- * 刚发出去的 Anthropic 体里还有没有 image block——413 分流用（图片过重 vs 纯上下文
- * 超限在 wire 层同形）。必须看**发出去的那个体**：体积护栏可能已经把图驱逐成占位符，
- * 拿入参 messages 判断会让分类器去剥一次已经不存在的图（白发一轮）。
- */
-function anthropicBodyHasImages(body: Record<string, unknown>): boolean {
-  const messages = body.messages
-  if (!Array.isArray(messages)) return false
-  return messages.some((m) => {
-    const content = (m as { content?: unknown } | null)?.content
-    return Array.isArray(content) && content.some((b) => (b as { type?: unknown } | null)?.type === 'image')
-  })
-}
-
 function foldConsecutiveSameRole(messages: AnthropicMessage[], onUserBoundary?: (messageIndex: number, blockCount: number, sourceIndex: number) => void): AnthropicMessage[] {
   const out: AnthropicMessage[] = []
   for (const [sourceIndex, msg] of messages.entries()) {
@@ -164,6 +152,7 @@ export class AnthropicClient implements StreamClient {
   /** 体积护栏上报节律（跨请求保持；语义与节流见 notifyBodyGuard）。 */
   private readonly bodyGuardNotify = createBodyGuardNotifyState()
   /** 运行时档位（output_config 通道消费；传统 budget 路径不读）。 */
+  private officialThinking: 'enabled' | 'disabled' = 'enabled'
   private reasoningEffort: string | undefined
 
   constructor(private config: AnthropicClientConfig) {
@@ -184,6 +173,7 @@ export class AnthropicClient implements StreamClient {
   }
 
   setThinking(_mode: 'enabled' | 'disabled'): void {
+    if (this.config.requestAuth) this.officialThinking = _mode
     // Anthropic thinking is controlled via budget_tokens, not a toggle
   }
 
@@ -197,6 +187,9 @@ export class AnthropicClient implements StreamClient {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
+    const requestAuth = captureModelAuthorization(this.config.requestAuth, request.model || this.config.model)
+    callbacks = officialStreamCallbacks(requestAuth, callbacks)
+    try {
     // image_strip 恢复状态（与 openai-client.sendStream 同构，那里有完整说明）：
     // 首次原样带图 → 分类器判 image_strip 后剥图重发一次 → 仍 413 时请求体已
     // 无图，错误上的 payloadHadImages: false 让分类器改判 context_overflow。
@@ -222,6 +215,7 @@ export class AnthropicClient implements StreamClient {
         const mapping: NativeSourceBoundaries | undefined = scope ? { source: proveCanonicalSource(request.messages), boundaries: [], cacheLayout: [] } : undefined
         const body = this.buildRequestBody({ ...request, messages: wireMessages }, mapping)
         if (scope) scope.nativeSourceBoundaries = mapping
+        applyOfficialRequestPolicy(requestAuth, body, this.officialThinking === 'disabled' ? 'off' : request.reasoning_effort ?? this.reasoningEffort)
 
         // 请求体体积护栏（可选）：与 openai-client.sendStream 同一护栏、同一确定性纪律
         // （只截 wire 副本、同输入同字节），差异只是 shape——OpenAI 兼容体的工具输出是
@@ -237,13 +231,13 @@ export class AnthropicClient implements StreamClient {
       // 共享 lifecycle controller（见 openai-client 同名注释）：传给 fetch，
       // 由外部 signal 联动并在 processSSEStream 的 finally 中 abort。
       const lifecycle = new AbortController()
-      if (signal) {
-        if (signal.aborted) lifecycle.abort()
-        else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
-      }
+      const forwardAbort = () => lifecycle.abort(signal?.reason)
+      if (signal?.aborted) forwardAbort()
+      else signal?.addEventListener('abort', forwardAbort, { once: true })
+      try {
       // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
       await audit.observation.measureAsync('rateLimitWaitMs', () => acquireRateLimitSlot(this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal))
-      const response = await fetchWithTimeout(`${normalizeBaseUrl(this.config.baseUrl)}/v1/messages`, {
+      const response = await fetchModelWithTimeout(requestAuth, 'messages', `${normalizeBaseUrl(this.config.baseUrl)}/v1/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -284,7 +278,8 @@ export class AnthropicClient implements StreamClient {
         throw err
       }
 
-      await this.processSSEStream(response, callbacks, signal, lifecycle)
+      try { await this.processSSEStream(response, callbacks, signal, lifecycle) } catch (error) { throw officialStreamFailure(requestAuth, error) }
+      } finally { signal?.removeEventListener('abort', forwardAbort); lifecycle.abort() }
     }), signal, {
       budget: this.config.retryBudget?.(),
       maxTotalDurationMs: this.config.retry?.maxTotalDurationMs ?? 10 * 60_000,
@@ -302,6 +297,7 @@ export class AnthropicClient implements StreamClient {
         }
       },
     })
+    } catch (error) { throw officialStreamFailure(requestAuth, error) }
   }
 
   /** Exposed for testing. */

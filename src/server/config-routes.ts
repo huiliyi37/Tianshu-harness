@@ -140,6 +140,8 @@ import { listGrantedApps, revokeApp } from '../tools/computer-use/app-grants.js'
 import { computerUseModulePresent, isComputerUseSupportedPlatform, loadComputerUseImpl } from '../tools/computer-use/bridge.js'
 import { isProFeatureEnabled } from '../config/pro-license.js'
 import { starDomainRegistry } from '../agent/star-domain-registry.js'
+import { isOfficialProvider } from '../models/model-runtime.js'
+import { officialProviderMutationError, officialProviderProbeError } from './official-provider-policy.js'
 
 function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
   return async (body, params, headers, res) => {
@@ -174,6 +176,7 @@ function resolveProviderProbeTarget(
   opts?: { allowKeyless?: boolean },
 ): { apiKey: string | undefined; baseUrl: string } | { error: string } {
   const savedProvider = loadConfig().provider.providers[provider]
+  if (savedProvider && isOfficialProvider(savedProvider)) return apiKey !== undefined || baseUrlOverride && baseUrlOverride !== savedProvider.baseUrl ? { error: 'Official provider overrides are not allowed' } : { apiKey: undefined, baseUrl: savedProvider.baseUrl }
   if (baseUrlOverride) assertCredentialOrigin(savedProvider, baseUrlOverride, apiKey)
   // apiKey 可选：缺省时用该 provider 的存储 Key（keyRef 物化 / apiKeyEnv）——
   // 已配置 provider 上的「拉取模型列表/测试调用」不应要求用户重输 Key。
@@ -254,14 +257,14 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
           protocol: p.protocol,
           isDefault: name === defaultName,
           userSaved: p.userSaved === true,
-          keyStatus: getApiKeyStatus(name),
+          keyStatus: isOfficialProvider(p) ? { source: 'none', ref: '' } : getApiKeyStatus(name),
           // OAuth 型 provider（codex）：keyStatus 恒 none，登录态单独下发（authType/
           // oauthAuthenticated 由 config-routes-oauth.ts 组装）——与 serve.ts
           // providerHasUsableAuth 同一条判定链。
           ...oauthListFields(p),
           // keyless 判定走 provider-presets 单一事实源（预设 keyless 或自定义无密钥材料）——
           // keyStatus 恒 none 的 keyless 端点靠本标记与「该配没配」区分。
-          keyless: isKeylessProviderEntry(name, p),
+          keyless: !isOfficialProvider(p) && isKeylessProviderEntry(name, p),
           effortSupported: resolveEffortSupported(name, p),
           ...(p.capabilities?.effortFormat ? { effortFormat: p.capabilities.effortFormat } : {}),
           // 无 keys 才回退顶层快照——见 contractModels 的注释。
@@ -276,7 +279,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
             imageGen: m.imageGen,
             // 免费徽章数据源：schema 的 pricing.free（真正免费——区别于订阅折算价）。
             // undefined 即"未知/付费"，desktop 以 === true 判定渲染。
-            free: m.pricing?.free,
+            free: isOfficialProvider(p) ? undefined : m.pricing?.free,
             reasoningEffort: m.reasoningEffort,
             // 桌面 EffortMenu 的诚实化开关：无档位通道（自定义 provider 默认）→ false，
             // 控件据此禁用调档，而不是静默丢弃后仍报「设置成功」。
@@ -335,6 +338,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         modelsMode?: 'replace' | 'append'
         allowProFallback?: boolean
       }
+      const blocked = officialProviderMutationError(providerName, body)
+      if (blocked) return blocked
       if (!providerName) return { status: 400, body: { error: 'providerName is required' } }
 
       let parsedModel: ModelConfig | undefined
@@ -343,7 +348,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         if (!result.success) {
           return { status: 400, body: { error: `Invalid model: ${result.error.message}` } }
         }
-        parsedModel = result.data
+        parsedModel = Object.fromEntries(Object.entries(result.data).filter(([key]) => Object.hasOwn(model, key))) as ModelConfig
       }
 
       // 与 /custom 的 models 校验同构：逐项 safeParse，任何一项不合法整单 400——
@@ -391,6 +396,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         /** 端点能力声明（自定义 provider 创建时显式声明 effortFormat 等）。 */
         capabilities?: unknown
       }
+      const blocked = officialProviderMutationError(providerName, body)
+      if (blocked) return blocked
       if (!providerName) return { status: 400, body: { error: 'providerName is required' } }
       if (!baseUrl) return { status: 400, body: { error: 'baseUrl is required' } }
       if (models !== undefined && !Array.isArray(models)) {
@@ -452,6 +459,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         providerName?: string
         fields?: Record<string, unknown>
       }
+      const blocked = officialProviderMutationError(providerName, body)
+      if (blocked) return blocked
       if (!providerName) return { status: 400, body: { error: 'providerName is required' } }
       if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
         return { status: 400, body: { error: 'fields object is required' } }
@@ -478,6 +487,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
 
     'DELETE /config/providers/:name': withAuth((_body, params) => {
       const name = decodeRouteParam(params?.name)
+      const blocked = officialProviderMutationError(name, _body)
+      if (blocked) return blocked
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       try {
         removeProvider(name)
@@ -490,6 +501,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
 
     'DELETE /config/providers/:name/models/:modelId': withAuth((_body, params) => {
       const name = decodeRouteParam(params?.name)
+      const blocked = officialProviderMutationError(name, _body)
+      if (blocked) return blocked
       // decodeURIComponent 配合客户端的 encodeURIComponent——modelId 可能含空格、
       // 斜杠等特殊字符，URL 路径中为 percent-encoded 形式，需解码后才能与配置中的
       // 原始 ID 匹配。
@@ -506,6 +519,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
 
     'POST /config/providers/:name/key': withAuth((body, params) => {
       const name = decodeRouteParam(params?.name)
+      const blocked = officialProviderMutationError(name, body)
+      if (blocked) return blocked
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       const { apiKey, apiKeyEnv: envVar } = body as { apiKey?: string; apiKeyEnv?: string }
       try {
@@ -523,6 +538,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     // key」的修复点。env 注入的 key 清不掉时 keyStatus 如实报回 source:'env'。
     'DELETE /config/providers/:name/key': withAuth((_body, params) => {
       const name = decodeRouteParam(params?.name)
+      const blocked = officialProviderMutationError(name, _body)
+      if (blocked) return blocked
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       try {
         const result = clearApiKey(name)
@@ -541,6 +558,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     'POST /config/providers/test-key': withAuth(async (body) => {
       const { provider, apiKey, baseUrl: override, protocol, model } = body as { provider?: string; apiKey?: string; baseUrl?: string; protocol?: ProviderProtocol; model?: string }
       if (!provider) return { status: 400, body: { error: 'provider is required' } }
+      const blocked = officialProviderProbeError(provider, body)
+      if (blocked) return blocked
       if (protocol !== undefined && !PROVIDER_PROTOCOL_VALUES.includes(protocol)) {
         return { status: 400, body: { error: `Invalid protocol: ${String(protocol)} (expected ${PROVIDER_PROTOCOL_VALUES.join(' | ')})` } }
       }
@@ -611,6 +630,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         vision?: boolean
       }
       if (!provider) return { status: 400, body: { error: 'provider is required' } }
+      const blocked = officialProviderProbeError(provider, body)
+      if (blocked) return blocked
       const target = resolveProviderProbeTarget(provider, apiKey, override)
       if ('error' in target) return { status: 400, body: { error: target.error } }
       const stored = loadConfig().provider.providers[provider]
@@ -623,7 +644,7 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
         // 已保存模型按用户声明测试；未声明视觉时保守地只测文本。
         // 尚未保存的向导请求继续使用显式参数或模型表启发。
         vision: vision ?? (storedModel ? storedModel.supportsVision === true : undefined),
-        skipCompletion: !model,
+        skipCompletion: !!stored && isOfficialProvider(stored) || !model,
       })
       const completionSkipped = !report.probedModel
       const ok = report.completionOk || (completionSkipped && report.modelsOk)
@@ -659,6 +680,8 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
 
     'PUT /config/providers/:name/allow-pro-fallback': withAuth((body, params) => {
       const name = decodeRouteParam(params?.name)
+      const blocked = officialProviderMutationError(name, body)
+      if (blocked) return blocked
       if (!name) return { status: 400, body: { error: 'provider name is required' } }
       const { allowProFallback } = (body ?? {}) as { allowProFallback?: unknown }
       if (typeof allowProFallback !== 'boolean') {

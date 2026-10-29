@@ -1,3 +1,4 @@
+import type { WorkerAuthRequest, WorkerAuthResult, WorkerPrepareRequest, WorkerPrepareResult, WorkerPrepareCancel } from './credential-broker.js'
 import type { HookRpcRequest, HookRpcResponse } from '../../hooks/hook-host-rpc.js'
 import type { ContinuationPrefixProof } from '../../api/continuation-prefix.js'
 /**
@@ -24,6 +25,8 @@ import type { WorkerActivityKind, WorkerTranscript, WorkerRuntimeDecision, Worke
 /** ── Parent → Child ───────────────────────────────────────────── */
 
 export interface SerializedWorkerConfig {
+  officialSelections?: import('../../models/model-runtime.js').WorkerModelSelection[]
+  officialModels?: import('../../models/model-runtime.js').DelegatedModelSnapshot[]
   hookRpc?: boolean
   order: WorkOrder
   cwd: string
@@ -69,6 +72,8 @@ export interface WorkerChildInitPayload {
 }
 
 export type ParentMessage =
+  | WorkerAuthResult
+  | WorkerPrepareResult
   | HookRpcResponse
   | { t: 'pro-deny'; id: string }
   | { t: 'init'; payload: WorkerChildInitPayload }
@@ -94,6 +99,7 @@ export type ChildLogMessage = { t: 'log'; line: string }
 
 /** 终态：WorkerSessionRun 的可序列化投影。 */
 export interface SerializedWorkerRun {
+  officialFailure?: import('../../models/official-contract.js').OfficialErrorCode
   result: WorkerResult
   transcript: WorkerTranscript
   usage: Usage
@@ -109,6 +115,9 @@ export interface SerializedWorkerRun {
 }
 
 export type ChildMessage =
+  | WorkerAuthRequest
+  | WorkerPrepareCancel
+  | WorkerPrepareRequest
   | HookRpcRequest
   | { t: 'pro-denied'; id: string }
   | { t: 'pro-drained' }

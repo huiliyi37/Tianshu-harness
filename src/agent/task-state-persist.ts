@@ -7,6 +7,7 @@ import { createTaskLedger, type TaskLedgerEvent } from './task-ledger.js'
 import { createOwnershipLedger } from './ownership-ledger.js'
 import { isTransientPlanDraftPath } from './plan-mode.js'
 import { createWorktreeBaseline, type BaselineSnapshot } from './worktree-baseline.js'
+import { gitStateStamp } from '../tools/git-state-stamp.js'
 import { candidateSnapshotRef } from './candidate-snapshot-ref.js'
 
 interface TaskState {
@@ -84,12 +85,29 @@ export function classifyFingerprintPath(root: string, file: string): 'in-project
   return 'in-project'
 }
 
+/** HEAD + index 的 git 输出，按状态戳缓存：同步 spawn 会堵住 sidecar 事件循环（2026-10-21 现场，见 git-state-stamp.ts）。 */
+const gitOutputCache = new Map<string, { stamp: string; out: string[] | null }>()
+function gitHeadAndIndex(root: string): string[] | null {
+  const stamp = gitStateStamp(root)
+  const hit = stamp ? gitOutputCache.get(root) : undefined
+  if (hit && hit.stamp === stamp) return hit.out
+  const out: string[] = []
+  for (const args of [['rev-parse', 'HEAD'], ['ls-files', '--stage', '-z']]) {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true })
+    if (result.status !== 0) { if (stamp) gitOutputCache.set(root, { stamp, out: null }); return null }
+    out.push(result.stdout)
+  }
+  // 戳在 spawn 前后一致才缓存——期间被改写则下次重算。
+  if (stamp && gitStateStamp(root) === stamp) gitOutputCache.set(root, { stamp, out })
+  return out
+}
+
 function fingerprint(root: string, files: string[], isolated = false): string | null {
   const hash = createHash('sha256')
-  for (const args of isolated ? [] : [['rev-parse', 'HEAD'], ['ls-files', '--stage', '-z']]) {
-    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true })
-    if (result.status !== 0) return null
-    hash.update(result.stdout)
+  if (!isolated) {
+    const git = gitHeadAndIndex(root)
+    if (!git) return null
+    for (const chunk of git) hash.update(chunk)
   }
   for (const file of [...new Set(files)].sort()) {
     const path = resolve(root, file), rel = relative(root, path)

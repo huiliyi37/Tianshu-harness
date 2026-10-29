@@ -1,3 +1,4 @@
+import { createManagedAccountAuth, isOfficialProvider, resolveModelRuntime, type ModelSubmission } from '../models/model-runtime.js'
 import { loadConfig } from '../config/manager.js'
 import { resolveApiKey } from './factory.js'
 import type { ImageGenerationParameters } from '../server/protocol.js'
@@ -16,7 +17,7 @@ const parametersSchema = z.object({
   timeoutMs: z.number().int().min(1).max(1800000).optional(),
 })
 
-export function resolveImageGeneration(input: Partial<ImageGenerationParameters>, config: Config = loadConfig()) {
+export function resolveImageGeneration(input: Partial<ImageGenerationParameters>, config: Config = loadConfig(), submission?: ModelSubmission) {
   input = parametersSchema.parse(input)
   const slot = config.agent.imageGenModel
   const providerName = input.provider ?? slot?.provider, modelId = input.model ?? slot?.model
@@ -35,5 +36,11 @@ export function resolveImageGeneration(input: Partial<ImageGenerationParameters>
     prefix: input.prefix ?? defaults?.prompt, size,
     sizeField: compatibility?.sizeField ?? defaults?.sizeField ?? 'size', timeoutMs,
   }
-  return { parameters, connection: { baseUrl: provider.baseUrl, apiKey: resolveApiKey(provider), ...imageGenerationNetwork(config, provider) } }
+  const pinned = isOfficialProvider(provider) ? submission?.capture() : undefined
+  const auth = isOfficialProvider(provider) && !pinned ? createManagedAccountAuth() : undefined
+  const prepareRequestAuth = isOfficialProvider(provider) ? async (signal?: AbortSignal) => {
+    const runtime = await (pinned ? pinned.resolve.bind(pinned) : resolveModelRuntime)({ config, provider, apiKey: '', auth, modelId: modelId!, targetProvider: providerName, purpose: 'image-generation', signal })
+    return runtime.requestAuth!
+  } : undefined
+  return { parameters, connection: { baseUrl: provider.baseUrl, apiKey: resolveApiKey(provider), ...(prepareRequestAuth ? { prepareRequestAuth } : {}), ...imageGenerationNetwork(config, provider) } }
 }

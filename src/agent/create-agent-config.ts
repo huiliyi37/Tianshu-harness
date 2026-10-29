@@ -1,3 +1,6 @@
+import { resolveCompactProviderName } from './compact-provider-selection.js'
+export { resolveCompactProviderName } from './compact-provider-selection.js'
+import { createPurposeClient, createModelSubmission, getPreparedModel, isOfficialProvider, type ModelSubmission } from '../models/model-runtime.js'
 import { snapshotSessionBinding } from '../model/model-binding.js'
 import { supportsLatencyReasoning } from './latency-experiments.js'
 import { clampReadConcurrency } from '../config/read-concurrency.js'
@@ -46,6 +49,7 @@ export interface ModelSpec {
 export interface AgentConfigInput {
   toolPreset?: import('../tools/tool-preset-names.js').ToolPreset
   readConcurrency?: number
+  runtimeSubmission?: ModelSubmission
   userInstructions: import('../prompt/user-instructions.js').UserInstructionsSnapshot
   network?: Config['network']
   apiKey: string
@@ -126,6 +130,7 @@ export interface AgentConfigInput {
 
 export interface MainAgentConfigInputParams {
   toolPreset: import('../tools/tool-preset-names.js').ToolPreset | undefined
+  runtimeSubmission?: ModelSubmission
   userInstructions: import('../prompt/user-instructions.js').UserInstructionsSnapshot
   apiKey: string
   model: ModelSpec
@@ -157,6 +162,7 @@ export function createMainAgentConfigInput(params: MainAgentConfigInputParams): 
   return {
     toolPreset: params.toolPreset,
     readConcurrency: params.config.tools?.readConcurrency,
+    runtimeSubmission: params.runtimeSubmission,
     userInstructions: params.userInstructions,
     apiKey: params.apiKey,
     model: params.model,
@@ -222,10 +228,13 @@ export function createMainAgentConfigInput(params: MainAgentConfigInputParams): 
 
 export function createAgentConfig(input: AgentConfigInput): Pick<
   AgentConfig,
+  'automaticMemoryReview' | 'runtimeSubmission' | 'prepareModelSubmission' |
   'readConcurrency' | 'client' | 'promptEngine' | 'contextWindow' | 'compact' | 'cwd' | 'blockPolicy' | 'providerProfile' | 'providerName' | 'compactionProfile' | 'primaryClient' | 'compactClient' | 'sessionId' | 'approvalMode' | 'autoReasoning' | 'latencyReasoningSupported' | 'latencyPromptExperiment' | 'reasoningFloor' | 'turnLevelThinking' | 'songlineEnabled' | 'constellationEnabled' | 'companionPresenceEnabled' | 'dreamEnabled' | 'memoryFormation' | 'runtimeLean' | 'securityGuidance' | 'interruptMarker' | 'hearthObserveEnabled' | 'crossSessionEnabled' | 'antiAnchoring' | 'intentRetrievalRouter' | 'llmSpeculation' | 'autoDelegateEnabled' | 'domainKeywordRouting' | 'defaultDomain' | 'goalJudge' | 'allProviders' | 'permissions' | 'toolGating' | 'prefixCacheStrategy' | 'supportsVision' | 'visionClient' | 'visionModelPrompt' | 'visionModelMaxTokens' | 'visionBridge' | 'onStatusLine' | 'wireContext' | 'meridianIndexer' | 'agentReconnect' | 'retryBudgetHolder' | 'budgetSummaryClient' | 'budgetSummaryMaxTokens'
 > {
   const { model, apiKey, cwd, provider } = input
-  const capabilities = resolveCapabilities(provider.name, provider.capabilities, model.capabilities)
+  const submission = input.runtimeSubmission ?? createModelSubmission(provider, model.id, input.allProviders)
+  input = { ...input, runtimeSubmission: submission }
+  const capabilities = isOfficialProvider(provider) ? getPreparedModel(provider, model.id).capabilities : resolveCapabilities(provider.name, provider.capabilities, model.capabilities)
   const thinkingBudget = model.reasoningEffort === 'max'
     ? 64000
     : Math.min(16000, Math.floor(model.contextWindow * 0.02))
@@ -234,6 +243,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
   const retryBudgetHolder: { current?: import('../api/retry-budget.js').RetryBudget } = {}
   const credentialOwner = snapshotSessionBinding(provider, model.id, apiKey)
   const primaryClient = createProviderClient(provider, capabilities, {
+    requestAuth: submission?.forModel(provider, model.id),
     network: input.network,
     apiKey,
     credentialScope: `${provider.name}:${credentialOwner.keyId ?? provider.keyRef ?? provider.apiKeyEnv ?? provider.auth?.type ?? 'default'}`,
@@ -312,6 +322,8 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
   if (rewindAuthorization) primaryClient.restoreRewindAuthorization?.(rewindAuthorization)
 
   return {
+    prepareModelSubmission: submission?.prepare,
+    runtimeSubmission: submission,
     client,
     promptEngine,
     contextWindow: model.contextWindow,
@@ -320,6 +332,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
     blockPolicy,
     providerProfile: getProviderProfile(provider.name, model.contextWindow, provider.protocol),
     providerName: provider.name,
+    automaticMemoryReview: !isOfficialProvider(provider),
     wireContext: input.wireContext,
     // CLI meridian 接线（2026-09-06）：透传持久 SQLite 增量图——消除写工具收尾
     // importGraph fallback 每会话全量扫仓（~750ms/5k 文件）。
@@ -338,7 +351,7 @@ export function createAgentConfig(input: AgentConfigInput): Pick<
       ...(modelPricing ? { pricing: modelPricing } : {}),
     }),
     primaryClient: primaryClient,
-    budgetSummaryClient: createReportClientFactory(provider, capabilities, { apiKey, model: model.id, auth: input.auth, sessionId: input.sessionId, network: input.network }),
+    budgetSummaryClient: submission && isOfficialProvider(provider) ? () => createProviderClient(provider, capabilities, { apiKey: '', model: model.id, maxTokens: Math.min(16_384, model.maxTokens), reasoningEffort: 'off', requestAuth: submission.forModel(provider, model.id), network: input.network, sessionId: input.sessionId }) : createReportClientFactory(provider, capabilities, { apiKey, model: model.id, auth: input.auth, sessionId: input.sessionId, network: input.network }),
     budgetSummaryMaxTokens: model.maxTokens,
     compactClient,
     sessionId: input.sessionId,
@@ -496,6 +509,7 @@ function buildFallbackChain(
         // unless the user explicitly opts in via allowProFallback.
         const fModel = resolveFallbackModel(fp)
         const fCaps = resolveCapabilities(fp.name, fp.capabilities, fModel.capabilities)
+        if (isOfficialProvider(fp)) return createPurposeClient(input.allProviders!, fp, fModel.id, 'agent', { maxTokens: fModel.maxTokens, reasoningEffort: model.reasoningEffort, sessionId: input.sessionId }, input.runtimeSubmission)
         // Resolve fallback API key — fail loudly instead of silently returning
         // primary so the user knows their fallback provider is misconfigured.
         let fApiKey: string
@@ -528,22 +542,6 @@ function buildFallbackChain(
  * allProviders so the schema default `model: deepseek-v4-flash` actually
  * builds a cheap dedicated client (previously inert without provider).
  */
-export function resolveCompactProviderName(input: {
-  compact: { provider?: string; model?: string }
-  provider: ProviderConfig
-  allProviders?: Record<string, ProviderConfig>
-}): string | undefined {
-  if (input.compact.provider) return input.compact.provider
-  const model = input.compact.model
-  if (!model) return undefined
-  const hasModel = (prov: ProviderConfig) =>
-    contractModels(prov).some(m => m.id === model)
-  if (hasModel(input.provider)) return input.provider.name
-  for (const [name, prov] of Object.entries(input.allProviders ?? {})) {
-    if (hasModel(prov)) return name
-  }
-  return undefined
-}
 
 /**
  * Build the dedicated compaction StreamClient from compact.provider+model.
@@ -575,7 +573,7 @@ function buildCompactClient(
       if (!auth?.isAuthenticated()) return undefined
     } else {
       apiKey = resolveApiKey(prov)
-      if (!apiKey) return undefined
+      if (!apiKey && !isOfficialProvider(prov)) return undefined
     }
   } catch {
     return undefined
@@ -587,7 +585,9 @@ function buildCompactClient(
   // high ceiling is cost-neutral but prevents truncating a generous CJK summary
   // mid-sentence — 16K chars is ~10K tokens for Chinese, far above a 4K cap.
   const maxTokens = Math.min(16_384, spec.maxTokens)
+  if (isOfficialProvider(prov)) return createPurposeClient(input.allProviders ?? { [prov.name]: prov }, prov, spec.id, 'compact', { maxTokens, sessionId: input.sessionId }, input.runtimeSubmission)
   return createProviderClient(prov, caps, {
+    requestAuth: isOfficialProvider(prov) ? input.runtimeSubmission?.forModel(prov, spec.id) : undefined,
     network: input.network,
     apiKey,
     model: spec.id,
@@ -643,7 +643,7 @@ function tryBuildVisionClientFrom(
     } else {
       apiKey = resolveApiKey(prov)
       // keyless 端点 resolveApiKey 返回空串是正常态（ollama 等本地端点无 key），非缺失
-      if (!apiKey && !isKeylessProviderEntry(prov.name, prov)) return { error: `${prov.name} 的 API key 为空` }
+      if (!apiKey && !isOfficialProvider(prov) && !isKeylessProviderEntry(prov.name, prov)) return { error: `${prov.name} 的 API key 为空` }
     }
   } catch {
     // resolveApiKey 拿不到 key 就抛。最常见的成因不是"没有 key"而是"key 只存在环境变量里，
@@ -656,7 +656,8 @@ function tryBuildVisionClientFrom(
   }
   const caps = resolveCapabilities(prov.name, prov.capabilities, spec.capabilities)
   const maxTokens = Math.min(requestedMaxTokens, spec.maxTokens)
-  const client = createProviderClient(prov, caps, {
+  const client = isOfficialProvider(prov) ? createPurposeClient(input.allProviders ?? { [prov.name]: prov }, prov, spec.id, 'vision', { maxTokens, sessionId: input.sessionId, reasoningEffort: 'low' }, input.runtimeSubmission) : createProviderClient(prov, caps, {
+    requestAuth: isOfficialProvider(prov) ? input.runtimeSubmission?.forModel(prov, spec.id) : undefined,
     network: input.network,
     apiKey,
     model: spec.id,

@@ -127,6 +127,7 @@ describe('image-gen client — tolerant response parsing (§4.3)', () => {
     const { fetchImpl } = captureOnce(jsonResponse({ data: [{ b64_json: PNG_B64 }] }))
     const result = await generateImage({
       baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-image-1', prompt: 'x', fetchImpl,
+      lookupImpl: PUBLIC_LOOKUP,
     })
     assert.equal(result.source, 'b64_json')
     assert.deepEqual(result.bytes, new Uint8Array(PNG_BYTES))
@@ -170,6 +171,7 @@ describe('image-gen client — tolerant response parsing (§4.3)', () => {
     await assert.rejects(
       () => generateImage({
         baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-image-1', prompt: 'x', fetchImpl,
+        lookupImpl: PUBLIC_LOOKUP,
       }),
       (err: Error) => {
         // 报错必须能定位——含响应片段，而不是笼统的 "parse failed"。
@@ -199,6 +201,7 @@ describe('image-gen client — error classification (§4.1 实测错误码)', ()
       await assert.rejects(
         () => generateImage({
           baseUrl: 'https://api.siliconflow.com/v1', apiKey: 'k', model: 'flux', prompt: 'x', fetchImpl,
+          lookupImpl: PUBLIC_LOOKUP,
         }),
         (err: Error) => {
           assert.match(err.message, c.expect)
@@ -220,6 +223,7 @@ describe('image-gen client — timeout', () => {
       () => generateImage({
         baseUrl: 'https://api.siliconflow.com/v1', apiKey: 'k', model: 'flux', prompt: 'x',
         timeoutMs: 180_000, fetchImpl,
+        lookupImpl: PUBLIC_LOOKUP,
       }),
       (err: Error) => {
         assert.match(err.message, /180000|180_000|timed out/i)
@@ -279,6 +283,7 @@ describe('image-gen client — 错误文案脱敏（审查修复）', () => {
     await assert.rejects(
       () => generateImage({
         baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-image-1', prompt: 'x', fetchImpl,
+        lookupImpl: PUBLIC_LOOKUP,
       }),
       (err: Error) => {
         assert.equal(
@@ -297,6 +302,7 @@ describe('image-gen client — 错误文案脱敏（审查修复）', () => {
     await assert.rejects(
       () => generateImage({
         baseUrl: 'https://api.openai.com/v1', apiKey: 'k', model: 'gpt-image-1', prompt: 'x', fetchImpl,
+        lookupImpl: PUBLIC_LOOKUP,
       }),
       /weird provider shape/,
     )

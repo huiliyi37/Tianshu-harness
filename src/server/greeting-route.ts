@@ -1,3 +1,4 @@
+import { createManagedAccountAuth, type ResolveModelInput } from '../models/model-runtime.js'
 /**
  * GET /greeting — 桌面端欢迎页动态问候语（算法模板 + flash LLM 混合）。
  *
@@ -34,7 +35,9 @@ export function buildGreetingRoute(
   apiKey: string,
   getConfig?: () => { enabled: boolean; model: string },
   apiToken?: string,
+  official?: ResolveModelInput,
 ): Record<string, RouteHandler> {
+  if (official) official = { ...official, auth: official.auth ?? createManagedAccountAuth() }
   const DEFAULT_MODEL = 'deepseek-v4-flash'
   const greetingHandler: RouteHandler = async (_body, params, _headers): Promise<{ status: number; body: GreetingResponse }> => {
       const hour = Number(params?.hour)
@@ -47,7 +50,7 @@ export function buildGreetingRoute(
       const greetingConfig = getConfig?.() ?? { enabled: true, model: DEFAULT_MODEL }
 
       // 有 API key 且 greeting LLM 已启用才走 LLM 路径
-      if (apiKey && greetingConfig.enabled) {
+      if ((apiKey || official) && greetingConfig.enabled) {
         const ck = cacheKey(hour, locale)
         const cached = llmCache.get(ck)
         if (cached) {
@@ -56,6 +59,7 @@ export function buildGreetingRoute(
 
         try {
           const llmResult = await generateGreetingLlm(baseUrl, apiKey, greetingConfig.model, hour, locale, {
+            official,
             onError: (err) => serverLogger.warn('greeting LLM fetch failed', { error: String(err) }),
           })
           if (llmResult) {

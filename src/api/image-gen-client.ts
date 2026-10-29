@@ -1,3 +1,4 @@
+import { authorizeModelRequest, captureModelAuthorization, checkOfficialResponse, officialStreamFailure, type ModelRequestAuthorizer } from './request-authorization.js'
 import { endpointRequest, endpointDownload, type EndpointRequestOptions } from '../tools/net/endpoint-request.js'
 import { EndpointNetworkError } from '../tools/net/endpoint-policy.js'
 import { resolveProbeEndpoints } from './endpoint-map.js'
@@ -41,6 +42,8 @@ function assertWithinLimit(actualBytes: number, maxBytes: number, hint: string):
 }
 
 export interface GenerateImageOptions extends EndpointRequestOptions {
+  requestAuth?: ModelRequestAuthorizer
+  prepareRequestAuth?: (signal?: AbortSignal) => Promise<ModelRequestAuthorizer>
   baseUrl: string
   apiKey?: string
   model: string
@@ -170,6 +173,11 @@ function extractImageRef(payload: unknown): ImageRef | null {
  */
 export async function generateImage(options: GenerateImageOptions): Promise<GeneratedImage> {
   options.signal?.throwIfAborted()
+  const requestAuth = captureModelAuthorization(options.prepareRequestAuth ? await options.prepareRequestAuth(options.signal) : options.requestAuth, options.model)
+  try { return await generateImageRequest(options, requestAuth) } catch (error) { throw officialStreamFailure(requestAuth, error) }
+}
+
+async function generateImageRequest(options: GenerateImageOptions, requestAuth: ModelRequestAuthorizer | undefined): Promise<GeneratedImage> {
   options.onStage?.('generating')
   const timeoutMs = options.timeoutMs ?? DEFAULT_IMAGE_GEN_TIMEOUT_MS
   const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES
@@ -188,8 +196,10 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`
 
-  const response = await endpointRequest(url, { method: 'POST', headers, body: JSON.stringify(body) },
-    { ...options, deadline, maxBytes: Math.ceil(maxBytes / 3) * 4 + 65_536 })
+  const authorized = await authorizeModelRequest(requestAuth, 'image-generation', url, { method: 'POST', headers, body: JSON.stringify(body) })
+  const response = await endpointRequest(authorized.url, authorized.init,
+    { ...options, deadline, maxBytes: Math.ceil(maxBytes / 3) * 4 + 65_536 }).catch(error => { throw officialStreamFailure(requestAuth, error) })
+  await checkOfficialResponse(requestAuth, response)
   if (!response.ok) {
     let bodyText = await response.text().catch(() => '')
     if (options.apiKey) bodyText = bodyText.split(options.apiKey).join('***')

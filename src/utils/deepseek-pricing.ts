@@ -22,6 +22,7 @@ export function deepseekOfficialPricing(model: string, timestamp: number): Model
 /** Official endpoint overrides stale saved presets; gateways retain their own tariffs. */
 export function findUsagePricing(providers: Record<string, ProviderConfig>, providerName: string | undefined, model: string | undefined, timestamp: number): ModelConfig['pricing'] {
   const provider = providerName ? providers[providerName] : undefined
+  if (provider?.auth?.type === 'tianshu-account') return undefined
   if (provider && model) {
     try {
       if (new URL(provider.baseUrl).hostname === 'api.deepseek.com') {

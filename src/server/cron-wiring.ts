@@ -51,6 +51,7 @@ export class CronWiring {
   private lock?: CronLock
   private cwd?: string
   private unsubscribeTaskDue: UnsubscribeTaskDue
+  private unsubscribeOfficialRefusal: () => void
   private unsubscribeLockLost?: () => void
 
   constructor(config: CronWiringConfig) {
@@ -58,6 +59,9 @@ export class CronWiring {
     this.registry = config.registry
     this.lock = config.lock
     this.cwd = config.cwd
+    this.unsubscribeOfficialRefusal = this.registry.subscribeOfficialRefusal(record => {
+      if (record.scheduledTaskId) this.scheduler.setStatus(record.scheduledTaskId, 'paused')
+    })
     this.unsubscribeLockLost = this.lock?.onLockLost(() => {
       this.scheduler.stop()
       // issue #290：锁丢失后写门立即转 false，事件触发器若继续回调
@@ -156,6 +160,7 @@ export class CronWiring {
 
   /** 彻底断开接线。 */
   dispose(): void {
+    this.unsubscribeOfficialRefusal()
     this.unsubscribeTaskDue()
     this.unsubscribeLockLost?.()
     this.unsubscribeLockLost = undefined

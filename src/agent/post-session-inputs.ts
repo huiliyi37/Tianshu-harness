@@ -9,7 +9,7 @@ function liveCandidates(self: AgentLoop): KnowledgeCandidate[] {
     .filter(c => c.source.sessionId === self.config.sessionId && c.source.eventId.startsWith('memory:'))
     .map(c => ({ text: c.text, kind: c.kind, confidence: c.confidence, origin: 'manual' as const,
       tags: c.tags, sessionId: self.config.sessionId }))
-  return [...self.knowledgeCandidates, ...manual]
+  return self.config.automaticMemoryReview === false ? manual : [...self.knowledgeCandidates, ...manual]
 }
 
 function liveRetrospect(self: AgentLoop): RetrospectInput {

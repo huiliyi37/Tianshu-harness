@@ -161,3 +161,39 @@ it('summarizeCallAudit folds worker purposes, keeps unattributed rows explicit a
   assert.equal(allowed.status, 200)
   assert.ok(Array.isArray((allowed.body as { groups: unknown[] }).groups))
 })
+
+let certaintyFixture = 0
+function certaintySummary(kinds: Array<'known' | 'unpriced' | 'missing' | 'explicit-unknown' | 'zero'>) {
+  const since = Date.now() + ++certaintyFixture * 1_000_000
+  const rows = kinds.map((kind, index) => ({
+    operationId: `certainty-${certaintyFixture}-${index}`, t: since + index, phase: 'finished', status: 'complete',
+    provider: 'certainty-provider', model: 'same-model', purpose: 'worker_execution',
+    usageKnown: kind !== 'missing' && kind !== 'explicit-unknown',
+    ...(kind === 'missing' ? {} : { usage: { input_tokens: 1_000_000, output_tokens: 0 } }),
+  }))
+  appendFileSync(join(home, 'logs', 'provider-calls.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+  return summarizeCallAudit({ since, resolvePricing: (_model, _provider, timestamp) => kinds[timestamp - since] === 'unpriced' ? undefined : { input: kinds[timestamp - since] === 'zero' ? 0 : 1, output: 0 } })
+}
+
+for (const kinds of [['known', 'unpriced'], ['unpriced', 'known'], ['known', 'missing'], ['missing', 'known'], ['known', 'explicit-unknown']] as const) {
+  it(`partial audit certainty never becomes fully known for ${kinds.join(' then ')}`, () => {
+    const summary = certaintySummary([...kinds])
+    assert.equal(summary.totals.costKnown, false)
+    assert.equal(summary.groups[0]!.costKnown, false)
+    assert.equal(summary.groups[0]!.models[0]!.costKnown, false)
+    const expectedCost = kinds.some(kind => kind === 'explicit-unknown') ? 2 : 1
+    assert.equal(summary.totals.cost, expectedCost, 'certainty does not rewrite existing cash figures')
+    assert.equal(summary.groups[0]!.cost, expectedCost)
+    assert.equal(summary.groups[0]!.models[0]!.cost, expectedCost)
+  })
+}
+
+it('all-unpriced audit totals remain unknown while a genuinely priced zero remains known', () => {
+  const unknown = certaintySummary(['unpriced'])
+  assert.equal(unknown.totals.cost, 0)
+  assert.equal(unknown.totals.costKnown, false)
+  const zero = certaintySummary(['zero'])
+  assert.equal(zero.totals.cost, 0)
+  assert.equal(zero.totals.costKnown, true)
+  assert.equal(zero.groups[0]!.models[0]!.costKnown, true)
+})

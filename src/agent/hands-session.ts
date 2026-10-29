@@ -1,3 +1,9 @@
+import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { open, readFile, unlink } from 'node:fs/promises'
+import { ArtifactStore } from '../artifact/store.js'
+import { spawnGitSync } from '../tools/spawn-git.js'
+import { OfficialError } from '../models/official-contract.js'
 import type { CompactionConfig } from '../compact/constants.js'
 import { WorktreeCoordinator } from './worktree-coordinator.js'
 import { getCurrentGitRef, revParseHead } from './worktree.js'
@@ -79,7 +85,10 @@ export interface HandsSessionConfig {
    *  resulting artifactId is attached to the WorkerResult, so the UI can fetch it.
    *  Persistence failure is non-fatal — diffArtifactId is left undefined and the
    *  diff still travels in result.artifacts as before. */
-  artifactStore?: { save(input: { tool: string; target: string; rawContent: string; summary: string; sections?: unknown[] }): Promise<string> }
+  artifactStore?: {
+    save(input: { tool: string; target: string; rawContent: string; summary: string; sections?: unknown[] }): Promise<string>
+    saveDurable?(input: { tool: string; target: string; rawContent: string; summary: string; sections: [] }): Promise<string>
+  }
   /**
    * Run the worker agent in the worktree.
    * Receives the worker prompt and AgentCallbacks; returns the full text output
@@ -168,6 +177,21 @@ export async function runHandsSession(config: HandsSessionConfig): Promise<Hands
     }
   }
   config.order.workerCwd = wt.path
+  const recoveryGit = (args: string[], input?: string): string => {
+    const result = spawnGitSync(args, { cwd: wt.path, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000, maxBuffer: 64 * 1024 * 1024, input })
+    if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== 'string') throw new Error('Worker recovery Git operation failed')
+    return result.stdout
+  }
+  let recoveryBase: string | undefined
+  if (!inPlace) {
+    try { const base = recoveryGit(['rev-parse', '--verify', 'HEAD']).trim(); if (/^[a-f0-9]{40,64}$/.test(base)) recoveryBase = base } catch {}
+  }
+  let retainWorktree = false
+  let officialRefusal: OfficialError | undefined
+  const recoverySession = `worker-recovery-${createHash('sha256').update(config.order.id).digest('hex').slice(0, 16)}`
+  const recoveryCheckpoint = join(config.cwd, '.rivet', 'worker-recovery', recoverySession)
+  const protectedRecoveryStore = () => new ArtifactStore(join(config.cwd, '.rivet', 'worker-recovery'), recoverySession)
+  const fallbackRecoveryStore = () => new ArtifactStore(join(config.cwd, '.rivet', 'artifacts'), recoverySession)
   try {
     const scopeResult = materializeScope(config.cwd, wt.path, worktreeScopeFiles(config.order))
     // Only block on genuinely unreachable scope entries (path escape / outside
@@ -184,6 +208,7 @@ export async function runHandsSession(config: HandsSessionConfig): Promise<Hands
    }
     let text = ''
     let apiError: string | undefined
+    let officialFailure: OfficialError | undefined
     let turnUsage: Partial<Usage> = {}
     // 首轮之外的 agent 轮次总账——执行续跑 / 写闸门修复共用，避免叠乘。
     // 预算回馈的实际用量信号：跨轮（首轮/续跑/修复）累计的工具调用数。
@@ -195,11 +220,12 @@ export async function runHandsSession(config: HandsSessionConfig): Promise<Hands
       onToolUse: () => { toolUses++ },
       onToolResult: () => {},
       onTurnComplete: (usage) => { turnUsage = usage },
-      onError: (err) => { apiError = err.message },
+      onError: (err) => { apiError = err.message; if (err instanceof OfficialError) officialFailure = err },
       onAbort: () => { apiError = 'aborted' },
       onApprovalRequired: async () => false,
    }, wt.path)
 
+    if (officialFailure) throw officialFailure
     if (apiError) {
       return {
         result: buildBlockedWorkerResult(config.order, apiError),
@@ -266,7 +292,75 @@ export async function runHandsSession(config: HandsSessionConfig): Promise<Hands
     }
 
     return { result, usage: turnUsage, ...(toolUses > 0 ? { toolUses } : {}), writeGate }
+ } catch (error) {
+    if (error instanceof OfficialError) {
+      officialRefusal = error
+      if (!inPlace) {
+        retainWorktree = true
+        let restartProtected = false
+        const markerPath = join(wt.path, '.vsw-owner.json')
+        const syncDirectory = async () => {
+          if (process.platform === 'win32') return
+          const directory = await open(wt.path, 'r')
+          try { await directory.sync() } finally { await directory.close() }
+        }
+        const checkedMarker = async () => {
+          const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { sessionId?: unknown; retainedForRecovery?: unknown; pid?: unknown }
+          return marker.sessionId === config.order.id && marker.retainedForRecovery === true && typeof marker.pid !== 'number'
+        }
+        try {
+          const marker = await open(markerPath, 'w')
+          try {
+            await marker.writeFile(JSON.stringify({ sessionId: config.order.id, retainedForRecovery: true }))
+            await marker.sync()
+          } finally { await marker.close() }
+          await syncDirectory()
+          if (!await checkedMarker()) throw new Error('Worker recovery marker verification failed')
+          restartProtected = true
+        } catch {
+          try {
+            try { await unlink(markerPath) } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            }
+            await syncDirectory()
+            try { restartProtected = await checkedMarker() } catch (error) {
+              restartProtected = (error as NodeJS.ErrnoException).code === 'ENOENT'
+            }
+          } catch {}
+        }
+        try {
+          if (!recoveryBase) throw new Error('Worker recovery base unavailable')
+          const ignored = recoveryGit(['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
+          const submodules = recoveryGit(['submodule', 'status'])
+          const entries = recoveryGit(['ls-files', '--stage'])
+          const paths = ['--', '.', ':(exclude).vsw-owner.json']
+          recoveryGit(['-c', 'core.autocrlf=false', 'add', '-A', ...paths])
+          const attributes = recoveryGit(['check-attr', '--all', '-z', '--stdin'], recoveryGit(['ls-files', '-z']))
+          const incomplete = !restartProtected || ignored.length > 0 || submodules.trim().length > 0 || /^160000 /m.test(entries) || attributes.length > 0
+          const patch = recoveryGit(['diff', '--cached', '--binary', '--full-index', recoveryBase, ...paths])
+          const store = config.artifactStore?.saveDurable ? config.artifactStore : fallbackRecoveryStore()
+          const snapshot = {
+            tool: 'hands_recovery', target: config.order.id, summary: `Worker recovery: ${config.order.id}`, sections: [] as [],
+            rawContent: JSON.stringify({ version: 1, workOrderId: config.order.id, baseCommit: recoveryBase, worktreePath: wt.path, branch: wt.branch, retainedWorktree: incomplete, restartProtected, recoveryCheckpoint, patch }),
+          }
+          await protectedRecoveryStore().saveDurable(snapshot)
+          await store.saveDurable!(snapshot)
+          retainWorktree = incomplete
+        } catch {
+          try {
+            const retained = { tool: 'hands_recovery', target: config.order.id, summary: `Retained worker worktree: ${config.order.id}`, sections: [] as [], rawContent: JSON.stringify({ version: 1, workOrderId: config.order.id, baseCommit: recoveryBase, worktreePath: wt.path, branch: wt.branch, retainedWorktree: true, restartProtected, recoveryCheckpoint }) }
+            await protectedRecoveryStore().saveDurable(retained)
+            await fallbackRecoveryStore().saveDurable(retained)
+          } catch {}
+        }
+      }
+    }
+    throw error
  } finally {
-    await config.wtCoordinator.remove(config.order.id)
+    if (!retainWorktree) {
+      if (officialRefusal) {
+        try { await config.wtCoordinator.remove(config.order.id) } catch {}
+      } else await config.wtCoordinator.remove(config.order.id)
+    }
  }
 }

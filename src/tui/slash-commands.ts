@@ -82,7 +82,7 @@ import { PROVIDER_PRESETS, isProviderPresetKey } from '../config/provider-preset
 import { installPlugin, removePlugin, getInstalledPlugins, isPluginInstalled } from '../plugins/plugin-installer.js'
 import { parseManifest } from '../plugins/manifest.js'
 import { PLUGIN_PRESETS } from '../plugins/plugin-presets.js'
-import { switchAgentRuntime, switchAgentSession, switchAgentCwd } from '../bootstrap.js'
+import { switchPreparedAgentRuntime, switchAgentSession, switchAgentCwd } from '../bootstrap.js'
 // /new 及其共用的会话切换复原逻辑——独立模块，避免本文件巨石继续膨胀
 //（architecture-guards 的 max-lines ratchet 只降不升）。
 import { applySessionSwitch, registerNewSessionCommand } from './new-session.js'
@@ -130,7 +130,7 @@ export interface SlashHandlerContext {
   model: string
   maxTokens: number
   availableModels: Array<{ id: string; supportsVision?: boolean }>
-  onModelSwitch: (modelId: string) => { ok: boolean; error?: string; changed?: boolean; modelName?: string; warnings?: string[] }
+  onModelSwitch: (modelId: string) => { ok: boolean; error?: string; changed?: boolean; modelName?: string; warnings?: string[] } | Promise<{ ok: boolean; error?: string; changed?: boolean; modelName?: string; warnings?: string[] }>
   allProviders: Record<string, ProviderConfig>
   currentProvider: string
   currentSessionId: string
@@ -757,7 +757,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
   {
     name: '/model',
     immediate: true,
-    handler(ctx) {
+    async handler(ctx) {
       const { parts, pushStatic } = ctx
       const cmd = parts[0]!.toLowerCase()
       const targetModel = parts[1]
@@ -778,7 +778,7 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
         if (lines.length === 0) lines.push('(尚无已保存的 provider——运行 /connect 接入后模型会出现在这里)')
         pushStatic(createLogEntry({ type: 'system', content: `Models:\n${lines.join('\n')}\n\nCurrent: ${ctx.model} [${ctx.currentProvider}]\nContext: ${ctx.maxTokens.toLocaleString()} tokens\nCost: ¥${ctx.cost.toFixed(4)}` }))
       } else {
-        const result = ctx.onModelSwitch(targetModel)
+        const result = await ctx.onModelSwitch(targetModel)
         if (result.ok) {
           pushStatic(createLogEntry({ type: 'system', content: formatModelSwitchFeedback({ ...result, modelName: result.modelName ?? targetModel }) }))
         } else {
@@ -3742,8 +3742,8 @@ export function registerTuiSlashCommands(app: TuiApp, ctx: BootstrapContext): vo
       model: app.getModelInfo().modelName,
       maxTokens,
       availableModels: contractModels(ctx.provider).map(m => ({ id: m.id })),
-      onModelSwitch: (modelId: string) => {
-        const res = switchAgentRuntime(ctx, modelId)
+      onModelSwitch: async (modelId: string) => {
+        const res = await switchPreparedAgentRuntime(ctx, modelId)
         if (res.ok && res.modelName) {
           app.setModelInfo(res.modelName, res.contextWindow)
         }

@@ -1,3 +1,5 @@
+import { createSubmissionClient, isOfficialProvider, type ModelSubmission } from '../models/model-runtime.js'
+import { OfficialError } from '../models/official-contract.js'
 import { currentWorkspaceRoots } from '../tools/workspace-context.js'
 import { clampReadConcurrency } from '../config/read-concurrency.js'
 import { reviewSnapshotCwd } from './review-snapshot.js'
@@ -23,6 +25,7 @@ import { workerModelPolicy, type WorkerModelPolicy } from './worker-model-policy
 import { resolveModelBinding, sessionProviderKey, snapshotSessionBinding, ModelBindingUnavailable, type ModelBindingRef, type ModelUnavailableReason } from '../model/model-binding.js'
 
 export interface WorkerRuntimeDeps {
+  runtimeSubmission?: ModelSubmission
   externalHookParent?: { runtimeId: string; runId: string }
   externalHookHost?: import('../hooks/external-hook-types.js').ExternalHookHostPort
   getUserInstructions: () => import('../prompt/user-instructions.js').UserInstructionsSnapshot
@@ -55,7 +58,7 @@ interface PreparedModel {
   fallbackReason?: ModelUnavailableReason
 }
 
-function prepareModel(deps: WorkerRuntimeDeps, order: WorkOrder): PreparedModel {
+function prepareModel(deps: WorkerRuntimeDeps, order: WorkOrder, ownedProvider = deps.provider): PreparedModel {
   const userInstructions = parseUserInstructionsSnapshot(deps.getUserInstructions())
   const policy = workerModelPolicy(deps.config, order)
   const root = deps.rootSessionBinding ?? snapshotSessionBinding(deps.provider, deps.currentModelId, deps.apiKey, sessionProviderKey(deps.config.provider.providers, deps.provider))
@@ -63,27 +66,44 @@ function prepareModel(deps: WorkerRuntimeDeps, order: WorkOrder): PreparedModel 
   let binding: Binding
   if ('provider' in policy.target) {
     if (policy.unavailableReason) throw new ModelBindingUnavailable(policy.unavailableReason)
-    binding = resolveModelBinding(deps.config.provider.providers, policy.target, deps.config.network)
-  } else binding = resolveModelBinding(deps.config.provider.providers, root, deps.config.network)
+    binding = resolveModelBinding(deps.config.provider.providers, policy.target, deps.config.network, ownedProvider)
+  } else binding = resolveModelBinding(deps.config.provider.providers, root, deps.config.network, ownedProvider)
   return { deps, policy, root, binding, userInstructions }
 }
 
 /** One policy snapshot per dispatch; new saved settings apply only to new orders. */
 export function createWorkerRuntimeFactory(getDeps: () => WorkerRuntimeDeps) {
-  const prepared = new WeakMap<WorkOrder, PreparedModel>()
-  const get = (order: WorkOrder) => {
+  const prepared = new WeakMap<WorkOrder, PreparedModel | Promise<PreparedModel>>()
+  const get = (order: WorkOrder, signal?: AbortSignal) => {
     let result = prepared.get(order)
-    if (!result) { result = prepareModel(getDeps(), order); prepared.set(order, result) }
+    if (!result) {
+      const current = getDeps()
+      const instructions = parseUserInstructionsSnapshot(current.getUserInstructions())
+      const deps = { ...current, getUserInstructions: () => instructions, runtimeSubmission: current.runtimeSubmission?.capture() }
+      signal?.throwIfAborted()
+      const policy = workerModelPolicy(deps.config, order)
+      const target = 'provider' in policy.target && !policy.unavailableReason ? policy.target : undefined
+      const configured = target && deps.config.provider.providers[target.provider]
+      result = target && configured && isOfficialProvider(configured) && deps.runtimeSubmission
+        ? deps.runtimeSubmission.resolve({ config: deps.config, provider: configured, apiKey: '', modelId: target.model, purpose: 'agent', signal }).then(runtime => {
+          signal?.throwIfAborted()
+          return prepareModel(deps, order, runtime.provider)
+        })
+        : prepareModel(deps, order)
+      prepared.set(order, result)
+    }
     return result
   }
   return {
-    selectModel: (order: WorkOrder): ModelCapabilityCard | undefined => {
-      const selected = get(order)
-      return selected.binding ? buildModelCards({ models: [selected.binding.spec] })[0] : undefined
+    selectModel: (order: WorkOrder, signal?: AbortSignal) => {
+      const selected = get(order, signal)
+      const card = (value: PreparedModel) => value.binding ? buildModelCards({ models: [value.binding.spec] })[0] : undefined
+      return selected instanceof Promise ? selected.then(card) : card(selected)
     },
     runtimeFactory: ((order, card, registry) => {
-      const model = get(order)
-      return assembleWorkerRuntime(order.scope.reviewSnapshot ? { ...model, deps: { ...model.deps, cwd: reviewSnapshotCwd(order.scope.reviewSnapshot) } } : model, order, card, registry)
+      const selected = get(order)
+      const assemble = (model: Awaited<ReturnType<typeof get>>) => assembleWorkerRuntime(order.scope.reviewSnapshot ? { ...model, deps: { ...model.deps, cwd: reviewSnapshotCwd(order.scope.reviewSnapshot) } } : model, order, card, registry)
+      return selected instanceof Promise ? selected.then(assemble) : assemble(selected)
     }) as WorkerRuntimeFactory,
   }
 }
@@ -100,12 +120,14 @@ function assembleWorkerRuntime(prepared: PreparedModel, _order: WorkOrder, card:
   const fallbackReason = undefined
   if (!binding) {
     // Only an explicit automatic policy reaches the recommendation's candidate.
-    binding = resolveModelBinding(config.provider.providers, { provider: root.provider, model: card.model }, config.network)
+    binding = resolveModelBinding(config.provider.providers, { provider: root.provider, model: card.model }, config.network, deps.provider)
   }
   const workerProvider = binding.provider
   const workerApiKey = binding.apiKey
   const workerAuth = binding.auth
   const workerModel = binding.ref.model
+  const runtimeSubmission = deps.runtimeSubmission?.capture()
+  if (isOfficialProvider(workerProvider) && !runtimeSubmission) throw new OfficialError('auth_required', 401, false)
   const selectionMetadata = {
     strategy: fallbackReason ? 'session' as const : 'provider' in policy.target ? 'fixed' as const : policy.target.strategy,
     source: policy.source, requestedTarget: policy.target, fallbackReason,
@@ -126,6 +148,9 @@ function assembleWorkerRuntime(prepared: PreparedModel, _order: WorkOrder, card:
   const expectedPrincipal = 'strategy' in policy.target && policy.target.strategy === 'session' ? root.credentialPrincipal : undefined
   return {
     readConcurrency: clampReadConcurrency(config.tools?.readConcurrency),
+    runtimeSubmission,
+    runtimeContext: { config, provider: workerProvider, apiKey: workerApiKey, auth: workerAuth, modelId: workerModel, purpose: 'agent' },
+    automaticMemoryReview: !isOfficialProvider(workerProvider),
     order: _order,
     runtimeDecision: {
       ...selectionMetadata,
@@ -141,7 +166,16 @@ function assembleWorkerRuntime(prepared: PreparedModel, _order: WorkOrder, card:
     providerName: workerProvider.name,
     baseUrl: workerProvider.baseUrl,
     slowThinking: workerProvider.slowThinking,
-    client: createProviderClient(workerProvider, workerCapabilities, {
+    client: isOfficialProvider(workerProvider) ? createSubmissionClient({ config, provider: workerProvider, apiKey: '', modelId: workerModel, purpose: 'agent' }, runtimeSubmission!, {
+      network: config.network,
+      singleAttempt: true,
+      credentialScope: `${binding.ref.provider}:${binding.ref.keyId ?? 'default'}`,
+      expectedPrincipal,
+      reasoningEffort: undefined,
+      maxTokens: workerMaxTokens,
+      thinkingBudget: isWrite ? 8192 : 4096,
+      sessionId: wireSessionId,
+    }) : createProviderClient(workerProvider, workerCapabilities, {
       network: config.network,
       singleAttempt: true,
       credentialScope: `${binding.ref.provider}:${binding.ref.keyId ?? 'default'}`,

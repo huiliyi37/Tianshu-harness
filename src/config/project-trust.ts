@@ -80,6 +80,12 @@ export function trustProject(cwd: string): void {
   writeTrustStore(store)
 }
 
+export function trustProjectForAutonomy(projectDir: string): boolean {
+  if (process.env[ENV_OVERRIDE] === '0' || isProjectTrusted(projectDir)) return false
+  trustProject(projectDir)
+  return isProjectTrusted(projectDir)
+}
+
 /** 撤销授信（幂等；未授信时为 no-op）。 */
 export function untrustProject(cwd: string): void {
   const key = canonicalProjectDir(cwd)

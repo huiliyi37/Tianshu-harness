@@ -1,3 +1,5 @@
+import { createWorkerAuthChannel } from './credential-broker.js'
+import { OfficialError } from '../../models/official-contract.js'
 import { HookRpcClient } from '../../hooks/hook-host-rpc.js'
 import { clampReadConcurrency } from '../../config/read-concurrency.js'
 import { ModelBindingUnavailable, resolveModelBinding } from '../../model/model-binding.js'
@@ -84,6 +86,7 @@ function buildChildCoordinator(
 ): DelegationCoordinator {
   const runtime = createWorkerRuntimeFactory(() => ({ ...deps, config: loadConfig({ cwd: deps.cwd }) }))
   return new DelegationCoordinator({
+    runtimeSubmission: deps.runtimeSubmission,
     baseToolRegistry: registry,
     sessionId: deps.rootSessionId,
     modelCards: buildModelCards(deps.provider),
@@ -115,16 +118,19 @@ async function runChild(): Promise<void> {
   const steerQueue: string[] = []
   const abortController = new AbortController()
 
+  const authChannel = createWorkerAuthChannel(writeFrame, abortController.signal)
   const stdin = createInterface({ input: process.stdin })
   stdin.on('line', (line: string) => {
     for (const msg of decoder.feed(`${line}\n`)) {
       if (msg.t === 'hook-response' || msg.t === 'hook-reaped') { hookClient.receive(msg); continue }
+      if (msg.t === 'auth-result' || msg.t === 'model-prepared') { authChannel.accept(msg); continue }
       if (msg.t === 'pro-deny') {
         void acknowledgeManagedProDenial(() => writeFrame({ t: 'pro-denied', id: msg.id })).catch(error => childLog(String(error)))
       } else if (msg.t === 'init') {
+        if (initPayload) { abortController.abort('duplicate init'); continue }
         initPayload = msg.payload
         if (msg.payload.steerSeed) steerQueue.push(msg.payload.steerSeed)
-        void bootAndRun(msg.payload, steerQueue, abortController)
+        void bootAndRun(msg.payload, steerQueue, abortController, authChannel)
       } else if (msg.t === 'steer') {
         steerQueue.push(msg.text)
       } else if (msg.t === 'abort') {
@@ -134,6 +140,8 @@ async function runChild(): Promise<void> {
   })
   // stdin 关闭（父进程死了）而 init 未到——无事可做，退出。
   stdin.on('close', () => {
+    abortController.abort('parent disconnected')
+    authChannel.dispose()
     hookClient.disconnect()
     void acknowledgeManagedProDenial(() => {}).finally(() => process.exit(initPayload ? 1 : 0))
   })
@@ -143,14 +151,15 @@ async function runChild(): Promise<void> {
   ticker.unref?.()
 }
 
-function bootAndRun(init: WorkerChildInitPayload, steerQueue: string[], abortController: AbortController): Promise<void> {
-  return withManagedProAuthorization(init.proAuthorization, () => withWorkspaceRoots(init.config.workspaceRoots ?? [init.config.cwd], () => bootAndRunInWorkspace(init, steerQueue, abortController)))
+function bootAndRun(init: WorkerChildInitPayload, steerQueue: string[], abortController: AbortController, authChannel: ReturnType<typeof createWorkerAuthChannel>): Promise<void> {
+  return withManagedProAuthorization(init.proAuthorization, () => withWorkspaceRoots(init.config.workspaceRoots ?? [init.config.cwd], () => bootAndRunInWorkspace(init, steerQueue, abortController, authChannel)))
 }
 
 async function bootAndRunInWorkspace(
   init: WorkerChildInitPayload,
   steerQueue: string[],
   abortController: AbortController,
+  authChannel: ReturnType<typeof createWorkerAuthChannel>,
 ): Promise<void> {
   try {
     const cfg = init.config
@@ -159,15 +168,18 @@ async function bootAndRunInWorkspace(
 
     // 2) 运行时重建（全部从落盘 config + init 快照来，无父进程内存态）。
     const config = loadConfig({ cwd })
+    const delegated = cfg.officialModels ? authChannel.connect(cfg.officialModels, cfg.officialSelections) : undefined
     const decision = cfg.runtimeDecision
     if (!decision?.rootSessionBinding) throw new Error('Missing root session binding')
     const rootSessionBinding = decision.rootSessionBinding
-    const root = resolveModelBinding(config.provider.providers, rootSessionBinding)
+    const rootRuntime = delegated?.runtimes.find(runtime => runtime.providerName === rootSessionBinding.provider && runtime.modelId === rootSessionBinding.model)
+    const root = resolveModelBinding(config.provider.providers, rootSessionBinding, config.network, rootRuntime?.provider)
     const { provider, apiKey, auth } = root
 
     const domainKnowledgeStore = new DomainKnowledgeStore(join(cwd, '.rivet', 'knowledge'))
 
     const deps = {
+      runtimeSubmission: delegated?.submission,
       externalHookHost: cfg.hookRpc ? hookClient : undefined,
       getUserInstructions: () => workerConfig.promptEngine.getUserInstructionsForDispatch(),
       config,
@@ -217,12 +229,14 @@ async function bootAndRunInWorkspace(
 
     // 4) client/promptEngine 按 runtimeDecision 忠实重建（不重跑路由）。
     const providerKey = decision.providerKey ?? decision.providerName
-    const actual = resolveModelBinding(config.provider.providers, { provider: providerKey, model: decision.model, keyId: decision.keyId, baseUrl: decision.baseUrl }, config.network)
+    const officialRuntime = delegated?.runtimes.find(runtime => runtime.providerName === decision.providerName && runtime.modelId === decision.model)
+    const actual = resolveModelBinding(config.provider.providers, { provider: providerKey, model: decision.model, keyId: decision.keyId, baseUrl: decision.baseUrl }, config.network, officialRuntime?.provider)
     const providerForDecision = actual.provider
     const modelSpec = actual.spec
-    const capabilities = resolveCapabilities(decision.providerName, providerForDecision.capabilities, modelSpec?.capabilities)
+    const capabilities = officialRuntime?.capabilities ?? resolveCapabilities(decision.providerName, providerForDecision.capabilities, modelSpec?.capabilities)
     const blocks = subagentPromptBlocks()
     const client = createProviderClient(providerForDecision, capabilities, {
+      requestAuth: officialRuntime?.requestAuth,
       network: config.network,
       singleAttempt: true,
       credentialScope: `${providerKey}:${decision.keyId ?? 'default'}`,
@@ -249,6 +263,8 @@ async function bootAndRunInWorkspace(
 
     // 5) 组装 WorkerSessionConfig（v1 降级项不注入）并执行。
     const workerConfig: WorkerSessionConfig = {
+      automaticMemoryReview: providerForDecision.auth?.type !== 'tianshu-account',
+      runtimeSubmission: delegated?.submission,
       workspaceRoots: cfg.workspaceRoots,
       order: cfg.order,
       client,
@@ -293,6 +309,7 @@ async function bootAndRunInWorkspace(
     writeFrame({
       t: 'result',
       run: {
+        officialFailure: run.officialFailure?.code,
         result: run.result,
         transcript: run.transcript,
         usage: run.usage,
@@ -314,6 +331,7 @@ async function bootAndRunInWorkspace(
     writeFrame({
       t: 'result',
       run: {
+        officialFailure: err instanceof OfficialError ? err.code : undefined,
         result: err instanceof ModelBindingUnavailable ? workerFailureResult(init.config.order, err) : {
           workOrderId: init.config.order.id,
           status: isLocalWorkerPolicyError(err) ? 'blocked' : 'failed',

@@ -13,7 +13,8 @@ import type { OaiChatRequest, OaiMessage } from './oai-types.js'
 import { proRegistry } from './pro-registry.js'
 import { estimateOaiTokens } from '../compact/micro.js'
 import type { ProviderProfile } from './provider-profile.js'
-import { fetchWithTimeout } from './fetch-timeout.js'
+import { fetchModelWithTimeout, captureModelAuthorization, applyOfficialRequestPolicy, officialStreamFailure, officialStreamCallbacks, type ModelRequestAuthorizer } from './request-authorization.js'
+import { releaseCompletedReader } from './completed-reader.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { resolveWireEffort } from './provider.js'
@@ -60,28 +61,8 @@ import type { ProviderRetryConfig } from '../config/retry-schema.js'
 /** Hash only; diagnostics never include prompt or image contents. */
 function wireHash(s: string): string { return createHash('sha256').update(s).digest('hex') }
 
-/**
- * SSE transport ended before the provider's terminal `data: [DONE]` marker.
- *
- * A clean socket close is not by itself proof of a complete generation: the
- * connection may be cut by a proxy, an idle LB, or a retryable transport reset
- * after a partial body. Previously that EOF was settled as `complete`, so the
- * discarded partial turn looked successful and no `stream_attempt_aborted`
- * breadcrumb existed. Treat it as an incomplete attempt and let the retry /
- * fallback policy decide the next step.
- */
-export class IncompleteStreamError extends Error {
-  constructor() {
-    super('OpenAI SSE stream ended before [DONE] completion marker (incomplete stream)')
-    this.name = 'IncompleteStreamError'
-  }
-}
-
-// OpenAI 协议终态 finish_reason。收到其一即证明本轮已完成——部分上游
-// （MiniMax-M3 大上下文会话）合法结束时不发 `data: [DONE]`。安全边界：仅终态
-// finish_reason 可触发宽容；只有部分 content 而无 finish_reason 仍是真·断流。
-const TERMINAL_FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'content_filter', 'function_call'])
-
+import { IncompleteStreamError, TERMINAL_FINISH_REASONS } from './openai-stream-completion.js'
+export { IncompleteStreamError } from './openai-stream-completion.js'
 
 function tryParseToolArguments(raw: string): Record<string, unknown> | null {
   if (raw.trim().length === 0) return {}
@@ -138,6 +119,7 @@ function salvageFirstJsonObject(raw: string): Record<string, unknown> | null {
 }
 
 export interface OpenAIClientConfig {
+  requestAuth?: ModelRequestAuthorizer
   contextWindow?: number
   baseUrl: string
   apiKey: string
@@ -500,7 +482,7 @@ export class OpenAIClient implements StreamClient {
     const isPreservedThinking = this.config.thinking === 'enabled'
       && (stickyPreserved || opts?.preserveReasoning === true)
     return messages.map(stripOaiProviderMetadata).map(m => {
-      if (m.role !== 'assistant') return m
+      if (m.role !== 'assistant' || this.config.requestAuth) return m
       const hasToolCalls = Array.isArray((m as any).tool_calls) && (m as any).tool_calls.length > 0
       // DeepSeek preserved-thinking: tool-call turns must echo reasoning_content.
       // Some turns omit the field entirely (model skipped thinking). Absent vs
@@ -519,7 +501,7 @@ export class OpenAIClient implements StreamClient {
         // Pro wire transform（spec 3c 截断落点）：闭源模块注册的 copy-on-write
         // 消息变换（如 reasoning 尾部截断）。开源构建注册表恒空 → 原样返回。
         // wireContext = 会话冻结参数（truncate N），保证 resume/跨端字节稳定。
-        const transform = proRegistry.getWireTransform(this.config.providerName ?? '')
+        const transform = this.config.requestAuth ? undefined : proRegistry.getWireTransform(this.config.providerName ?? '')
         if (transform) return transform(m, this.config.model, this.config.wireContext)
         return m
       }
@@ -564,6 +546,9 @@ export class OpenAIClient implements StreamClient {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
+    const requestAuth = captureModelAuthorization(this.config.requestAuth, request.model || this.config.model)
+    callbacks = officialStreamCallbacks(requestAuth, callbacks)
+    try {
     this.lastRequestMessages = request.messages
     // 已派发过的历史数组必须保持原字节（request invariant 硬门禁，2026-07-06 事故类）：
     // 粘性 preservedThinkingProtocol（reasoning_echo 自愈）只作用于此后的**新**数组，
@@ -697,7 +682,9 @@ export class OpenAIClient implements StreamClient {
     this.requestInvariant.observe(request, msgArray, body.tools as unknown[] | undefined)
 
 
-    await this.sendStream(body, callbacks, signal, request.messages, request.contextBudget, request.prefixProbe, request.diagnostics, prepared.normalization)
+    applyOfficialRequestPolicy(requestAuth, body, this.config.thinking === 'disabled' ? 'off' : request.reasoning_effort ?? this.config.reasoningEffort)
+    await this.sendStream(body, callbacks, signal, request.messages, request.contextBudget, request.prefixProbe, request.diagnostics, prepared.normalization, requestAuth)
+    } catch (error) { throw officialStreamFailure(requestAuth, error) }
   }
 
   /** Compare this request's final wire bytes with the previous main-turn
@@ -736,6 +723,7 @@ export class OpenAIClient implements StreamClient {
     prefixProbe = false,
     diagnostics?: RequestDiagnostics,
     normalization?: WireNormalizationSummary,
+    requestAuth?: ModelRequestAuthorizer,
   ): Promise<void> {
     // reasoningRef survives retry attempts within this sendStream call.
     // When a mid-stream failure occurs (e.g. idle timeout, connection reset),
@@ -885,7 +873,7 @@ export class OpenAIClient implements StreamClient {
       if (scope) { scope.wireTransformVersion = OPENAI_WIRE_TRANSFORM_VERSION; scope.normalization = attemptNormalization }
 
       // Resolve auth headers: AuthProvider takes precedence over static apiKey
-      const authHeaders = this.config.auth
+      const authHeaders = requestAuth ? {} : this.config.auth
         ? await this.config.auth.getHeaders()
         : this.config.apiKey ? { 'Authorization': `Bearer ${this.config.apiKey}` } : {}
 
@@ -930,10 +918,9 @@ export class OpenAIClient implements StreamClient {
       // notifyBodyGuard 里与 anthropic 侧共用一份。
       notifyBodyGuard(guard, this.bodyGuardNotify, callbacks.onBodyGuard)
       const lifecycle = new AbortController()
-      if (signal) {
-        if (signal.aborted) lifecycle.abort()
-        else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
-      }
+      const forwardAbort = () => lifecycle.abort(signal?.reason)
+      if (signal?.aborted) forwardAbort()
+      else signal?.addEventListener('abort', forwardAbort, { once: true })
       // 客户端限速（未配置 rateLimit 时零开销）：同 provider 的所有 client 实例共享一只桶。
       await acquireRateLimitSlot(this.config.providerName ?? this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal)
       const proof = proveWirePrefix(guard.body, this.config.providerName ?? 'openai', requestId, normalizeBaseUrl(this.config.baseUrl))
@@ -963,6 +950,7 @@ export class OpenAIClient implements StreamClient {
         }
       }
       let parserStarted = false
+      let responseCompleted = false
       const sentAt = Date.now()
       const audit = beginCallAudit({ requestId, attemptId: identity.attemptId, sessionId: this.config.sessionId,
         provider: this.config.providerName ?? 'openai', model: String(guard.body.model), purpose: diagnostics?.purpose ?? (this.config.sessionId?.startsWith('worker-') ? 'worker_execution' : 'main_execution'),
@@ -978,7 +966,7 @@ export class OpenAIClient implements StreamClient {
       try {
       const serializedBody = guard.serializedBody ?? JSON.stringify(guard.body)
       audit.observation.sent(serializedBody, guard.body)
-      const response = await fetchWithTimeout(`${normalizeBaseUrl(this.config.baseUrl)}/chat/completions`, {
+      const response = await fetchModelWithTimeout(requestAuth, 'chat', `${normalizeBaseUrl(this.config.baseUrl)}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1043,10 +1031,12 @@ export class OpenAIClient implements StreamClient {
       parserStarted = true
       await this.parseStreamFromReader(reader, observedCallbacks, signal, reasoningRef, lifecycle, firstByteMs, identity,
         !!((body.tools as unknown[] | undefined)?.length),
-        (effectiveBody.tools as OaiChatRequest['tools'])?.map(tool => tool.function.name) ?? [])
+        (effectiveBody.tools as OaiChatRequest['tools'])?.map(tool => tool.function.name) ?? [], !!requestAuth)
       audit.finish({ status: 'complete', responseId: identity.responseId, responseModel: identity.responseModel, systemFingerprint: identity.systemFingerprint, finishReason: identity.finishReason })
-      } catch (error) {
-        if (isLocalWorkerPolicyError(error)) {
+      responseCompleted = true
+      } catch (caught) {
+        const error = officialStreamFailure(requestAuth, caught)
+        if (isLocalWorkerPolicyError(caught)) {
           this.mainPrefixProof = previousProof
           this.prevWireSignatures = previousSignatures
           this.prevWireToolsSig = previousToolsSignature
@@ -1059,7 +1049,10 @@ export class OpenAIClient implements StreamClient {
             observation: { ...identity, status: 'aborted', fields: {} } },
         })
         throw error
-      } finally { lifecycle.abort() }
+      } finally {
+        signal?.removeEventListener('abort', forwardAbort)
+        if (!responseCompleted) lifecycle.abort()
+      }
     }, signal, {
       budget: this.config.retryBudget?.(),
       maxTotalDurationMs: this.config.retry?.maxTotalDurationMs
@@ -1153,6 +1146,7 @@ export class OpenAIClient implements StreamClient {
     toolsDeclared = true,
     /** Exact wire declarations; omitted only by legacy direct parser callers. */
     toolNames?: readonly string[],
+    requireDoneMarker = false,
   ): Promise<void> {
     this.toolNameVocabulary = toolNames === undefined ? undefined : new ToolNameVocabulary(toolNames)
     this.toolStreamAttempt = { requestId: identity.requestId, attemptId: identity.attemptId }
@@ -1191,6 +1185,7 @@ export class OpenAIClient implements StreamClient {
       let parsed: Parameters<OpenAIClient['processDelta']>[0]
       try { parsed = JSON.parse(payload) } catch { return }
       if (!parsed || typeof parsed !== 'object') return
+      if (this.config.requestAuth && Object.hasOwn(parsed, 'error')) throw new Error('service_error')
       const metadata = parsed as typeof parsed & { id?: string; model?: string; system_fingerprint?: string }
       if (metadata.id) identity.responseId = metadata.id
       if (metadata.model) identity.responseModel = metadata.model
@@ -1298,10 +1293,11 @@ export class OpenAIClient implements StreamClient {
       }, timeout)
     }
 
+    let completedNormally = false
+    let doneMarkerReceived = false
     try {
       resetIdleTimer()
       let streamDone = false
-      let doneMarkerReceived = false
       // 硬顶 abort 可能发生在 reader.read() 阻塞期间——cancel() 让 read() 以
       // done=true 返回，若不在此显式抛出会变成"静默正常结束"，严格时限形同虚设。
       const throwIfHardCapAborted = (): void => {
@@ -1371,7 +1367,7 @@ export class OpenAIClient implements StreamClient {
 
       // Process any residual data in the SSE buffer (final chunk without trailing newline)
       const trimmed = buffer.trim()
-      if (trimmed.startsWith('data:')) {
+      if (!doneMarkerReceived && trimmed.startsWith('data:')) {
         const payload = trimmed.slice(5).trimStart()
         if (payload === '[DONE]') doneMarkerReceived = true
         else processPayload(payload)
@@ -1389,7 +1385,7 @@ export class OpenAIClient implements StreamClient {
       //    IncompleteStreamError（分类 stream_parse，重试与 FallbackStreamClient 切换照常），
       //    不让半截回答冒充完整回答。
       if (!doneMarkerReceived) {
-        if (terminalFinishReason === null) throw new IncompleteStreamError()
+        if (requireDoneMarker || terminalFinishReason === null) throw new IncompleteStreamError()
         debugLog(
           '[openai-client] SSE stream ended without [DONE] marker but a terminal finish_reason was received —'
           + ` settling tolerantly (provider=${this.config.providerName ?? 'openai'}`
@@ -1443,6 +1439,7 @@ export class OpenAIClient implements StreamClient {
         callbacks.onStopReason?.(mapFinishReason(settlement.reason ?? 'stop'), usage)
       }
       this.pendingStopReason = null
+      completedNormally = true
     } catch (err) {
       // Observability: surface how much streamed output this attempt discards.
       // Release the unfinished response even for direct parser callers without
@@ -1466,7 +1463,8 @@ export class OpenAIClient implements StreamClient {
       // 拆 fetch 连接：keep-alive 下 reader.cancel() 可能把连接还给连接池而非关闭，
       // abort 传给 fetch 的 lifecycle signal 强制 undici 销毁底层 socket。已结束的
       // 响应上 abort 为无操作，故正常结束路径安全。
-      lifecycle?.abort()
+      if (completedNormally && doneMarkerReceived) void releaseCompletedReader(reader, lifecycle, signal)
+      else lifecycle?.abort()
 
       this.toolCallBuffer.clear()
       this.toolCallHintFired.clear()

@@ -1,4 +1,10 @@
 import { ExternalHookHost } from './hooks/external-hook-host.js'
+import { decideStartupResumeModel } from './bootstrap/startup-resume-policy.js'
+export { decideStartupResumeModel } from './bootstrap/startup-resume-policy.js'
+export type { StartupResumeModelDecision } from './bootstrap/startup-resume-policy.js'
+export { switchPreparedAgentRuntime } from './bootstrap/official-runtime-switch.js'
+import { OfficialError } from './models/official-contract.js'
+import { isOfficialProvider, prepareRuntimeContext } from './models/model-runtime.js'
 import { sessionProviderKey, snapshotSessionBinding } from './model/model-binding.js'
 import { buildReplacementAgent } from './agent/runtime-rebuild.js'
 import { loadUserInstructions } from './config/user-instructions.js'
@@ -606,6 +612,7 @@ export function createInteractiveToolRegistry(
   // 实例同时喂给 starflow（星流状态机的攻坚阶段复用同一工具）。
   const galaxyTool = createGalaxyTool(
     {
+      resolveCandidateModels: (signal, pinnedSubmission) => refs.coordinator?.resolveCandidateModels(signal, pinnedSubmission) ?? Promise.resolve([]),
       delegateBatch: async (requests, policy, abortSignal, onProgress, onWorkerSettled) => {
         if (!refs.coordinator) throw new Error('DelegationCoordinator not initialized')
         return refs.coordinator.delegateBatch(requests, policy, abortSignal, onProgress, onWorkerSettled)
@@ -999,6 +1006,7 @@ export function createAgentRuntime(deps: {
       + `可选：${contractPool.map(m => m.id).join(', ')}`,
     )
   }
+  if (isOfficialProvider(provider) && (!contractPool[0] || modelId && !matchedModel)) throw new OfficialError('model_unavailable', 409, false)
   const currentModel = matchedModel ?? contractPool[0]!
 
   // wire 上下文会话固化（2026-08-07 spark T1）：meta 已有值 → 恒用之（resume/
@@ -1018,6 +1026,7 @@ export function createAgentRuntime(deps: {
     userInstructions,
     apiKey,
     model: {
+      ...currentModel,
       id: currentModel.id,
       maxTokens: currentModel.maxTokens,
       contextWindow: currentModel.contextWindow,
@@ -1070,8 +1079,13 @@ export function createAgentRuntime(deps: {
   let agentForSignals: AgentLoop | undefined
   const workerRuntime = createWorkerRuntimeFactory(() => {
     const saved = loadLayeredConfig({ cwd })
+    const providers = { ...saved.provider.providers }
+    for (const [name, configured] of Object.entries(config.provider.providers)) {
+      if (isOfficialProvider(configured) && providers[name] && isOfficialProvider(providers[name]!) && providers[name]!.baseUrl === configured.baseUrl) providers[name] = configured
+    }
     return {
-      config: { ...config, provider: saved.provider, workers: saved.workers, agent: { ...config.agent, review: saved.agent.review } },
+      runtimeSubmission: agentCfg.runtimeSubmission,
+      config: { ...config, provider: { ...saved.provider, providers }, workers: saved.workers, agent: { ...config.agent, review: saved.agent.review } },
       cwd, provider, apiKey, auth, currentModelId: currentModel.id, rootSessionBinding: { ...rootSessionBinding, credentialPrincipal: agentForSignals?.config.client.getMainPrefixProof?.()?.credentialScope?.split(':principal:')[1] }, rootSessionId: deps.sessionId,
       listActiveClaims: () => claimStore.listActiveClaims(),
       getUserInstructions: () => agentCfg.promptEngine.getUserInstructionsForDispatch(),
@@ -1192,6 +1206,7 @@ export function createAgentRuntime(deps: {
   agentForSignals = agent
 
   refs.coordinator = new DelegationCoordinator({
+    runtimeSubmission: agentCfg.runtimeSubmission,
     baseToolRegistry: toolRegistry,
     modelCards,
     // worker 子进程隔离（RIVET_WORKER_ISOLATION：1/all=全部 worker，review=仅审查
@@ -1596,48 +1611,6 @@ export interface SwitchSessionResult {
  * targetId 必须是已解析的完整 id(调用方用 SessionPersist.resolveSessionId 解析短前缀)。
  * resume 全量 replay 目标历史(显式代价、会重建前缀缓存),不跨会话吃当前上下文。
  */
-export interface StartupResumeModelDecision {
-  target: ResolvedModelTarget | null
-  originalModel?: string
-  fallbackUsed: boolean
-  degradedWarning?: string
-}
-
-/**
- * 启动 resume 模型亲和决策（纯函数，可测）：前缀缓存是 per-model 命名空间，
- * resume 不换回原模型，继承的冻结快照也落不进缓存。显式 --model/--provider
- * 优先（用户意图 > 缓存亲和）；原模型不可用走 resumeFallbackModel 兜底；
- * 兜底也没有 → 警告降级（不 fail-closed——startup 是进程入口，拒跑等于
- * 会话打不开，用户连开新会话都要绕路 --new；与 switchAgentSession 的
- * fail-closed 语义差异是刻意的）。
- */
-export function decideStartupResumeModel(input: {
-  resumed: boolean
-  explicitModel?: string
-  explicitProvider?: string
-  originalModel?: string
-  fallbackModelId?: string
-  resolve: (modelId: string) => ResolvedModelTarget | { error: string } | null
-}): StartupResumeModelDecision {
-  if (!input.resumed || input.explicitModel || input.explicitProvider) {
-    return { target: null, fallbackUsed: false }
-  }
-  if (!input.originalModel) return { target: null, fallbackUsed: false }
-  const hit = input.resolve(input.originalModel)
-  if (hit && !('error' in hit)) {
-    return { target: hit, originalModel: input.originalModel, fallbackUsed: false }
-  }
-  const fb = input.fallbackModelId ? input.resolve(input.fallbackModelId) : null
-  if (fb && !('error' in fb)) {
-    return { target: fb, originalModel: input.originalModel, fallbackUsed: true }
-  }
-  return {
-    target: null,
-    originalModel: input.originalModel,
-    fallbackUsed: false,
-    degradedWarning: `⚠ 原模型 ${input.originalModel} 当前不可用，且未配置续跑兜底模型（agent.resumeFallbackModel）——按默认模型续跑，前缀缓存将全量重建。`,
-  }
-}
 
 export function switchAgentSession(ctx: BootstrapContext, targetId: string): SwitchSessionResult {
   if (targetId === ctx.sessionId) {
@@ -2062,7 +2035,7 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   setupHttpProxy()
 
   // 2. Config
-  const config = loadRivetConfig(cwd, opts.args)
+  let config = loadRivetConfig(cwd, opts.args)
   const userInstructions = loadUserInstructions(config.agent.userInstructions)
   setTargetConventions(config.editor.platform, config.editor.eol)
   applyConfiguredGitBashPath(config.env.gitBashPath)
@@ -2111,7 +2084,7 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
   const effectiveProviderName = opts.providerName ?? defaultModelParts?.provider
   const effectiveModelId = opts.modelId ?? defaultModelParts?.modelId
 
-  const { provider, apiKey, auth } = resolveProviderAndAuth(config, effectiveProviderName, (opts.allowMissingKey ? { allowMissingKey: true } : {}))
+  let { provider, apiKey, auth } = resolveProviderAndAuth(config, effectiveProviderName, (opts.allowMissingKey ? { allowMissingKey: true } : {}))
 
   // 4. Session infrastructure
   const { registry: sessionRegistry, sessionId, heartbeatInterval } = await createSessionInfrastructure()
@@ -2309,6 +2282,13 @@ export async function bootstrapInteractiveSession(opts: BootstrapOptions = {}): 
     resolve: modelId => resolveProviderForModel({ config, provider, apiKey, auth }, modelId),
   })
   if (startupResume.degradedWarning) console.error(startupResume.degradedWarning)
+  const selectedRuntime = startupResume.target ?? { provider, apiKey, auth, modelId: effectiveModelId, providerName: provider.name }
+  if (isOfficialProvider(selectedRuntime.provider)) {
+    const reference = selectedRuntime.modelId ? `${selectedRuntime.providerName}:${selectedRuntime.modelId}` : undefined
+    const prepared = await prepareRuntimeContext({ config, provider: selectedRuntime.provider, apiKey: selectedRuntime.apiKey, auth: selectedRuntime.auth ?? auth }, reference)
+    ;({ config, provider, apiKey, auth } = prepared)
+    if (startupResume.target) startupResume.target = { ...prepared, providerName: prepared.provider.name, modelId: prepared.model.id }
+  }
   const explicitStartupGeneration = wasSessionResumed() && !!(opts.modelId || opts.providerName)
   const { agent } = createAgentRuntime({
     userInstructions,

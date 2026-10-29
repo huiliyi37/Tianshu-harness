@@ -1,3 +1,6 @@
+import { createLazyWorkerCredentialBroker, type WorkerCredentialBroker } from './credential-broker.js'
+import { isOfficialProvider, type ResolveModelInput } from '../../models/model-runtime.js'
+import { OfficialError } from '../../models/official-contract.js'
 import { HookRpcServer } from '../../hooks/hook-host-rpc.js'
 import { deriveWorkerSessionId } from '../work-order.js'
 import { currentWorkspaceRoots } from '../../tools/workspace-context.js'
@@ -125,15 +128,41 @@ export async function runWorkerSessionOop(
   config: WorkerSessionConfig,
   opts: WorkerOopOptions,
 ): Promise<WorkerSessionRun> {
+  config.abortSignal?.throwIfAborted()
   const entry = opts.entryOverride !== undefined ? opts.entryOverride : resolveChildEntry()
   if (!entry) throw new WorkerOopUnavailable('worker child entry not found (dist/tsx)')
   if (!config.runtimeDecision) throw new WorkerOopUnavailable('config.runtimeDecision absent — buildWorkerRuntime 未盖戳')
 
+  let credentialBroker: WorkerCredentialBroker | undefined
+  if (config.runtimeContext && config.runtimeSubmission) {
+    const pinned = config.runtimeSubmission.capture()
+    const choices: ResolveModelInput[] = []
+    for (const provider of Object.values(config.runtimeContext.config.provider.providers)) {
+      if (!isOfficialProvider(provider)) continue
+      for (const model of provider.models) {
+        const image = config.runtimeContext.config.agent.imageGenModel
+        const purposes = model.supportsImageGen
+          ? image?.provider === provider.name && image.model === model.id ? ['image-generation'] as const : []
+          : ['agent', 'report', 'compact', 'title', 'judge', 'greeting', 'skill', 'vision'] as const
+        for (const purpose of purposes) choices.push({ ...config.runtimeContext, provider, modelId: model.id, purpose })
+      }
+    }
+    credentialBroker = createLazyWorkerCredentialBroker(pinned, choices)
+    if (isOfficialProvider(config.runtimeContext.provider)) {
+      try {
+        const runtime = await pinned.resolve({ ...config.runtimeContext, signal: config.abortSignal })
+        config.abortSignal?.throwIfAborted()
+        credentialBroker.add(runtime)
+      } catch (error) { credentialBroker.dispose(); throw error }
+    }
+  } else if (config.runtimeContext && isOfficialProvider(config.runtimeContext.provider)) throw new OfficialError('auth_required', 401, false)
   const decision = config.runtimeDecision
   const initPayload: WorkerChildInitPayload = {
     userInstructions: config.promptEngine.getUserInstructionsSnapshot(),
     proAuthorization: captureManagedProAuthorization(),
     config: {
+      officialModels: credentialBroker?.snapshots,
+      officialSelections: credentialBroker?.selections,
       hookRpc: !!config.externalHookHost,
       order: { ...config.order, allowedTools: config.toolRegistry.getDefinitions().map(tool => tool.name) },
       cwd: config.cwd,
@@ -187,8 +216,14 @@ export async function runWorkerSessionOop(
     }))
   // track 进退出清理集合：主进程 shutdown 的 killAllSync 据此组杀 worker 树
   // （detached 后 worker 自成进程组，组杀连带 stdio MCP/LSP 等后代）。
-  const child = track(doSpawn(entry.execArgs, entry.script))
+  let child: ChildProcess
+  try {
+    config.abortSignal?.throwIfAborted()
+    child = track(doSpawn(entry.execArgs, entry.script))
+  } catch (error) { credentialBroker?.dispose(); throw error }
   if (!child.stdin || !child.stdout || !child.stderr) {
+    credentialBroker?.dispose()
+    if (child.pid) killProcessTree(child, 'SIGKILL')
     throw new WorkerOopUnavailable('child stdio unavailable')
   }
   // 闭包内 narrowing 会丢——先钉住非空句柄。
@@ -220,10 +255,11 @@ export async function runWorkerSessionOop(
   let detachAbort: (() => void) | undefined
 
   const cleanup = (): void => {
+    detachAbort?.()
+    credentialBroker?.dispose()
     void hookServer.close()
     if (watchdogTimer) clearTimeout(watchdogTimer)
     if (killTimer) clearTimeout(killTimer)
-    detachAbort?.()
     if (steerTimer) clearInterval(steerTimer)
     config.onSteerDrain = parentDrain
   }
@@ -292,6 +328,7 @@ export async function runWorkerSessionOop(
     }
 
     const mapResult = (run: SerializedWorkerRun): WorkerSessionRun => ({
+      officialFailure: run.officialFailure ? new OfficialError(run.officialFailure, undefined, false) : undefined,
       result: run.result,
       transcript: run.transcript,
       session: { getMessages: () => run.messages } as unknown as SessionContext,
@@ -317,6 +354,17 @@ export async function runWorkerSessionOop(
         if (msg.t === 'pro-drained') { proChild.acknowledge(undefined, true); continue }
         if (settled) continue
         switch (msg.t) {
+          case 'model-prepare-cancel':
+            credentialBroker?.cancelPrepare(msg.requestId)
+            break
+          case 'model-prepare':
+            if (credentialBroker) void credentialBroker.prepare(msg).then(result => { if (!settled) stdin.write(encodeFrame(result)) })
+            else stdin.write(encodeFrame({ t: 'model-prepared', requestId: msg.requestId, mode: msg.mode, error: 'auth_required' }))
+            break
+          case 'auth-request':
+            if (credentialBroker) void credentialBroker.handle(msg).then(result => { if (!settled) stdin.write(encodeFrame(result)) })
+            else stdin.write(encodeFrame({ t: 'auth-result', requestId: msg.requestId, error: 'auth_required' }))
+            break
           case 'activity':
             forwardSteer()
             armWatchdog()
@@ -361,19 +409,21 @@ export async function runWorkerSessionOop(
 
     // abort 下行：转发给子进程（其内部有 salvage 宽限）；本侧 watchdog 兜底
     // 击杀不退出的僵死子进程。abort 后不停表——等 result 或 watchdog。
-    if (config.abortSignal) {
+    const cancellation = config.abortSignal && credentialBroker ? AbortSignal.any([config.abortSignal, credentialBroker.signal]) : config.abortSignal ?? credentialBroker?.signal
+    if (cancellation) {
       const onAbort = (): void => {
-        try { stdin.write(encodeFrame({ t: 'abort', reason: String(config.abortSignal?.reason ?? 'caller_aborted') })) } catch { /* stdin 已关——close 事件兜底 */ }
+        credentialBroker?.dispose()
+        try { stdin.write(encodeFrame({ t: 'abort', reason: String(cancellation.reason ?? 'caller_aborted') })) } catch { /* stdin 已关——close 事件兜底 */ }
       }
-      if (config.abortSignal.aborted) onAbort()
+      if (cancellation.aborted) onAbort()
       else {
-        config.abortSignal.addEventListener('abort', onAbort, { once: true })
+        cancellation.addEventListener('abort', onAbort, { once: true })
         // settle 后摘除：abortSignal 常是会话级合成信号（AbortSignal.any([会话, order])，
         // coordinator.ts mergedSignal），order 级先触发 abort 时 once 不消耗、监听继续挂在
         // 会话信号上——把整个运行闭包（ChildProcess 句柄、解码器、含会话史的 initPayload）
         // 钉在会话生命周期。长会话多次委派单调泄漏，第 11 个监听触发
         // MaxListenersExceededWarning。wrapAbort / worker-session 路径已有同款摘除纪律。
-        detachAbort = () => config.abortSignal?.removeEventListener('abort', onAbort)
+        detachAbort = () => cancellation.removeEventListener('abort', onAbort)
       }
     }
 

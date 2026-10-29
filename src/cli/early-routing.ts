@@ -138,6 +138,14 @@ export async function routeEarlyCli(
     if (exitCode !== 0) io.exit(exitCode)
     return true
   }
+
+  if (args[0] === 'account' || args[0] === 'model') {
+    const { runOfficialModelCLI } = await import('./official-model-cli.js')
+    const { output, exitCode } = await runOfficialModelCLI(args, { write: line => io.stdout(line + '\n') })
+    if (output) (exitCode === 0 ? io.stdout : io.stderr)(output + '\n')
+    if (exitCode !== 0) io.exit(exitCode)
+    return true
+  }
   if (args[0] === 'skills') {
     const { output, exitCode } = await handlers.skills(args.slice(1))
     ;(exitCode === 0 ? io.stdout : io.stderr)(output + '\n')

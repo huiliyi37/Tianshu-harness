@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { atomicCredentialWrite } from './token-store.js'
 import { execFileSync } from 'node:child_process'
 
 /**
@@ -49,9 +50,7 @@ export function accountDeviceFingerprint(home: string, supplied?: unknown, nativ
   if (isValidDeviceFingerprint(native)) {
     mkdirSync(home,{recursive:true})
     for (const path of [join(home,'.device-id'),accountPath]) {
-      const temporary=`${path}.tmp-${randomUUID()}`
-      try {writeFileSync(temporary,native,{mode:0o600,flag:'wx',flush:true});renameSync(temporary,path)}
-      finally {try {unlinkSync(temporary)} catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error}}
+      atomicCredentialWrite(path, native)
     }
     return native
   }
@@ -72,4 +71,11 @@ export function accountDeviceFingerprint(home: string, supplied?: unknown, nativ
   mkdirSync(home,{recursive:true})
   try {writeFileSync(path,id,{mode:0o600,flag:'wx'});return id}
   catch(error) {if((error as NodeJS.ErrnoException).code==='EEXIST')return read();throw error}
+}
+
+/** Read without creating a fingerprint while capturing an installed account. */
+export function readAccountDeviceFingerprint(home: string): string | null {
+  const native = process.env.RIVET_PRO_DEVICE_ID
+  if (isValidDeviceFingerprint(native)) return native
+  try { const saved = readFileSync(join(home, '.account-device-id'), 'utf8').trim(); return isValidDeviceFingerprint(saved) ? saved : null } catch { return null }
 }

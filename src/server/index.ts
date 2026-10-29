@@ -6,6 +6,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { join, resolve, sep, extname } from 'node:path'
 import { isAuthorizedRequest } from './auth.js'
 import { allowedCorsOrigin } from './cors.js'
+import { isMembershipPrivatePath, membershipBridgeAuthorized, membershipCleanupFor } from '../auth/official-membership-license.js'
 import { errorContext, serverLogger } from './logger.js'
 import { isLoopbackBind, isLoopbackHostHeader, stripHostPort } from './host-policy.js'
 
@@ -14,6 +15,13 @@ import { isLoopbackBind, isLoopbackHostHeader, stripHostPort } from './host-poli
 // must fit. The server is a localhost-bound, token-gated sidecar, so a
 // larger ceiling is acceptable.
 const MAX_BODY_BYTES = 64 * 1024 * 1024
+
+const retainedSessionReceipts = new WeakMap<object, { sessionId: string; cleanup: 'retained' }>()
+export function attachRetainedSessionReceipt(error: unknown, receipt: { sessionId: string; cleanup: 'retained' }): unknown {
+  const target = error !== null && (typeof error === 'object' || typeof error === 'function') ? error : new Error('Request failed', { cause: error })
+  retainedSessionReceipts.set(target, receipt)
+  return target
+}
 
 export interface RouteResponse {
   status: number
@@ -114,6 +122,7 @@ export function createRouter(routes: Record<string, RouteHandler>) {
 }
 
 export interface StartServerOptions {
+  membershipBridgeToken?: string
   tls?: TlsServerOptions
   /** 监听地址。默认 127.0.0.1；显式设 LAN IP / 0.0.0.0 开启远程访问。 */
   host?: string
@@ -355,6 +364,11 @@ export async function startServer(
         return
       }
 
+      if (isMembershipPrivatePath(cleanUrl) && !membershipBridgeAuthorized(reqHeaders, opts.membershipBridgeToken)) {
+        res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
       const body = await readBody(req)
       if (body === BODY_TOO_LARGE) {
         res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close', ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}) })
@@ -380,6 +394,8 @@ export async function startServer(
       res.writeHead(result.status, headers)
       res.end(responseBody)
     } catch (error) {
+      const receipt = error !== null && (typeof error === 'object' || typeof error === 'function') ? retainedSessionReceipts.get(error) : undefined
+      if (error !== null && (typeof error === 'object' || typeof error === 'function')) retainedSessionReceipts.delete(error)
       serverLogger.error('[server] request handler error', {
         method: req.method,
         url: req.url,
@@ -402,7 +418,7 @@ export async function startServer(
           'Content-Type': 'application/json',
           ...(origin ? { 'Access-Control-Allow-Origin': origin } : {}),
         })
-        res.end(JSON.stringify({ error: malformedUrl ? 'Malformed URL encoding' : 'Internal server error' }))
+        res.end(JSON.stringify({ error: malformedUrl ? 'Malformed URL encoding' : 'Internal server error', ...receipt }))
       } catch {
         // 客户端已断开/套接字已失效——写响应失败本身不再逃逸。
         res.destroy()
@@ -411,6 +427,8 @@ export async function startServer(
   }
 
   const server = opts.tls ? createHttpsServer({ ...opts.tls, minVersion: 'TLSv1.2' }, listener) : createServer(listener)
+  const disposeMembership = membershipCleanupFor(routes)
+  if (disposeMembership) server.once('close', disposeMembership.dispose)
   let boundPort = port
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -422,8 +440,9 @@ export async function startServer(
       resolve()
     })
   })
+  disposeMembership?.start()
   return {
-    close: (cb) => server.close(cb),
+    close: (cb) => { disposeMembership?.dispose(); server.close(cb) },
     closeIdleConnections: () => server.closeIdleConnections(),
     port: boundPort,
   }
@@ -462,7 +481,7 @@ async function readBody(req: IncomingMessage): Promise<ReadBodyResult> {
   try {
     return JSON.parse(raw)
   } catch (err) {
-    serverLogger.warn('Invalid JSON request body', { ...errorContext(err) })
+    serverLogger.warn('Invalid JSON request body', { name: err instanceof Error ? err.name : 'SyntaxError' })
     return INVALID_JSON
   }
 }

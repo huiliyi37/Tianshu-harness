@@ -4,10 +4,11 @@ import type { Config } from './schema.js'
 import { verifyProGrant, type ProGrantReason } from './pro-grant.js'
 import { LICENSE_PRODUCT } from './license-keys.js'
 import { rivetHome } from './paths.js'
+import { readOfficialMembership } from '../auth/official-membership-license.js'
 
 export type ProFeature = 'computerUse' | 'chatGateway' | 'teamMax' | 'councilMultiRound' | 'unattendedAutomation' | 'spark'
 
-export type ProLicenseSource = 'grant' | 'config' | 'env' | 'license-file' | 'none'
+export type ProLicenseSource = 'grant' | 'official-membership' | 'config' | 'env' | 'license-file' | 'none'
 
 export interface ProLicenseInfo {
   enabled: boolean
@@ -206,9 +207,12 @@ export function resolveProLicense(
   licensePath = defaultLicensePath()
 ): ProLicenseInfo {
   if (runtimeProDenied) return { enabled: false, source: 'none', reason: 'grant_native_denied' }
-  return process.env.RIVET_DESKTOP === '1'
+  const legacy = process.env.RIVET_DESKTOP === '1'
     ? resolveDesktopGrant(config, licensePath)
     : resolveCliGrant(config, licensePath)
+  if (legacy.enabled) return legacy
+  const membership = readOfficialMembership(dirname(licensePath), testPublicKeyOverride ?? undefined)
+  return membership ? { enabled: true, source: 'official-membership', tier: 'pro', reason: 'membership_ok' } : legacy
 }
 
 export function isProEnabled(config: Config): boolean {

@@ -1,3 +1,4 @@
+import type { ModelSubmission } from '../models/model-runtime.js'
 import { snapshotSessionBinding } from '../model/model-binding.js'
 import { createWorkerRuntimeFactory } from './worker-runtime.js'
 import { loadConfig } from '../config/manager.js'
@@ -12,6 +13,7 @@ import type { AuthProvider } from '../auth/types.js'
 import { profileRegistry } from './profile-registry.js'
 
 export interface HeadlessCoordinatorInput {
+  runtimeSubmission?: ModelSubmission
   getExternalHookParent?: () => { runtimeId: string; runId: string } | undefined
   externalHookHost?: import('../hooks/external-hook-types.js').ExternalHookHostPort
   getUserInstructions: () => import('../prompt/user-instructions.js').UserInstructionsSnapshot
@@ -39,6 +41,7 @@ export function createHeadlessCoordinator(input: HeadlessCoordinatorInput): Dele
     ? { provider: input.providerName, model: input.currentModelId, keyId: input.keyId, baseUrl: input.provider.baseUrl }
     : snapshotSessionBinding(input.provider, input.currentModelId, input.apiKey, input.providerName)
   const runtime = createWorkerRuntimeFactory(() => ({
+    runtimeSubmission: input.runtimeSubmission,
     externalHookHost: input.externalHookHost,
     externalHookParent: input.getExternalHookParent?.(),
     getUserInstructions: input.getUserInstructions,

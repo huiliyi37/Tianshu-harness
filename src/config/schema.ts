@@ -74,6 +74,7 @@ export function inferModelContextWindow(modelId: string): number | undefined {
 }
 export const modelConfigSchema = z.object({
   id: z.string(),
+  managed: z.object({ bindingId: z.string().min(1).max(8192) }).strict().optional(),
   /** 惯用短名（glm-53 / k27-code 等）2026-09 起废弃——模型一律按原 ID 保存
    *  与展示。schema 不再声明该字段：旧配置/旧客户端传入的 alias 由 zod 默认
    *  strip 掉，解析后不存在、永不落盘（存量剥除见 migrateStripModelAlias）。 */
@@ -134,6 +135,7 @@ export const modelConfigSchema = z.object({
   return { ...model, contextWindow, maxTokens }
 })
 export const authConfigSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('tianshu-account') }).strict(),
   z.object({
     type: z.literal('api-key'),
     keyEnv: z.string(),
@@ -265,7 +267,15 @@ export const providerBaseSchema = z.object({
  *  is presumed to speak /v1/messages unless the config explicitly says
  *  otherwise (e.g. an OpenAI-compatible proxy). Preprocess runs before
  *  defaults, so an explicit `protocol: 'openai'` is preserved. */
-export const providerSchema = z.preprocess(raw => {
+export const providerSchema = z.preprocess((raw, ctx) => {
+  if (raw && typeof raw === 'object' && (raw as { auth?: { type?: string } }).auth?.type === 'tianshu-account') {
+    const value = raw as Record<string, unknown>
+    if (['apiKey', 'apiKeyEnv', 'keyRef', 'keys'].some(key => value[key] != null && value[key] !== '') || (value.baseUrl && value.baseUrl !== 'https://official.invalid')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Official models use published bindings and account credentials' })
+      return z.NEVER
+    }
+    return { ...value, baseUrl: 'https://official.invalid' }
+  }
   if (raw !== null && typeof raw === 'object' && !('protocol' in raw)) {
     const name = (raw as Record<string, unknown>).name
     if (name === 'anthropic') return { ...(raw as Record<string, unknown>), protocol: 'anthropic' }

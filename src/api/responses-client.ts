@@ -29,13 +29,14 @@ import type { ContentBlock, Usage } from './types.js'
 import { withStructuredRetry } from './retry-engine.js'
 import { parseRetryAfterMs } from './error-classifier.js'
 import { resolveWireEffort } from './provider.js'
-import { fetchWithTimeout } from './fetch-timeout.js'
+import { fetchModelWithTimeout, captureModelAuthorization, applyOfficialRequestPolicy, officialStreamFailure, officialStreamCallbacks, type ModelRequestAuthorizer } from './request-authorization.js'
 import { wireAbortToReaderCancel, wrapBodyTimeoutError } from './abort-reader.js'
 import { acquireRateLimitSlot } from './rate-limiter.js'
 import { repairJsonSyntax } from './json-syntax-repair.js'
 import type { ProviderRetryConfig } from '../config/retry-schema.js'
 
 export interface ResponsesClientConfig {
+  requestAuth?: ModelRequestAuthorizer
   sessionId?: string
   baseUrl: string
   apiKey: string
@@ -129,11 +130,16 @@ export class ResponsesClient implements StreamClient {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
+    const requestAuth = captureModelAuthorization(this.config.requestAuth, request.model || this.config.model)
+    callbacks = officialStreamCallbacks(requestAuth, callbacks)
+    try {
     let requestBody: Record<string, unknown> | undefined
     const auditContext = { ...requestAuditContext(this.config, request), model: request.model || this.config.model }
     await withStructuredRetry(() => withNativeRequestAudit(auditContext, signal, async (attemptContext, audit) => {
       const body = requestBody ??= audit.observation.measure('bodyPreparationMs', () => this.buildRequestBody(request))
+      applyOfficialRequestPolicy(requestAuth, body, this.thinking === 'disabled' ? 'off' : request.reasoning_effort ?? this.reasoningEffort)
       const authHeaders = await audit.observation.measureAsync('authenticationMs', async () => {
+        if (requestAuth) return {}
         if (this.config.auth) return this.config.auth.getHeaders()
         const headers: Record<string, string> = {}
         if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`
@@ -144,12 +150,12 @@ export class ResponsesClient implements StreamClient {
       // Shared lifecycle controller (same pattern as OpenAIClient/CodexClient):
       // fetch keeps the socket alive under keep-alive; the finally abort tears it down.
       const lifecycle = new AbortController()
-      if (signal) {
-        if (signal.aborted) lifecycle.abort()
-        else signal.addEventListener('abort', () => lifecycle.abort(), { once: true })
-      }
+      const forwardAbort = () => lifecycle.abort(signal?.reason)
+      if (signal?.aborted) forwardAbort()
+      else signal?.addEventListener('abort', forwardAbort, { once: true })
+      try {
       await audit.observation.measureAsync('rateLimitWaitMs', () => acquireRateLimitSlot(this.config.baseUrl, this.config.retry?.rateLimit, lifecycle.signal))
-      const response = await fetchWithTimeout(url, {
+      const response = await fetchModelWithTimeout(requestAuth, 'responses', url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -179,7 +185,8 @@ export class ResponsesClient implements StreamClient {
         throw err
       }
 
-      await this.processSSEStream(response, callbacks, signal, lifecycle)
+      try { await this.processSSEStream(response, callbacks, signal, lifecycle) } catch (error) { throw officialStreamFailure(requestAuth, error) }
+      } finally { signal?.removeEventListener('abort', forwardAbort); lifecycle.abort() }
     }), signal, {
       budget: this.config.retryBudget?.(),
       maxTotalDurationMs: this.config.retry?.maxTotalDurationMs ?? 10 * 60_000,
@@ -191,6 +198,7 @@ export class ResponsesClient implements StreamClient {
         }
       },
     })
+    } catch (error) { throw officialStreamFailure(requestAuth, error) }
   }
 
   private resolveEffort(requestEffort: string | undefined): string | undefined {

@@ -5,6 +5,7 @@ import { recordTraceEvent } from './trace-store.js'
 import type { ToolPipelineDeps, ToolExecResult } from './tool-pipeline.js'
 import type { AgentCallbacks } from './loop-types.js'
 import { runtimeObservation } from '../utils/runtime-provenance.js'
+import { OfficialError } from '../models/official-contract.js'
 type ToolUse = { id: string; name: string; input: Record<string, unknown>; argsTruncated?: boolean }
 
 /**
@@ -71,8 +72,10 @@ export async function withToolTerminalAudit(
     else if (!settled) terminalExtras = rest
   } }
   let result: ToolExecResult
+  let officialFailure: OfficialError | undefined
   try { result = await run(tu, wrappedDeps, wrapped, turn, checkpointAlreadyCreated) }
   catch (error) {
+    if (error instanceof OfficialError) officialFailure = error
     const interrupted = dispatched ? '未确认完成，查询已有执行和文件状态后再决定后续动作。' : '本次工具主体未执行；保留已有准备记录，核对后再决定后续动作。'
     result = { toolResult: { type: 'tool_result', tool_use_id: tu.id, content: error instanceof Error && error.name === 'AbortError' ? `Tool ${tu.name} interrupted; ${interrupted}` : String(error), is_error: true }, traceStore: deps.traceStore, importGraph: deps.importGraph, lastConflictCheckCount: deps.lastConflictCheckCount, checkpointCreated: checkpointAlreadyCreated, latestRisk: deps.latestRisk, errorKind: /timed out/.test(String(error)) ? 'timeout' : 'unknown' }
   }
@@ -88,5 +91,6 @@ export async function withToolTerminalAudit(
   })
   await emitToolResultTrace({ observation, cwd: deps.cwd, sessionId: deps.sessionId, id: tu.id, name: tu.name, isError, contentLen: content.length, source: 'pipeline', errorKind: result.errorKind, errorReason: result.errorReason, dispatched })
   callbacks.onToolResult(tu.id, tu.name, content, isError, ...(terminalExtras as [string?, string?, Parameters<AgentCallbacks['onToolResult']>[6]?]))
+  if (officialFailure) throw officialFailure
   return result
 }

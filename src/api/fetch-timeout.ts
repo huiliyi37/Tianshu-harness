@@ -27,6 +27,7 @@ import { observeAuditResponse } from './transport-audit.js'
 import { prepareExecutionSend, credentialPrincipal, currentExecutionScope, assertExecutionAccess } from './execution-continuity.js'
 import { proRegistry } from './pro-registry.js'
 import { randomUUID } from 'node:crypto'
+import { isDirectOfficialRequest } from './request-authorization.js'
 
 const DEFAULT_TIMEOUT_MS = 45_000
 
@@ -54,7 +55,7 @@ export async function fetchWithTimeout(
     const body = parsedBody ?? JSON.parse(init.body) as Record<string, unknown>
     await prepareExecutionSend(String(url), body, credentialPrincipal(init.headers))
   }
-  if (execution?.sessionId) {
+  if (execution?.sessionId && !isDirectOfficialRequest(init.headers)) {
     const headers = new Headers(init.headers)
     headers.set('X-Request-Session', execution.sessionId)
     for (const name of ['x-grok-conv-id', 'x-opencode-session']) if (headers.has(name)) headers.set(name, execution.sessionId)

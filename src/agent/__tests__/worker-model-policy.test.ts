@@ -165,15 +165,15 @@ test('keyless, env credentials, cross-provider names and OAuth readiness use sha
     assert.ok(resolveModelBinding(d.config.provider.providers, { provider: 'oauth', model: 'exact-main' }).auth)
   } finally { oauth.mock.restore() }
 })
-test('dispatch snapshot pins retries; later dispatch reads changed model and saved strategy', () => {
+test('dispatch snapshot pins retries; later dispatch reads changed model and saved strategy', async () => {
   const d = deps(), factory = createWorkerRuntimeFactory(() => d), first = order()
-  assert.equal(factory.selectModel(first)?.model, 'exact-main')
+  assert.equal((await factory.selectModel(first))?.model, 'exact-main')
   d.currentModelId = 'other-flash'; d.config.workers.defaultStrategy = 'auto'
-  assert.equal(factory.runtimeFactory(first, buildModelCards(d.provider)[0]!, registry).runtimeDecision?.model, 'exact-main')
+  assert.equal((await factory.runtimeFactory(first, buildModelCards(d.provider)[0]!, registry)).runtimeDecision?.model, 'exact-main')
   const next = order()
-  assert.equal(factory.selectModel(next), undefined)
+  assert.equal(await factory.selectModel(next), undefined)
   d.config.workers.defaultStrategy = 'session'
-  assert.equal(factory.selectModel(order())?.model, 'other-flash')
+  assert.equal((await factory.selectModel(order()))?.model, 'other-flash')
 })
 test('root unavailable fails closed rather than choosing another model', () => {
   const d = deps(); d.currentModelId = 'deleted'
@@ -321,8 +321,8 @@ test('canonical root identity survives reload and display rename, but removal do
   d.config.provider.providers = { canonical: d.provider }
   const factory = createWorkerRuntimeFactory(() => d)
   const first = order()
-  assert.equal(factory.selectModel(first)?.model, 'exact-main')
-  const root = factory.runtimeFactory(first, buildModelCards(d.provider)[0]!, registry).runtimeDecision!.rootSessionBinding!
+  assert.equal((await factory.selectModel(first))?.model, 'exact-main')
+  const root = (await factory.runtimeFactory(first, buildModelCards(d.provider)[0]!, registry)).runtimeDecision!.rootSessionBinding!
   d.rootSessionBinding = root
   d.config = structuredClone(d.config)
   d.config.provider.providers.canonical!.name = 'Renamed display'
@@ -403,7 +403,7 @@ test('registered dynamic presets are not a fallback for a deleted configured pro
   assert.throws(() => runtime(d, order('code_scout', { provider: 'dynamic-worker-fixture', model: 'exact-main', keyId: 'deleted' })), /model_deleted/)
 })
 
-test('real saved reload retains a configured dynamic preset, but drops a session-only overlay and honors deletion', () => {
+test('real saved reload retains a configured dynamic preset, but drops a session-only overlay and honors deletion', async () => {
   const d = deps()
   const dynamicKey = 'dynamic-spark-reload-fixture'
   proRegistry.registerPreset({ key: dynamicKey, label: 'Spark-style dynamic preset', description: 'fixture', apiKeyEnv: 'TIANSHU_FIXTURE_ABSENT', defaultModelId: 'exact-main', provider: provider(dynamicKey) })
@@ -412,7 +412,7 @@ test('real saved reload retains a configured dynamic preset, but drops a session
   d.rootSessionBinding = { provider: dynamicKey, model: 'exact-main' }
   writeFileSync(process.env.RIVET_CONFIG_PATH!, JSON.stringify({ provider: { providers: { [dynamicKey]: dynamic } } }))
   const factory = createWorkerRuntimeFactory(() => ({ ...d, config: loadConfig({ cwd: dir }) }))
-  assert.equal(factory.selectModel(order())?.model, 'exact-main')
+  assert.equal((await factory.selectModel(order()))?.model, 'exact-main')
   writeFileSync(process.env.RIVET_CONFIG_PATH!, '{}')
   const sessionOnly = loadConfig({ cwd: dir, sessionOverlay: { provider: { providers: { [dynamicKey]: dynamic } } } })
   assert.ok(sessionOnly.provider.providers[dynamicKey])

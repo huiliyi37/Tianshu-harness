@@ -36,7 +36,7 @@ type ParseFn = (
 ) => Promise<void>
 
 describe('SSE fetch+reader shared lifecycle (2C)', () => {
-  it('正常结束退出路径在 finally 中 abort lifecycle（拆 fetch 连接）', async () => {
+  it('正常结束退出路径保留 lifecycle 以复用已完成的连接', async () => {
     const client = new OpenAIClient(CONFIG)
     const enc = new TextEncoder()
     let ctl!: ReadableStreamDefaultController<Uint8Array>
@@ -56,7 +56,7 @@ describe('SSE fetch+reader shared lifecycle (2C)', () => {
     await flush()
     await p
 
-    assert.equal(lifecycle.signal.aborted, true, '正常结束后应 abort lifecycle 以拆 fetch 连接')
+    assert.equal(lifecycle.signal.aborted, false, '正常结束后应保留 lifecycle 以复用连接')
   })
 
   it('idle 超时退出路径同样 abort lifecycle（reader.cancel 拆不掉时由 fetch abort 兜底）', async () => {

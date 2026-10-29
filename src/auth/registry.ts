@@ -1,3 +1,4 @@
+import { createManagedAccountAuth } from '../models/model-runtime.js'
 import type { AuthProvider } from './types.js'
 import { ApiKeyAuth } from './api-key.js'
 import { OAuthAuth, type OAuthConfig } from './oauth-auth.js'
@@ -27,6 +28,7 @@ export function createAuthProvider(
   legacyApiKey?: string,
   network?: ProviderNetwork,
 ): AuthProvider {
+  if (authConfig?.type === 'tianshu-account') return createManagedAccountAuth()
   if (!authConfig || authConfig.type === 'api-key') {
     const keyEnv = authConfig?.type === 'api-key' ? authConfig.keyEnv : undefined
     const key = (keyEnv ? env[keyEnv] : undefined) ?? legacyApiKey

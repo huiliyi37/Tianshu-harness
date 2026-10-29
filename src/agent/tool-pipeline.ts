@@ -8,6 +8,8 @@ import { immutableToolInput, type PreparedExecution } from './prepared-tool-batc
 import { fileRepairGuard } from './file-repair-guard.js'
 import { fileReadGate } from './file-read-gate.js'
 import { renderFileStateTail } from '../tools/file-state-receipt.js'
+import { delegateProfilesFromInput } from './delegate-profile-input.js'
+import { OfficialError } from '../models/official-contract.js'
 import { assertRuntimeAccess } from '../skills/runtime/policy.js'
 import { prepareSkillRuntimeCall } from '../tools/skill-runtime.js'
 import { createVerificationRecorder, beginCourseToolExecution, type CourseExecutionCallbacks } from './course-verification-execution.js'
@@ -113,22 +115,6 @@ function gitMutationKind(cmd: string): string | undefined {
   if (/\bgit\s+restore\s/.test(c)) return 'restore'
   if (/\bgit\s+clean\s/.test(c)) return 'clean'
   return undefined
-}
-
-/** Collect the worker profile name(s) a delegate_task/delegate_batch call requests.
- *  delegate_task carries a single `profile`; delegate_batch carries `tasks[].profile`.
- *  Absent profile → default read-only scout, so it need not be listed here. */
-function delegateProfilesFromInput(input: Record<string, unknown>): string[] {
-  const names: string[] = []
-  if (typeof input.profile === 'string') names.push(input.profile)
-  if (Array.isArray(input.tasks)) {
-    for (const task of input.tasks) {
-      if (task && typeof task === 'object' && typeof (task as { profile?: unknown }).profile === 'string') {
-        names.push((task as { profile: string }).profile)
-      }
-    }
-  }
-  return names
 }
 
 /** Extract artifact ID from content if it starts with [artifact:ID] */
@@ -657,6 +643,7 @@ async function executeToolUseInner(
         mutationNotices.push(...notices)
       }
     },
+    modelSubmission: deps.config.runtimeSubmission?.capture(),
     input: tu.input,
     toolUseId: tu.id,
     cwd: deps.cwd,
@@ -1552,6 +1539,7 @@ async function executeToolUseInner(
             ? deps.callBudget.waiting(release => deps.executePrepared!(tu.name, params.input, () => { release(); return dispatch() }))
             : deps.executePrepared ? deps.executePrepared(tu.name, params.input, dispatch) : dispatch()
           const zenGuardedExecution = execution.catch(err => {
+            if (err instanceof OfficialError) throw err
             const zenHint = deps.getZenUnregisteredHint?.(tu.name)
             if (zenHint) {
               throw new Error(`${err instanceof Error ? err.message : String(err)}\n${zenHint}`)
@@ -2153,6 +2141,7 @@ async function executeToolUseInner(
  } catch (err) {
     candidateSnapshot?.destroy()
     claimBoundary.rollback()
+    if (err instanceof OfficialError) throw err
     if (err instanceof ApprovedInputBoundaryError) {
       latestRisk = err.risk
       callbacks.onToolResult(tu.id, tu.name, err.message, true)

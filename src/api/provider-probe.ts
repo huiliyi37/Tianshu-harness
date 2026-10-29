@@ -1,3 +1,4 @@
+import { probeManagedProvider } from './managed-provider-probe.js'
 import { endpointRequest, endpointHeaderLatency, inheritEndpointHeaderLatency, type EndpointRequestOptions } from '../tools/net/endpoint-request.js'
 import { EndpointNetworkError } from '../tools/net/endpoint-policy.js'
 import { observeAuditResponse } from './transport-audit.js'
@@ -739,6 +740,8 @@ async function readCappedText(response: Response): Promise<string> {
 }
 
 export async function probeProvider(options: ProbeOptions): Promise<ProbeReport> {
+  const managed = await probeManagedProvider(options, { timeoutMs: DEFAULT_PROBE_TIMEOUT_MS, sessionId: PROBE_SESSION_ID, visionPrompt: VISION_PROBE_PROMPT, visionImage: VISION_PROBE_IMAGE_DATA_URI })
+  if (managed) return managed
   options = { ...options, deadline: options.deadline ?? Date.now() + (options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS), operationId: randomUUID() } as ProbeOptions
   const errors: string[] = []
   const fetched = await fetchModelList(options, errors)

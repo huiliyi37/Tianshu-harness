@@ -52,7 +52,7 @@ test('real sidecar assembly isolates trusted projects, pins live rebuilds and re
   const persist = new SessionPersist('rules-sidecar', root)
   assert.equal(persist.readFrozenSnapshot()?.userInstructions?.state, 'active')
   writeFileSync(source, 'CHANGED_ON_DISK: only a fresh session may load this.')
-  assert.ok(managed.switchModel?.('fixture:model-b'))
+  assert.ok(await managed.switchModel?.('fixture:model-b'))
   await managed.run('hello again', callbacks)
   assert.ok(JSON.stringify(bodies.at(-1)?.messages.at(-1)).includes('PINNED_MAIN'))
   assert.ok(!JSON.stringify(bodies.at(-1)).includes('CHANGED_ON_DISK'))

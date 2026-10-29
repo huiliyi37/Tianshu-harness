@@ -29,7 +29,8 @@ export interface StaticLineApp {
  * 全程只往静态行输出，不改流式状态——调用方（slash handler）自己管
  * setIsStreaming 那套。
  */
-export async function handleAccountLogin(app: StaticLineApp): Promise<boolean> {
+export async function handleAccountLogin(app: StaticLineApp, onResult?: (success: boolean) => void, options: { openBrowser?: (url: string) => void } = {}): Promise<boolean> {
+  onResult?.(false)
   const {
     requestDeviceCode,
     pollForAccountToken,
@@ -52,7 +53,8 @@ export async function handleAccountLogin(app: StaticLineApp): Promise<boolean> {
     return true
   }
 
-  openInBrowser(created.verifyUrl)
+  const openBrowser = options.openBrowser ?? openInBrowser
+  openBrowser(created.verifyUrl)
   app.commitStatic(
     `请在浏览器完成授权（已尝试自动打开）：\n${created.verifyUrl}\n\n` +
       `设备码：${created.userCode} · ${Math.round(created.expiresIn / 60)} 分钟内有效\n` +
@@ -66,6 +68,7 @@ export async function handleAccountLogin(app: StaticLineApp): Promise<boolean> {
 
   if (result.status === 'approved' && result.accessToken) {
     const token = saveAccountToken(accountStore(rivetHome()), result)
+    onResult?.(true)
     // 顺带把星籍取回来落盘（与 sidecar 的 POST /account/poll 同法）：这是唯一
     // 确定在线的时刻，之后 /status 就能离线显示身份。拉不到不影响登录结果。
     const { primeStellarIdentity } = await import('./account-status.js')

@@ -39,7 +39,8 @@ function isOAuthAuthenticated(p: ProviderConfig): boolean {
 
 /** GET /config/providers 列表项的 oauth 维度：codex 等订阅型没有 API key 概念
  *  （keyStatus 恒 none），登录态走 oauthAuthenticated——UI 据 authType 分叉。 */
-export function oauthListFields(p: ProviderConfig): { authType?: 'oauth'; oauthAuthenticated?: boolean } {
+export function oauthListFields(p: ProviderConfig): { authType?: 'oauth' | 'tianshu-account'; officialAvailable?: boolean; oauthAuthenticated?: boolean } {
+  if (p.auth?.type === 'tianshu-account') return { authType: 'tianshu-account', officialAvailable: false }
   if (p.auth?.type !== 'oauth') return {}
   return { authType: 'oauth', oauthAuthenticated: isOAuthAuthenticated(p) }
 }

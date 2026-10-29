@@ -2,6 +2,9 @@ import { resolveEcosystemWorkflowInput } from './workflows/ecosystem-workflows.j
 import { prepareHeadlessHandoff, finishHeadlessHandoff } from './cli/headless-handoff.js'
 import { activateRequiredToolsNow } from './workflows/required-tools.js'
 import { ExternalHookHost } from './hooks/external-hook-host.js'
+import { OfficialError } from './models/official-contract.js'
+import { createModelSubmission, isOfficialProvider, prepareRuntimeContext } from './models/model-runtime.js'
+import { switchPreparedAgentRuntime } from './bootstrap.js'
 import { sessionSkillSnapshot } from './skills/session-skill-snapshot.js'
 /**
  * 天枢 T9 主入口 — 纯 ANSI 终端 UI，零 React/Ink 依赖。
@@ -148,6 +151,7 @@ import { sessionsDir } from './config/paths.js'
 import { trustProject, isProjectTrusted, isTrustPromptDismissed, detectProjectTrustStakes, dismissProjectTrustPrompt } from './config/project-trust.js'
 import { promptProjectTrust } from './cli/project-trust-prompt.js'
 import { fetchOfficialUsage } from './cache/deepseek-official-usage.js'
+import { captureOfficialIdentity, getOfficialCustomerView, getOfficialStatus } from './auth/official-model-auth.js'
 import { TuiPerfMonitor, isTuiPerfEnabled } from './tui/engine/perf-monitor.js'
 import { runTuiShutdownSequence } from './tui/engine/shutdown-sequence.js'
 import { contractModels } from './config/contract-models.js'
@@ -379,7 +383,7 @@ async function main() {
     // 传 cwd：无头此前从不读项目层配置（.rivet-config.json 不参与合并），是
     // 「无头不加载 MCP」的更深层根因——即使装配了 initializeMcp，servers 也恒为空。
     // 项目信任门语义不变：未授信项目的 mcp/hooks 等敏感键在 loadConfig 内剥离。
-    const cfg = loadConfig({ cwd: process.cwd() })
+    let cfg = loadConfig({ cwd: process.cwd() })
     setTargetConventions(cfg.editor.platform, cfg.editor.eol)
     applyConfiguredGitBashPath(cfg.env.gitBashPath)
     const { buildSearchBackends } = await import('./tools/web-search.js')
@@ -419,7 +423,7 @@ async function main() {
       ? defaultModelParts.provider
       : undefined
     const provName = requestedProvider ?? preferredProvider ?? cfg.provider.default
-    const prov = cfg.provider.providers[provName]
+    let prov = cfg.provider.providers[provName]
     if (!prov) { process.stderr.write(`Provider not configured: ${provName}. Run: rivet config setup <provider>\n`); process.exit(1) }
     // 解析顺序：**先定位模型归属哪个 key，再从该 key 取凭据**（与 server 侧
     // resolveModelSpec 同语义）。反过来先取凭据会让「模型属第二把 key」的场景拿第一把
@@ -445,7 +449,8 @@ async function main() {
     const normalizedInPool = resolvedModelId !== undefined && resolvedModelId !== wantedModelId
       ? providerPool.find(m => m.id === resolvedModelId)
       : undefined
-    const model = owner?.model ?? exactInPool ?? normalizedInPool ?? providerPool[0]!
+    let model = owner?.model ?? exactInPool ?? normalizedInPool ?? providerPool[0]!
+    if (isOfficialProvider(prov) && (!model || wantedModelId && !owner && !exactInPool)) throw new OfficialError('model_unavailable', 409, false)
     // 模型名失配告警（合 origin/main）：静默换档会让「配了多模态模型却看不到图片」
     // 完全无迹可循（兜底档常是同名前缀的纯文本档）。headless 每进程只解析一次，无需去重。
     // 判失配要把原文与归一结果都算上（两者都已查过），否则配置里写短名会被误报成「不在
@@ -460,16 +465,25 @@ async function main() {
     // 凭据：模型所属 key 配了任一凭据槽 → 只用它；否则回退 provider 级（未迁移
     // provider 的 owner 为 null，行为与迁移前一致）。
     const ownerKey = owner?.owner
-    const key = ownerKey && (ownerKey.keyRef || ownerKey.apiKey || ownerKey.apiKeyEnv)
+    let key = (ownerKey && (ownerKey.keyRef || ownerKey.apiKey || ownerKey.apiKeyEnv)
       ? (tryResolveCredentialKey({ name: prov.name, keyRef: ownerKey.keyRef, apiKey: ownerKey.apiKey, apiKeyEnv: ownerKey.apiKeyEnv }) ?? '')
-      : (prov.apiKey ?? process.env[prov.apiKeyEnv ?? ''])
-    if (!key) { process.stderr.write(`API key not set. Export ${prov.apiKeyEnv ?? 'API_KEY'} or run: rivet config setup ${prov.name}\n`); process.exit(1) }
+      : (prov.apiKey ?? process.env[prov.apiKeyEnv ?? ''])) ?? ''
+    if (!key && !isOfficialProvider(prov)) { process.stderr.write(`API key not set. Export ${prov.apiKeyEnv ?? 'API_KEY'} or run: rivet config setup ${prov.name}\n`); process.exit(1) }
     // Session selection (Claude Code parity): resolve through the same contract the TUI
     // uses so `--continue` / `--resume <id>` actually take effect. main() only sets the
     // resume env vars (RIVET_RESUME / RIVET_RESUME_ID) before this point; minting a fresh
     // UUID here bypassed them entirely — every headless run started a brand-new session
     // and the requested history was never loaded (no error, no hint).
     const sessionId = getOrCreateSessionId()
+    if (isOfficialProvider(prov)) {
+      let prepared
+      try { prepared = await prepareRuntimeContext({ config: cfg, provider: prov, apiKey: key ?? '' }, `${provName}:${model.id}`) }
+      catch (error) { if (error instanceof OfficialError && error.code === 'auth_required') { process.stderr.write('请执行 tianshu account login 后重试。\n'); process.exitCode = 1; return }; throw error }
+      cfg = prepared.config
+      prov = prepared.provider
+      model = prepared.model
+      key = prepared.apiKey
+    }
 
     // --budget N (default 100) is the hard turn cap for goal mode; it doubles as
     // the GoalTracker iteration budget so the two limits coincide. The default is
@@ -556,7 +570,9 @@ async function main() {
           toolRegistry.remove(name)
         }
 
+        const runtimeSubmission = createModelSubmission(prov, model.id, cfg.provider.providers)
         const headlessCoordinator = createHeadlessCoordinator({
+          runtimeSubmission,
           externalHookHost: headlessHookHost,
           getExternalHookParent: () => {
             const current = headlessAgentRef.current
@@ -597,6 +613,7 @@ async function main() {
           ? goalBudget
           : Math.max(1, Number(process.env.RIVET_HEADLESS_MAX_TURNS) || 15)
         const agentCfg = createAgentConfig(createMainAgentConfigInput({
+          runtimeSubmission,
           userInstructions,
           inheritFrozenFrom: instructionsFrozen,
           apiKey: key,
@@ -1081,8 +1098,19 @@ async function main() {
         savings,
       }
     },
-    loadOfficial: () => {
+    officialSourceKey: () => {
       const provider = ctx?.provider
+      if (provider?.auth?.type !== 'tianshu-account') return `legacy/${provider?.name}/${provider?.baseUrl}`
+      const status = getOfficialStatus()
+      return JSON.stringify(['tianshu', provider.name, status.sourceEpoch, status.identity, status.status])
+    },
+    loadOfficial: async () => {
+      const provider = ctx?.provider
+      if (provider?.auth?.type === 'tianshu-account') {
+        const identity = captureOfficialIdentity()
+        if (!identity) throw Error('auth_required')
+        return { source: 'tianshu' as const, customerView: await getOfficialCustomerView(identity) }
+      }
       const apiKey = provider?.apiKey ?? (provider?.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined)
       return fetchOfficialUsage({ apiKey, baseUrl: provider?.baseUrl })
     },
@@ -1470,9 +1498,9 @@ async function main() {
       }
     }
     if (midSession) tuiApp.commitStatic(DOMAIN_SWITCH_CACHE_WARNING)
-  }, /* modelPickerExec: */ (provider: string, modelId: string, effort?: string) => {
+  }, /* modelPickerExec: */ async (provider: string, modelId: string, effort?: string) => {
     // Enter applies to this session; apply effort only after the target runtime exists.
-    const res = switchAgentRuntime(ctx!, modelId, provider)
+    const res = await switchPreparedAgentRuntime(ctx!, modelId, provider)
     if (res.ok && res.modelName) {
       applyPickerEffort(ctx!, effort)
       tuiApp.setModelInfo(res.modelName, res.contextWindow)
@@ -1506,10 +1534,10 @@ async function main() {
       tuiApp.commitStatic(`⚠️ 设置默认失败: ${(err as Error).message}`)
     }
     if (midSession) tuiApp.commitStatic(DOMAIN_SWITCH_CACHE_WARNING)
-  }, /* modelPickerSaveDefaultExec: */ (provider: string, modelId: string, effort?: string) => {
+  }, /* modelPickerSaveDefaultExec: */ async (provider: string, modelId: string, effort?: string) => {
     // s applies the model and persists it as the default.
     // effort 有显式改动时：会话即时生效 + 随默认持久化（'auto' = 清字段回自动）。
-    const res = switchAgentRuntime(ctx!, modelId, provider)
+    const res = await switchPreparedAgentRuntime(ctx!, modelId, provider)
     if (res.ok && res.modelName) {
       applyPickerEffort(ctx!, effort)
       tuiApp.setModelInfo(res.modelName, res.contextWindow)
@@ -1544,7 +1572,7 @@ async function main() {
     } catch (err) {
       tuiApp.commitStatic(`⚠️ 设置默认失败: ${(err as Error).message}`)
     }
-  }, /* choicePanelExec: */ (id: string) => {
+  }, /* choicePanelExec: */ async (id: string) => {
     // 应用并持久化权限模式：会话内即时生效（agent）+ 底栏 badge 同步（tuiApp）+
     // 写入 ~/.rivet/config.json（重启后仍是该模式，无需重选）。
     const applyPermission = (mode: string) => {
@@ -1650,7 +1678,7 @@ async function main() {
             if (!modelAlias) {
               runtime = { needed: true, switched: false, error: '默认 provider 没有可用模型' }
             } else {
-              const res = switchAgentRuntime(ctx, modelAlias, fresh.provider.default)
+              const res = await switchPreparedAgentRuntime(ctx, modelAlias, fresh.provider.default)
               if (res.ok && res.modelName) {
                 tuiApp.setModelInfo(res.modelName, res.contextWindow)
                 for (const warning of res.warnings ?? []) tuiApp.commitStatic(warning)
@@ -1698,6 +1726,7 @@ async function main() {
       return true
     }
 
+    void (async () => {
     // Reload from disk and hot-swap the in-memory provider table so
     // switchAgentRuntime (which reads ctx.config) sees the new provider.
     let liveApplied = false
@@ -1709,7 +1738,7 @@ async function main() {
           provider: ctx.provider.name, model: ctx.agent.config.promptEngine.getModel(),
         })
         if (selection) {
-          const res = switchAgentRuntime(ctx, selection.model, selection.provider)
+          const res = await switchPreparedAgentRuntime(ctx, selection.model, selection.provider)
           if (res.ok && res.modelName) {
             tuiApp.setModelInfo(res.modelName, res.contextWindow)
             for (const warning of res.warnings ?? []) tuiApp.commitStatic(warning)
@@ -1725,6 +1754,7 @@ async function main() {
         ? `✅ ${summary}\n下一步：直接开始对话——/model 可随时切换模型，/connect 可再添加服务商。`
         : `✅ ${summary}\n（已保存到配置。若模型未切换，重启天枢后生效。）\n下一步：/model 切换模型，/connect 再添加服务商。`,
     )
+    })()
     return true
   }, /* planPickerExec: */ (slug: string) => {
     // Plan Picker Enter 回调：批准选中计划并自动 kickoff 分波执行（与 /plan-approve 共用）。

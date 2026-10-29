@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import type { StreamClient } from '../api/stream-client.js'
 import type { ArtifactStore } from '../artifact/store.js'
 import { appendFile, mkdir } from 'node:fs/promises'
@@ -89,6 +90,7 @@ export async function repairReportOnce(client: StreamClient, model: string, prom
     max_tokens: REPORT_TOKEN_LIMIT, response_format: { type: 'json_object' },
     diagnostics: { ...audit, purpose: 'worker_report_repair', baseline: 'baseline_missing' },
   }, { onText: delta => { text += delta }, onStop: reason => { truncated = reason === 'max_tokens' || reason === 'length' } }, hooks)
+  if (error instanceof OfficialError) throw error
   let reason = error?.message ?? (truncated ? 'truncated report repair' : isReportChannelError(text) ? 'channel: DSML in report repair' : undefined)
   if (!reason) {
     try { parseWorkerResult(text, 'repair') } catch (err) { reason = String(err) }

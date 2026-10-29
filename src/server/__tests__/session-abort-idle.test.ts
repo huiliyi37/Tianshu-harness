@@ -109,7 +109,7 @@ test('abort on an existing idle session still reports success', () => {
   assert.equal(mgr.abort('ghost'), false, 'unknown session → 404')
 })
 
-test('abort still stops a running session and records the marker', () => {
+test('abort still stops a running session and records the marker', async () => {
   const persistence = new RecordingPersistence()
   const agents: HangingAgent[] = []
   const mgr = new RuntimeSessionManager({
@@ -118,6 +118,8 @@ test('abort still stops a running session and records the marker', () => {
   })
   const s = mgr.createSession({ prompt: 'go' })
   assert.equal(mgr.getSession(s.id)!.status, 'running')
+  for (let elapsed = 0; agents.length === 0 && elapsed < 1000; elapsed += 10) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(agents.length, 1, 'project preparation eventually starts the live agent')
   reset(persistence)
 
   assert.equal(mgr.abort(s.id), true)

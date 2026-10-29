@@ -82,6 +82,10 @@ export const DEFAULT_CLOCK_SKEW_MS = 10 * 60 * 1000
 export const PRO_GRANT_TIERS = ['pro', 'max', 'lifetime'] as const
 
 export interface ProGrantClaims {
+  source?: string
+  subject?: string
+  accountSessionId?: string
+  membershipRevision?: string
   product: string
   deviceId?: string
   tier?: string
@@ -100,6 +104,9 @@ export interface ProGrantClaims {
 }
 
 export type ProGrantReason =
+  | 'membership_owner_required'
+  | 'source_mismatch'
+  | 'account_mismatch'
   | 'ok'
   | 'grace'
   | 'missing'
@@ -208,6 +215,12 @@ export function verifyProGrant(
   if (!sig.ok) return sig
   const claims = sig.claims
 
+  if (claims.source === 'official-membership') {
+    const checked = validateOfficialMembershipClaims(claims, opts)
+    return checked.ok ? { ok: false, reason: 'membership_owner_required' } : checked
+  }
+  if (claims.source !== undefined || claims.subject !== undefined || claims.accountSessionId !== undefined || claims.membershipRevision !== undefined) return { ok: false, reason: 'source_mismatch' }
+
   if (claims.product !== LICENSE_PRODUCT) return { ok: false, reason: 'product_mismatch' }
   if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) {
     return { ok: false, reason: 'bad_payload' }
@@ -256,4 +269,23 @@ export function verifyProGrant(
   return grace
     ? { ok: true, reason: 'grace', claims, graceUntil: deadline }
     : { ok: true, reason: 'ok', claims }
+}
+
+export function validateOfficialMembershipClaims(claims: ProGrantClaims, opts: VerifyProGrantOptions = {}, owner?: { subject: string; accountSessionId: string; deviceId: string }): ProGrantResult {
+  if (claims.source !== 'official-membership') return { ok: false, reason: 'source_mismatch' }
+  if (claims.product !== LICENSE_PRODUCT) return { ok: false, reason: 'product_mismatch' }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (claims.tier !== 'pro' || claims.maxOfflineMs !== 0 || typeof claims.subject !== 'string' || !uuid.test(claims.subject)
+    || typeof claims.accountSessionId !== 'string' || !uuid.test(claims.accountSessionId)
+    || typeof claims.deviceId !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(claims.deviceId)
+    || typeof claims.membershipRevision !== 'string' || !/^\d{1,256}$/.test(claims.membershipRevision)
+    || ![claims.iat, claims.exp, claims.lic].every(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+    || claims.exp <= claims.iat! || claims.exp - claims.iat! > 60000 || claims.exp > claims.lic!) return { ok: false, reason: 'bad_payload' }
+  if ((opts.deviceId !== undefined && claims.deviceId !== opts.deviceId) || (owner && claims.deviceId !== owner.deviceId)) return { ok: false, reason: 'device_mismatch' }
+  if (owner && (claims.subject !== owner.subject || claims.accountSessionId !== owner.accountSessionId)) return { ok: false, reason: 'account_mismatch' }
+  const now = opts.now ?? Date.now()
+  if (now < claims.iat!) return { ok: false, reason: 'not_yet_valid' }
+  if (now >= claims.lic!) return { ok: false, reason: 'license_expired' }
+  if (now >= claims.exp) return { ok: false, reason: 'expired' }
+  return { ok: true, reason: 'ok', claims }
 }

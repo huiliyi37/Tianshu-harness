@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import { workerDeliverySchema } from '../agent/work-order.js'
 import { z } from 'zod'
 import type { CoordinatorRun, DelegationRequest } from '../agent/coordinator.js'
@@ -323,6 +324,7 @@ export function createDelegateTaskTool(
         // 吞掉会把 abort 记成 runtime_gate 失败，喂给 vigor/doom-loop 指纹。
         // 注意 coordinator 的 abort 抛的是 Error('Delegation aborted: …')，
         // name 不是 AbortError，而管道只认 name——rethrow 前统一捏成 AbortError。
+        if (err instanceof OfficialError) throw err
         const isAbort = params.abortSignal?.aborted === true
           || (err instanceof Error && err.name === 'AbortError')
           || msg.includes('Delegation aborted')

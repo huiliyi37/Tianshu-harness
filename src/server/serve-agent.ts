@@ -1,4 +1,8 @@
 import { liveHandoffInput } from '../agent/live-handoff.js'
+import { createServeTimingLogger } from './serve-timing.js'
+import { resolveInitialSpec, prepareManagedTarget } from './agent-model-selection.js'
+import { isOfficialProvider } from '../models/model-runtime.js'
+import type { AuthProvider } from '../auth/types.js'
 import { createSkillDraftWriter, SKILL_CREATION_TOOLS } from '../skills/skill-creation.js'
 import { previewContinuityRecovery, applyContinuityRecovery, withContinuityAvailable } from '../agent/continuity-recovery.js'
 /**
@@ -74,6 +78,7 @@ import {
   resolveServeContext,
   resolveModelSpec,
   resolveModelSpecWithReload,
+  resolveManagedTargetSelection,
   isModelSpecUsable,
   unconfiguredSpecMessage,
   restoreHistoryMessages,
@@ -214,7 +219,7 @@ interface SessionStores {
  * overwrites it. Call forgetSessionStores when a session is permanently
  * destroyed to bound memory.
  */
-const sessionStoresById = new Map<string, { stores: SessionStores; cwd: string; currentModelRef?: () => string }>()
+const sessionStoresById = new Map<string, { stores: SessionStores; cwd: string; submission?: () => import('../models/model-runtime.js').ModelSubmission | undefined; currentModelRef?: () => string }>()
 
 /** Late-bound goal handles for the session-manager's goal methods. Returns
  *  undefined when no stores have been built for this session yet (idle /
@@ -236,6 +241,7 @@ export function resolveGoalHandles(
   return {
     goalTrackerRef: entry.stores.refs.goalTrackerRef,
     currentModelRef: entry.currentModelRef?.(),
+    runtimeSubmission: entry.submission?.(),
     sessionDir: getSessionDir(entry.cwd),
     ...(config?.workers?.profiles?.cheap ? { cheapProfile: config.workers.profiles.cheap } : {}),
     ...(config?.provider?.providers ? { allProviders: config.provider.providers } : {}),
@@ -291,6 +297,8 @@ export function resolveHistoryRestore(
 }
 
 interface PreparedSession {
+  selectedSpec?: ResolvedModelSpec
+  ownedOfficialAuth?: AuthProvider
   persist: SessionPersist
   messages: import('../api/oai-types.js').OaiMessage[]
   baseline: BaselineSnapshot
@@ -298,13 +306,29 @@ interface PreparedSession {
 
 export async function buildManagedAgentAsync(
   args: Parameters<typeof buildManagedAgent>, signal?: AbortSignal, expectedTranscriptWatermark?: number,
+  initialSelection?: NonNullable<ReturnType<typeof resolveManagedTargetSelection>>,
 ): Promise<import('./session-manager.js').ManagedAgent> {
-  const [ctx, cwd, sessionId, registry, approval, shared, reload, model, allowed] = args
+  const timing = process.env.RIVET_SERVE_TIMING === '1' ? createServeTimingLogger(true) : undefined
+  const markAssemblyPhase = (phase: string) => {
+    if (timing) timing.mark(phase, `elapsedMs=${Math.round(timing.elapsedMs())} wallMs=${Date.now()}`)
+  }
+  let [ctx, cwd, sessionId, registry, approval, shared, reload, model, allowed] = args
+  markAssemblyPhase('managed-target-start')
+  const target = await prepareManagedTarget(ctx, model, reload, isOfficialProvider(ctx.provider) ? ctx.auth : undefined, true, signal, initialSelection)
+  markAssemblyPhase('managed-target-ready')
+  ctx = target!.context
   signal?.throwIfAborted()
   const persist = new SessionPersist(sessionId, cwd, {
     recoveryStructuredTools: ctx.config.agent.recovery?.structuredTools,
   })
-  const [messages, baseline] = await Promise.all([persist.loadOaiAsync(signal), captureGitBaselineAsync(cwd, signal)])
+  markAssemblyPhase('managed-prefetch-start')
+  const messagesRead = persist.loadOaiAsync(signal)
+  const baselineRead = captureGitBaselineAsync(cwd, signal)
+  const [messages, baseline] = await Promise.all([
+    timing ? messagesRead.then(messages => { markAssemblyPhase('managed-history-ready'); return messages }) : messagesRead,
+    timing ? baselineRead.then(baseline => { markAssemblyPhase('managed-baseline-ready'); return baseline }) : baselineRead,
+  ])
+  markAssemblyPhase('managed-prefetch-ready')
   const meta = persist.loadMetadata()
   if (messages.length && shouldReconcileDisk(meta)) {
     const { writes, complete } = await findRecentUnrecordedWritesAsync(cwd, messages, {
@@ -315,7 +339,10 @@ export async function buildManagedAgentAsync(
     if (!complete) messages.push({ role: 'system', content: 'Disk reconciliation is incomplete; verify existing work before repeating any external operation.' })
   }
   signal?.throwIfAborted()
-  return buildManagedAgent(ctx, cwd, sessionId, registry, approval, shared, reload, model, allowed, { persist, messages, baseline }, expectedTranscriptWatermark)
+  markAssemblyPhase('managed-sync-build-start')
+  const managed = buildManagedAgent(ctx, cwd, sessionId, registry, approval, shared, reload, model, allowed, { persist, messages, baseline, selectedSpec: target!.spec, ownedOfficialAuth: target!.ownedOfficialAuth }, expectedTranscriptWatermark)
+  markAssemblyPhase('managed-sync-build-ready')
+  return managed
 }
 
 function buildSessionStores(
@@ -707,14 +734,7 @@ function assembleAgentLoop(
  *  API key or an OAuth provider. After a sidecar crash-restart, a provider that
  *  relies on `apiKeyEnv` whose variable is not present in the respawned process
  *  resolves to apiKey='' — running against it produces a raw upstream 401. */
-function specOfContext(ctx: ServeContext): ResolvedModelSpec {
-  return {
-    provider: ctx.provider,
-    apiKey: ctx.apiKey,
-    auth: ctx.auth,
-    model: { id: ctx.model.id, maxTokens: ctx.model.maxTokens, contextWindow: ctx.model.contextWindow, reasoningEffort: ctx.model.reasoningEffort, capabilities: ctx.model.capabilities },
-  }
-}
+
 
 /**
  * Resolve the spec a new session starts on. When `reload` is provided (the
@@ -723,17 +743,7 @@ function specOfContext(ctx: ServeContext): ResolvedModelSpec {
  * — the startup snapshot's key may be stale or revoked. Tests that inject a
  * synthetic context pass no `reload` and keep the deterministic snapshot.
  */
-function resolveInitialSpec(ctx: ServeContext, reload?: () => ServeContext): ResolvedModelSpec {
-  if (reload) {
-    try {
-      const fresh = reload()
-      if (fresh.configured) return specOfContext(fresh)
-    } catch { /* mid-edit / broken config on disk — fall back to the snapshot */ }
-  }
-  if (ctx.configured) return specOfContext(ctx)
-  // Re-read config — the user may have called POST /config/providers since startup.
-  return specOfContext(resolveServeContext())
-}
+
 
 export function buildAgentLoop(
   ctx: ServeContext,
@@ -773,25 +783,29 @@ export function buildManagedAgent(
 ): import('./session-manager.js').ManagedAgent {
   const stores = buildSessionStores(ctx, cwd, sessionId, registry, shared, prepared, expectedTranscriptWatermark)
   // Expose stores and the live model to session-manager; replace stale rebuild entries.
-  sessionStoresById.set(sessionId, { stores, cwd, currentModelRef: () => spec.keyId
+  sessionStoresById.set(sessionId, { stores, cwd, submission: () => agent.config.runtimeSubmission, currentModelRef: () => spec.keyId
     ? `${spec.provider.name}:${spec.keyId}:${spec.model.id}` : `${spec.provider.name}:${spec.model.id}` })
-  // Rehydrate on the recorded model; resumeRun gates an unresolved preference
-  // before a request can silently use the default model.
-  let spec: ResolvedModelSpec =
-    (preferredModelId
-      ? reload
-        ? resolveModelSpecWithReload(ctx, preferredModelId, reload)
-        : resolveModelSpecWithReload(ctx, preferredModelId)
-      : null) ?? resolveInitialSpec(ctx, reload)
-  let agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared, allowedTools, reload)
+  // Model affinity: a rehydrated session builds on the model its prefix cache was built on (record.model → preferredModelId),
+  // never silently on the default — that is used only when the id no longer resolves (resumeRun() gates it fail-closed).
+  let spec: ResolvedModelSpec, agent: ReturnType<typeof assembleAgentLoop>
+  try {
+    spec = prepared?.selectedSpec ?? (preferredModelId ? resolveModelSpecWithReload(ctx, preferredModelId, reload) : null) ?? resolveInitialSpec(ctx, reload)
+    agent = assembleAgentLoop(ctx, cwd, sessionId, stores, spec, approvalMode, registry, shared, allowedTools, prepared?.selectedSpec ? () => ctx : reload)
+  } catch (error) {
+    // A half-built session must not keep its stores: later lookups would treat it as built and report a missing
+    // capability (e.g. "安装包未包含极限思考") instead of the real build failure. Only drop the entry if it is still ours.
+    if (sessionStoresById.get(sessionId)?.stores === stores) sessionStoresById.delete(sessionId)
+    throw error
+  }
   // Rebuild the loop on a new spec, preserving conversation + stores. Shared
   // by switchModel and the run pre-flight self-heal below.
   let runtimeNoticeHandler: ((message: string) => void) | undefined
+  let ownedOfficialAuth = prepared?.ownedOfficialAuth ?? (isOfficialProvider(spec.provider) ? spec.auth : undefined)
   const rebuildOnSpec = (next: ResolvedModelSpec, explicitModelChange = false) => {
     const oldAgent = agent
     const liveApprovalMode = oldAgent.config.approvalMode
     const candidate = buildReplacementAgent(oldAgent, stores.refs, stores.deepRecallAgentRef, explicitModelChange,
-      inherited => assembleAgentLoop(ctx, cwd, sessionId, stores, next, liveApprovalMode, registry, shared, allowedTools, reload, inherited, oldAgent.config.promptEngine.getUserInstructionsSnapshot()),
+      inherited => assembleAgentLoop(ctx, cwd, sessionId, stores, next, liveApprovalMode, registry, shared, allowedTools, () => ctx, inherited, oldAgent.config.promptEngine.getUserInstructionsSnapshot()),
       text => { if (runtimeNoticeHandler) runtimeNoticeHandler(text); else process.stderr.write(text + '\n') })
     spec = next
     agent = candidate
@@ -799,7 +813,7 @@ export function buildManagedAgent(
   }
   return {
     setRuntimeNoticeHandler: handler => { runtimeNoticeHandler = handler },
-    run: (prompt, callbacks, images, options) => {
+    run: async (prompt, callbacks, images, options) => {
       // Auth pre-flight: if this session's model has no usable key (e.g. an
       // apiKeyEnv provider after a sidecar restart lost its env), fail with a
       // clear, actionable message instead of sending the request and surfacing
@@ -810,8 +824,12 @@ export function buildManagedAgent(
         // Settings AFTER this agent was built. Re-resolve the same model
         // against the live config and rebuild in place — the session then
         // just works instead of demanding a sidecar restart.
-        const healed = reload ? resolveModelSpecWithReload(ctx, spec.model.id, reload) : null
-        if (healed && isModelSpecUsable(healed)) rebuildOnSpec(healed)
+        const healed = reload ? await prepareManagedTarget(ctx, spec.model.id, reload, ownedOfficialAuth, false) : null
+        if (healed && isModelSpecUsable(healed.spec)) {
+          ctx = healed.context
+          ownedOfficialAuth = healed.ownedOfficialAuth
+          rebuildOnSpec(healed.spec)
+        }
         else return Promise.reject(new Error(unconfiguredSpecMessage(spec)))
       }
       return waitForAgentRewind(agent).then(() => agent.run(prompt, callbacks, images, options))
@@ -854,11 +872,14 @@ export function buildManagedAgent(
     // switchModel 会累积泄漏。先 capture old，装新后调 shutdown 释放。
     // Wave J: 透传 shared 让 switchModel 后仍复用 providerHealth/domainStore，
     // 健康数据不丢、knowledge 不重 load。
-    switchModel: (modelId) => {
+    switchModel: async (modelId) => {
       // First-install / post-startup config edits: resolve against the live
       // config, not just the startup snapshot. See resolveModelSpecWithReload.
-      const next = resolveModelSpecWithReload(ctx, modelId, reload)
-      if (!next) return null
+      const target = await prepareManagedTarget(ctx, modelId, reload, ownedOfficialAuth, false)
+      if (!target) return null
+      ctx = target.context
+      ownedOfficialAuth = target.ownedOfficialAuth
+      const next = target.spec
       // Audit: capture the outgoing model before the rebuild replaces it.
       // (rebuildOnSpec cancels the old loop's idle compaction — it shares this
       // SessionContext with the incoming loop — and preserves the live

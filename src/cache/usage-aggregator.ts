@@ -67,9 +67,9 @@ export interface UsageTotals {
    */
   billedHitRate: number | null
   /** total cost in the model's billing currency (per computeUsageCost) */
-  cost: number
+  cost: number | null
   /** money saved by cache hits: ΣcacheRead × (missPrice − hitPrice) */
-  savings: number
+  savings: number | null
 }
 
 export interface ModelUsage extends UsageTotals {
@@ -183,6 +183,7 @@ interface Accumulator {
   /** hit-rate quotient parts — main rows only */
   mainInput: number
   mainCacheRead: number
+  unpriced: boolean
   cost: number
   savings: number
 }
@@ -192,7 +193,7 @@ function newAccumulator(): Accumulator {
     prefixSamples: 0, prefixStable: 0, retryRequests: 0, cacheCreateUnreported: 0, hitRateUnknown: 0,
     requests: 0, sidePathRequests: 0,
     input: 0, cacheRead: 0, cacheCreate: 0, output: 0,
-    mainInput: 0, mainCacheRead: 0,
+    mainInput: 0, mainCacheRead: 0, unpriced: false,
     cost: 0, savings: 0,
   }
 }
@@ -213,6 +214,7 @@ function addRow(acc: Accumulator, row: CacheUsageRow, pricing: ModelConfig['pric
   acc.cacheRead += row.cacheRead
   acc.cacheCreate += row.cacheCreate
   acc.output += row.output
+  if (!pricing) acc.unpriced = true
   if (pricing) {
     acc.cost += computeUsageCost({
       input_tokens: row.input,
@@ -241,8 +243,8 @@ function toTotals(acc: Accumulator): UsageTotals {
     output: acc.output,
     hitRate: acc.mainInput > 0 ? Math.round(acc.mainCacheRead / acc.mainInput * 1000) / 10 : null,
     billedHitRate: acc.input > 0 ? Math.round(acc.cacheRead / acc.input * 1000) / 10 : null,
-    cost: round(acc.cost),
-    savings: round(acc.savings),
+    cost: acc.unpriced ? null : round(acc.cost),
+    savings: acc.unpriced ? null : round(acc.savings),
   }
 }
 
@@ -308,7 +310,7 @@ export function aggregateUsageRows(rows: readonly CacheUsageRow[], options: Aggr
   const sortModels = (entries: ReadonlyMap<string, ModelBucket>): ModelUsage[] =>
     [...entries.values()]
       .map(({ model, provider, acc }) => ({ model, ...(provider ? { provider } : {}), ...toTotals(acc) }))
-      .sort((a, b) => b.cost - a.cost || b.input - a.input || a.model.localeCompare(b.model) || (a.provider ?? '').localeCompare(b.provider ?? ''))
+      .sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1) || b.input - a.input || a.model.localeCompare(b.model) || (a.provider ?? '').localeCompare(b.provider ?? ''))
 
   const days: DayUsage[] = [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))

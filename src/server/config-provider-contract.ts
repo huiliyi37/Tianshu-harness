@@ -13,7 +13,8 @@ export interface ProviderListItem {
   keyStatus: { source: 'inline' | 'env' | 'none'; ref: string }
   /** OAuth 型 provider（codex 订阅制）：存在即 'oauth'。此时 keyStatus 恒 none
    *  （没有 API key 这个概念），UI 应看 oauthAuthenticated 而不是 keyStatus。 */
-  authType?: 'oauth'
+  authType?: 'oauth' | 'tianshu-account'
+  officialAvailable?: boolean
   /** OAuth 型 provider 的登录态（token store 可读即 true）。非 oauth 不下发。 */
   oauthAuthenticated?: boolean
   /** 无需 API key 的端点：keyless 预设（ollama），或未配任何密钥材料的自定义

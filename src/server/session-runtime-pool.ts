@@ -62,10 +62,11 @@ export class SessionRuntimePool implements RuntimePool {
           listening = true
         }
         try {
-          const { status, summary, changedFiles, haltedApp } = await execution
+          const { status, summary, changedFiles, haltedApp, officialFailure } = await execution
           // Propagate real terminal state: a failed/aborted run must NOT be
           // recorded as completed. Throwing lets TaskRegistry mark failed (or,
           // when the abort came from cancel/timeout, keep that terminal state).
+          if (officialFailure) throw officialFailure
           if (status === 'failed' || status === 'aborted') {
             const err = new Error(summary || `session ${status}`)
             // 无人值守中止：缺授权的 app 名挂在 error 上，registry 结构化落

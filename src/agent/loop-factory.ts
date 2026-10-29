@@ -601,7 +601,7 @@ function buildLazyCopilotCompletion(self: AgentLoop): (system: string, user: str
         const cheapProfile = cfg.workers?.profiles?.cheap
         const allProviders = self.config.allProviders ?? {}
         if (!cheapProfile || !allProviders[cheapProfile.provider]) return null
-        const cheap = buildCheapClient(cheapProfile, allProviders, self.config.sessionId)
+        const cheap = buildCheapClient(cheapProfile, allProviders, self.config.sessionId, self.config.runtimeSubmission)
         return cheap ? completionFromClient(cheap.client, cheap.model) : null
       } catch {
         return null
@@ -889,7 +889,7 @@ export function createRuntimeHooksPipeline(self: AgentLoop): RuntimeHookPipeline
         // 三路素材收口：① 正则观察缓冲 ② agent 手动 remember（scope=project 的
         // 本会话 claims——memory 工具已停直写，项目级持久化由闸门裁决）③ 失败模式
         getCandidates: () => postSessionCandidates(self),
-        getFailureJournal: () => postSessionInput(self, 'failureJournal', () => self.failureJournal),
+        getFailureJournal: self.config.automaticMemoryReview === false ? undefined : () => postSessionInput(self, 'failureJournal', () => self.failureJournal),
         complete: async (prompt: string, timeoutMs: number) => {
           return runGateCompletion(gateClient, recordSidePath, prompt, timeoutMs)
         },
@@ -908,6 +908,7 @@ export function createRuntimeHooksPipeline(self: AgentLoop): RuntimeHookPipeline
     // 记忆形成侧：重要操作后模型判断 + 写入 LTM。复用 essence-gate 的廉价
     // LLM 通道（side-path 记账）与 session id。无 client 时不装配（fail-closed）。
     autoCapture: (() => {
+      if (self.config.automaticMemoryReview === false) return undefined
       const captureClient = self.config.compactClient ?? self.config.primaryClient ?? self.config.client
       // worker 子会话不写主项目 LTM（隔离边界，防 worker 观察污染）。
       const isWorker = self.config.sessionId?.startsWith('worker-') ?? false
@@ -924,6 +925,7 @@ export function createRuntimeHooksPipeline(self: AgentLoop): RuntimeHookPipeline
     })(),
     // 会话结束巩固：复用 essence-gate 廉价 LLM 通道，生成摘要 + procedure 写 LTM。
     sessionConsolidation: (() => {
+      if (self.config.automaticMemoryReview === false) return undefined
       const consolidateClient = self.config.compactClient ?? self.config.primaryClient ?? self.config.client
       // worker 子会话不做会话级巩固（隔离边界）。
       const isWorker = self.config.sessionId?.startsWith('worker-') ?? false

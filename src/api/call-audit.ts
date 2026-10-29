@@ -166,7 +166,7 @@ export interface ProviderCallModelStat {
   cacheRead: number
   cacheCreate: number
   reasoning: number
-  /** 只有命中定价配置才累计;costKnown=false 时恒 0,避免把未定价模型算成免费。 */
+  /** 已定价部分的金额；costKnown=false 时是不完整小计，不可显示为完整费用。 */
   cost: number
   costKnown: boolean
 }
@@ -179,7 +179,7 @@ export interface ProviderCallGroupStat extends Omit<ProviderCallModelStat, 'prov
 export interface ProviderCallSummary {
   since: number
   generatedAt: number
-  totals: { requests: number; usageMissing: number; input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number; cost: number }
+  totals: { requests: number; usageMissing: number; input: number; output: number; cacheRead: number; cacheCreate: number; reasoning: number; cost: number; costKnown: boolean }
   groups: ProviderCallGroupStat[]
 }
 
@@ -206,31 +206,32 @@ function normalizeAuditUsage(usage: Record<string, number> | undefined): { input
 export function summarizeCallAudit(options: { since?: number; resolvePricing?: (model: string | undefined, provider: string | undefined, timestamp: number) => ModelConfig['pricing'] } = {}): ProviderCallSummary {
   const since = options.since ?? 0
   const groups = new Map<CallSourceGroup, { stat: ProviderCallGroupStat; models: Map<string, ProviderCallModelStat> }>()
-  const totals = { requests: 0, usageMissing: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0 }
+  const totals = { requests: 0, usageMissing: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0, costKnown: true }
   for (const row of loadCallAuditRecords()) {
     if (row.t < since) continue
     const groupKey = callSourceGroup(row.purpose)
     let entry = groups.get(groupKey)
     if (!entry) {
-      entry = { stat: { group: groupKey, requests: 0, usageMissing: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0, costKnown: false, models: [] }, models: new Map() }
+      entry = { stat: { group: groupKey, requests: 0, usageMissing: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0, costKnown: true, models: [] }, models: new Map() }
       groups.set(groupKey, entry)
     }
     const model = row.responseModel ?? row.model
     const modelKey = `${row.provider ?? ''}${model ?? ''}`
     let bucket = entry.models.get(modelKey)
     if (!bucket) {
-      bucket = { provider: row.provider, model, requests: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0, costKnown: false }
+      bucket = { provider: row.provider, model, requests: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, reasoning: 0, cost: 0, costKnown: true }
       entry.models.set(modelKey, bucket)
     }
     entry.stat.requests++; bucket.requests++; totals.requests++
     const usage = normalizeAuditUsage(row.usage)
-    if (!usage) { entry.stat.usageMissing++; totals.usageMissing++; continue }
+    if (!usage) { entry.stat.usageMissing++; totals.usageMissing++; entry.stat.costKnown = bucket.costKnown = totals.costKnown = false; continue }
     const pricing = options.resolvePricing?.(model, row.provider, row.t)
     const cost = pricing ? computeUsageCost({ input_tokens: usage.input, output_tokens: usage.output, cache_read_input_tokens: usage.cacheRead, cache_creation_input_tokens: usage.cacheCreate, reasoning_tokens: usage.reasoning }, pricing).total : 0
-    if (pricing) { entry.stat.costKnown = true; bucket.costKnown = true }
-    for (const target of [entry.stat, bucket, totals] as Array<Pick<ProviderCallModelStat, 'input' | 'output' | 'cacheRead' | 'cacheCreate' | 'reasoning' | 'cost'>>) {
+    const costKnown = row.usageKnown !== false && !!pricing && Number.isFinite(cost)
+    for (const target of [entry.stat, bucket, totals] as Array<Pick<ProviderCallModelStat, 'input' | 'output' | 'cacheRead' | 'cacheCreate' | 'reasoning' | 'cost' | 'costKnown'>>) {
       target.input += usage.input; target.output += usage.output; target.cacheRead += usage.cacheRead
       target.cacheCreate += usage.cacheCreate; target.reasoning += usage.reasoning; target.cost += cost
+      target.costKnown &&= costKnown && Number.isFinite(target.cost)
     }
   }
   return {

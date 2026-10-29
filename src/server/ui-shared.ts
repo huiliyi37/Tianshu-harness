@@ -133,5 +133,7 @@ export {
 
 export { STELLAR_CARDS, stellarCard } from '../agent/stellar-card.js'
 export { remoteAccessOrigin } from './remote-access-endpoint.js'
+export type { OfficialStatus, OfficialErrorCode, Purpose, Catalog, PriceQuote, AccountSummary, AccountOperation, AccountOperationResult, OfficialCustomerView } from '../models/official-contract.js'
+export { parseOfficialCustomerView, projectCustomerOperation, validateCustomerOperation } from '../models/official-customer-view.js'
 
 export { readPlanCompletionSummary } from '../plan/completion-summary.js'

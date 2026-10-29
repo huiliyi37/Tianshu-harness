@@ -1,3 +1,7 @@
+import { parseDeviceCreate, parseDevicePoll } from './account-device-response.js'
+import { nativeDeviceMetadata } from './device-metadata.js'
+import { errors as undiciErrors } from 'undici'
+export { parseDeviceCreate, parseDevicePoll } from './account-device-response.js'
 /**
  * 天枢账号登录（RFC 8628 device flow，服务端为官网 Supabase Edge Functions）。
  *
@@ -18,7 +22,7 @@
  * token + Rust 验签负责（`desktop/src-tauri/src/activation.rs`）。两者分开存储：
  * `<RIVET_HOME>/account.json` vs `<RIVET_HOME>/license.json`。
  */
-import { TokenStore, type AccountProfileSnapshot as StoredAccountProfile, type FoundingBadgeSnapshot, type TokenData } from './token-store.js'
+import { TokenStore, type AccountProfileSnapshot as StoredAccountProfile, type FoundingBadgeSnapshot, type TokenData, type AccountSource } from './token-store.js'
 import { fetchAccountSnapshot as fetchSnapshot, type AccountSyncResult } from './account-sync.js'
 import { AccountDeviceRequestError, classifyDeviceError, deviceHttpError } from './account-device-errors.js'
 import { FOUNDING_USER_LIMIT, isFoundingBadge, tierOfBadgeCode, tierOfRank } from '../agent/founding-tiers.js'
@@ -122,40 +126,11 @@ export interface DeviceCreateResult {
   verifyUrl: string
 }
 
-/**
- * 解析 `tui-auth-create` 的响应。
- *
- * 三个字段缺一不可：deviceCode 用于轮询，userCode 要展示给用户，
- * verifyUrl 是让用户去浏览器打开的地方——缺任何一个流程都走不下去，
- * 返回半成品只会让故障点后移（表现为「转圈」而不是报错）。
- */
-export function parseDeviceCreate(raw: Record<string, unknown>): DeviceCreateResult {
-  const deviceCode = raw.deviceCode
-  const userCode = raw.userCode
-  const verifyUrl = raw.verifyUrl
-
-  if (typeof deviceCode !== 'string' || !deviceCode) {
-    throw new Error('device create: missing deviceCode')
-  }
-  if (typeof userCode !== 'string' || !userCode) {
-    throw new Error('device create: missing userCode')
-  }
-  if (typeof verifyUrl !== 'string' || !verifyUrl) {
-    throw new Error('device create: missing verifyUrl')
-  }
-
-  return {
-    deviceCode,
-    userCode,
-    verifyUrl,
-    expiresIn: typeof raw.expiresIn === 'number' ? raw.expiresIn : 300,
-    pollInterval: typeof raw.pollInterval === 'number' ? raw.pollInterval : 5,
-  }
-}
 
 export interface RequestDeviceCodeOpts extends FetchInjection {
   tuiVersion?: string
   deviceName?: string
+  clientKind?: 'desktop' | 'cli'
   /** 客户端持久硬件指纹——授权页用它作为设备标识（迁移 047 起） */
   deviceFingerprint?: string
 }
@@ -169,7 +144,7 @@ export async function requestDeviceCode(opts: RequestDeviceCodeOpts = {}): Promi
       headers: accountHeaders(),
       body: JSON.stringify({
         tuiVersion: opts.tuiVersion ?? null,
-        deviceName: opts.deviceName ?? null,
+        ...nativeDeviceMetadata(opts.deviceName, opts.clientKind),
         deviceFingerprint: opts.deviceFingerprint ?? null,
         // 客户端登录必须自证「持久设备绑定」用途：服务端 tui-auth-create 也接受
         // account-login，但 2026-10-17 实测响应回显的 purpose 仍是 client-login——
@@ -219,6 +194,9 @@ export type PollStatus =
   | 'already_consumed'
   | 'error'
 
+const trustedPolls = new WeakSet<object>()
+const freshDevicePolls = new WeakSet<object>()
+
 export interface DevicePollResult {
   status: PollStatus
   accessToken?: string
@@ -226,31 +204,6 @@ export interface DevicePollResult {
   expiresIn?: number
 }
 
-/**
- * 解析 `tui-auth-check` 的响应。
- *
- * `approved` 却没有 accessToken 视为异常而非「成功但空」——否则会把空凭据写盘，
- * 用户下次启动发现自己「已登录」但什么都做不了。
- */
-export function parseDevicePoll(raw: Record<string, unknown>): DevicePollResult {
-  const known: readonly string[] = ['pending', 'approved', 'denied', 'expired', 'already_consumed', 'error']
-  const status: PollStatus = typeof raw.status === 'string' && known.includes(raw.status) ? raw.status as PollStatus : 'error'
-
-  if (status === 'approved') {
-    const accessToken = raw.accessToken
-    if (typeof accessToken !== 'string' || !accessToken) {
-      throw new Error('device poll: approved without accessToken')
-    }
-    return {
-      status,
-      accessToken,
-      refreshToken: typeof raw.refreshToken === 'string' ? raw.refreshToken : undefined,
-      expiresIn: typeof raw.expiresIn === 'number' ? raw.expiresIn : 3600,
-    }
-  }
-
-  return { status }
-}
 
 /** 该状态是否意味着「不用再轮询了」。 */
 export function isTerminalPollStatus(s: PollStatus): boolean {
@@ -291,7 +244,7 @@ export async function checkDeviceOnce(
   let res: Response
   try {
     res = await doFetch(`${accountApiBase()}/functions/v1/tui-auth-check`, {
-      method: 'POST',
+      method: 'POST', redirect: 'error',
       headers: accountHeaders(),
       body: JSON.stringify({ deviceCode }),
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
@@ -304,7 +257,9 @@ export async function checkDeviceOnce(
   if (!res.ok) throw new TransientCheckError(`device check failed: ${res.status}`)
 
   // 协议错误原样冒泡（parseDevicePoll 对「approved 无 token」抛错）
-  return parseDevicePoll((await res.json()) as Record<string, unknown>)
+  const result = parseDevicePoll((await res.json()) as Record<string, unknown>)
+  if (new URL(accountApiBase()).protocol === 'https:') { trustedPolls.add(result); freshDevicePolls.add(result) }
+  return result
 }
 
 /**
@@ -353,7 +308,7 @@ export function accountStore(rivetHome: string): TokenStore {
 }
 
 /** 把轮询结果写盘。没有 accessToken 时抛错（不写空凭据）。 */
-export function saveAccountToken(store: TokenStore, poll: DevicePollResult): TokenData {
+export function saveAccountToken(store: TokenStore, poll: DevicePollResult, login?: { intent: string; deviceId: string }): TokenData {
   if (!poll.accessToken) {
     throw new Error('saveAccountToken: missing accessToken')
   }
@@ -362,8 +317,24 @@ export function saveAccountToken(store: TokenStore, poll: DevicePollResult): Tok
     refreshToken: poll.refreshToken,
     expiresAt: Date.now() + (poll.expiresIn ?? 3600) * 1000,
   }
+  if (login) {
+    const installed = store.installLogin(data, login.intent, trustedAccountSource(poll, login.deviceId), freshDevicePolls.has(poll))
+    if (!installed) throw Error('account_changed')
+    return installed
+  }
   store.save(data)
   return data
+}
+
+/** Source correlation comes only from a successful trusted transport exchange. Device is a local hint. */
+export function trustedAccountSource(poll: DevicePollResult, deviceId: string): AccountSource | undefined {
+  if (!trustedPolls.has(poll) || !poll.accessToken || !deviceId) return undefined
+  try {
+    const claims = JSON.parse(Buffer.from(poll.accessToken.split('.')[1]!, 'base64url').toString())
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!uuid.test(claims.sub) || !uuid.test(claims.session_id) || claims.type !== 'access' || claims.role !== 'authenticated' || !Number.isFinite(claims.exp) || claims.exp * 1000 <= Date.now()) return undefined
+    return { subject: claims.sub, accountSessionId: claims.session_id, deviceId }
+  } catch { return undefined }
 }
 
 // ── 账号资料 ─────────────────────────────────────────────────────────────
@@ -426,11 +397,12 @@ export async function fetchAccountProfile(
 export async function refreshAccountToken(refreshToken: string, opts: FetchInjection = {}): Promise<DevicePollResult | null> {
   try {
     const response = await (opts.fetchImpl ?? fetch)(`${accountApiBase()}/functions/v1/tui-auth-refresh`, {
-      method: 'POST', headers: { ...accountHeaders(), Authorization: `Bearer ${refreshToken}` },
+      method: 'POST', redirect: 'error', headers: { ...accountHeaders(), Authorization: `Bearer ${refreshToken}` },
       body: '{}', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     })
     if (!response.ok) return null
     const result = parseDevicePoll({ ...await response.json() as Record<string, unknown>, status: 'approved' })
+    if (new URL(accountApiBase()).protocol === 'https:') trustedPolls.add(result)
     return result.refreshToken ? result : null
   } catch { return null }
 }
@@ -528,9 +500,7 @@ export async function fetchStellarIdentity(
 /**
  * 把星籍写进账号凭据文件。
  *
- * **必须以 token 为底展开**：`TokenStore.save()` 是全量 `JSON.stringify` 且不校验，
- * 只写 identity 会把 accessToken 当场抹掉（下次启动表现为「文件在但登录没了」）。
- * 所以写入口只有这一个函数，调用方不许手搓。
+ * 在短事务里合并当前资料；原始快照的账号代次必须仍然一致。
  */
 export function saveAccountIdentity(
   store: TokenStore,
@@ -538,9 +508,9 @@ export function saveAccountIdentity(
   identity: StellarIdentity,
   now: number = Date.now(),
 ): TokenData {
-  const next: TokenData = { ...token, identity: { ...identity, fetchedAt: now } }
-  store.save(next)
-  return next
+  const saved = store.patchAccount(token, current => ({ ...current, identity: { ...identity, fetchedAt: now } }))
+  if (!saved) throw Error('account_changed')
+  return saved
 }
 
 /** 读缓存副本；字段不全（老文件/坏数据）时回 null。 */
@@ -707,8 +677,7 @@ export async function fetchAccountProfileSnapshot(
 /**
  * 把账号资料快照写进凭据文件。
  *
- * **必须以 token 为底展开**：`TokenStore.save()` 是全量写且不校验，只写 profile
- * 会把 accessToken 当场抹掉（下次启动表现为「文件在但登录没了」）。
+ * 按原始账号代次条件合并，保留事务时刻的凭据与其他类别。
  */
 export function saveAccountProfile(
   store: TokenStore,
@@ -716,9 +685,9 @@ export function saveAccountProfile(
   profile: AccountProfileSnapshot,
   now: number = Date.now(),
 ): TokenData {
-  const next: TokenData = { ...token, profile: { ...profile, fetchedAt: now } }
-  store.save(next)
-  return next
+  const saved = store.patchAccount(token, current => ({ ...current, profile: { ...current.profile, ...profile, fetchedAt: now } }))
+  if (!saved) throw Error('account_changed')
+  return saved
 }
 
 /** 读缓存副本；形状不全（老文件 / 坏数据）时回 null。 */
@@ -750,7 +719,7 @@ export function cachedAccountProfile(token: TokenData | null): AccountProfileSna
 /** Cancellation and logout are capabilities scoped to this request/session. */
 async function endAccountRequest(body: {deviceCode?: string; accessToken?: string}, opts: FetchInjection): Promise<boolean> {
   const response = await (opts.fetchImpl ?? fetch)(`${accountApiBase()}/functions/v1/tui-auth-end`, {
-    method: 'POST', headers: accountHeaders(), body: JSON.stringify(body),
+    method: 'POST', redirect: 'error', headers: accountHeaders(), body: JSON.stringify(body),
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   })
   return response.ok
@@ -766,10 +735,11 @@ export function fetchAccountSnapshot(accessToken: string, opts: FetchInjection =
   return fetchSnapshot(accessToken, accountApiBase(), accountHeaders(), jwtSubject(accessToken), opts)
 }
 
-export async function refreshAccountTokenWithStatus(credential: string, opts: FetchInjection = {}): Promise<{ poll: DevicePollResult | null; code: AccountSyncResult['code'] }> {
+export async function refreshAccountTokenWithStatus(credential: string, opts: FetchInjection = {}): Promise<{ poll: DevicePollResult | null; code: AccountSyncResult['code']; requestNotSent?: true }> {
   const outcome: {code: AccountSyncResult['code']} = {code:'protocol_error'}
   const started = Date.now()
   let httpStatus: number | undefined
+  let requestNotSent = false
   const poll = await refreshAccountToken(credential, { fetchImpl: async (input, init) => {
     try {
       const response = await (opts.fetchImpl ?? fetch)(input, init)
@@ -778,10 +748,11 @@ export async function refreshAccountTokenWithStatus(credential: string, opts: Fe
       return response
     } catch (error) {
       outcome.code = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name) ? 'timeout' : 'network_error'
+      requestNotSent = error instanceof TypeError && error.cause instanceof undiciErrors.ConnectTimeoutError
       throw error
     }
   } })
   if (!poll && outcome.code === 'ok') outcome.code = 'protocol_error'
   if (!poll) console.warn('[account-sync]', JSON.stringify({ stage: 'renewal', endpoint: 'tui-auth-refresh', code:outcome.code, httpStatus, elapsedMs:Date.now()-started, runtime: process.version, desktopVersion: /^[0-9a-zA-Z.+-]{1,40}$/.test(process.env.RIVET_DESKTOP_VERSION ?? '') ? process.env.RIVET_DESKTOP_VERSION : 'unknown' }))
-  return { poll, code:outcome.code }
+  return { poll, code:outcome.code, ...(!poll && requestNotSent ? { requestNotSent: true as const } : {}) }
 }

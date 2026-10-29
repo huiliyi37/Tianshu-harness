@@ -24,6 +24,11 @@ class NoopAgent implements ManagedAgent {
   rewindToMessages(_msgs: OaiMessage[]): void {}
 }
 
+async function waitUntil(check: () => boolean): Promise<void> {
+  for (let elapsed = 0; !check() && elapsed < 1000; elapsed += 10) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(check(), true, 'bounded project preparation settles before the lifecycle assertion')
+}
+
 /** In-memory persistence so the rehydrate path can be tested without disk. */
 class MemoryPersistence implements SessionPersistenceAdapter {
   records = new Map<string, SessionRecord>()
@@ -207,6 +212,7 @@ test('new events after rehydrate are persisted via the adapter', async () => {
   const s = mgr.createSession({})
   assert.ok(mem.records.has(s.id), 'record persisted on create')
   mgr.run(s.id, 'go')
+  await waitUntil(() => (mem.events.get(s.id) ?? []).some(event => event.type === 'status'))
   const persistedEvents = mem.events.get(s.id) ?? []
   assert.ok(persistedEvents.some((e) => e.type === 'status'), 'run status event persisted')
 })
@@ -700,6 +706,7 @@ test('requestApproval persists pendingApprovals so the rehydrate gate sees it', 
     persistence: mem,
   })
   const s = mgr.createSession({ prompt: 'go' })
+  await waitUntil(() => agent.callbacks !== undefined)
   void agent.callbacks!.onApprovalRequired('t1', 'bash', { command: 'ls' })
 
   // The on-disk record reflects the pending approval at request time — this is
@@ -884,7 +891,7 @@ test('archiveSession 卸载重态：agent shutdown、事件环清空、重开时
   })
   const s = mgr.createSession({})
   mgr.run(s.id, 'hello') // NoopAgent 立即 settle，但 agent 已建
-  await new Promise((r) => setTimeout(r, 10)) // run settle → idle 归档路径
+  await waitUntil(() => mgr.getAgentForSession(s.id) !== undefined && mgr.getSession(s.id)?.status === 'completed')
   const ok = mgr.archiveSession(s.id)
   assert.equal(ok, true)
   assert.equal(shutdowns, 1, '归档必须 shutdown 已建 agent（清 timer/coordinator）')
@@ -912,6 +919,7 @@ test('运行中归档：卸载推迟到 run settle 之后（不撕在途 promise
   })
   const s = mgr.createSession({ prompt: 'go' })
   assert.equal(mgr.getSession(s.id)!.status, 'running')
+  await waitUntil(() => mgr.getAgentForSession(s.id) !== undefined)
   mgr.archiveSession(s.id) // abort + archive；run promise 仍在 settle
   await new Promise((r) => setTimeout(r, 20))
   assert.equal(shutdowns, 1, 'run settle 后归档卸载必须完成')
@@ -940,10 +948,12 @@ test('空闲 agent TTL：超时释放，运行/挂起审批的会话不受影响
   // idle 会话：先建 agent（run 立刻被 abort 掉太绕——直接用 delegate 建？）
   // 用 run + abort 更贴近真实：跑起来再 abort，agent 保持已建。
   const idle = mgr.createSession({ prompt: 'a' })
+  await waitUntil(() => agents.length === 1)
   mgr.abort(idle.id)
   await new Promise((r) => setTimeout(r, 10)) // run promise settle → running=false
   // running 会话：一直在跑（abort 只针对 idle 那个 agent 调用）
   const busy = mgr.createSession({ prompt: 'b' })
+  await waitUntil(() => built === 2)
   assert.equal(built, 2)
 
   // 未到 TTL：sweep 不动
@@ -959,6 +969,7 @@ test('空闲 agent TTL：超时释放，运行/挂起审批的会话不受影响
 
   // 释放后再发 prompt：agent 惰性重建（工厂第 3 次调用）
   mgr.run(idle.id, 'again')
+  await waitUntil(() => built === 3)
   assert.equal(built, 3, '下一条 prompt 触发重建')
 })
 

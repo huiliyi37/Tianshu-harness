@@ -212,21 +212,47 @@ test('POST /account/poll 缺 deviceCode 是 400，不是静默 pending', async (
 
 test('POST /account/poll 单次 check 后立即返回 pending——不长循环', async () => {
   const { home, cleanup } = makeHome()
+  // 固定设备号与本地密钥后端：本用例测「单次 check 不长循环」，不测冷启动时 reg.exe 取原生
+  // 指纹、DPAPI 起 PowerShell 的耗时（Windows 上首次各可达 1–2s，会把 1s 预算挤掉）。
+  const previousDevice = process.env.RIVET_PRO_DEVICE_ID
+  const previousStore = process.env.RIVET_TOKEN_STORE
+  let release!: () => void
+  let checking!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { checking = resolve })
+  let request: Promise<unknown> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
+    process.env.RIVET_PRO_DEVICE_ID = 'poll-fixture-device-01'
+    process.env.RIVET_TOKEN_STORE = 'local-key'
+    __resetSecretCipherCache()
     let calls = 0
     const router = routerFor(home, {
       checkDeviceOnce: async () => {
         calls++
+        checking()
+        await pending
         return { status: 'pending' }
       },
     })
-    const started = Date.now()
-    const res = await router('POST', '/account/poll', { deviceCode: 'dc-1' }, AUTH)
+    const response = router('POST', '/account/poll', { deviceCode: 'dc-1' }, AUTH)
+    request = response
+    await Promise.race([started, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('device check startup timed out')), 30000) })])
+    release()
+    const res = await Promise.race([response, new Promise<undefined>(resolve => { setImmediate(() => resolve(undefined)) })])
+    assert.ok(res, 'pending check 必须立即返回，不能等待下一轮轮询')
     assert.equal(res.status, 200)
     assert.equal((res.body as DevicePollResult).status, 'pending')
     assert.equal(calls, 1, '路由必须自己单次 check（前端负责按 pollInterval 重发）')
-    assert.ok(Date.now() - started < 1000, '单次 check 不得挂住')
   } finally {
+    if (previousDevice === undefined) delete process.env.RIVET_PRO_DEVICE_ID
+    else process.env.RIVET_PRO_DEVICE_ID = previousDevice
+    if (previousStore === undefined) delete process.env.RIVET_TOKEN_STORE
+    else process.env.RIVET_TOKEN_STORE = previousStore
+    __resetSecretCipherCache()
+    if (timer) clearTimeout(timer)
+    release()
+    await request
     cleanup()
   }
 })
@@ -969,7 +995,7 @@ test('real account API wiring accepts website device grants and projects verifie
       else throw new Error('unexpected account endpoint')
       return new Response(JSON.stringify(body))
     }
-    const router=createRouter(buildAccountRoutes({apiToken:TOKEN,rivetHome:home,noProxy:'*'}))
+    const router=createRouter(buildAccountRoutes({apiToken:TOKEN,rivetHome:home,noProxy:'*',fetchImpl:globalThis.fetch}))
     const refresh=await router('POST','/account/identity/refresh',{},AUTH)
     assert.equal((refresh.body as {complete:boolean}).complete,true)
     assert.equal(rotations,1,'default API must actually consume the renewal method')

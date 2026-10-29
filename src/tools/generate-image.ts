@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type { Tool } from './types.js'
@@ -116,12 +117,12 @@ Bad: 用 create_image 画复杂照片级场景（它只能写 SVG 矢量图）`,
         const size = input.size ?? slot.size
         const cwd = params.cwd || baseCwd
         const selection = { parameters: { provider: slot.provider, model: slot.model, prompt, prefix: slot.prompt, size, sizeField: slot.sizeField, timeoutMs: slot.timeoutMs }, connection: { baseUrl: provider.baseUrl, apiKey: resolveKey(provider), ...imageGenerationNetwork(cfg, provider) } }
-        const resolved = deps.generateImage ? selection : resolveImageGeneration(selection.parameters, cfg)
+        const resolved = deps.generateImage && provider.auth?.type !== 'tianshu-account' ? selection : resolveImageGeneration(selection.parameters, cfg, params.modelSubmission)
         const started = await service.start({ cwd, requestId: params.toolUseId || randomUUID(), origin: 'chat', signal: params.abortSignal, sessionId: params.sessionId,
           ...resolved,
           ...(input.output_path ? { outputPath: resolve(expandHome(input.output_path.trim())) } : {}),
         })
-        const result = await service.wait(cwd, started.id)
+        const result = await service.wait(cwd, started.id, { propagateOfficialFailure: true })
         if (result?.state !== 'succeeded' || !result.path) return { content: `错误：${result?.error?.message ?? '生成未完成'}`, isError: true }
         params.onFileWrite?.(result.path)
         return {
@@ -130,6 +131,7 @@ Bad: 用 create_image 画复杂照片级场景（它只能写 SVG 矢量图）`,
           generatedImageId: result.id,
         }
       } catch (err) {
+        if (err instanceof OfficialError) throw err
         const msg = err instanceof Error ? err.message : String(err)
         return { content: `错误：${msg}`, isError: true }
       }

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { currentOfficialRequestPrincipal } from './request-authorization.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { proveWirePrefix, continuityFailureDetails, assertCanonicalSourcePrefix, isCompleteExecutionSnapshot, isRewindGenerationAuthorization, ContinuationPrefixError, LocalWorkerPolicyError, type ContinuationPrefixProof, type RewindGenerationAuthorization } from './continuation-prefix.js'
 import { captureNativeProof, isProvenNativeContinuation, type NativeSourceBoundaries } from './native-continuation.js'
@@ -22,6 +23,8 @@ export interface ExecutionScope {
   commits?: Promise<void>[]
   nativeSourceBoundaries?: NativeSourceBoundaries
   rejectedSend?: { url: string; body: Record<string, unknown>; owner?: string; requestId?: string; attemptId?: string }
+  /** 每次真实发送前刷新用量标识；与 beforeSend 分开——后者是否存在即「受保护主请求」的判据。 */
+  onSend?: () => void
   beforeSend?: (url: string, body: Record<string, unknown>, owner?: string) => void
 }
 const scopes = new AsyncLocalStorage<ExecutionScope>()
@@ -34,7 +37,7 @@ export async function validateExecutionHistory(client: StreamClient, request: Oa
   const validation = { guards: 0, accepted: new LocalWorkerPolicyError('Execution history validation accepted') }
   const parent = currentExecutionScope()
   const scope: ExecutionScope = { singleAttempt: parent?.singleAttempt === true, sends: 0, commits: [],
-    sessionId: parent?.sessionId, beforeSend: parent?.beforeSend }
+    sessionId: parent?.sessionId, onSend: parent?.onSend, beforeSend: parent?.beforeSend }
   try {
     await validations.run(validation, () => scopes.run(scope, () => client.stream({ ...request,
       prefixProbe: true, messages: structuredClone(request.messages),
@@ -73,8 +76,10 @@ export function checkExecutionSend(url: string, body: Record<string, unknown>, o
     scope.rejectedSend = { url, body, owner, requestId: scope.requestId, attemptId: scope.attemptId }
     throw new LocalWorkerPolicyError('Worker request already sent; automatic retry is disabled')
   }
-  try { scope.beforeSend?.(url, body, owner) }
-  finally { scope.nativeSourceBoundaries = undefined }
+  try {
+    scope.onSend?.()
+    scope.beforeSend?.(url, body, owner)
+  } finally { scope.nativeSourceBoundaries = undefined }
   const validation = validations.getStore()
   if (validation) {
     if (!validation.guards) throw new LocalWorkerPolicyError('History validation requires a protected baseline guard at the transport boundary')
@@ -90,6 +95,8 @@ export async function prepareExecutionSend(url: string, body: Record<string, unk
 
 /** Principal identity only. Access tokens and JWT contents are never stored. */
 export function credentialPrincipal(headers: RequestInit['headers']): string | undefined {
+  const official = currentOfficialRequestPrincipal(headers)
+  if (official) return official
   const h = new Headers(headers)
   let owner = h.get('chatgpt-account-id') ?? h.get('x-account-id')
   if (!owner) {

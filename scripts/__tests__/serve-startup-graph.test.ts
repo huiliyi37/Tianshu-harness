@@ -71,7 +71,7 @@ const FORBIDDEN_HEAVY = [
  * verification-attribution → test-completion 改动态 import 或抽取正则叶子模块，
  * 应回调本值。
  */
-const REACHABLE_LIMIT = 640
+const REACHABLE_LIMIT = 647
 
 /**
  * 启动图允许静态出现的 bare 包（tsup 会按入口可达性把它们打进 chunk）。

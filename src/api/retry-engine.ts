@@ -5,6 +5,8 @@
  * generic `withStructuredRetry` wrapper for any async operation.
  */
 
+import { OfficialError } from '../models/official-contract.js'
+import { checkOfficialRetry } from './request-authorization.js'
 import { classifyApiError } from './error-classifier.js'
 import { currentExecutionScope } from './execution-continuity.js'
 import type { RetryBudget } from './retry-budget.js'
@@ -222,7 +224,8 @@ export async function withStructuredRetry<T>(
   const maxTotal = currentExecutionScope()?.singleAttempt ? 0 : options?.maxTotalRetries
   const maxDuration = options?.maxTotalDurationMs
   const policy = options?.policy
-  const startTime = maxDuration ? Date.now() : 0
+  let startTime = maxDuration ? Date.now() : 0
+  let lastOfficialFailure: OfficialError | undefined
 
   // attempt is 1-based and counts *retries* (not the initial call)
   for (let attempt = 0; ; attempt++) {
@@ -234,6 +237,7 @@ export async function withStructuredRetry<T>(
 
       // Check global duration budget
       if (maxDuration && Date.now() - startTime > maxDuration) {
+        if (lastOfficialFailure) throw lastOfficialFailure
         throw new RetryBudgetExhaustedError(
           `Retry budget exhausted: total retry time exceeded ${Math.round(maxDuration / 1000)}s ` +
           `across ${attempt} attempt(s). Provider may be unavailable — try again later or switch provider.`,
@@ -250,6 +254,22 @@ export async function withStructuredRetry<T>(
         throw err
       }
 
+      if (err instanceof OfficialError) {
+        lastOfficialFailure = err
+        if (startTime === 0) startTime = Date.now()
+        if (err.code !== 'rate_limited' || err.status !== 429 || !err.retryable || !err.retryAfterSeconds || !err.scope) throw err
+        const ceiling = Math.min(2, maxTotal ?? 2, policy?.overrides?.rate_limit?.maxRetries ?? 2)
+        const wait = err.retryAfterSeconds * 1000
+        const duration = Math.min(60_000, maxDuration ?? 60_000)
+        if (attempt >= ceiling || Date.now() - startTime + wait > duration || (options?.budget && !options.budget.take())) throw err
+        const end = Date.now() + wait
+        do {
+          await checkOfficialRetry(err)
+          await abortableDelay(Math.min(250, Math.max(0, end - Date.now())), signal)
+        } while (Date.now() < end)
+        await checkOfficialRetry(err)
+        continue
+      }
       const classified = classifyApiError(err)
 
       // Non-retryable → propagate immediately

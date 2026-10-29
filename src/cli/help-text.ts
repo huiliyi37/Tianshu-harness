@@ -17,6 +17,8 @@ Usage:
   rivet --goal "<task>" [--budget N] [--json] [--stream-json]   headless goal mode
   rivet serve [--port N] [--host ADDR] [--attach] [--json]   runtime API server
     --tls-cert <pem> --tls-key <pem>   required when serve binds outside loopback
+  rivet account login|status|logout  manage the Tianshu account
+  rivet model list|use <provider:model>  list or select a model
   rivet sessions | rivet logs        list sessions / log locations and exit
   rivet storage audit --json         inspect session and skill storage without changing data
   rivet storage compact --dry-run --output <plan>   preview resource deduplication

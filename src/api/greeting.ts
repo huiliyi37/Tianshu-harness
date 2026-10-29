@@ -1,3 +1,6 @@
+import { resolveModelRuntime, type ResolveModelInput } from '../models/model-runtime.js'
+import { createProviderClient } from './factory.js'
+import { completionFromClient } from '../agent/goal-criteria.js'
 import { providerIdentityHeaders } from './caller-identity.js'
 import { normalizeBaseUrl } from './endpoint-map.js'
 
@@ -169,6 +172,7 @@ export const GREETING_LLM_TIMEOUT_MS = 3_000
 const GREETING_SESSION_ID = 'tianshu-greeting'
 
 export interface GreetingLlmOptions {
+  official?: ResolveModelInput
   /** 请求超时(默认 GREETING_LLM_TIMEOUT_MS;测试注入短超时用)。 */
   timeoutMs?: number
   /** 失败回调(server 侧接 serverLogger;CLI 静默不传)。 */
@@ -229,6 +233,12 @@ export async function generateGreetingLlm(
   const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? GREETING_LLM_TIMEOUT_MS)
 
   try {
+    if (opts?.official) {
+      const runtime = await resolveModelRuntime({ ...opts.official, modelId: model, purpose: 'greeting', signal: controller.signal })
+      const client = createProviderClient(runtime.provider, runtime.capabilities, { apiKey: '', auth: runtime.auth, model: runtime.modelId, maxTokens: 64, requestAuth: runtime.requestAuth, sessionId: GREETING_SESSION_ID })
+      const text = (await completionFromClient(client, runtime.modelId, 64)(systemPrompt, '请给出一句问候语。', controller.signal)).trim()
+      return text && text.length <= 50 ? text : null
+    }
     const res = await fetch(chatUrl, {
       method: 'POST',
       headers: {

@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 /**
  * TaskRegistry — daemon 级任务注册表
  *
@@ -102,6 +103,8 @@ export interface TaskRegistryConfig {
 }
 
 export class TaskRegistry {
+  private readonly officialRefusals = new Set<(record: TaskRecord) => void>()
+  subscribeOfficialRefusal(listener: (record: TaskRecord) => void): () => void { this.officialRefusals.add(listener); return () => { this.officialRefusals.delete(listener) } }
   private store: TaskStore
   private runtimePool?: RuntimePool
   private defaultTimeoutMs: number
@@ -118,6 +121,8 @@ export class TaskRegistry {
   /** 待触发的重试 timer（进程关闭时清理，避免泄漏）。 */
   private retryTimers = new Map<string, { origin: string; timer: ReturnType<typeof setTimeout> }>()
   private cancelledRetryOrigins = new Set<string>()
+  private executionDrains = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  private disposed = false
 
   /** 本进程已认领执行的 pending 任务，防止幂等请求重复调度。 */
   private executionClaims = new Set<string>()
@@ -145,7 +150,7 @@ export class TaskRegistry {
 
     // 整块串行化：find → build → save 在同一个 per-key 锁内完成
     const record = await this.serialized(idempotencyKey, async () => {
-      if (input.retryOf && this.cancelledRetryOrigins.has(input.retryOf)) throw new Error('Task retry was cancelled')
+      if (this.disposed || input.retryOf && this.cancelledRetryOrigins.has(input.retryOf)) throw new Error('Task retry was cancelled')
       // 去重检查（force 跳过）
       if (!force) {
         const existing = await this.store.findActiveByIdempotencyKey(idempotencyKey)
@@ -193,7 +198,8 @@ export class TaskRegistry {
    * 原子状态转换。
    * 终态不可被低优先级覆盖（cancelled > timed_out > failed > completed）。
    */
-  async transition(id: string, to: TaskStatus, extra?: { error?: string; result?: TaskRecord['result']; haltedApp?: string }): Promise<TaskRecord | null> {
+  async transition(id: string, to: TaskStatus, extra?: { error?: string; result?: TaskRecord['result']; haltedApp?: string; officialFailure?: TaskRecord['officialFailure'] }): Promise<TaskRecord | null> {
+    if (extra?.officialFailure) await this.recordOfficialRefusal(id, extra.officialFailure)
     return this.serialized(id, async () => {
       const record = await this.store.load(id)
       if (!record) return null
@@ -210,6 +216,7 @@ export class TaskRegistry {
         ...(to === 'completed' || to === 'failed' || to === 'cancelled' || to === 'timed_out' ? { completedAt: now } : {}),
         ...(extra?.error ? { error: extra.error } : {}),
         ...(extra?.result ? { result: extra.result } : {}),
+        ...(extra?.officialFailure ? { officialFailure: extra.officialFailure } : {}),
         ...(extra?.haltedApp ? { haltedApp: extra.haltedApp } : {}),
       }
 
@@ -226,6 +233,21 @@ export class TaskRegistry {
       }
 
       return updated
+    })
+  }
+
+  private async recordOfficialRefusal(id: string, code: NonNullable<TaskRecord['officialFailure']>): Promise<void> {
+    await this.serialized(id, async () => {
+      const record = await this.store.load(id)
+      if (!record) return
+      const origin = record.retryOf ?? record.id
+      this.cancelledRetryOrigins.add(origin)
+      for (const [source, retry] of this.retryTimers) if (retry.origin === origin) {
+        clearTimeout(retry.timer); this.retryTimers.delete(source)
+      }
+      const updated = { ...record, officialFailure: record.officialFailure ?? code }
+      await this.store.save(updated)
+      for (const listener of this.officialRefusals) listener(updated)
     })
   }
 
@@ -248,6 +270,7 @@ export class TaskRegistry {
    * it can retry again, bounded by maxAttempts.
    */
   private maybeScheduleRetry(record: TaskRecord): void {
+    if (this.disposed || record.officialFailure) return
     const retry = record.retry
     const attempt = record.attempt ?? 1
     if (!retry || attempt >= retry.maxAttempts) return
@@ -258,12 +281,14 @@ export class TaskRegistry {
     const delay = Math.max(0, retry.backoffMs) * attempt
 
     const timer = setTimeout(() => {
-      this.retryTimers.delete(record.id)
       void (async () => {
+        await this.executionDrains.get(record.id)?.promise
+        if (this.disposed || this.retryTimers.get(record.id)?.timer !== timer) return
         const current = await this.store.load(record.id)
         const original = await this.store.load(origin)
-        if (this.cancelledRetryOrigins.has(origin) || original?.status === 'cancelled'
+        if (this.disposed || this.retryTimers.get(record.id)?.timer !== timer || this.cancelledRetryOrigins.has(origin) || original?.officialFailure || current?.officialFailure || original?.status === 'cancelled'
           || !current || (current.status !== 'failed' && current.status !== 'timed_out')) return
+        this.retryTimers.delete(record.id)
         await this.createTask({
           prompt: record.prompt,
           source: record.source,
@@ -283,7 +308,7 @@ export class TaskRegistry {
         })
       })().catch(err => {
         serverLogger.error('Failed to enqueue task retry', { taskId: record.id, ...errorContext(err) })
-      })
+      }).finally(() => { if (this.retryTimers.get(record.id)?.timer === timer) this.retryTimers.delete(record.id) })
     }, delay)
     // Don't keep the event loop alive solely for a pending retry.
     if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref()
@@ -292,6 +317,9 @@ export class TaskRegistry {
 
   /** Clear pending retry + timeout timers (call on shutdown to avoid leaks). */
   dispose(): void {
+    this.disposed = true
+    for (const drain of this.executionDrains.values()) drain.resolve()
+    this.executionDrains.clear()
     for (const { timer } of this.retryTimers.values()) clearTimeout(timer)
     this.retryTimers.clear()
     this.cancelledRetryOrigins.clear()
@@ -430,17 +458,20 @@ export class TaskRegistry {
 
   /** 仅认领本进程尚未调度的 pending 任务。 */
   private claimPendingExecution(record: TaskRecord): boolean {
-    if (!this.runtimePool || record.status !== 'pending' || this.executionClaims.has(record.id)) return false
+    if (this.disposed || !this.runtimePool || record.status !== 'pending' || this.executionClaims.has(record.id)) return false
     this.executionClaims.add(record.id)
     return true
   }
 
   /** 启动已认领任务，并在整个执行/失败落库结束后释放认领。 */
   private dispatchExecution(record: TaskRecord): void {
+    let resolve!: () => void
+    const drain = { promise: new Promise<void>(done => { resolve = done }), resolve: () => resolve() }
+    this.executionDrains.set(record.id, drain)
     void this.scheduleExecution(record)
       .catch(async err => {
         try {
-          await this.transition(record.id, 'failed', { error: String(err) })
+          await this.transition(record.id, 'failed', { error: String(err), ...(err instanceof OfficialError ? { officialFailure: err.code } : {}) })
         } catch (transitionErr) {
           serverLogger.error('Failed to mark task execution failure', {
             taskId: record.id,
@@ -451,6 +482,8 @@ export class TaskRegistry {
       })
       .finally(() => {
         this.executionClaims.delete(record.id)
+        drain.resolve()
+        if (this.executionDrains.get(record.id) === drain) this.executionDrains.delete(record.id)
       })
   }
 
@@ -489,8 +522,9 @@ export class TaskRegistry {
       handle = await this.runtimePool.acquire(record.id)
 
       // 检查是否已被取消
-      if (ac.signal.aborted) {
+      if (ac.signal.aborted || this.disposed) {
         handle.release()
+        handle = null
         return // cancel() 已处理状态转换
       }
 
@@ -513,6 +547,7 @@ export class TaskRegistry {
       const message = err instanceof Error ? err.message : String(err)
       // 无人值守中止：缺授权的 app 名结构化落库（修复闭环「补授权 → 重跑」）。
       const haltedApp = err instanceof Error ? (err as Error & { haltedApp?: string }).haltedApp : undefined
+      if (err instanceof OfficialError) await this.recordOfficialRefusal(record.id, err.code)
       if (ac.signal.aborted) {
         // 如果是被 abort 的，检查是否已经是 timed_out（超时触发）
         // 如果还不是 → cancelled（手动取消）

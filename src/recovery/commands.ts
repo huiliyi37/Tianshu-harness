@@ -44,10 +44,10 @@ export class RecoveryCommands {
         const current = this.ctx.agent.config?.promptEngine?.getModel()
         if (current) say(`[model] Current: ${current}`)
       } else {
-        const { switchAgentRuntime } = await import('../bootstrap.js')
+        const { switchPreparedAgentRuntime } = await import('../bootstrap.js')
         // Qualified model refs are resolved by the shared bootstrap contract.
         if (!this.canCommit()) return { handled: true }
-        const result = switchAgentRuntime(this.ctx, arg)
+        const result = await switchPreparedAgentRuntime(this.ctx, arg)
         say(result.ok ? `[model] ${result.modelName}` : `[error] ${result.error}`)
       }
     } else if (command?.startsWith('/plan-')) {

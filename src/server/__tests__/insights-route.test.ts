@@ -166,6 +166,56 @@ test('worker failure with unobserved usage is explicitly unknown, not a free req
   assert.equal(body.totals.costKnown, false)
 })
 
+for (const withWorker of [false, true]) test(`unpriced main usage keeps its cash figure but makes the complete total unknown (worker=${withWorker})`, async () => {
+  const { agents, router } = setup()
+  const created = await router('POST', '/sessions', { prompt: 'go', model: 'unpriced-main' }, AUTH)
+  assert.equal(created.status, 201)
+  const id = (created.body as { id: string }).id
+  const callbacks = agents[0]!.callbacks!
+  callbacks.onTurnComplete!({ input_tokens: 1_000_000, output_tokens: 1000 }, 1, true)
+  if (withWorker) callbacks.onDelegationActivity!({ workOrderId: 'priced-worker', parentToolId: 'tool', profile: 'scout', status: 'completed', model: 'deepseek-v4-pro', provider: 'deepseek', usage: { input_tokens: 1000, output_tokens: 10 } })
+  const body = (await router('GET', `/sessions/${id}/insights`, {}, AUTH)).body as { mainSession: { cost: number; costKnown: boolean }; totals: { cost: number; costKnown: boolean }; workers: Array<{ cost: number; costKnown: boolean }> }
+  assert.equal(body.totals.costKnown, false, 'known workers cannot make an unpriced main session fully known')
+  assert.equal(body.mainSession.costKnown, false)
+  assert.equal(body.mainSession.cost, 0)
+  if (withWorker) {
+    assert.equal(body.workers[0]!.costKnown, true)
+    assert.ok(Number.isFinite(body.workers[0]!.cost) && body.workers[0]!.cost > 0)
+    assert.equal(body.totals.cost, body.workers[0]!.cost, 'preserve the known subtotal, do not fabricate extra charges')
+  } else assert.equal(body.totals.cost, 0)
+})
+
+test('request-ledger certainty follows the preferred rows without changing their numeric subtotal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'insights-certainty-'))
+  const previous = process.env.RIVET_SESSION_DIR
+  try {
+    process.env.RIVET_SESSION_DIR = root
+    const { agents, router } = setup()
+    const created = await router('POST', '/sessions', { prompt: 'go', model: 'unpriced-main' }, AUTH)
+    const id = (created.body as { id: string }).id
+    agents[0]!.callbacks!.onTurnComplete!({ input_tokens: 1000, output_tokens: 10 }, 1, true)
+    mkdirSync(join(root, id), { recursive: true })
+    const ledger = join(root, id, 'cache-log.jsonl')
+    const priced = { t: Date.parse('2026-10-01T01:00:00Z'), model: 'deepseek-flash', provider: 'deepseek', input: 1000, output: 10, cacheRead: 0, cacheCreate: 0 }
+    const read = async () => (await router('GET', `/sessions/${id}/insights`, {}, AUTH)).body as { mainSession: { cost: number; costKnown: boolean }; totals: { cost: number; costKnown: boolean } }
+    writeFileSync(ledger, JSON.stringify(priced))
+    const known = await read()
+    assert.equal(known.mainSession.costKnown, true, 'the exact priced ledger supersedes an unpriced snapshot estimate')
+    assert.equal(known.totals.costKnown, true)
+    assert.ok(Number.isFinite(known.mainSession.cost) && known.mainSession.cost > 0)
+    writeFileSync(ledger, [priced, { ...priced, model: 'unpriced-ledger', provider: 'account-provider' }].map(row => JSON.stringify(row)).join('\n'))
+    const mixed = await read()
+    assert.equal(mixed.mainSession.costKnown, false)
+    assert.equal(mixed.totals.costKnown, false)
+    assert.equal(mixed.mainSession.cost, known.mainSession.cost)
+    assert.equal(mixed.totals.cost, known.totals.cost)
+  } finally {
+    if (previous === undefined) delete process.env.RIVET_SESSION_DIR
+    else process.env.RIVET_SESSION_DIR = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('insights: 累计快照口径 — 不求和（同一 worker 重复上报也只记一次）', async () => {
   // 2026-09-23：main session 的 usage 与 worker 的 usage 都是**累计快照**。
   // 求和 = 把同一批 token 按事件数记 N 次；实测真实会话放大 19×

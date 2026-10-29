@@ -12,6 +12,7 @@ import {
   type PricingResolver,
 } from '../cache/usage-aggregator.js'
 import type { OfficialUsageSnapshot } from '../cache/deepseek-official-usage.js'
+import type { OfficialCustomerView } from '../models/official-contract.js'
 import type {
   CachePanelData,
   CachePanelOfficial,
@@ -31,7 +32,8 @@ export interface CachePanelSourceDeps {
   /** 本会话实时口径；null = 还没有会话/请求 */
   session: () => CachePanelSession | null
   resolvePricing: PricingResolver
-  loadOfficial: () => Promise<OfficialUsageSnapshot>
+  loadOfficial: () => Promise<OfficialUsageSnapshot | { source: 'tianshu'; customerView: OfficialCustomerView }>
+  officialSourceKey?: () => string
   /** 异步数据到位后触发重画 */
   onUpdate: () => void
   now?: () => number
@@ -46,7 +48,8 @@ export function periodDays(period: CachePeriod, now: number): number {
   return Math.max(0, (now - start.getTime()) / 86_400_000)
 }
 
-function toPanelOfficial(snapshot: OfficialUsageSnapshot): CachePanelOfficial {
+function toPanelOfficial(snapshot: OfficialUsageSnapshot | { source: 'tianshu'; customerView: OfficialCustomerView }): CachePanelOfficial {
+  if (snapshot.source === 'tianshu') return { status: 'ready', source: 'tianshu', customerView: snapshot.customerView }
   if (snapshot.source === 'none') {
     return { status: 'unavailable', hint: snapshot.hint }
   }
@@ -68,6 +71,8 @@ export class CachePanelSource {
   private official: CachePanelOfficial = { status: 'loading' }
   private officialAt = 0
   private officialLoading = false
+  private officialSource: string | undefined
+  private officialTicket = 0
   /** 三档聚合的记忆化（issue #98 配套）——data() 现在被 live 渲染循环逐帧调用
    *  （常驻余额角标读 official），聚合只随 rows 刷新（rowsAt 版本）变化，
    *  不做记忆化会让每帧重算三档全量遍历。 */
@@ -83,6 +88,9 @@ export class CachePanelSource {
   invalidate(): void {
     this.rowsAt = 0
     this.officialAt = 0
+    this.official = { status: 'loading' }
+    this.officialLoading = false
+    this.officialTicket++
   }
 
   private ensureRows(now: number): void {
@@ -99,12 +107,24 @@ export class CachePanelSource {
   }
 
   private ensureOfficial(now: number): void {
+    const source = this.deps.officialSourceKey?.() ?? 'legacy'
+    if (source !== this.officialSource) {
+      this.officialSource = source
+      this.officialAt = 0
+      this.officialLoading = false
+      this.official = { status: 'loading' }
+      this.officialTicket++
+    }
     if (this.officialLoading || now - this.officialAt < OFFICIAL_TTL_MS) return
     this.officialLoading = true
+    this.official = { status: 'loading' }
+    const ticket = ++this.officialTicket
+    const current = () => ticket === this.officialTicket && source === (this.deps.officialSourceKey?.() ?? 'legacy')
     void this.deps.loadOfficial()
-      .then(snapshot => { this.official = toPanelOfficial(snapshot) })
-      .catch(err => { this.official = { status: 'unavailable', hint: `官方账单查询失败：${(err as Error).message}` } })
+      .then(snapshot => { if (current()) this.official = toPanelOfficial(snapshot) })
+      .catch(error => { if (current()) this.official = { status: 'unavailable', hint: source === 'legacy' || source.startsWith('legacy/') ? `官方账单查询失败：${(error as Error).message}` : '额度暂不可查，请刷新。' } })
       .finally(() => {
+        if (!current()) return
         this.officialLoading = false
         this.officialAt = this.now()
         this.deps.onUpdate()

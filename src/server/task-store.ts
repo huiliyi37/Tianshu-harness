@@ -1,3 +1,4 @@
+import { officialErrorCodes, type OfficialErrorCode } from '../models/official-contract.js'
 /**
  * TaskStore — 任务持久化抽象接口 + per-task JSON MVP 实现
  *
@@ -43,6 +44,7 @@ export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
 export type TaskSource = 'api' | 'cron' | 'manual' | 'internal'
 
 export interface TaskRecord {
+  officialFailure?: OfficialErrorCode
   id: string
   prompt: string
   source: TaskSource
@@ -356,6 +358,7 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     (record.sessionId === undefined || typeof record.sessionId === 'string') &&
     (record.attempt === undefined || (typeof record.attempt === 'number' && Number.isFinite(record.attempt))) &&
     (record.retryOf === undefined || typeof record.retryOf === 'string') &&
+    (record.officialFailure === undefined || officialErrorCodes.includes(record.officialFailure as OfficialErrorCode)) &&
     (record.haltedApp === undefined || typeof record.haltedApp === 'string') &&
     (record.retry === undefined || (typeof record.retry === 'object' && record.retry !== null &&
       typeof (record.retry as ScheduledTaskRetry).maxAttempts === 'number' &&

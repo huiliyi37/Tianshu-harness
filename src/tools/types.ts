@@ -207,6 +207,7 @@ export interface VerificationSnapshotPlan {
 export interface ToolCallParams {
   currentVerificationFingerprint?: () => string | null
   getActualCommits?: () => string[]
+  modelSubmission?: import('../models/model-runtime.js').ModelSubmission
   runtimeExecutionPlan?: import('../skills/runtime/operation.js').RuntimeExecutionPlan
   saveSkillDraft?: import('../skills/skill-creation.js').SkillDraftWriter
   onVerificationCompleted?: (verification: VerificationMetadata) => void

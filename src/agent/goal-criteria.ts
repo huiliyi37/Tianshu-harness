@@ -1,3 +1,5 @@
+import { createPurposeClient, isOfficialProvider, type ModelSubmission } from '../models/model-runtime.js'
+import { OfficialError } from '../models/official-contract.js'
 /**
  * Goal success-criteria extraction.
  *
@@ -88,7 +90,8 @@ export async function extractGoalCriteria(
     const raw = await complete(EXTRACTION_SYSTEM, buildCriteriaExtractionUser(goal), signal)
     const parsed = parseCriteria(raw)
     if (parsed && parsed.length > 0) return parsed.slice(0, MAX_CRITERIA)
-  } catch {
+  } catch (error) {
+    if (error instanceof OfficialError) throw error
     // fall through to generic template
   }
   return [...GENERIC_SUCCESS_CRITERIA]
@@ -143,9 +146,11 @@ export function buildCheapClient(
   profile: { provider: string; model: string },
   providers: Record<string, ProviderConfig>,
   sessionId?: string,
+  submission?: ModelSubmission,
 ): { client: StreamClient; model: string } | null {
   const prov = providers[profile.provider]
   if (!prov) return null
+  if (isOfficialProvider(prov)) return { client: createPurposeClient(providers, prov, profile.model, 'judge', { maxTokens: 1024, sessionId }, submission), model: profile.model }
   let apiKey: string
   try {
     apiKey = resolveApiKey(prov)
@@ -158,7 +163,7 @@ export function buildCheapClient(
   const maxTokens = Math.min(1024, modelSpec?.maxTokens ?? 4096)
   const client = createProviderClient(
     prov,
-    resolveCapabilities(profile.provider, prov.capabilities),
+    resolveCapabilities(profile.provider, prov.capabilities, modelSpec?.capabilities),
     // 判据抽取是主会话的 side-path，会话 ID 仍用主会话的——上游按会话做路由/
     // 缓存亲和，缺省会落到 factory 的进程级兜底，把不同会话的判据请求混成一段。
     { apiKey, model, maxTokens, sessionId },

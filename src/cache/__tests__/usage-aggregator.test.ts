@@ -192,7 +192,9 @@ test('aggregateUsageRows: 按天分桶升序 + 按模型降序（成本优先）
 
   // reasoner output 5000×12/1M = 0.06 > chat 当日成本，排前
   assert.equal(agg.models[0]!.model, 'deepseek-reasoner')
-  assert.ok(agg.models[0]!.cost > agg.models[1]!.cost)
+  assert.equal(typeof agg.models[0]!.cost, 'number')
+  assert.equal(typeof agg.models[1]!.cost, 'number')
+  assert.ok(agg.models[0]!.cost! > agg.models[1]!.cost!)
 })
 
 test('aggregateUsageRows: 成本与缓存节省按 pricing 计算', () => {
@@ -202,15 +204,17 @@ test('aggregateUsageRows: 成本与缓存节省按 pricing 计算', () => {
     resolvePricing: model => (model === 'deepseek-chat' ? deepseekPricing : undefined),
   })
   // cost = 100/1M×4 + 50/1M×12 + 800/1M×0.4 + 100/1M×4(cacheWrite 回落 input) = 0.0004+0.0006+0.00032+0.0004
+  assert.ok(typeof agg.totals.cost === 'number')
   assert.ok(Math.abs(agg.totals.cost - 0.00172) < 1e-9)
   // savings = 800/1M × (4 − 0.4) = 0.00288
+  assert.ok(typeof agg.totals.savings === 'number')
   assert.ok(Math.abs(agg.totals.savings - 0.00288) < 1e-9)
 })
 
-test('aggregateUsageRows: 无 pricing 时成本与节省为 0，token 统计不受影响', () => {
+test('aggregateUsageRows: 无 pricing 时成本与节省不可查询，token 统计不受影响', () => {
   const agg = aggregateUsageRows([mainRow()], { now: NOW })
-  assert.equal(agg.totals.cost, 0)
-  assert.equal(agg.totals.savings, 0)
+  assert.equal(agg.totals.cost, null)
+  assert.equal(agg.totals.savings, null)
   assert.equal(agg.totals.input, 1000)
 })
 

@@ -1,3 +1,4 @@
+import { OfficialError } from '../models/official-contract.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, writeFile, link, unlink, realpath } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -13,11 +14,11 @@ export interface ImageGenerationInput {
   origin: 'chat' | 'workbench' | 'test'
   sessionId?: string
   parameters: ImageGenerationParameters
-  connection: Pick<GenerateImageOptions, 'baseUrl' | 'apiKey' | 'proxy' | 'trustProxyFakeIp' | 'endpointNetworkPolicy'>
+  connection: Pick<GenerateImageOptions, 'baseUrl' | 'apiKey' | 'proxy' | 'trustProxyFakeIp' | 'endpointNetworkPolicy' | 'requestAuth' | 'prepareRequestAuth'>
   outputPath?: string
   signal?: AbortSignal
 }
-interface Entry { record: ImageGenerationRecord; fingerprint: string; controller: AbortController; done: Promise<ImageGenerationRecord> }
+interface Entry { officialFailure?: OfficialError; record: ImageGenerationRecord; fingerprint: string; controller: AbortController; done: Promise<ImageGenerationRecord> }
 export const imageGenerationPending = (state: ImageGenerationRecord['state']) => ['generating', 'downloading', 'saving'].includes(state)
 
 export class ImageGenerationService {
@@ -91,6 +92,7 @@ export class ImageGenerationService {
         record.error = { stage: 'record', message: 'Image saved, but generation history could not be saved. Retry saving the record.' }
       }
     } catch (error) {
+      if (error instanceof OfficialError) entry.officialFailure = error
       record.state = signal.aborted ? 'cancelled' : 'failed'
       record.finishedAt = Date.now()
       const raw = error instanceof Error ? error.message : String(error)
@@ -99,10 +101,13 @@ export class ImageGenerationService {
     }
     return { ...record }
   }
-  async wait(cwd: string, id: string): Promise<ImageGenerationRecord | undefined> {
+  async wait(cwd: string, id: string, options?: { propagateOfficialFailure?: boolean }): Promise<ImageGenerationRecord | undefined> {
     cwd = await realpath(resolve(cwd))
     const entry = [...this.entries.values()].find(entry => entry.record.cwd === resolve(cwd) && entry.record.id === id)
-    return entry ? entry.done : this.get(cwd, id)
+    if (!entry) return this.get(cwd, id)
+    const record = await entry.done
+    if (options?.propagateOfficialFailure && entry.officialFailure) throw entry.officialFailure
+    return record
   }
   async get(cwd: string, id: string): Promise<ImageGenerationRecord | undefined> {
     cwd = await realpath(resolve(cwd))

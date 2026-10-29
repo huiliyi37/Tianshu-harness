@@ -1,3 +1,5 @@
+import { OfficialError } from '../models/official-contract.js'
+import { isOfficialProvider, isPreparedModelEligible, type ModelSubmission } from '../models/model-runtime.js'
 /**
  * DP 副本 A/B 候选模型池推导（S4）。
  *
@@ -21,6 +23,7 @@ export interface CandidateModel {
 /** 该 provider 当前是否真的能发出请求（OAuth 看登录态，其余看 key 解析）。 */
 export function providerHasCredentials(provider: ProviderConfig): boolean {
   try {
+    if (isOfficialProvider(provider)) return provider.models.some(model => { return isPreparedModelEligible(provider, model.id, 'agent') })
     if (provider.auth?.type === 'oauth') {
       return createAuthProvider(provider.auth, process.env).isAuthenticated()
     }
@@ -44,10 +47,30 @@ export function deriveCandidateModels(
 ): CandidateModel[] {
   const out: CandidateModel[] = []
   for (const [providerId, provider] of Object.entries(providers ?? {})) {
-    const first = provider.models?.[0]
+    const first = provider.models?.find(model => { if (model.supportsImageGen) return false; if (!isOfficialProvider(provider)) return true; return isPreparedModelEligible(provider, model.id, 'agent') })
     if (!first?.id) continue
     if (!hasCredentials(provider)) continue
     out.push({ provider: providerId, model: first.id })
+  }
+  return out
+}
+
+export async function resolveCandidateModels(providers: Record<string, ProviderConfig> | undefined, submission?: ModelSubmission, signal?: AbortSignal): Promise<CandidateModel[]> {
+  const pinned = submission?.capture()
+  const out: CandidateModel[] = []
+  for (const [name, provider] of Object.entries(providers ?? {})) {
+    signal?.throwIfAborted()
+    if (!isOfficialProvider(provider)) { out.push(...deriveCandidateModels({ [name]: provider })); continue }
+    if (!pinned) continue
+    for (const model of provider.models) {
+      try {
+        const prepared = await pinned.prepareModel({ config: { provider: { providers } } as import('../config/schema.js').Config, provider, apiKey: '', modelId: model.id, targetProvider: name, purpose: 'agent', signal })
+        if (isPreparedModelEligible(prepared.provider, prepared.modelId, 'agent')) { out.push({ provider: name, model: prepared.modelId }); break }
+      } catch (error) {
+        if (error instanceof OfficialError && ['model_unavailable', 'capability_unknown'].includes(error.code)) continue
+        throw error
+      }
+    }
   }
   return out
 }

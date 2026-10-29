@@ -1,3 +1,4 @@
+import { createPurposeClient, isOfficialProvider } from '../models/model-runtime.js'
 import { loadConfig } from '../config/manager.js'
 import { contractModels } from '../config/contract-models.js'
 import { findModelOwner, findModelInKey, resolveModelRef } from '../config/provider-keys.js'
@@ -18,8 +19,8 @@ export async function completeSkillDraft(system: string, user: string): Promise<
   const owner = selected ?? findModelOwner(provider, model.id)
   const effective = owner?.owner ? { ...provider, ...owner.owner } : provider
   const apiKey = effective.auth?.type === 'oauth' ? '' : resolveApiKey(effective)
-  const auth = createAuthProvider(effective.auth ?? undefined, process.env, apiKey, { ...config.network, proxy: effective.proxy ?? config.network.proxy })
-  const client = createProviderClient(effective, resolveCapabilities(provider.name, provider.capabilities, model.capabilities), {
+  const auth = isOfficialProvider(effective) ? undefined : createAuthProvider(effective.auth ?? undefined, process.env, apiKey, { ...config.network, proxy: effective.proxy ?? config.network.proxy })
+  const client = isOfficialProvider(effective) ? createPurposeClient(config.provider.providers, effective, model.id, 'skill', { maxTokens: 8192, network: config.network }) : createProviderClient(effective, resolveCapabilities(provider.name, provider.capabilities, model.capabilities), {
     apiKey, model: model.id, maxTokens: 8192, auth, network: config.network,
   })
   let output = '', failure: Error | undefined

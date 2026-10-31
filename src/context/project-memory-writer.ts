@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync, lstatSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { projectStateAllowed } from '../config/project-trust.js'
 
@@ -56,15 +56,50 @@ export function acquireLock(lockPath: string): () => void {
 }
 
 /**
+ * 软链写入收容（2026-10-31 审计 Finding 3）：atomicWrite 走「tmp 文件 + rename」，
+ * 目标目录或目标文件为软链时，写入会落到项目外（项目记忆写入 → 任意路径写入）。
+ *
+ * 返回 true 表示目标目录可安全写入：目录真实存在、不是软链、且 realpath 落在项目根内；
+ * 目标文件若已存在，也必须是项目内的常规文件（不是软链）。
+ */
+function isWritableInsideProject(cwd: string, targetPath: string): boolean {
+  const dir = join(targetPath, '..')
+  let root: string
+  let realDir: string
+  try {
+    root = realpathSync(cwd)
+    const dirStat = lstatSync(dir)
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return false
+    realDir = realpathSync(dir)
+  } catch {
+    return false
+  }
+  const dirRel = relative(root, realDir)
+  if (!dirRel || dirRel.startsWith('..') || isAbsolute(dirRel)) return false
+
+  const fileStat = lstatSync(targetPath, { throwIfNoEntry: false })
+  if (!fileStat) return true // 新文件：目录已确认可信
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) return false
+  const realFile = realpathSync(targetPath)
+  const fileRel = relative(root, realFile)
+  return !(!fileRel || fileRel.startsWith('..') || isAbsolute(fileRel))
+}
+
+/**
  * Write content to a temp file then atomically rename to target path.
  * This guarantees readers never see a partial write.
+ *
+ * 拒绝静默越界写入：目录/文件为软链或解析后不在 cwd 内时不写，返回 false 由调用方
+ * 决定降级（项目记忆是 best-effort，写失败不该炸调用链，但绝不能写到项目外）。
  */
-function atomicWrite(targetPath: string, content: string): void {
+function atomicWrite(cwd: string, targetPath: string, content: string): boolean {
+  if (!isWritableInsideProject(cwd, targetPath)) return false
   const dir = join(targetPath, '..')
   const tmpName = `.memory.${randomBytes(4).toString('hex')}.tmp`
   const tmpPath = join(dir, tmpName)
   writeFileSync(tmpPath, content, 'utf-8')
   renameSync(tmpPath, targetPath)
+  return true
 }
 
 export function appendProjectMemory(
@@ -101,10 +136,45 @@ export function appendKnowledgeJsonl(cwd: string, filename: string, record: obje
   appendToJsonl(cwd, filename, record as MemoryEntry, fifoCap)
 }
 
+/**
+ * 解析 `.rivet/knowledge` 的可信真实路径；目录链上出现软链或解析后越出 cwd 时返回
+ * undefined。`create` 为真时按需建目录（建完再复核一次）——必须在写锁文件**之前**
+ * 判定：否则 lock/tmp 文件会顺着目录软链落到项目外。
+ */
+function resolveKnowledgeDir(cwd: string, create: boolean): string | undefined {
+  let root: string
+  try {
+    root = realpathSync(cwd)
+  } catch {
+    return undefined
+  }
+  for (const segment of [join(cwd, '.rivet'), join(cwd, '.rivet', 'knowledge')]) {
+    const stat = lstatSync(segment, { throwIfNoEntry: false })
+    if (stat?.isSymbolicLink()) return undefined
+    if (!stat) {
+      if (!create) return undefined
+      try { mkdirSync(segment, { recursive: true }) } catch { return undefined }
+      if (lstatSync(segment, { throwIfNoEntry: false })?.isSymbolicLink()) return undefined
+    } else if (!stat.isDirectory()) {
+      return undefined
+    }
+  }
+  const dir = join(cwd, '.rivet', 'knowledge')
+  let realDir: string
+  try {
+    realDir = realpathSync(dir)
+  } catch {
+    return undefined
+  }
+  const rel = relative(root, realDir)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return undefined
+  return realDir
+}
+
 /** Append one entry to a knowledge JSONL file under lock; optional FIFO cap. */
 function appendToJsonl(cwd: string, filename: string, entry: MemoryEntry, fifoCap?: number): void {
-  const dir = join(cwd, '.rivet', 'knowledge')
-  mkdirSync(dir, { recursive: true })
+  const dir = resolveKnowledgeDir(cwd, true)
+  if (!dir) return // 目录为软链/越界：项目记忆是 best-effort，静默跳过而不是写到项目外
   const path = join(dir, filename)
   const lockPath = join(dir, `${filename}.lock`)
 
@@ -123,7 +193,7 @@ function appendToJsonl(cwd: string, filename: string, entry: MemoryEntry, fifoCa
       }
     }
 
-    atomicWrite(path, newContent)
+    atomicWrite(cwd, path, newContent)
   } finally {
     release()
   }
@@ -157,7 +227,10 @@ export function readCommitFacts(cwd: string): MemoryEntry[] {
  * by confidence (desc). Returns number of entries removed.
  */
 export function compactProjectMemory(cwd: string): number {
-  const dir = join(cwd, '.rivet', 'knowledge')
+  // 与 append 同一条收容判定：目录为软链/越界时不读不写（否则会读到项目外内容再
+  // 拿它算「删除了几条」，语义上是假的）。
+  const dir = resolveKnowledgeDir(cwd, false)
+  if (!dir) return 0
   const path = join(dir, 'memory.jsonl')
   const lockPath = join(dir, 'memory.jsonl.lock')
   if (!existsSync(path)) return 0
@@ -193,7 +266,7 @@ export function compactProjectMemory(cwd: string): number {
 
     // Write back only if changed
     if (kept.length < entries.length || fileSize > MAX_FILE_SIZE) {
-      atomicWrite(path, kept.map(e => JSON.stringify(e)).join('\n') + '\n')
+      atomicWrite(cwd, path, kept.map(e => JSON.stringify(e)).join('\n') + '\n')
       return entries.length - kept.length
     }
 

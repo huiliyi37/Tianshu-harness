@@ -1,9 +1,16 @@
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadAllProjectMemoryEntries, loadProjectMemory, queryProjectMemoryEntries } from '../project-memory-loader.js'
+
+// 信任门族（2026-10-31 审计 Finding 2）：门已下沉到 loadProjectMemory /
+// loadAllProjectMemoryEntries / queryProjectMemoryEntries 内部——读取函数自身拒绝，
+// 不再依赖调用点。本文件验「授信项目的读取语义」；未授信拒绝语义在文件末尾
+// describe（project-memory-loader trust gate）覆盖。
+// node:test 文件级进程隔离，此 env 不外泄。
+process.env.RIVET_TRUST_PROJECT = '1'
 
 function writeMemory(cwd: string, entries: Array<Record<string, unknown> | string>): void {
   const dir = join(cwd, '.rivet', 'knowledge')
@@ -169,5 +176,142 @@ describe('project-memory-loader', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// 软链逃逸回归（2026-10-31 审计 Finding 2）：memory.jsonl 为跨项目软链时，
+// 他项目的私有 user_constraint 曾以 confidence 1.0 注入冻结前缀。
+describe('project-memory-loader symlink containment', () => {
+  const OUTSIDE_ENTRY = {
+    id: 'foreign-constraint', kind: 'user_constraint', text: 'OUTSIDE_CONSTRAINT_NEVER_INJECT_THIS',
+    confidence: 1.0, createdAt: 1, source: 'other-project',
+  }
+
+  function outsideFixture(): { outside: string; foreignFile: string; foreignDir: string; cleanup: () => void } {
+    const outside = mkdtempSync(join(tmpdir(), 'rivet-memory-outside-'))
+    const foreignFile = join(outside, 'foreign-memory.jsonl')
+    writeFileSync(foreignFile, JSON.stringify(OUTSIDE_ENTRY) + '\n', 'utf-8')
+    const foreignDir = join(outside, 'foreign-knowledge')
+    mkdirSync(foreignDir, { recursive: true })
+    writeFileSync(join(foreignDir, 'memory.jsonl'), JSON.stringify(OUTSIDE_ENTRY) + '\n', 'utf-8')
+    return { outside, foreignFile, foreignDir, cleanup: () => rmSync(outside, { recursive: true, force: true }) }
+  }
+
+  function projectDir(): { dir: string; knowledgeDir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-memory-loader-'))
+    const knowledgeDir = join(dir, '.rivet', 'knowledge')
+    mkdirSync(knowledgeDir, { recursive: true })
+    return { dir, knowledgeDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('rejects memory.jsonl symlinked to a foreign project file', () => {
+    const project = projectDir()
+    const outside = outsideFixture()
+    try {
+      symlinkSync(outside.foreignFile, join(project.knowledgeDir, 'memory.jsonl'))
+
+      assert.deepEqual(loadProjectMemory(project.dir), { content: '', entryCount: 0 }, 'no Tier-1 injection from a symlinked file')
+      assert.deepEqual(loadAllProjectMemoryEntries(project.dir), [], 'no recall dump from a symlinked file')
+      assert.deepEqual(queryProjectMemoryEntries(project.dir, 'outside constraint'), [], 'no recall hits from a symlinked file')
+    } finally {
+      project.cleanup()
+      outside.cleanup()
+    }
+  })
+
+  it('rejects a .rivet/knowledge directory that is itself a symlink to a foreign directory', () => {
+    const project = projectDir()
+    const outside = outsideFixture()
+    try {
+      rmSync(project.knowledgeDir, { recursive: true, force: true })
+      symlinkSync(outside.foreignDir, project.knowledgeDir)
+
+      assert.deepEqual(loadProjectMemory(project.dir), { content: '', entryCount: 0 }, 'symlinked knowledge dir must yield no block')
+      assert.deepEqual(loadAllProjectMemoryEntries(project.dir), [], 'symlinked knowledge dir must yield no entries')
+      assert.deepEqual(queryProjectMemoryEntries(project.dir, 'outside constraint'), [], 'symlinked knowledge dir must yield no recall hits')
+    } finally {
+      project.cleanup()
+      outside.cleanup()
+    }
+  })
+
+  it('rejects a regular memory.jsonl whose realpath leaves the project', () => {
+    const project = projectDir()
+    const outside = outsideFixture()
+    try {
+      // 链名就是本项目该有的文件名——名字无害，realpath 在项目外
+      symlinkSync(join(outside.outside, 'foreign-knowledge', 'memory.jsonl'), join(project.knowledgeDir, 'memory.jsonl'))
+
+      assert.deepEqual(loadAllProjectMemoryEntries(project.dir), [], 'containment check must reject the resolved path')
+    } finally {
+      project.cleanup()
+      outside.cleanup()
+    }
+  })
+
+  it('still loads a normal in-project memory.jsonl', () => {
+    const project = projectDir()
+    try {
+      writeMemory(project.dir, [
+        { id: 'local-1', kind: 'user_constraint', text: 'LOCAL_CONSTRAINT_KEPT', confidence: 1, createdAt: 1, source: 'test' },
+      ])
+
+      const block = loadProjectMemory(project.dir)
+
+      assert.equal(block.entryCount, 1, 'containment check must not break the normal path')
+      assert.match(block.content, /LOCAL_CONSTRAINT_KEPT/)
+      assert.equal(loadAllProjectMemoryEntries(project.dir).length, 1)
+    } finally {
+      project.cleanup()
+    }
+  })
+})
+
+// 信任门下沉重构（2026-10-31 审计 Finding 2）：门原先只在调用点
+// （volatile-snapshot.ts:77），直接调用 loader 的路径（recall / compact /
+// unified-memory 桥）无门。对照 readCommitFacts 的设计：门下沉到读取函数内部，
+// 防新调用点漏门。
+describe('project-memory-loader trust gate', () => {
+  const prevTrust = process.env.RIVET_TRUST_PROJECT
+  const prevHome = process.env.RIVET_HOME
+  const tmpDirs: string[] = []
+
+  function isolatedProject(): string {
+    const home = mkdtempSync(join(tmpdir(), 'rivet-loader-home-'))
+    tmpDirs.push(home)
+    process.env.RIVET_HOME = home
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-loader-untrusted-'))
+    tmpDirs.push(dir)
+    writeMemory(dir, [
+      { id: 'untrusted-1', kind: 'user_constraint', text: 'UNTRUSTED_SENTINEL', confidence: 1, createdAt: 1, source: 'test' },
+    ])
+    return dir
+  }
+
+  afterEach(() => {
+    if (prevTrust === undefined) delete process.env.RIVET_TRUST_PROJECT
+    else process.env.RIVET_TRUST_PROJECT = prevTrust
+    if (prevHome === undefined) delete process.env.RIVET_HOME
+    else process.env.RIVET_HOME = prevHome
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses to read project memory directly from an untrusted project dir', () => {
+    const dir = isolatedProject()
+    process.env.RIVET_TRUST_PROJECT = '0'
+
+    assert.deepEqual(loadProjectMemory(dir), { content: '', entryCount: 0 }, 'frozen-prefix injection must be gated inside the loader')
+    assert.deepEqual(loadAllProjectMemoryEntries(dir), [], 'recall dump must be gated inside the loader')
+    assert.deepEqual(queryProjectMemoryEntries(dir, 'untrusted sentinel'), [], 'recall query must be gated inside the loader')
+  })
+
+  it('reads project memory from a trusted project dir', () => {
+    const dir = isolatedProject()
+    process.env.RIVET_TRUST_PROJECT = '1'
+
+    const block = loadProjectMemory(dir)
+
+    assert.equal(block.entryCount, 1)
+    assert.match(block.content, /UNTRUSTED_SENTINEL/)
   })
 })

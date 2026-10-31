@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendProjectMemory, compactProjectMemory, readCommitFacts } from '../project-memory-writer.js'
@@ -182,3 +182,64 @@ describe('project-memory-writer', () => {
     }
   })
 })
+
+// 软链写入逃逸回归（2026-10-31 审计 Finding 3）：原子写走「tmp 文件 + rename」，
+// 目标目录为软链时 rename 会把内容落到项目外——项目记忆写入变成任意路径写入。
+describe('project-memory-writer symlink containment', () => {
+  function outsideDir(): { outside: string; cleanup: () => void } {
+    const outside = mkdtempSync(join(tmpdir(), 'rivet-memory-writer-outside-'))
+    return { outside, cleanup: () => rmSync(outside, { recursive: true, force: true }) }
+  }
+
+  it('refuses to write when .rivet/knowledge is a symlink to an outside directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-memory-writer-'))
+    const outside = outsideDir()
+    try {
+      mkdirSync(join(dir, '.rivet'), { recursive: true })
+      symlinkSync(outside.outside, join(dir, '.rivet', 'knowledge'))
+
+      appendProjectMemory(dir, claim('leak-1', 0.95, 1, 'MUST_NOT_ESCAPE'))
+
+      assert.equal(existsSync(join(outside.outside, 'memory.jsonl')), false, 'no file may be created outside the project')
+      assert.deepEqual(readdirOf(outside.outside), [], 'no temp or lock files may leak outside the project')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      outside.cleanup()
+    }
+  })
+
+  it('refuses to write through a memory.jsonl that is a symlink to an outside file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-memory-writer-'))
+    const outside = outsideDir()
+    try {
+      const target = join(outside.outside, 'victim.jsonl')
+      writeFileSync(target, 'ORIGINAL_OUTSIDE_CONTENT\n', 'utf-8')
+      mkdirSync(join(dir, '.rivet', 'knowledge'), { recursive: true })
+      symlinkSync(target, memoryPath(dir))
+
+      appendProjectMemory(dir, claim('leak-2', 0.95, 1, 'MUST_NOT_ESCAPE'))
+
+      assert.equal(readFileSync(target, 'utf-8'), 'ORIGINAL_OUTSIDE_CONTENT\n', 'outside file content must be untouched')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      outside.cleanup()
+    }
+  })
+
+  it('still writes normally when the target directory is a real in-project directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-memory-writer-'))
+    try {
+      appendProjectMemory(dir, claim('ok-1', 0.95, 1, 'NORMAL_WRITE_KEPT'))
+
+      const entries = readEntries(dir)
+      assert.equal(entries.length, 1, 'containment check must not break the normal write path')
+      assert.equal(entries[0]!.text, 'NORMAL_WRITE_KEPT')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+function readdirOf(path: string): string[] {
+  return readdirSync(path)
+}

@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -14,6 +15,8 @@ import {
   fetchNpmLatestVersion,
   fetchGitHubLatestVersion,
   npmPackageExists,
+  isValidUpdateVersion,
+  runUpdate,
   detectInstallRoot,
   formatDeclinedUpdate,
   getCurrentVersion,
@@ -483,6 +486,80 @@ describe('npmPackageExists', () => {
     }
     await npmPackageExists('tianshu-harness')
     assert.equal(method, 'GET')
+  })
+})
+
+// ─── 更新版本规格白名单：远端版本不得拼进 shell 命令 ───
+// /update 的 POSIX 全局安装走 spawn(command, { shell: true })，版本字符串
+// 来自 registry / GitHub releases 的 JSON。此前只判 typeof string，而
+// parseSemver 会把 '9.9.9; <命令>' 宽松解析为 9.9.9 通过 hasUpdate 判定，
+// 随后 shell 把它拆成两条命令执行——恶意镜像/代理返回 crafted 版本即可
+// 在用户运行 /update 时拿到命令执行。白名单字符集不含任何 shell 元字符。
+describe('update version spec whitelist', () => {
+  let origFetch: typeof globalThis.fetch
+  let origNoSystemProxy: string | undefined
+
+  before(() => {
+    origFetch = globalThis.fetch
+    origNoSystemProxy = process.env.RIVET_NO_SYSTEM_PROXY
+    process.env.RIVET_NO_SYSTEM_PROXY = '1'
+  })
+
+  after(() => {
+    globalThis.fetch = origFetch
+    if (origNoSystemProxy === undefined) delete process.env.RIVET_NO_SYSTEM_PROXY
+    else process.env.RIVET_NO_SYSTEM_PROXY = origNoSystemProxy
+  })
+
+  it('accepts plain, canary, prerelease and build-metadata versions', () => {
+    for (const v of ['3.37.4', '1.2.3.4', '3.0.0-beta.2', 'v3.37.4', '3.0.0+build.1', '3.0.0-rc.1+sha.abc']) {
+      assert.equal(isValidUpdateVersion(v), true, v)
+    }
+  })
+
+  it('rejects shell metacharacters and non-version specs', () => {
+    for (const v of ['9.9.9; echo pwned', '1.2.3$(id)', '1.2.3`id`', '1.2.3 && rm -rf /', '1.2.3|cat', '1.2', 'latest', '', '3.37.4 ', '3.37.4\nrm']) {
+      assert.equal(isValidUpdateVersion(v), false, JSON.stringify(v))
+    }
+  })
+
+  it('fetchNpmLatestVersion ignores a crafted version from every mirror', async () => {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ version: '9.9.9; echo pwned' }), { status: 200 })
+    assert.equal(await fetchNpmLatestVersion('tianshu-harness'), null)
+  })
+
+  it('fetchGitHubLatestVersion ignores a crafted tag', async () => {
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ tag_name: 'v9.9.9$(id)', published_at: '2026-10-31T00:00:00Z' }), { status: 200 })
+    assert.equal(await fetchGitHubLatestVersion('owner', 'repo'), null)
+  })
+
+  it('runUpdate refuses a crafted channel before any network request', async () => {
+    // 全局安装判定：包根落在 `npm prefix -g`/node_modules 下即为 global。
+    // 在全局前缀下建临时包根（finally 清理），不碰任何已装包。
+    let prefix: string | null = null
+    try {
+      prefix = execSync('npm prefix -g', { encoding: 'utf-8', timeout: 5_000 }).trim() || null
+    } catch {
+      prefix = null
+    }
+    if (!prefix) return
+    const root = join(prefix, 'node_modules', 'rivet-update-spec-test')
+    rmSync(root, { recursive: true, force: true })
+    mkdirSync(root, { recursive: true })
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'rivet-update-spec-test', version: '1.0.0' }))
+      globalThis.fetch = async () => { throw new Error('must not fetch') }
+      const lines: string[] = []
+      const result = await runUpdate(root, '9.9.9; echo pwned', (line) => { lines.push(line) })
+      assert.equal(result.ok, false)
+      assert.match(result.message, /unsafe/)
+      assert.equal(lines.length, 0)
+    } finally {
+      globalThis.fetch = origFetch
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

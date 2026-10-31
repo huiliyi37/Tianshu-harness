@@ -72,6 +72,20 @@ export function updateInstallSpec(latest: string): string {
   return latest.replace(/^v/, '')
 }
 
+/**
+ * 版本规格白名单：`/update` 会把版本拼进 shell 命令（POSIX 全局安装走
+ * `spawn(command, { shell: true })`），而版本字符串来自远端 registry /
+ * GitHub releases 的 JSON（此前只判 `typeof string`）。未校验的版本如
+ * `9.9.9; <任意命令>` 会被 parseSemver 宽松解析为 9.9.9（`parseInt` 截断），
+ * 通过 hasUpdate 判定后在 shell 里拆成两条命令执行——镜像/代理返回恶意
+ * 版本即可在用户运行 /update 时拿到命令执行。
+ * 只放行严格 semver 形态（含 tianshu 的 4+ 段 canary 版、prerelease 与
+ * build 元数据）：字符集里没有任何 shell 元字符，拼进命令必然是单个参数。
+ */
+export function isValidUpdateVersion(version: string): boolean {
+  return /^v?\d+(\.\d+){2,}(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version)
+}
+
 /** Semver 比较。返回值 < 0 表示 a < b。
  *  先比主版本三段，再比第 4+ 段（缺失视为 0），最后比 prerelease。 */
 export function compareSemver(a: string, b: string): number {

@@ -23,7 +23,7 @@ import { rivetHome, updateCheckPath } from '../config/paths.js'
 import { findInstallRoot, readInstallVersion } from '../cli/version.js'
 import { WinStreamDecoder } from '../platform.js'
 // 版本解析/比较拆到 ./semver.js 后仍需本地绑定（compareSemver 用于 hasUpdate 判定）。
-import { compareSemver, parseSemver, updateInstallSpec } from './semver.js'
+import { compareSemver, parseSemver, updateInstallSpec, isValidUpdateVersion } from './semver.js'
 import { ProxyAgent } from 'undici'
 import type { Dispatcher } from 'undici'
 import { resolveProxyForUrl } from '../tools/net/proxy-resolver.js'
@@ -156,7 +156,7 @@ function findPowerShell(): string | null {
 
 // 版本解析/比较已沿接缝拆到 ./semver.js（updater.ts 触到 800 行红线，
 // architecture-guards max-lines ratchet）；此处 re-export 保持既有 import 契约不变。
-export { compareSemver, parseSemver, updateInstallSpec }
+export { compareSemver, parseSemver, updateInstallSpec, isValidUpdateVersion }
 
 /**
  * 安装包根目录——向上找到最近的、**带 version 字段**的 package.json。
@@ -315,7 +315,7 @@ export async function fetchNpmLatestVersion(
     } catch {
       continue
     }
-    if (typeof data.version === 'string') {
+    if (typeof data.version === 'string' && isValidUpdateVersion(data.version)) {
       return { version: data.version, publishedAt: data.time?.[data.version], source: 'npm' }
     }
   }
@@ -396,6 +396,7 @@ export async function fetchGitHubLatestVersion(
   const tag = data.tag_name
   if (typeof tag !== 'string') return null
   const version = tag.replace(/^v/, '')
+  if (!isValidUpdateVersion(version)) return null
   return { version, publishedAt: data.published_at, source: 'github' }
 }
 
@@ -548,6 +549,11 @@ export async function runUpdate(
   if (type === 'source') {
     command = 'git pull && npm install && npm run build'
   } else if (type === 'global') {
+    // 纵深防御：channel 可能绕过 fetch 校验直接传入；包名同样拼进 shell
+    // 命令，一并用字符集白名单兜底（校验在联网查询之前）。
+    if (!isValidUpdateVersion(channel) || !/^[A-Za-z0-9@._/~-]+$/.test(name)) {
+      return { ok: false, skipped: false, message: 'Refusing to install an unsafe package spec.' }
+    }
     const published = await npmPackageExists(name)
     if (!published) {
       return {

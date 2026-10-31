@@ -9,7 +9,8 @@ import { isRebuildableSkillResource } from './skill-resource-policy.js'
 
 export interface PackageFile { path: string; data: string; executable: boolean }
 export interface SkillPackage { definition: SkillDefinition; files: PackageFile[]; fingerprint: string; subpath: string }
-const MAX_BYTES = 32 * 1024 * 1024
+/** 单个技能包总字节上限。32MB 对捆绑大参考资源（数据文件、模型、离线文档）的技能过严，放宽到 100MB。 */
+const MAX_BYTES = 100 * 1024 * 1024
 /**
  * 技能包敏感资源判定（按路径段、词元级匹配）——issue #458：旧判据是裸子串正则
  * `/(^|\/)\.env(?:\.|$)|credentials|private.*key|token|secret/i`，`token`/`secret`/

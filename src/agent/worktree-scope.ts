@@ -1,6 +1,6 @@
 import { spawnGitSync } from '../tools/spawn-git.js'
-import { appendFileSync, copyFileSync, existsSync, mkdirSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export interface ScopeMaterializeResult {
   /** Relative file paths copied from the base repo into the worker worktree. */
@@ -21,13 +21,17 @@ export interface ScopeMaterializeResult {
 }
 
 function normalizeScopePath(baseCwd: string, filePath: string): string | null {
-  if (!isAbsolute(filePath)) return filePath
-  const rel = relative(baseCwd, filePath)
+  // 词法收容：把相对/绝对两种形态都先 resolve 到 base 下再判是否仍在 base 内。
+  // 旧实现把相对路径原样返回，于是 `../x`、`sub/../../x` 这类条目在 join
+  // 之后才归一化出逃逸——workerPath 与 basePath 双双落在 repo 外，收容全靠
+  // 调用方事先过滤（hands 路径的 scope 直接来自 work order，无此过滤）。
   // win32 跨盘时 relative 无法表达相对路径，原样返回目标的绝对路径——这同样是
-  // 「解析到 repo 外」，必须与 '..' 前缀同判为 null。漏判会让 `D:\other\x.ts`
+  // 「解析到 repo 外」，必须判为 null。漏判会让 `D:\other\x.ts`
   // 这类跨盘路径落进 toBeCreated、诱导 worker 去"创建"一个 repo 外路径。
   // （`/etc/passwd` 在 Windows 上解析为「当前盘根下的 etc/passwd」，命中的也是这条。）
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+  const resolved = isAbsolute(filePath) ? resolve(filePath) : resolve(baseCwd, filePath)
+  const rel = relative(resolve(baseCwd), resolved)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null
   return rel
 }
 
@@ -110,6 +114,25 @@ export function materializeScope(
       // killed every new-file-creating delegation (T1 fix, 2026-07-29).
       toBeCreated.push(relPath)
       continue
+    }
+
+    // 符号链接守卫：copyFileSync 会跟随链接，于是 repo 内一条指向 repo 外的
+    // 软链会把外部字节以普通文件形式拷进 worker 工作树——worker 的隔离边界
+    // 本是"仅可见 scope 内的 repo 文件"，就此被绕过（candidateSnapshotRef
+    // 对同一问题已有 realpath-inside 判定，此处补齐）。指向 repo 内的链接
+    // 保持原有复制行为。lstat/realpath 竞态（文件在检查间消失）时落入下
+    // 面的复制，让复制本身报出真实错误，不凭空捏造一个 missing。
+    try {
+      if (lstatSync(basePath).isSymbolicLink()) {
+        const target = realpathSync(basePath)
+        const inside = relative(realpathSync(baseCwd), target)
+        if (inside === '' || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+          missing.push(filePath)
+          continue
+        }
+      }
+    } catch {
+      // fall through to copyFileSync, which reports the real failure
     }
 
     mkdirSync(dirname(workerPath), { recursive: true })

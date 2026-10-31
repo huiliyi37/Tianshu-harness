@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs'
+import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { materializeScope } from '../worktree-scope.js'
@@ -112,5 +112,50 @@ describe('materializeScope', () => {
     const result = materializeScope(repoDir, wtDir, ['missing.md'])
     assert.deepEqual(result.missing, [])
     assert.deepEqual(result.toBeCreated, ['missing.md'])
+  })
+
+  it('reports relative traversal entries as missing instead of escaping the repo', () => {
+    // repoDir 与 wtDir 同在 tmpdir 下：旧实现把相对路径原样返回，join 后
+    // 归一化会把 `../x` 落到 tmpdir，与 basePath 恰好是同一文件而被跳过；
+    // 但对嵌套更深的 worker 工作树（.rivet/vsw/<session>），`..` 段数不同
+    // 会让两端解析到不同位置。收容必须在 join 之前、按 base 归一化判定。
+    const escapeName = `scope-escape-${basename(repoDir)}.txt`
+    const escapePath = join(tmpdir(), escapeName)
+    writeFileSync(escapePath, 'OUTSIDE')
+    try {
+      for (const entry of [`../${escapeName}`, `sub/../../${escapeName}`]) {
+        const result = materializeScope(repoDir, wtDir, [entry])
+        assert.deepEqual(result.missing, [entry])
+        assert.deepEqual(result.materialized, [])
+        assert.deepEqual(result.toBeCreated, [])
+        assert.ok(!existsSync(join(wtDir, escapeName)))
+      }
+    } finally {
+      rmSync(escapePath, { force: true })
+    }
+  })
+
+  it('does not copy symlinks pointing outside the repo into the worker worktree', () => {
+    const target = join(tmpdir(), `scope-link-target-${basename(repoDir)}.txt`)
+    writeFileSync(target, 'LINK-TARGET-SECRET')
+    symlinkSync(target, join(repoDir, 'evil-link.txt'))
+    try {
+      const result = materializeScope(repoDir, wtDir, ['evil-link.txt'])
+      assert.deepEqual(result.missing, ['evil-link.txt'])
+      assert.deepEqual(result.materialized, [])
+      assert.ok(!existsSync(join(wtDir, 'evil-link.txt')))
+    } finally {
+      rmSync(target, { force: true })
+    }
+  })
+
+  it('still copies symlinks resolving inside the repo', () => {
+    writeFileSync(join(repoDir, 'inner.md'), '# Inner')
+    symlinkSync(join(repoDir, 'inner.md'), join(repoDir, 'inner-link.md'))
+
+    const result = materializeScope(repoDir, wtDir, ['inner-link.md'])
+
+    assert.deepEqual(result.materialized, ['inner-link.md'])
+    assert.equal(readFileSync(join(wtDir, 'inner-link.md'), 'utf-8'), '# Inner')
   })
 })

@@ -71,7 +71,8 @@ function scopeVisible(g: PathGrant, cwd?: string): boolean {
  * ancestor) exists, so containment checks compare real paths. Falls back to a
  * plain resolve for not-yet-existing targets.
  */
-function canonicalize(p: string): string {
+/** Canonicalize a path (exported for guard checks that must see the resolved target — see request-path-access). */
+export function canonicalize(p: string): string {
   const abs = resolve(p)
   try {
     return realpathSync(abs)

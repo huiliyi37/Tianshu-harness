@@ -2,7 +2,7 @@ import { existsSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { Tool } from './types.js'
 import { expandHome } from '../platform.js'
-import { grantPath, type GrantMode } from './path-grants.js'
+import { canonicalize, grantPath, type GrantMode } from './path-grants.js'
 import { detectSensitiveFile } from './sensitive-file-detector.js'
 
 /** 不得作为授权根的系统级目录（issue #117）：一次批准即把本会话的读写面放大到
@@ -71,18 +71,27 @@ export const REQUEST_PATH_ACCESS_TOOL: Tool = {
       root = dirname(target)
     }
 
+    // 授权检查必须看解析后的真实路径：target 可能是符号链接（例如工作区内
+    // 的链接指向 /etc），词法路径查表会放行、而 grantPath 随后又把授权根
+    // 规范化到链接目标——审批看到的路径与实际授权的路径不一致。词法形态与
+    // 规范形态都要查（不存在的路径规范化只解析已存在祖先，词法检查兜底）。
+    const canonicalTarget = canonicalize(target)
+    const canonicalRoot = canonicalize(root)
+    const resolvedNote = canonicalTarget !== target ? ` → ${canonicalTarget}` : ''
     // issue #117 — 授权必须有上界：target 与其授权根都要查（`/etc/passwd` 的授权根
     // 是 `/etc`），根/系统目录与敏感文件一律拒绝。
-    if (isForbiddenGrantRoot(target) || isForbiddenGrantRoot(root)) {
+    if (isForbiddenGrantRoot(target) || isForbiddenGrantRoot(root)
+      || isForbiddenGrantRoot(canonicalTarget) || isForbiddenGrantRoot(canonicalRoot)) {
       return {
-        content: `错误：拒绝授权文件系统根/系统目录（${target}）——请指定具体的工作子目录。`,
+        content: `错误：拒绝授权文件系统根/系统目录（${target}${resolvedNote}）——请指定具体的工作子目录。`,
         isError: true,
       }
     }
-    const sensitive = detectSensitiveFile(target)
+    let sensitive = detectSensitiveFile(target)
+    if (!sensitive.sensitive) sensitive = detectSensitiveFile(canonicalTarget)
     if (sensitive.sensitive) {
       return {
-        content: `错误：拒绝授权敏感文件（${sensitive.patternName ?? '敏感路径'}）：${target}`,
+        content: `错误：拒绝授权敏感文件（${sensitive.patternName ?? '敏感路径'}）：${target}${resolvedNote}`,
         isError: true,
       }
     }

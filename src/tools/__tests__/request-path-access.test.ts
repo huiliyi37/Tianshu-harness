@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -145,5 +145,68 @@ describe('request_path_access tool', () => {
   it('errors on missing path', async () => {
     const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({}, '/tmp') as never)
     assert.equal(res.isError, true)
+  })
+
+  // 审计发现：守卫此前只查词法路径，而 grantPath 随后规范化（解析符号链接）——
+  // 工作区内的链接指向 /etc 时，审批看到的路径与实际授权的路径不一致。
+  it('refuses a symlink alias pointing at a forbidden root', async () => {
+    if (process.platform === 'win32') return
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-alias-'))
+    const link = join(dir, 'build-out')
+    try {
+      symlinkSync('/etc', link)
+    } catch {
+      return // symlink creation not permitted in this environment: skip
+    }
+    try {
+      const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: link, mode: 'write' }, cwd) as never)
+      assert.equal(res.isError, true, 'symlink to /etc must be refused')
+      assert.match(res.content, /\/etc/)
+      assert.equal(isWriteGranted('/etc/hosts'), false)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a symlink alias pointing at a sensitive-named directory', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    const base = mkdtempSync(join(tmpdir(), 'rivet-alias-'))
+    const real = join(base, '.env')
+    const link = join(base, 'data')
+    try {
+      mkdirSync(real)
+      symlinkSync(real, link)
+    } catch {
+      return // symlink creation not permitted in this environment: skip
+    }
+    try {
+      const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: link, mode: 'read' }, cwd) as never)
+      assert.equal(res.isError, true, 'symlink to a .env directory must be refused')
+      assert.equal(isReadGranted(join(real, 'x')), false)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('still grants a symlink alias pointing at an ordinary directory', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'rivet-cwd-'))
+    const ext = mkdtempSync(join(tmpdir(), 'rivet-ext-'))
+    const link = join(cwd, 'out')
+    try {
+      symlinkSync(ext, link)
+    } catch {
+      return // symlink creation not permitted in this environment: skip
+    }
+    try {
+      const res = await REQUEST_PATH_ACCESS_TOOL.execute(params({ path: link, mode: 'read' }, cwd) as never)
+      assert.ok(!res.isError)
+      assert.equal(isReadGranted(join(ext, 'x')), true)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(ext, { recursive: true, force: true })
+    }
   })
 })

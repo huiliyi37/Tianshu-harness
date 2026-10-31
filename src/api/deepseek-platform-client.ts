@@ -116,6 +116,9 @@ async function platformFetch(
   apiKey: string | undefined,
   baseUrl: string | undefined,
   signal?: AbortSignal,
+  // issue #545：与 balance-client 同款缺 dispatcher 问题——不传则平台摘要/
+  // 成本查询直连，绕过 network.proxy 与 provider 级代理。
+  dispatcher?: unknown,
 ): Promise<PlatformResult<unknown>> {
   // Auth priority: platform webview login (cookie+token) > API Key
   const platformAuth = loadPlatformAuth()
@@ -136,7 +139,7 @@ async function platformFetch(
 
   let res: Response
   try {
-    res = await fetchWithTimeout(url, { headers, signal }, 10_000)
+    res = await fetchWithTimeout(url, { headers, signal }, 10_000, dispatcher)
   } catch (err) {
     return fail('network', (err as Error).message)
   }
@@ -191,9 +194,10 @@ export async function getDeepSeekUserSummary(
   apiKey: string | undefined,
   baseUrl: string | undefined,
   signal?: AbortSignal,
+  dispatcher?: unknown,
 ): Promise<PlatformResult<DeepSeekUserSummary>> {
   const result = unwrap<DeepSeekUserSummary>(
-    await platformFetch('/api/v0/users/get_user_summary', apiKey, baseUrl, signal),
+    await platformFetch('/api/v0/users/get_user_summary', apiKey, baseUrl, signal, dispatcher),
   )
   if (result.data && 'normal_wallets' in result.data) {
     try { return { data: normalizeWalletSummary(result.data) } }
@@ -219,11 +223,12 @@ export async function getDeepSeekCostReport(
   month: number,
   year: number,
   signal?: AbortSignal,
+  dispatcher?: unknown,
 ): Promise<PlatformResult<DeepSeekCostReport>> {
   if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year) || year < 1970 || year > 9999) {
     return fail('malformed', '账单月份无效')
   }
-  const legacy = await platformFetch(`/api/v0/usage/cost?month=${month}&year=${year}`, apiKey, baseUrl, signal)
+  const legacy = await platformFetch(`/api/v0/usage/cost?month=${month}&year=${year}`, apiKey, baseUrl, signal, dispatcher)
   const legacyPayload = unwrap<{ days?: unknown }>(legacy)
   // Retired routes can return HTTP 200 with a business error or unrelated payload.
   // Only a validated legacy report suppresses the current endpoint fallback.
@@ -232,8 +237,8 @@ export async function getDeepSeekCostReport(
     const range = platformMonthRange(month, year)
     const query = `start=${range.start}&end=${range.end}&tz=${range.tz}`
     const [amount, cost] = await Promise.all([
-      platformFetch(`/api/v0/usage/by_api_key/amount?${query}`, apiKey, baseUrl, signal).then(unwrap),
-      platformFetch(`/api/v0/usage/by_api_key/cost?${query}`, apiKey, baseUrl, signal).then(unwrap),
+      platformFetch(`/api/v0/usage/by_api_key/amount?${query}`, apiKey, baseUrl, signal, dispatcher).then(unwrap),
+      platformFetch(`/api/v0/usage/by_api_key/cost?${query}`, apiKey, baseUrl, signal, dispatcher).then(unwrap),
     ])
     if (!amount.data) return amount as PlatformResult<DeepSeekCostReport>
     if (!cost.data) return cost as PlatformResult<DeepSeekCostReport>
@@ -267,8 +272,9 @@ export async function getDeepSeekAmount(
   baseUrl: string | undefined,
   month: string, // YYYY-MM format
   signal?: AbortSignal,
+  dispatcher?: unknown,
 ): Promise<PlatformResult<DeepSeekAmountDetail>> {
   return unwrap<DeepSeekAmountDetail>(
-    await platformFetch(`/api/v0/usage/amount?month=${month}`, apiKey, baseUrl, signal),
+    await platformFetch(`/api/v0/usage/amount?month=${month}`, apiKey, baseUrl, signal, dispatcher),
   )
 }

@@ -38,11 +38,14 @@ export function balanceEndpoint(baseUrl: string): string {
 /**
  * 查询 DeepSeek 账户余额。非 DeepSeek provider 返回 null。
  * 10 秒超时；网络错误/API 错误返回 null（静默，不阻断 UI）。
+ * dispatcher：issue #545——此前调用方不传 dispatcher，余额查询直连绕过
+ * network.proxy 与 provider 级代理；传入 providerDispatcher 的产物即走代理。
  */
 export async function queryDeepSeekBalance(
   apiKey: string | undefined,
   baseUrl: string | undefined,
   signal?: AbortSignal,
+  dispatcher?: unknown,
 ): Promise<BalanceResult | null> {
   if (!apiKey || !isDeepSeekProvider(baseUrl)) return null
   const url = balanceEndpoint(baseUrl!)
@@ -50,7 +53,7 @@ export async function queryDeepSeekBalance(
     const res = await fetchWithTimeout(url, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
       signal,
-    }, 10_000)
+    }, 10_000, dispatcher)
     if (!res.ok) return null
     const data = (await res.json()) as {
       is_available?: boolean

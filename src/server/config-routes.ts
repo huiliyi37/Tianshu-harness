@@ -108,8 +108,9 @@ import { isKeylessProviderEntry } from '../config/provider-presets.js'
 import type { ProviderListItem } from './config-provider-contract.js'
 import { allPresetKeys, resolvePreset, resolvePresetBaseUrl, resolvePresetDefaultModel, resolvePresetLabel, resolvePresetProtocol } from '../api/pro-registry.js'
 import { buildOAuthRoutes, oauthListFields } from './config-routes-oauth.js'
-import { modelConfigSchema, providerCapabilitiesSchema, PROVIDER_PROTOCOL_VALUES, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderProtocol } from '../config/schema.js'
-import { queryDeepSeekBalance } from '../api/balance-client.js'
+import { modelConfigSchema, providerCapabilitiesSchema, PROVIDER_PROTOCOL_VALUES, type ModelConfig, type ProviderCapabilitiesConfig, type ProviderProtocol, type Config, type ProviderConfig } from '../config/schema.js'
+import { queryDeepSeekBalance, balanceEndpoint } from '../api/balance-client.js'
+import { providerDispatcher } from '../api/provider-network.js'
 import { resolveAccountCredential, type AccountCredential } from './account-credential.js'
 import { discoverVisionModels, validateVisionModel } from '../api/vision-model-onboarding.js'
 import { generateImage } from '../api/image-gen-client.js'
@@ -157,6 +158,17 @@ function withAuth(handler: RouteHandler, apiToken?: string): RouteHandler {
  *  「哪个 key 的账户在回答」——缺省查询命中池回退时尤其需要。 */
 function accountEcho(cred: AccountCredential): { keyId?: string; label?: string } {
   return cred.keyId ? { keyId: cred.keyId, ...(cred.label ? { label: cred.label } : {}) } : {}
+}
+
+/** 账户类查询的代理 dispatcher（issue #545）：此前余额/摘要/成本三条路由只传
+ * apiKey 与 baseUrl，查询直连，配置了 network.proxy 或 provider 级代理的用户
+ * 在代理-only 网络下恒失败。合并规则与 factory.ts:167 一致：provider.proxy
+ * （去空串）优先于全局 network.proxy；noProxy 来自全局 network 配置；目标 URL
+ * 交给 providerDispatcher 做 noProxy 判定（含 noProxy 命中时返回直连 Agent）。
+ * 未配置代理时返回 undefined，行为与原来一致。 */
+function accountDispatcher(cfg: Config, provider: ProviderConfig | undefined, url: string | undefined) {
+  if (!provider || !url) return undefined
+  return providerDispatcher(url, { proxy: provider.proxy?.trim() || cfg.network.proxy, noProxy: cfg.network.noProxy })
 }
 
 /** /config/providers/test-key 与 /config/providers/test 共用的 key+baseUrl
@@ -1278,29 +1290,52 @@ export function buildConfigRoutes(apiToken?: string, hooks?: ConfigRouteHooks): 
     'GET /config/balance': withAuth(async (_body, params) => {
       // 查 DeepSeek 官方账户余额。仅 DeepSeek 官方端点支持（其他 provider 返回 null）。
       // ?provider=&keyId= 指定账户（issue #392 多 key 池）；缺省 = 默认 provider 主 key。
-      const cred = resolveAccountCredential(loadConfig(), params?.provider, params?.keyId)
+      // issue #545：余额查询也要走代理——按账户的 provider/global 代理生成 dispatcher。
+      const cfg = loadConfig()
+      const cred = resolveAccountCredential(cfg, params?.provider, params?.keyId)
       if ('error' in cred) return { status: 400, body: { error: cred.error } }
-      const balance = await queryDeepSeekBalance(cred.apiKey, cred.provider?.baseUrl)
+      const balance = await queryDeepSeekBalance(
+        cred.apiKey,
+        cred.provider?.baseUrl,
+        undefined,
+        accountDispatcher(cfg, cred.provider, cred.provider?.baseUrl ? balanceEndpoint(cred.provider.baseUrl) : undefined),
+      )
       return { status: 200, body: { balance, ...accountEcho(cred) } }
     }, apiToken),
 
     // DeepSeek 平台账户摘要：当天/当月花费、余额、Flash/Pro 用量。
     'GET /config/deepseek/summary': withAuth(async (_body, params) => {
-      const cred = resolveAccountCredential(loadConfig(), params?.provider, params?.keyId)
+      const cfg = loadConfig()
+      const cred = resolveAccountCredential(cfg, params?.provider, params?.keyId)
       if ('error' in cred) return { status: 400, body: { error: cred.error } }
       // failure/message 透出，桌面端才能区分「未登录」与「网络错」。
-      const result = await getDeepSeekUserSummary(cred.apiKey, cred.provider?.baseUrl)
+      // issue #545：与余额查询同一毛病（platformFetch 缺 dispatcher），一并修；
+      // 平台域名固定为 platform.deepseek.com，dispatcher 按该域名判定 noProxy。
+      const result = await getDeepSeekUserSummary(
+        cred.apiKey,
+        cred.provider?.baseUrl,
+        undefined,
+        accountDispatcher(cfg, cred.provider, 'https://platform.deepseek.com'),
+      )
       return { status: 200, body: { summary: result.data, failure: result.failure, message: result.message, ...accountEcho(cred) } }
     }, apiToken),
 
     // DeepSeek 平台成本明细：按模型按天的 token/cost。month=1-12, year=YYYY。
     'GET /config/deepseek/cost': withAuth(async (_body, params) => {
-      const cred = resolveAccountCredential(loadConfig(), params?.provider, params?.keyId)
+      const cfg = loadConfig()
+      const cred = resolveAccountCredential(cfg, params?.provider, params?.keyId)
       if ('error' in cred) return { status: 400, body: { error: cred.error } }
       const now = new Date()
       const month = Number(params?.month ?? now.getMonth() + 1)
       const year = Number(params?.year ?? now.getFullYear())
-      const result = await getDeepSeekCostReport(cred.apiKey, cred.provider?.baseUrl, month, year)
+      const result = await getDeepSeekCostReport(
+        cred.apiKey,
+        cred.provider?.baseUrl,
+        month,
+        year,
+        undefined,
+        accountDispatcher(cfg, cred.provider, 'https://platform.deepseek.com'),
+      )
       return { status: 200, body: { cost: result.data, failure: result.failure, message: result.message, ...accountEcho(cred) } }
     }, apiToken),
 

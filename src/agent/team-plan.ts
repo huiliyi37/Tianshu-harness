@@ -102,6 +102,20 @@ function stripLineNoise(line: string): string {
 
 function extractFiles(text: string): string[] {
   const files: string[] = []
+  const lines = text.split('\n')
+  for (const line of lines) {
+    const explicitMatch = line.match(/(?:(?:^|\s)(?:[-*]\s*)?(?:文件|files?|touch|paths?)\s*[:：]\s*)(.+)/i)
+    if (explicitMatch) {
+      const explicitContent = explicitMatch[1]!
+      for (const item of explicitContent.split(/[,，、;；\s]+/)) {
+        const clean = item.replace(/^[`'"]+|[`'"]+[(),.;:]*$/g, '').replace(/[(),.;:]+$/g, '').trim()
+        if (isValidPathCandidate(clean)) {
+          files.push(clean)
+        }
+      }
+    }
+  }
+
   for (const match of text.matchAll(FILE_PATH_RE)) {
     const captured = (match[1] ?? match[2] ?? '').trim()
     if (!captured) continue
@@ -112,11 +126,21 @@ function extractFiles(text: string): string[] {
     for (const raw of captured.split(/[,，、;；\s]+/)) {
       const candidate = raw.replace(/[(),.;:]+$/g, '').trim()
       if (!candidate) continue
-      if (!/^(src|docs|specs|test|tests|\.rivet)\//.test(candidate)) continue
-      files.push(candidate)
+      if (isValidPathCandidate(candidate)) {
+        files.push(candidate)
+      }
     }
   }
   return unique(files)
+}
+
+function isValidPathCandidate(candidate: string): boolean {
+  if (!candidate || candidate.startsWith('..') || candidate.startsWith('/')) return false
+  if (candidate.includes('://')) return false
+  if (/^(src|docs|specs|test|tests|\.rivet)\//.test(candidate)) return true
+  if (/^(?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.(?:[cm]?[jt]sx?|py|go|rs|c|cpp|h|hpp|java|kt|rb|sh|json|md|ya?ml|toml|css|scss|html|txt)$/i.test(candidate)) return true
+  if (/^(?:Makefile|Dockerfile|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$/i.test(candidate)) return true
+  return false
 }
 
 /**
@@ -189,12 +213,17 @@ function parseDependencyRef(raw: string): string | DependencyEdge {
   }
 }
 
+const NO_DEP_RE = /^(?:none|nil|null|无|无依赖|暂无|不需要|-|—)$/i
+
 function extractDependencies(lines: string[]): Array<string | DependencyEdge> {
   const deps: Array<string | DependencyEdge> = []
   for (const line of lines) {
     const m = line.match(/(?:depends?\s*(?:on)?|依赖|前置)\s*[:：]?\s*(.+)/i)
     if (m) {
-      const refs = m[1]!.split(/[,，、;；\s]+/).filter(r => r && r.toLowerCase() !== 'none')
+      const refs = m[1]!.split(/[,，、;；\s]+/).filter(r => {
+        const trimmed = r.trim()
+        return trimmed && !NO_DEP_RE.test(trimmed)
+      })
       deps.push(...refs.map(parseDependencyRef))
     }
   }

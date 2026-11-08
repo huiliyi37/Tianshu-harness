@@ -8,6 +8,6 @@ export function continuityGuidance(details: ContinuityFailureDetails | undefined
   const stage = details?.stage === 'transport' ? '源历史与冻结投影未变，发送层字节发生变化。'
     : details?.stage === 'render' ? '冻结投影无法与已发布字节核对。' : ''
   return stage + (surface === 'desktop'
-    ? '本地连续性校验受阻，重复发送不会修复；请检查前缀恢复资格。无法修复时导出救援副本并在新会话续接，原会话保留。执行绑定或源历史异常时禁止重建。'
+    ? '本地连续性校验受阻，重复发送不会修复；请到 设置 → 运行时环境 →「检查运行环境」查看运行时状态，或导出救援副本并在新会话续接，原会话保留。执行绑定或源历史异常时禁止重建。'
     : '本地连续性校验受阻，重复发送不会修复；请用 /repair-prefix 检查恢复资格，或用 /repair-prefix --rescue 导出并预览新会话续接。执行绑定或源历史异常时禁止重建。')
 }

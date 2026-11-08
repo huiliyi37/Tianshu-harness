@@ -14,7 +14,7 @@ export function captureCommitVersion(cwd: string, files: string[]): CommitVersio
   for (const file of [...new Set(files)].sort()) {
     const path = resolve(root, file), rel = relative(root, path)
     if (isAbsolute(rel) || rel.startsWith('..') || detectSensitiveFile(file).sensitive) return null
-    hash.update(file)
+    hash.update(file.replace(/\\/g, '/'))
     try {
       const actual = realpathSync(path), inside = relative(realpathSync(root), actual)
       if (isAbsolute(inside) || inside.startsWith('..')) return null

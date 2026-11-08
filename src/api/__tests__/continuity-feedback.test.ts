@@ -21,6 +21,7 @@ test('continuity diagnostics identify projection deltas without exposing user co
   assert.doesNotMatch(desktopGuidance, /repair-prefix/)
   assert.doesNotMatch(desktopGuidance, /\/logs/)
   assert.match(desktopGuidance, /检查运行环境/)
+  assert.match(desktopGuidance, /设置 → 运行时环境 →「检查运行环境」/)
   for (const changed of ['source', 'tools', 'options', 'binding']) {
     assert.equal(continuityFailureDetails(new ContinuationPrefixError(changed, old, next))?.recovery, 'blocked')
   }

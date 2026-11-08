@@ -2,7 +2,7 @@ import { withTaskConstraints } from './work-order-constraints.js'
 export { MAX_TASK_CONSTRAINT_CHARS } from './work-order-constraints.js'
 import { workerDeliverySchema, type WorkerDelivery } from './worker-delivery.js'
 export { workerDeliverySchema, type WorkerDelivery } from './worker-delivery.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -135,7 +135,12 @@ export function clampWorkerMaxTurns(runtimeDefault: number, budgetMaxTurns: numb
  * must derive through here so they stay in sync.
  */
 export function deriveWorkerSessionId(orderId: string, dispatchNonce?: string): string {
-  const base = `worker-${orderId.replace(/:/g, '-')}`
+  let cleanId = orderId.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  if (!cleanId) {
+    const hash = createHash('sha256').update(orderId).digest('hex').slice(0, 8)
+    cleanId = `task-${hash}`
+  }
+  const base = `worker-${cleanId}`
   return dispatchNonce ? `${base}-${dispatchNonce}` : base
 }
 

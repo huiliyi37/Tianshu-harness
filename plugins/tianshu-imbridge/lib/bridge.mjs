@@ -33,7 +33,13 @@ export function conversationDirName(key) {
   return createHash('sha256').update(String(key)).digest('hex').slice(0, 16)
 }
 
-/** 由首条消息生成会话标题（桌面端列表可读）。 */
+/**
+ * 由首条消息生成的**兜底**会话标题。
+ *
+ * 常规路径不再用它起名：建会话时不传标题，把起名权交给宿主（它会用便宜模型起一个
+ * 概括性短标题）。只有宿主那条路没走通（模型慢、配置缺、命名失败）时，才用这里
+ * 补一个可读名，免得桌面端列表里只剩会话 ID。
+ */
 export function sessionTitleFor(content) {
   const flat = String(content ?? '').replace(/\s+/g, ' ').trim()
   return flat ? `QQ: ${flat.slice(0, 30)}` : 'QQ 对话'
@@ -54,7 +60,7 @@ export class MessageQueue {
 
 // ── 交互闭环：审批回决与提问回答的文本处理（纯函数，单测覆盖）──
 
-const APPROVE_WORDS = new Set(['批准', '同意批准', 'approve'])
+const APPROVE_WORDS = new Set(['批准', '同意', '允许', '通过', '确认', '可以', 'approve', 'ok'])
 const DENY_WORDS = new Set(['拒绝', '驳回', '不同意', '不许', '取消', 'deny', 'reject'])
 
 /**
@@ -318,7 +324,7 @@ export class ImBridge {
     let sessionId = this.#sessionMap?.get(key) ?? null
     let fresh = false
     if (!sessionId) {
-      sessionId = await this.#createServeSession(key, cwd, content)
+      sessionId = await this.#createServeSession(key, cwd)
       fresh = true
     }
 
@@ -331,7 +337,7 @@ export class ImBridge {
     if (!snapshot) {
       // 陈旧映射（会话确已被删除）→ 重建，游标回到 0
       this.#sessionMap?.del?.(key)
-      sessionId = await this.#createServeSession(key, cwd, content)
+      sessionId = await this.#createServeSession(key, cwd)
       fresh = true
     } else if (Number.isFinite(snapshot.lastSeq)) {
       baseSeq = snapshot.lastSeq
@@ -358,6 +364,10 @@ export class ImBridge {
 
     const reply = await this.#serveClient.waitForReply(sessionId, { since: baseSeq })
     await this.#deliverServeReply({ key, target, sessionId, reply })
+
+    // 本会话的第一条消息（baseSeq=0）之后补一次标题兜底：宿主的自动命名只在首条
+    // 消息触发，而且是 fire-and-forget，失败就没有标题。
+    if (baseSeq === 0) await this.#ensureSessionTitle(sessionId, content)
   }
 
   /** 统一投递：审批挂起 → 转发审批卡片；否则发文本 +（若有）提问卡片。 */
@@ -443,14 +453,41 @@ export class ImBridge {
     await this.#deliverServeReply({ key, target, sessionId: waiting.sessionId, reply })
   }
 
-  async #createServeSession(key, cwd, content) {
-    const session = await this.#serveClient.createSession({ cwd, title: sessionTitleFor(content) })
+  /**
+   * 建会话：**不传标题**，把起名权留给宿主。
+   *
+   * 宿主的自动命名条件是「收到第一条用户消息时标题仍为空」；我们一旦传了 title，
+   * 它就永久跳过。以前传的是 `QQ: 前 30 字`，桌面端会话列表里全是这种半截句子。
+   * 不传之后宿主会用便宜模型起概括性短标题，兜底见 #ensureSessionTitle。
+   */
+  async #createServeSession(key, cwd) {
+    const session = await this.#serveClient.createSession({ cwd })
     const id = session?.id
     if (!id) throw new Error('createSession 未返回会话 id')
     this.#sessionMap?.set?.(key, id)
     this.#stats.serveSessionsCreated += 1
     this.#logger.info?.(`[bridge] serve 新建会话 ${String(id).slice(0, 14)}（${key}）`)
     return id
+  }
+
+  /**
+   * 标题兜底（仅在一个会话的第一条消息之后调用一次）。
+   *
+   * 先读后写，绝不覆盖宿主自动起好的名字；失败只记一条日志，不影响对话本身。
+   */
+  async #ensureSessionTitle(sessionId, content) {
+    if (typeof this.#serveClient?.ensureTitle !== 'function') return
+    const shortId = String(sessionId).slice(0, 14)
+    try {
+      const result = await this.#serveClient.ensureTitle(sessionId, sessionTitleFor(content))
+      if (result === 'set') {
+        this.#logger.info?.(`[bridge] 宿主未自动命名，已写入兜底标题（${shortId}）`)
+      } else if (result === 'kept') {
+        this.#logger.info?.(`[bridge] 会话标题由宿主自动命名（${shortId}）`)
+      }
+    } catch (error) {
+      this.#logger.warn?.(`[bridge] 标题兜底失败（不影响对话）: ${error?.message ?? error}`)
+    }
   }
 
   // ── headless 降级路径（原逻辑）───────────────────────────────

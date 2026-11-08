@@ -1,0 +1,90 @@
+{
+  "name": "@tencent-connect/qqbot-nodejs",
+  "version": "1.0.4",
+  "description": "Tencent QQ Bot Node.js SDK — protocol-level client for the QQ Open Platform (HTTP + WebSocket Gateway, message + media + streaming).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "USAGE.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "commitlint": "commitlint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "semantic-release": "semantic-release",
+    "ci:prepare-test-pkg": "node scripts/prepare-test-pkg.js",
+    "prepack": "npm run build",
+    "playground": "tsx examples/playground/index.ts",
+    "playground:build": "node --import tsx examples/playground/index.ts",
+    "example:webhook": "tsx examples/webhook/index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.3",
+    "@commitlint/config-conventional": "^20.5.3",
+    "@eslint/js": "^10.0.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@types/node": "^22.20.1",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
+    "mpg123-decoder": "^1.0.3",
+    "semantic-release": "^25.0.5",
+    "silk-wasm": "^3.7.1",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "mpg123-decoder": "^1.0.3",
+    "silk-wasm": "^3.7.1"
+  },
+  "peerDependenciesMeta": {
+    "mpg123-decoder": {
+      "optional": true
+    },
+    "silk-wasm": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "qqbot",
+    "qq",
+    "tencent",
+    "bot",
+    "sdk",
+    "websocket",
+    "openapi"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "probe",
+  "version": "0.0.1",
+  "description": "TEMPORARY residency probe plugin — delete after validation",
+  "private": true,
+  "type": "module",
+  "tianshu": {
+    "name": "probe",
+    "version": "0.0.1",
+    "description": "Residency probe: toplevel marker + 5s heartbeat + probe_ping tool",
+    "entry": "index.js",
+    "tools": [
+      { "name": "probe_ping", "description": "Return probe process info (pid, uptime, heartbeat count, data file)" }
+    ],
+    "permissions": { "fs": true }
+  }
+}

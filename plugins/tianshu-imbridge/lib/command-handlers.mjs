@@ -8,6 +8,7 @@
  */
 import {
   formatSessionList, listSessions, parseSessionArgs, resolveSessionTarget, DEFAULT_LIMIT,
+  workspaceNameOf,
 } from './sessions.mjs'
 import { formatWorkspaceList, listWorkspaces, resolveWorkspaceTarget } from './workspaces.mjs'
 import {
@@ -68,6 +69,65 @@ export function createCommandHandlers({ workspace, fsImpl, serveClient, sessionM
         lines.push(`（原绑定 ${String(previous).slice(0, 12)}… 已被替换）`)
       }
       await ctx.reply(lines.join('\n'))
+    },
+
+    /**
+     * /new —— 原地开新会话：在当前对话线所在的工作区预建会话并换绑。
+     * 与 /workspace 同构（预建 + 换绑，绕开「建会话后立刻 prompt 撞 400」的竞态），
+     * 差别只在 cwd 的来源：这里取当前绑定会话的快照（原地重开，不换工作区）。
+     * 旧会话不删——想找回用 /sessions 挑、/session 绑定。
+     * 一切失败路径都先回绝、后不动绑定。
+     */
+    new: async (ctx) => {
+      if (!serveClient?.available || !sessionMap) {
+        await ctx.reply('当前是降级模式（没有 serve 会话通道），/new 不可用；绑定保持原样。')
+        return
+      }
+      const previous = sessionMap.get(ctx.key)
+      if (!previous) {
+        await ctx.reply('这条对话线还没有绑定会话——直接发一条消息就会新建；或先用 /workspace 指定目录。')
+        return
+      }
+      let snapshot
+      try {
+        snapshot = await serveClient.getSession(previous)
+      } catch (error) {
+        await ctx.reply(`读取当前会话失败：${error?.message ?? error}（绑定未改动）`)
+        return
+      }
+      if (!snapshot) {
+        await ctx.reply([
+          `当前绑定的会话（${String(previous).slice(0, 12)}…）在宿主里已经不存在了。`,
+          '直接发一条消息会自动新建一个；也可以用 /workspace 指定目录。',
+        ].join('\n'))
+        return
+      }
+      const cwd = typeof snapshot.cwd === 'string' && snapshot.cwd.trim() ? snapshot.cwd : null
+      if (!cwd) {
+        await ctx.reply('当前会话没有记录工作区，无法原地重开——用 /workspace 指定目录吧。')
+        return
+      }
+      let id = null
+      try {
+        // 不传标题：把起名权留给宿主的自动命名（与 /workspace 同一取舍）。
+        const session = await serveClient.createSession({ cwd })
+        id = session?.id ?? null
+      } catch (error) {
+        await ctx.reply(`开新会话失败（绑定未改动）：${error?.message ?? error}`)
+        return
+      }
+      if (!id) {
+        await ctx.reply('开新会话失败：宿主没有返回会话 id（绑定未改动）')
+        return
+      }
+      sessionMap.set(ctx.key, id)
+      await ctx.reply([
+        `已开新会话（工作区「${workspaceNameOf(cwd)}」）`,
+        `工作区：${cwd}`,
+        `会话 ${String(id).slice(0, 12)}…`,
+        '下一条消息将进入该会话。',
+        '（旧会话还在，想回去用 /sessions 挑）',
+      ].join('\n'))
     },
 
     /**
@@ -151,10 +211,10 @@ export function createCommandHandlers({ workspace, fsImpl, serveClient, sessionM
       }
       let id = null
       try {
-        const session = await serveClient.createSession({
-          cwd: target.path,
-          title: `QQ 工作区：${target.name}`,
-        })
+        // 不传 title：让宿主的自动命名在用户发出第一条消息时接手（工作区信息在会话的
+        // cwd 字段里，不靠标题携带）。代价是这条会话在首条消息之前没有标题，
+        // 桌面端会先显示会话 ID 前几位。
+        const session = await serveClient.createSession({ cwd: target.path })
         id = session?.id ?? null
       } catch (error) {
         await ctx.reply(`切换失败（绑定未改动）：${error?.message ?? error}`)
@@ -168,7 +228,8 @@ export function createCommandHandlers({ workspace, fsImpl, serveClient, sessionM
       await ctx.reply([
         `已切换到「${target.name}」`,
         `工作区：${target.path}`,
-        `下一条消息将在该工作区新建的会话里进行（会话 ${String(id).slice(0, 12)}…）`,
+        `已在该工作区建好会话（${String(id).slice(0, 12)}…），下一条消息直接进去。`,
+        '（会话标题会由天枢在您发出第一条消息后自动命名）',
       ].join('\n'))
     },
   }

@@ -7,6 +7,7 @@ import {
   listWorkspaces,
   pickWorkspaces,
   resolveWorkspaceRoot,
+  resolveWorkspaceTarget,
 } from '../lib/workspaces.mjs'
 
 /** 复刻本机真实形状：根下有隐藏的数据目录，3 个工作区各自内部还带一份 .rivet/。 */
@@ -142,4 +143,35 @@ test('listWorkspaces: 根目录读不动时报错带上路径', () => {
   assert.deepEqual(r.names, [])
   assert.match(r.error, /D:\\nope/)
   assert.match(r.error, /EACCES/)
+})
+
+// ── 跨平台路径语义（上游 2026-09-30 收编后适配，dev 侧 7b5774cda）────────
+// 起因：node:path 的 dirname / basename / join 只认**本机**分隔符，而配置里的
+// workspace 可能是另一种形态（Windows 的 D:\x 与 POSIX 的 /x 都会出现）。在 POSIX
+// 上读 Windows 形态会得到 '.'（父目录错），下游的枚举根、编号切换、按工作区过滤
+// 全部连锁失配。修复后本文件不再 import node:path。
+// 注：与 win32 同形的断言在 Windows 上跑不出差异，价值在 POSIX / CI 侧；
+// 「盘根」那条两种平台都能区分新旧实现。
+
+test('resolveWorkspaceRoot: 盘根之下不再往上（旧实现会返回 D:\\）', () => {
+  assert.equal(resolveWorkspaceRoot('D:\\x'), null)
+})
+
+test('resolveWorkspaceRoot: POSIX 形态路径同样能推父目录', () => {
+  assert.equal(resolveWorkspaceRoot('/home/u/ws'), '/home/u')
+  assert.equal(resolveWorkspaceRoot('/x'), '/')
+})
+
+test('resolveWorkspaceRoot: 混合分隔符取最后一个', () => {
+  assert.equal(resolveWorkspaceRoot('D:\\a/b\\c'), 'D:\\a/b')
+})
+
+test('resolveWorkspaceTarget: 编号切换沿用枚举根的分隔符（不产混合分隔符）', () => {
+  const fsImpl = {
+    readdirSync: () => [{ name: 'coding', isDirectory: () => true }],
+    statSync: () => ({ isDirectory: () => true }),
+  }
+  const r = resolveWorkspaceTarget('1', { workspace: 'D:\\path\\to\\默认', fsImpl })
+  assert.equal(r.ok, true)
+  assert.equal(r.path, 'D:\\path\\to\\coding', '不能用 path.join（会产出 D:\\path\\to/coding）')
 })

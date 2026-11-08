@@ -17,6 +17,11 @@
  */
 
 const DEFAULT_GRACE_MS = 3000
+/**
+ * 终结事件缺失时的静默收尾阈值（4.0.4 兜底）。
+ * 宁可多等 12 秒，也不要把整轮拖到 waitForReply 的 180s 超时。
+ */
+const DEFAULT_SILENCE_MS = 12_000
 const DEFAULT_POLL_MS = 1200
 const DEFAULT_TIMEOUT_MS = 180_000
 
@@ -67,14 +72,17 @@ export class TurnAccumulator {
   #parts = []
   #lastSeq = 0
   #finalSeenAt = null
+  #lastTextAt = null
   #graceMs
+  #silenceMs
   // 交互事件（等待用户选择）：提问卡片与审批请求
   #questions = []
   #approvals = new Map() // requestId -> { requestId, toolName, input }
   #approvalSeenAt = null
 
-  constructor({ graceMs = DEFAULT_GRACE_MS } = {}) {
+  constructor({ graceMs = DEFAULT_GRACE_MS, silenceMs = DEFAULT_SILENCE_MS } = {}) {
     this.#graceMs = Number.isFinite(graceMs) && graceMs >= 0 ? graceMs : DEFAULT_GRACE_MS
+    this.#silenceMs = Number.isFinite(silenceMs) && silenceMs > 0 ? silenceMs : DEFAULT_SILENCE_MS
   }
 
   feed(events, nowMs = Date.now()) {
@@ -88,6 +96,7 @@ export class TurnAccumulator {
         if (text) {
           this.#parts.push(text)
           this.#finalSeenAt = null // 新内容 → 尚未真正终结
+          this.#lastTextAt = nowMs
         }
       } else if (ev.type === 'turn_complete' && ev.data?.isFinal !== false) {
         this.#finalSeenAt = nowMs
@@ -138,7 +147,12 @@ export class TurnAccumulator {
   }
 
   isComplete(nowMs = Date.now()) {
-    return this.#finalSeenAt !== null && nowMs - this.#finalSeenAt >= this.#graceMs
+    if (this.#finalSeenAt !== null && nowMs - this.#finalSeenAt >= this.#graceMs) return true
+    // 兜底：4.0.4 的运行时会话事件经混淆，静态无法确认终结事件名是否仍在。
+    // 有文本且静默超过阈值即收尾——否则 serve 模式下每条消息都会等到 180s 超时。
+    return this.#parts.length > 0
+      && this.#lastTextAt !== null
+      && nowMs - this.#lastTextAt >= this.#silenceMs
   }
 }
 
@@ -192,6 +206,50 @@ export class ServeSessionClient {
       throw error
     }
     return json
+  }
+
+  /**
+   * 改会话标题（宿主只认 string；空串表示清空）。
+   * 只服务「自动命名失败时的兜底」，不作为常规路径。
+   */
+  async renameSession(id, title) {
+    const { status, json } = await this.#request(
+      'PATCH',
+      `/sessions/${encodeURIComponent(id)}`,
+      { title },
+    )
+    if (status !== 200) {
+      const error = new Error(`改标题失败（HTTP ${status}）: ${json?.error ?? ''}`)
+      error.code = 'rename-failed'
+      throw error
+    }
+    return json
+  }
+
+  /**
+   * 标题兜底：**只在标题仍为空时**写入，绝不覆盖已有标题。
+   *
+   * 背景：宿主会在「会话收到第一条用户消息、且当时还没有标题」时自动起名
+   * （便宜模型、异步 fire-and-forget、出错即放弃）。命名慢或配置缺时，
+   * 桌面端列表里就只剩会话 ID 可看。这里补一个可读的兜底名。
+   *
+   * @param {string} id 会话 id
+   * @param {string} fallback 兜底标题
+   * @param {{settleMs?: number, retries?: number}} opts 复查等待与次数
+   * @returns {Promise<'kept'|'set'|'skip'>} kept=宿主已命名｜set=写入兜底｜skip=读不到或不需写
+   */
+  async ensureTitle(id, fallback, { settleMs = 1500, retries = 1 } = {}) {
+    const wanted = typeof fallback === 'string' ? fallback.trim() : ''
+    if (!wanted) return 'skip'
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const snapshot = await this.getSession(id)
+      if (!snapshot) return 'skip'
+      const current = typeof snapshot.title === 'string' ? snapshot.title.trim() : ''
+      if (current) return 'kept'
+      if (attempt < retries) await sleep(settleMs)
+    }
+    await this.renameSession(id, wanted)
+    return 'set'
   }
 
   /** 会话清单（桌面端会话目录里的那一份）。 */

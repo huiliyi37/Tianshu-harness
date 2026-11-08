@@ -55,7 +55,7 @@ test('parseCommand: 别名表与规范名清单同源（不另立一份）', () 
   }
   assert.deepEqual(
     [...COMMAND_NAMES].sort(),
-    ['help', 'history', 'session', 'sessions', 'workspace', 'workspacelist'],
+    ['help', 'history', 'new', 'session', 'sessions', 'workspace', 'workspacelist'],
   )
 })
 

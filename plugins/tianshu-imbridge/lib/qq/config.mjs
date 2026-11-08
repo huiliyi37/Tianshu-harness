@@ -12,14 +12,12 @@
  * 数据目录：$RIVET_HOME/imbridge（RIVET_HOME 缺失时回退 ~/.rivet/imbridge）
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pluginDataDir } from '../data-dir.mjs'
 
-export function pluginDataDir(env = process.env) {
-  const home = typeof env.RIVET_HOME === 'string' ? env.RIVET_HOME.trim() : ''
-  if (home) return join(home, 'imbridge')
-  return join(homedir(), '.rivet', 'imbridge')
-}
+// 数据目录解析已抽到 lib/data-dir.mjs（两通道共用），此处原样再导出：
+// 既有调用方（index.js 的 im_status、测试）按旧路径 import 的行为不变。
+export { pluginDataDir }
 
 export function loadQqConfig(env = process.env) {
   const dataDir = pluginDataDir(env)

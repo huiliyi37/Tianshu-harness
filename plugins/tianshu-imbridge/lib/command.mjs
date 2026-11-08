@@ -24,6 +24,7 @@ const ALIASES = Object.freeze({
   sessions: 'sessions',
   sessionlist: 'sessions',
   session: 'session',
+  new: 'new',
   history: 'history',
   help: 'help',
   h: 'help',
@@ -97,6 +98,13 @@ export const COMMAND_USAGE = Object.freeze({
     example: '/session 3',
     detail: '编号与 /sessions 的清单同源同序；目标不存在时报错，原绑定不动。',
   },
+  new: {
+    params: '',
+    summary: '在当前工作区开一个新会话并换绑（旧会话保留）',
+    example: '/new',
+    detail: '新会话落在当前对话线所在的工作区；没有绑定会话时会明确提示，绑定保持原样。'
+      + '降级模式（没有 serve 通道）下不可用。',
+  },
   history: {
     params: '[N]',
     summary: '回看当前绑定会话的最近 N 条消息（默认 3，上限 20）',
@@ -114,7 +122,7 @@ export const COMMAND_USAGE = Object.freeze({
 /** 帮助卡片的分组与展示顺序；不在表里的命令归到「其他」。 */
 export const COMMAND_GROUPS = Object.freeze([
   { title: '工作区', names: ['workspacelist', 'workspace'] },
-  { title: '会话', names: ['sessions', 'session'] },
+  { title: '会话', names: ['sessions', 'session', 'new'] },
   { title: '历史', names: ['history'] },
   { title: '帮助', names: ['help'] },
 ])

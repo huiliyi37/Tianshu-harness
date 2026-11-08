@@ -1,0 +1,38 @@
+{
+  "$tpi": "1.0",
+  "kind": "tianshu.plugin",
+  "id": "tianshu-imbridge",
+  "displayName": "IM 桥接（QQ / 微信）",
+  "version": "0.7.1",
+  "description": "手机 QQ / 微信 ↔ 天枢直连桥：原生会话、命令层、交互转发",
+  "runtime": "agent",
+  "entry": "index.js",
+  "capabilities": [
+    "tools"
+  ],
+  "contributes": {
+    "tools": [
+      {
+        "name": "im_status",
+        "description": "Report tianshu-imbridge status: phase, mode (serve-native/headless), enabled channels (QQ / WeChat), session map, inbound/reply stats"
+      },
+      {
+        "name": "im_send",
+        "description": "Send a proactive message to the owner (notification) over QQ or WeChat. Defaults to the configured owner / last inbound sender of the chosen channel."
+      },
+      {
+        "name": "weixin_bind_start",
+        "description": "Start WeChat (iLink/ClawBot) binding: generates a QR code image onto the user's Desktop and waits in the background for the scan."
+      },
+      {
+        "name": "weixin_bind_status",
+        "description": "Check the WeChat binding progress: whether the QR was scanned, whether credentials were saved, and what to do next."
+      }
+    ],
+    "lifecycle": []
+  },
+  "permissions": {
+    "fs": true,
+    "net": true
+  }
+}

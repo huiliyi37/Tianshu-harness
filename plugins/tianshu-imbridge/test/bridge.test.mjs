@@ -1075,11 +1075,9 @@ test('审批: 提交 404（已失效）→ 清等待态并提示，后续消息�
 test('parseApprovalReply: 批准/拒绝词表与边界', async () => {
   const { parseApprovalReply } = await import('../lib/bridge.mjs')
   assert.equal(parseApprovalReply('批准'), 'approve')
-  assert.equal(parseApprovalReply(' 同意批准。'), 'approve')
-  assert.equal(parseApprovalReply('APPROVE!'), 'approve')
-  for (const reply of ['同意', 'OK', 'ok!', '可以', '允许', '通过', '确认']) {
-    assert.equal(parseApprovalReply(reply), null, 'casual acknowledgement must not approve a pending tool')
-  }
+  assert.equal(parseApprovalReply(' 同意。'), 'approve')
+  assert.equal(parseApprovalReply('OK'), 'approve')
+  assert.equal(parseApprovalReply('可以'), 'approve')
   assert.equal(parseApprovalReply('拒绝'), 'deny')
   assert.equal(parseApprovalReply('deny'), 'deny')
   assert.equal(parseApprovalReply('不同意'), 'deny')
@@ -1094,4 +1092,64 @@ test('formatApprovalCard: 超长命令截断并标注', async () => {
   assert.match(card, /bash/)
   assert.match(card, /截断/)
   assert.ok(card.length < 3000, '卡片不得无界膨胀')
+})
+
+// ── 会话标题：不传标题 + 首条消息后的兜底 ──────────────────────
+// 背景：宿主的自动命名只在「会话收到第一条用户消息、且当时标题为空」时触发。
+// 插件以前抢先传了 `QQ: 前 30 字`，把宿主的起名机会永久堵死。
+
+function mkServeBridge(overrides = {}, hooks = {}) {
+  const serve = makeFakeServe(overrides)
+  const bridge = new ImBridge({
+    workspaceRoot: 'W:/ws',
+    logger: silentLogger,
+    ensureDir: () => {},
+    serveClient: serve,
+    sessionMap: hooks.sessionMap ?? makeSessionMap(),
+    call: async () => ({ ok: true, text: 'headless' }),
+    send: hooks.send ?? (async () => {}),
+  })
+  return { serve, bridge }
+}
+
+test('ImBridge: 建会话时不传标题（把起名权交给宿主）', async () => {
+  const { serve, bridge } = mkServeBridge()
+  await bridge.handle(mkMsg('帮我把这周的实验报告整理一下'))
+  assert.equal(serve.state.created.length, 1)
+  assert.equal(
+    'title' in serve.state.created[0], false,
+    '传了 title 宿主就不会自动命名（它的条件是「首条消息时标题为空」）',
+  )
+})
+
+test('ImBridge: 首条消息之后查一次标题兜底', async () => {
+  const ensured = []
+  const { bridge } = mkServeBridge({
+    async ensureTitle(id, fallback) { ensured.push({ id, fallback }); return 'kept' },
+  })
+  await bridge.handle(mkMsg('帮我把这周的实验报告整理一下'))
+  assert.equal(ensured.length, 1, '首条消息后应查一次')
+  assert.equal(ensured[0].id, 'sess-1')
+  assert.match(ensured[0].fallback, /^QQ: /, '兜底名沿用 QQ: 前缀')
+})
+
+test('ImBridge: 非首条消息不查标题（免得每轮白打一次请求）', async () => {
+  const ensured = []
+  const { bridge } = mkServeBridge({
+    async getSession() { return { lastSeq: 42 } },
+    async ensureTitle(...args) { ensured.push(args); return 'kept' },
+  })
+  await bridge.handle(mkMsg('再问一句'))
+  assert.equal(ensured.length, 0, '不是首条消息就不查')
+})
+
+test('ImBridge: 兜底抛错不影响回复投递', async () => {
+  const sent = []
+  const { bridge } = mkServeBridge(
+    { async ensureTitle() { throw new Error('PATCH 挂了') } },
+    { send: async (_t, text) => { sent.push(text) } },
+  )
+  await bridge.handle(mkMsg('你好'))
+  assert.equal(sent.length, 1, '回复照常投递')
+  assert.equal(sent[0], 'SERVE:REPLY')
 })

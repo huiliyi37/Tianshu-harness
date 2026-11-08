@@ -1,0 +1,98 @@
+/**
+ * QQ Bot WebSocket Gateway protocol constants.
+ *
+ * Pure protocol-layer constants. Zero external dependencies.
+ */
+
+/** QQ Bot WebSocket intents grouped by permission level. */
+const INTENTS = {
+  GUILDS: 1 << 0,
+  GUILD_MEMBERS: 1 << 1,
+  PUBLIC_GUILD_MESSAGES: 1 << 30,
+  DIRECT_MESSAGE: 1 << 12,
+  GROUP_AND_C2C: 1 << 25,
+  /** Button interaction callbacks (INTERACTION_CREATE). */
+  INTERACTION: 1 << 26,
+} as const;
+
+export const FULL_INTENTS =
+  INTENTS.GUILDS |
+  INTENTS.GUILD_MEMBERS |
+  INTENTS.PUBLIC_GUILD_MESSAGES |
+  INTENTS.DIRECT_MESSAGE |
+  INTENTS.GROUP_AND_C2C |
+  INTENTS.INTERACTION;
+
+export const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000, 60000] as const;
+export const RATE_LIMIT_DELAY = 60000;
+export const MAX_RECONNECT_ATTEMPTS = 100;
+export const MAX_QUICK_DISCONNECT_COUNT = 3;
+export const QUICK_DISCONNECT_THRESHOLD = 5000;
+
+/** Gateway opcodes used by the QQ Bot WebSocket protocol. */
+export const GatewayOp = {
+  DISPATCH: 0,
+  HEARTBEAT: 1,
+  IDENTIFY: 2,
+  RESUME: 6,
+  RECONNECT: 7,
+  INVALID_SESSION: 9,
+  HELLO: 10,
+  HEARTBEAT_ACK: 11,
+} as const;
+
+/** WebSocket close codes used by the QQ Gateway. */
+export const GatewayCloseCode = {
+  NORMAL: 1000,
+  AUTH_FAILED: 4004,
+  INVALID_SESSION: 4006,
+  SEQ_OUT_OF_RANGE: 4007,
+  RATE_LIMITED: 4008,
+  SESSION_TIMEOUT: 4009,
+  SERVER_ERROR_START: 4900,
+  SERVER_ERROR_END: 4913,
+  INSUFFICIENT_INTENTS: 4914,
+  DISALLOWED_INTENTS: 4915,
+} as const;
+
+/** Event type strings dispatched under opcode 0 (DISPATCH). */
+export const GatewayEvent = {
+  READY: "READY",
+  RESUMED: "RESUMED",
+  // ── Message events ──
+  C2C_MESSAGE_CREATE: "C2C_MESSAGE_CREATE",
+  AT_MESSAGE_CREATE: "AT_MESSAGE_CREATE",
+  DIRECT_MESSAGE_CREATE: "DIRECT_MESSAGE_CREATE",
+  GROUP_AT_MESSAGE_CREATE: "GROUP_AT_MESSAGE_CREATE",
+  GROUP_MESSAGE_CREATE: "GROUP_MESSAGE_CREATE",
+  // ── Interaction ──
+  INTERACTION_CREATE: "INTERACTION_CREATE",
+  // ── Guild events (P1) ──
+  GUILD_CREATE: "GUILD_CREATE",
+  GUILD_UPDATE: "GUILD_UPDATE",
+  GUILD_DELETE: "GUILD_DELETE",
+  GUILD_MEMBER_ADD: "GUILD_MEMBER_ADD",
+  GUILD_MEMBER_UPDATE: "GUILD_MEMBER_UPDATE",
+  GUILD_MEMBER_REMOVE: "GUILD_MEMBER_REMOVE",
+  CHANNEL_CREATE: "CHANNEL_CREATE",
+  CHANNEL_UPDATE: "CHANNEL_UPDATE",
+  CHANNEL_DELETE: "CHANNEL_DELETE",
+  // ── Group/C2C lifecycle events (P1) ──
+  GROUP_ADD_ROBOT: "GROUP_ADD_ROBOT",
+  GROUP_DEL_ROBOT: "GROUP_DEL_ROBOT",
+  GROUP_MSG_REJECT: "GROUP_MSG_REJECT",
+  GROUP_MSG_RECEIVE: "GROUP_MSG_RECEIVE",
+  FRIEND_ADD: "FRIEND_ADD",
+  FRIEND_DEL: "FRIEND_DEL",
+  C2C_MSG_REJECT: "C2C_MSG_REJECT",
+  C2C_MSG_RECEIVE: "C2C_MSG_RECEIVE",
+  // ── Reaction events ──
+  MESSAGE_REACTION_ADD: "MESSAGE_REACTION_ADD",
+  MESSAGE_REACTION_REMOVE: "MESSAGE_REACTION_REMOVE",
+} as const;
+
+/** Interaction sub-types carried in `InteractionEvent.data.type`. */
+export const InteractionType = {
+  CONFIG_QUERY: 2001,
+  CONFIG_UPDATE: 2002,
+} as const;

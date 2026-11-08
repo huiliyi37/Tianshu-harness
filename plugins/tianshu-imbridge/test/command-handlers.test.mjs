@@ -147,7 +147,7 @@ test('workspace: 按编号切换 → 新建会话的 cwd 与目标工作区逐�
   const { replies, calls, map } = await runWorkspace('2')
   assert.equal(calls.created.length, 1, '应只建一个会话')
   assert.equal(calls.created[0].cwd, `${ROOT_CFG}\\coding`, 'cwd 必须落在目标工作区')
-  assert.match(calls.created[0].title, /coding/)
+  assert.equal(calls.created[0].title, undefined, '不传标题，把起名权交给宿主的自动命名')
   assert.equal(map.get('c2c:u'), 'S-1', '绑定被替换为新会话')
   assert.match(replies.join(''), /已切换到「coding」/)
   assert.match(replies.join(''), /coding/)
@@ -371,4 +371,133 @@ test('history: 超上限（30）收敛到 20 并说明', async () => {
   const { client } = mkHistoryServe({ events: historyEvents() })
   const { replies } = await runHistory('30', { client })
   assert.match(replies[0], /一次最多 20 条/)
+})
+
+// ── /new：原地开新会话（小类 13）────────────────────────────
+
+/** serve 替身：快照带 cwd、建会话与推进都被记录，供 /new 用例复用。 */
+const mkNewServe = ({
+  snapshot = { id: 'S-OLD', cwd: 'D:\\path\\to\\日常', lastSeq: 0 },
+  getImpl, createImpl,
+} = {}) => {
+  const calls = { created: [], prompted: [] }
+  return {
+    calls,
+    client: {
+      available: true,
+      getSession: getImpl ?? (async () => snapshot),
+      createSession: createImpl ?? (async (a) => { calls.created.push(a); return { id: `S-${calls.created.length}` } }),
+      promptSession: async (id, p) => { calls.prompted.push({ id, p }) },
+      waitForReply: async () => ({ text: '模型回复', lastSeq: 1, timedOut: false, error: null }),
+    },
+  }
+}
+
+const runNew = async ({ serve = true, client, map = mkMap([['c2c:u', 'S-OLD']]) } = {}) => {
+  const replies = []
+  const handlers = createCommandHandlers({
+    workspace: WS_CFG,
+    fsImpl: switchFs(),
+    serveClient: serve ? (client ?? mkNewServe().client) : null,
+    sessionMap: map,
+  })
+  await dispatchCommand(
+    { parsed: parseCommand('/new'), key: 'c2c:u', reply: async (t) => { replies.push(t) } },
+    handlers,
+  )
+  return { replies, map }
+}
+
+test('new: 在当前会话的工作区建新会话并换绑', async () => {
+  const { client, calls } = mkNewServe()
+  const { replies, map } = await runNew({ client })
+  assert.equal(calls.created.length, 1, '应只建一个会话')
+  assert.equal(calls.created[0].cwd, 'D:\\path\\to\\日常', 'cwd 必须与当前会话的工作区逐字一致')
+  assert.equal(calls.created[0].title, undefined, '不传标题，把起名权交给宿主的自动命名')
+  assert.equal(map.get('c2c:u'), 'S-1', '绑定被替换为新会话')
+  assert.match(replies.join(''), /已开新会话/)
+  assert.match(replies.join(''), /日常/)
+})
+
+test('new: 换绑后桥的下一条消息用新会话，且不再建会话', async () => {
+  const { client, calls } = mkNewServe()
+  const map = mkMap([['c2c:u', 'S-OLD']])
+  const handlers = createCommandHandlers({ workspace: WS_CFG, fsImpl: switchFs(), serveClient: client, sessionMap: map })
+  await dispatchCommand(
+    { parsed: parseCommand('/new'), key: 'c2c:u', reply: async () => {} },
+    handlers,
+  )
+  const createdAfterOpen = calls.created.length
+
+  const sent = []
+  const bridge = new ImBridge({
+    workspaceRoot: 'W:/ws', logger: silentLogger, ensureDir: () => {},
+    serveClient: client, sessionMap: map,
+    call: async () => { throw new Error('不应走 headless') },
+    send: async (_t, text) => { sent.push(text) },
+  })
+  await bridge.handle({
+    kind: 'c2c', senderId: 'u', content: '新会话里说一句',
+    replyTarget: { scope: 'c2c', targetId: 'u', msgId: 'm' },
+  })
+  assert.equal(calls.created.length, createdAfterOpen, '下一条消息不得再建会话')
+  assert.equal(calls.prompted.length, 1, '必须推进换绑后的新会话')
+  assert.equal(calls.prompted[0].id, 'S-1')
+  assert.deepEqual(sent, ['模型回复'])
+})
+
+test('new: 无绑定时明确提示，不建会话、绑定表零改动', async () => {
+  const { client, calls } = mkNewServe()
+  const { replies, map } = await runNew({ client, map: mkMap([]) })
+  assert.equal(calls.created.length, 0, '不得建会话')
+  assert.deepEqual(map.log, [], '绑定表不得被触碰')
+  assert.match(replies[0], /还没有绑定会话/)
+})
+
+test('new: 会话已不存在（404）时明确提示，不破坏原绑定', async () => {
+  const { client, calls } = mkNewServe({ getImpl: async () => null })
+  const { replies, map } = await runNew({ client })
+  assert.equal(calls.created.length, 0)
+  assert.match(replies[0], /已经不存在/)
+  assert.deepEqual(map.log, [], '命令层不越权清理绑定')
+  assert.equal(map.get('c2c:u'), 'S-OLD')
+})
+
+test('new: 快照读失败（5xx）只回一句人话，绑定不动', async () => {
+  const { client, calls } = mkNewServe({ getImpl: async () => { throw new Error('快照失败（HTTP 500）') } })
+  const { replies, map } = await runNew({ client })
+  assert.equal(calls.created.length, 0)
+  assert.match(replies[0], /读取当前会话失败/)
+  assert.match(replies[0], /HTTP 500/)
+  assert.deepEqual(map.log, [])
+})
+
+test('new: 快照缺 cwd 时明确回绝，不建会话', async () => {
+  const { client, calls } = mkNewServe({ snapshot: { id: 'S-OLD', lastSeq: 0 } })
+  const { replies, map } = await runNew({ client })
+  assert.equal(calls.created.length, 0)
+  assert.match(replies[0], /没有记录工作区/)
+  assert.deepEqual(map.log, [])
+})
+
+test('new: 建会话失败时不换绑，并把原因说清', async () => {
+  const { client } = mkNewServe({ createImpl: async () => { throw new Error('宿主 500') } })
+  const { replies, map } = await runNew({ client })
+  assert.deepEqual(map.log, [], '失败路径不得动绑定')
+  assert.match(replies[0], /开新会话失败（绑定未改动）/)
+  assert.match(replies[0], /宿主 500/)
+})
+
+test('new: 宿主返回不带 id 也算失败，不写坏绑定', async () => {
+  const { client } = mkNewServe({ createImpl: async () => ({}) })
+  const { replies, map } = await runNew({ client })
+  assert.deepEqual(map.log, [])
+  assert.match(replies[0], /没有返回会话 id/)
+})
+
+test('new: 降级模式（无 serve 通道）明确提示，绑定不动', async () => {
+  const { replies, map } = await runNew({ serve: false })
+  assert.match(replies[0], /当前是降级模式/)
+  assert.ok(!/不认识的命令/.test(replies[0]), '应命中处理器，而不是落到未知命令兜底')
+  assert.deepEqual(map.log, [])
 })

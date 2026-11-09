@@ -148,9 +148,15 @@ export async function buildLegacyTestCommand(cwd: string, filter?: string): Prom
         userGuidance: 'Python 项目检测到，但 tests/ 目录下没有 test_*.py 或 *_test.py 文件。如果项目不需要自动化测试，用 bash 直接运行脚本验证；如果需要测试，在 tests/ 下创建 pytest 用例。',
       }
     }
-    const safeFilter = filter?.replace(/[`$\\;"'|]/g, '')
-    const args = safeFilter ? [safeFilter] : []
-    const display = safeFilter ? `pytest ${safeFilter}` : 'pytest'
+    // #564：files=[多个 .py] 用空格拼成多个 span 传进来。按 token 分别清洗，
+    // 每段用双引号包住——去元字符的旧写法遇到含空格的路径会被 pytest 当成
+    // 两个参数。pytest 支持多 span 混跑（tests/a.py tests/b.py）。
+    const spans = (filter ?? '').split(/\s+/).filter(Boolean)
+      .map(span => span.replace(/[`$\\;"'|]/g, ''))
+      .filter(Boolean)
+      .map(span => (/^[\w./:@=+-]+$/.test(span) ? span : `"${span}"`))
+    const args = spans.length ? spans : []
+    const display = spans.length ? `pytest ${spans.join(' ')}` : 'pytest'
     return { type: 'run', command: 'pytest', args, display, runner, scope, recommendedCommand: recommendedCommand ?? 'pytest' }
   }
 

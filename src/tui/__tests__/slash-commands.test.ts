@@ -46,6 +46,7 @@ function makeCtx(overrides?: Partial<SlashHandlerContext>): SlashHandlerContext 
         toolRegistry: { needsApproval: () => true },
       },
       cwd: '/cwd',
+      enableTool: () => ({ status: 'mounted', cacheImpact: 'none' }),
       setApprovalMode: () => {},
       addAllowRule: () => {},
       addDenyRule: () => {},
@@ -246,6 +247,96 @@ describe('/review off|on|status — 会话级审查门开关', () => {
     assert.deepEqual(input, { action: 'start', depth: 'max', focus: 'focus' })
     assert.deepEqual(resolveAppPromptInput('/review', '/cwd')!.requiredTools, ['review_changes'])
     assert.match(resolveAppPromptInput('/test all', '/cwd')!.prompt, /full=true/)
+  })
+
+  // issue #563：拒绝文案让用户传 files=/commit_ref/range，但 slash handler 从不解析——
+  // 这些 token 落进 focus，files= 被当成审查重点描述，对象仍是空的。
+  it('/review files=[...] 解析为 files 参数并透传（方括号与逗号两种写法）', async () => {
+    for (const [raw, expected] of [
+      ['files=[calc.py]', ['calc.py']],
+      ['files=[calc.py,lib/util.py]', ['calc.py', 'lib/util.py']],
+      ['files=a.ts,b.ts', ['a.ts', 'b.ts']],
+    ] as const) {
+      let input: Record<string, unknown> | undefined
+      const ctx = makeCtx({ parts: ['/review', raw], runIndependentReview: async value => { input = value; return { content: 'review done' } } })
+      assert.equal(await handleSlashCommand(ctx), true)
+      assert.deepEqual(input, { action: 'start', depth: 'default', files: expected }, raw)
+    }
+  })
+
+  it('/review commit_ref=... / range=... 解析为对应参数', async () => {
+    let commitInput: Record<string, unknown> | undefined
+    await handleSlashCommand(makeCtx({ parts: ['/review', 'commit_ref=abc1234'],
+      runIndependentReview: async value => { commitInput = value; return { content: 'ok' } } }))
+    assert.deepEqual(commitInput, { action: 'start', depth: 'default', commit_ref: 'abc1234' })
+
+    let rangeInput: Record<string, unknown> | undefined
+    await handleSlashCommand(makeCtx({ parts: ['/review', 'range=main..feature'],
+      runIndependentReview: async value => { rangeInput = value; return { content: 'ok' } } }))
+    assert.deepEqual(rangeInput, { action: 'start', depth: 'default', range: 'main..feature' })
+  })
+
+  it('显式对象参数与 focus 共存时各自归位', async () => {
+    let input: Record<string, unknown> | undefined
+    await handleSlashCommand(makeCtx({ parts: ['/review', 'max', 'files=[a.ts]', '检查', '锚点漂移'],
+      runIndependentReview: async value => { input = value; return { content: 'ok' } } }))
+    assert.deepEqual(input, { action: 'start', depth: 'max', files: ['a.ts'], focus: '检查 锚点漂移' })
+  })
+
+  it('对象参数互斥：冲突时报错且不启动审查（不静默丢弃）', async () => {
+    let captured = ''
+    let called = false
+    const ctx = makeCtx({ parts: ['/review', 'files=a.ts', 'range=main..feat'],
+      pushStatic: (entry: LogEntry) => { captured += entry.content },
+      runIndependentReview: async () => { called = true; return { content: 'should not run' } } })
+    assert.equal(await handleSlashCommand(ctx), true)
+    assert.equal(called, false)
+    assert.match(captured, /互斥/)
+  })
+
+  it('非法对象参数（range 缺 ..、files 为空）报错而非静默回落', async () => {
+    for (const raw of ['range=feature', 'files=[]', 'commit_ref=']) {
+      let captured = ''
+      let called = false
+      const ctx = makeCtx({ parts: ['/review', raw],
+        pushStatic: (entry: LogEntry) => { captured += entry.content },
+        runIndependentReview: async () => { called = true; return { content: 'should not run' } } })
+      await handleSlashCommand(ctx)
+      assert.equal(called, false, raw)
+      assert.match(captured, /用法|Usage/, raw)
+    }
+  })
+
+  it('minimal preset：#563 期望 /review 执行时把 review_changes 挂到主 agent', async () => {
+    const mounted: string[] = []
+    const agent = { ...makeCtx().agent, enableTool: (name: string) => { mounted.push(name); return { status: 'mounted', cacheImpact: 'none', prefixCacheStrategy: 'none' } } } as any
+    await handleSlashCommand(makeCtx({ agent, parts: ['/review'],
+      runIndependentReview: async () => ({ content: 'ok' }) }))
+    assert.deepEqual(mounted, ['review_changes'], '审查工具在 EXTENDED 层，minimal 下模型看不到——/review 必须先挂载')
+  })
+
+  it('模型工具列表不含 review_changes 时不阻断审查（registry 直执行仍可用）', async () => {
+    let called = false
+    const agent = { ...makeCtx().agent, enableTool: () => ({ status: 'busy', cacheImpact: 'none', prefixCacheStrategy: 'none' }) } as any
+    let captured = ''
+    await handleSlashCommand(makeCtx({ agent, parts: ['/review'],
+      pushStatic: (entry: LogEntry) => { captured += entry.content },
+      runIndependentReview: async () => { called = true; return { content: 'ok' } } }))
+    assert.equal(called, true, '挂载失败不得阻断审查')
+    assert.match(captured, /ok/)
+  })
+
+  it('resolveAppPromptInput 同步解析参数：server 路径不再把 files= 当 focus（issue #563 双门对齐）', () => {
+    const resolved = resolveAppPromptInput('/review files=[calc.py]', '/cwd')!
+    assert.match(resolved.prompt, /files=\["calc\.py"\]/)
+    assert.doesNotMatch(resolved.prompt, /Focus specifically on: files=/)
+    assert.deepEqual(resolved.requiredTools, ['review_changes'])
+
+    assert.match(resolveAppPromptInput('/review commit_ref=abc1234', '/cwd')!.prompt, /commit_ref="abc1234"/)
+    assert.match(resolveAppPromptInput('/review range=main..feature', '/cwd')!.prompt, /range="main\.\.feature"/)
+    assert.match(resolveAppPromptInput('/review max files=[a.ts] 检查锚点', '/cwd')!.prompt, /depth="max"/)
+    // 校验失败的输入必须明示错误，不回落到一次「无对象」审查
+    assert.match(resolveAppPromptInput('/review range=feature', '/cwd')!.prompt, /not a valid range|Usage/i)
   })
 
   it('无 reviewGateRef 注入时明确提示，不静默丢输入', async () => {

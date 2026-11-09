@@ -24,6 +24,68 @@ export interface ResolvedPromptInput {
   requiredTools?: readonly string[]
 }
 
+/** /review 的审查对象参数（issue #563）：files/commit_ref/range 三选一，其余 token 作 focus。 */
+export interface ReviewTargetArgs {
+  files?: string[]
+  commit_ref?: string
+  range?: string
+  focus?: string
+}
+
+export type ReviewTargetParse =
+  | { ok: true; args: ReviewTargetArgs }
+  | { ok: false; error: string }
+
+export const REVIEW_TARGET_USAGE = '用法：/review [max] [files=[...] | commit_ref=<sha> | range=A..B] [focus]'
+
+function parseFilesValue(raw: string): string[] | null {
+  const inner = raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw
+  const files = inner.split(',').map(s => s.trim()).filter(Boolean)
+  return files.length > 0 ? files : null
+}
+
+/**
+ * 解析 /review 剩余 token 中的对象参数（issue #563；slash handler 与
+ * resolveAppPromptInput 双门共用，避免两处解析漂移）。
+ * files/commit_ref/range 互斥——冲突或非法值时报错，不静默丢弃（工具层是
+ * files 优先的宽容语义，入口层显式报错更利于用户纠正）。
+ */
+export function parseReviewTargetArgs(tokens: readonly string[]): ReviewTargetParse {
+  const args: ReviewTargetArgs = {}
+  const focusParts: string[] = []
+  let seen: 'files' | 'commit_ref' | 'range' | undefined
+  for (const token of tokens) {
+    const m = token.match(/^(files|commit_ref|range)=(.*)$/)
+    if (!m) {
+      focusParts.push(token)
+      continue
+    }
+    const key = m[1] as 'files' | 'commit_ref' | 'range'
+    const raw = m[2]!
+    if (seen && seen !== key) {
+      return { ok: false, error: `files/commit_ref/range 互斥，只能指定一个（已指定 ${seen}，又给了 ${key}）。${REVIEW_TARGET_USAGE}` }
+    }
+    seen = key
+    if (key === 'files') {
+      const files = parseFilesValue(raw)
+      if (!files) return { ok: false, error: `files 参数无效：${raw}（应为 files=[a.ts,b.ts] 或 files=a.ts,b.ts）。${REVIEW_TARGET_USAGE}` }
+      args.files = files
+    } else if (key === 'commit_ref') {
+      if (!raw.trim()) return { ok: false, error: `commit_ref 参数无效：不能为空。${REVIEW_TARGET_USAGE}` }
+      args.commit_ref = raw.trim()
+    } else {
+      const [base, head] = raw.split('..')
+      if (!raw.includes('..') || !base?.trim() || !head?.trim()) {
+        return { ok: false, error: `range 参数无效：${raw} 不是合法区间（应为 A..B，例如 range=main..feature）。${REVIEW_TARGET_USAGE}` }
+      }
+      args.range = raw.trim()
+    }
+  }
+  const focus = focusParts.join(' ').trim()
+  if (focus) args.focus = focus
+  return { ok: true, args }
+}
+
 export function resolveAppPromptInput(
   input: string,
   cwd: string,
@@ -50,13 +112,23 @@ export function resolveAppPromptInput(
   if (reviewMatch) {
     const kw = reviewMatch[1]?.toLowerCase()
     if (kw === 'l1') return { prompt: '用户选择 L1 静态建议：仅核对范围与证据，不启动 worker。本次未执行独立代码审查或测试。' }
-    const focusText = reviewMatch[2]?.trim()
+    const tokens = reviewMatch[2]?.trim() ? reviewMatch[2]!.trim().split(/\s+/) : []
+    const parsed = parseReviewTargetArgs(tokens)
+    if (!parsed.ok) {
+      return { prompt: `User typed "${input}" which is not a valid /review target: ${parsed.error} Usage: /review [max] [files=[...] | commit_ref=<sha> | range=A..B] [focus].`, requiredTools: ['review_changes'] }
+    }
+    const { files, commit_ref, range, focus } = parsed.args
     const depth = kw === 'max' || kw === 'l3' ? 'max' : 'default'
     const levelLabel = depth === 'max'
       ? 'L3 read-only review formation (multiple inspectors)'
       : 'L2 single read-only reviewer'
-    const focusInstruction = focusText ? ` Focus specifically on: ${focusText}.` : ''
-    return { prompt: `Run an independent read-only code review: call review_changes with action="start" and depth="${depth}". This launches ${levelLabel}.${focusInstruction} Review only; do not commit, test, or apply fixes.`, requiredTools: ['review_changes'] }
+    const targetParts: string[] = []
+    if (files) targetParts.push(`files=${JSON.stringify(files)}`)
+    if (commit_ref) targetParts.push(`commit_ref="${commit_ref}"`)
+    if (range) targetParts.push(`range="${range}"`)
+    const targetInstruction = targetParts.length > 0 ? ` with ${targetParts.join(' and ')}` : ''
+    const focusInstruction = focus ? ` Focus specifically on: ${focus}.` : ''
+    return { prompt: `Run an independent read-only code review: call review_changes with action="start" and depth="${depth}"${targetInstruction}. This launches ${levelLabel}.${focusInstruction} Review only; do not commit, test, or apply fixes.`, requiredTools: ['review_changes'] }
   }
   // /review typos — don't silently drop user input
   if (/^\/review/i.test(input)) {

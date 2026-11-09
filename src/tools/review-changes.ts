@@ -137,7 +137,7 @@ export function createReviewChangesTool(getContext: (params?: ToolCallParams) =>
       }
       const snapshotOrChoice = await resolveReviewSnapshot(params, ctx)
       if ('choose' in snapshotOrChoice) {
-        return { content: '没有可审查的确定对象：当前无已归属 dirty 文件，也无本会话提交记录。\n请指定 files=[...]、commit_ref 或 range；审查无需先提交。\n（不会偷换成其他会话的 HEAD。）' }
+        return { content: '没有可审查的确定对象：当前无已归属 dirty 文件，也无本会话提交记录。\n请用 /review files=[...]、/review commit_ref=<sha> 或 /review range=A..B 指定对象，或句首说“请审查 X”；审查无需先提交。\n（不会偷换成其他会话的 HEAD。）' }
       }
       const snapshot = snapshotOrChoice
       const depth = params.input.depth === 'max' ? 'max' : 'default'

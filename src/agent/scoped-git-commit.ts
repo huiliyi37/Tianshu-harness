@@ -75,7 +75,7 @@ async function classifyStalePaths(cwd: string, files: string[], signal?: AbortSi
     else missing.push(f)
   }
   if (missing.length === 0) return { addable, stale: [] }
-  const ls = await runGit(cwd, ['ls-files', '-z', '--', ...missing], signal)
+  const ls = await runGit(cwd, ['--literal-pathspecs', 'ls-files', '-z', '--', ...missing], signal)
   const inIndex = new Set(ls.ok ? ls.output.split('\0').filter(Boolean) : [])
   const stale: string[] = []
   for (const f of missing) {
@@ -149,8 +149,8 @@ export async function commitScopedFiles(input: ScopedCommitInput): Promise<Scope
   if (versionDiff) {
     return { ok: false, reason: versionDiff, output: describeVersionDiff(versionDiff, expected, currentCapture.version) }
   }
-  const staged = await runGit(input.cwd, ['diff', '--cached', '--name-only', '-z', '--', ...addable], signal)
-  const unstaged = await runGit(input.cwd, ['diff', '--name-only', '-z', '--', ...addable], signal)
+  const staged = await runGit(input.cwd, ['--literal-pathspecs', 'diff', '--cached', '--name-only', '-z', '--', ...addable], signal)
+  const unstaged = await runGit(input.cwd, ['--literal-pathspecs', 'diff', '--name-only', '-z', '--', ...addable], signal)
   if (!staged.ok || !unstaged.ok) return { ok: false, reason: 'index-unreadable', output: 'Cannot verify selected index contents.' }
   const unstagedPaths = new Set(unstaged.output.split('\0').filter(Boolean))
   if (staged.output.split('\0').some(file => unstagedPaths.has(file))) {
@@ -168,7 +168,11 @@ export async function commitScopedFiles(input: ScopedCommitInput): Promise<Scope
       return { ok: false, reason: retryKind, output: describeVersionDiff(baseKind, expected, retryVersion, 'during retry') }
     }
     // add is idempotent — safe to re-run when the commit step hit a lock.
-    const add = await runGit(input.cwd, ['add', '--', ...addable], signal)
+    // add/commit 的 pathspec 一律字面解释（--literal-pathspecs，全局选项放子
+    // 命令前）：归属文件名本身可能含 glob/magic 字符（如 `foo*`、`:(exclude)`），
+    // 不加会被 git 当模式展开，暂存/提交范围就超出归属集合（实证：`git add --
+    // 'foo*'` 会连 foo1.txt、foo2.txt 一并暂存）。与 git.ts 的 git 工具同口径。
+    const add = await runGit(input.cwd, ['--literal-pathspecs', 'add', '--', ...addable], signal)
     if (!add.ok) {
       const delay = LOCK_RETRY_DELAYS_MS[attempt]
       if (delay !== undefined && isLockContention(add.output)) {
@@ -190,7 +194,11 @@ export async function commitScopedFiles(input: ScopedCommitInput): Promise<Scope
         output: `${describeVersionDiff(baseKind, expected, ready, 'during staging')} Changes remain available for review.`,
       }
     }
-    const commit = await runGit(input.cwd, ['-c', 'core.abbrev=64', 'commit', '-m', input.message, '--only', '--', ...addable], signal)
+    // core.abbrev=40（而非 64）：64 只在 SHA-256 仓库合法，SHA-1 仓库上 git
+    // 直接报 `abbrev length out of range`、整次提交失败（本机 git 2.43 实证）。
+    // 40 是 SHA-1 的满长，在 SHA-256 上也是合法缩写，提交输出的哈希仍满足
+    // 下方 commitSha 正则的 40–64 位要求。
+    const commit = await runGit(input.cwd, ['--literal-pathspecs', '-c', 'core.abbrev=40', 'commit', '-m', input.message, '--only', '--', ...addable], signal)
     if (!commit.ok && commit.interrupted) {
       const observed = await captureCommitVersionAsync(input.cwd, addable)
       return {

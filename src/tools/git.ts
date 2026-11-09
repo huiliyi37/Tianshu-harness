@@ -173,7 +173,10 @@ export async function isPathClean(cwd: string, relPath: string): Promise<boolean
   // 来自 preWriteClaimPaths 的 norm，只剥 cwd 前缀、保留入参分隔符——Windows 反
   // 斜杠键形会被 git 当转义/字面字符而恒不匹配，静默恒干净，L3 在该平台整段失效。
   const pathspec = toPosixPath(relPath)
-  const { ok, output } = await runGitSafe(['status', '--porcelain=v1', '-z', '-uall', '--ignored', '--', pathspec], cwd)
+  // pathspec 一律字面解释：文件名本身可能含 glob/magic 字符（`foo*`、
+  // `:(exclude)`），不加 --literal-pathspecs 时 git 会把它当模式展开——
+  // 脏探测要么漏报（exclude 排除一切 → 误判干净），要么误报到无关文件。
+  const { ok, output } = await runGitSafe(['--literal-pathspecs', 'status', '--porcelain=v1', '-z', '-uall', '--ignored', '--', pathspec], cwd)
   if (!ok) return 'unknown'
   return output.trim().length === 0
 }
@@ -200,7 +203,7 @@ function getScopedCommitFiles(cwd: string, ownedFiles: string[] | undefined, ses
 }
 
 async function hasStagedChanges(cwd: string, pathspecs?: string[], abortSignal?: AbortSignal): Promise<boolean> {
-  const args = ['diff', '--cached', '--quiet']
+  const args = ['--literal-pathspecs', 'diff', '--cached', '--quiet']
   if (pathspecs?.length) args.push('--', ...pathspecs)
   const { code } = await runGitExitCode(args, cwd, abortSignal)
   if (code === 0) return false // no staged changes
@@ -658,9 +661,12 @@ export const GIT_TOOL: Tool = {
               isError: true,
             }
           }
-          const commitArgs = ['commit', '-m', message]
+          // --literal-pathspecs（全局选项，放子命令前）：归属文件名本身可能
+          // 含 glob/magic 字符（如 `foo*`、`:(exclude)`），不加会被 git 当模式
+          // 展开，add/commit 就会把归属范围外的文件也暂存/提交进去。
+          const commitArgs = ['--literal-pathspecs', 'commit', '-m', message]
           if (scopedFiles.length > 0) {
-            await runGit(['add', '--', ...scopedFiles], cwd, params.abortSignal)
+            await runGit(['--literal-pathspecs', 'add', '--', ...scopedFiles], cwd, params.abortSignal)
             commitArgs.push('--only', '--', ...scopedFiles)
           } else if (!(await hasStagedChanges(cwd, undefined, params.abortSignal))) {
             return {
@@ -748,7 +754,7 @@ export const GIT_TOOL: Tool = {
               }
             }
             await createSafetyRef(cwd, params.abortSignal)
-            await runGit(['stash', 'push', '--', ...scoped], cwd, params.abortSignal)
+            await runGit(['--literal-pathspecs', 'stash', 'push', '--', ...scoped], cwd, params.abortSignal)
             return { content: `已 stash ${scoped.length} 个归属文件：${scoped.join(', ')}` }
           }
 

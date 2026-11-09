@@ -107,6 +107,69 @@ describe('GIT_TOOL', () => {
     assert.ok(!status.includes('new-owned.txt'))
   })
 
+  // pathspec 字面化（安全审计 2026-11-09 实证）：归属文件名本身含 glob 字符
+  // 时，`git add -- 'foo*'` 会把 foo1.txt、foo2.txt 一并暂存，commit --only
+  // 同理越界。--literal-pathspecs 后只动字面文件。
+  it('commits only the literal file when an owned filename contains glob characters', async () => {
+    writeFileSync(join(TMP, 'foo1.txt'), 'base 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'base 2')
+    writeFileSync(join(TMP, 'foo*'), 'base star')
+    execSync('git add .', { cwd: TMP })
+    execSync('git commit -m "init"', { cwd: TMP })
+
+    writeFileSync(join(TMP, 'foo1.txt'), 'change 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'change 2')
+    writeFileSync(join(TMP, 'foo*'), 'change star')
+
+    const result = await GIT_TOOL.execute({
+      input: { action: 'commit', message: 'Commit glob-named file' },
+      toolUseId: 'tu_glob',
+      cwd: TMP,
+      sessionModifiedFiles: [join(TMP, 'foo*')],
+    })
+    assert.equal(result.isError, undefined, result.content)
+
+    const committedFiles = execSync('git show --name-only --pretty=format: HEAD', { cwd: TMP, encoding: 'utf-8' })
+      .split('\n')
+      .filter(Boolean)
+      .sort()
+    assert.deepEqual(committedFiles, ['foo*'])
+
+    const status = execSync('git status --porcelain', { cwd: TMP, encoding: 'utf-8' })
+    assert.match(status, / M foo1\.txt/)
+    assert.match(status, / M foo2\.txt/)
+  })
+
+  it('stashes only the literal file when an owned filename contains glob characters', async () => {
+    writeFileSync(join(TMP, 'foo1.txt'), 'base 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'base 2')
+    writeFileSync(join(TMP, 'foo*'), 'base star')
+    execSync('git add .', { cwd: TMP })
+    execSync('git commit -m "init"', { cwd: TMP })
+
+    writeFileSync(join(TMP, 'foo1.txt'), 'change 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'change 2')
+    writeFileSync(join(TMP, 'foo*'), 'change star')
+
+    const result = await GIT_TOOL.execute({
+      input: { action: 'stash' },
+      toolUseId: 'tu_stash_glob',
+      cwd: TMP,
+      ownedFiles: [join(TMP, 'foo*')],
+    })
+    assert.equal(result.isError, undefined, result.content)
+
+    const stashed = execSync('git stash show --name-only stash@{0}', { cwd: TMP, encoding: 'utf-8' })
+      .split('\n')
+      .filter(Boolean)
+      .sort()
+    assert.deepEqual(stashed, ['foo*'])
+
+    const status = execSync('git status --porcelain', { cwd: TMP, encoding: 'utf-8' })
+    assert.match(status, / M foo1\.txt/)
+    assert.match(status, / M foo2\.txt/)
+  })
+
   it('refuses to commit unstaged changes when session ownership is unknown', async () => {
     writeFileSync(join(TMP, 'a.txt'), 'hello')
     execSync('git add .', { cwd: TMP })
@@ -706,5 +769,32 @@ describe('isPathClean — v2 claim-lease 的工作区干净判据', () => {
 
     assert.equal(await isPathClean(dir, 'sub\\a.txt'), false, '反斜杠键形必须命中真实脏文件')
     assert.equal(await isPathClean(dir, 'sub\\missing.txt'), true)
+  })
+
+  // pathspec 字面化（安全审计 2026-11-09 实证）：认领键本身是含 glob/magic
+  // 字符的文件名时，旧探测会把模式展开——`foo*` 命中脏的 foo1.txt 而误报
+  // 不干净，`:(exclude)*` 则排除一切而误报干净（L3 守卫被绕过）。
+  // --literal-pathspecs 后只按字面文件名判定。
+  it('glob 文件名按字面判定——同模式的脏文件不干扰', async () => {
+    initRepo()
+    writeFileSync(join(dir, 'foo1.txt'), 'hello')
+    writeFileSync(join(dir, 'foo*'), 'star')
+    execSync('git add . && git commit -m init', { cwd: dir })
+    writeFileSync(join(dir, 'foo1.txt'), 'changed')
+
+    assert.equal(await isPathClean(dir, 'foo*'), true, '字面文件干净时，同模式脏文件不应干扰')
+    writeFileSync(join(dir, 'foo*'), 'changed')
+    assert.equal(await isPathClean(dir, 'foo*'), false, '字面文件本身脏时必须判不干净')
+  })
+
+  it('pathspec magic 文件名按字面判定——:(exclude) 不再排除一切', async () => {
+    initRepo()
+    writeFileSync(join(dir, 'a.txt'), 'hello')
+    writeFileSync(join(dir, ':(exclude)*'), 'magic')
+    execSync('git add . && git commit -m init', { cwd: dir })
+    writeFileSync(join(dir, ':(exclude)*'), 'changed')
+
+    assert.equal(await isPathClean(dir, ':(exclude)*'), false, 'magic 文件名本身脏时必须判不干净')
+    assert.equal(await isPathClean(dir, 'a.txt'), true)
   })
 })

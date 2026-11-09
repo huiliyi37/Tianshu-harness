@@ -68,6 +68,29 @@ describe('commitScopedFiles', () => {
     assert.equal(git(['log', '-1', '--format=%s']).trim(), 'init')
   })
 
+  // pathspec 字面化（安全审计 2026-11-09 实证）：归属文件名本身含 glob 字符
+  // 时，旧实现 `git add -- 'foo*'` 会把 foo1.txt、foo2.txt 一并暂存，
+  // commit --only 同理越界。--literal-pathspecs 后只动字面文件。
+  it('glob 文件名不扩大暂存/提交范围（pathspec 字面化）', async () => {
+    writeFileSync(join(TMP, 'foo1.txt'), 'base 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'base 2')
+    writeFileSync(join(TMP, 'foo*'), 'base star')
+    git(['add', '.'])
+    git(['commit', '-m', 'init'])
+    writeFileSync(join(TMP, 'foo1.txt'), 'change 1')
+    writeFileSync(join(TMP, 'foo2.txt'), 'change 2')
+    writeFileSync(join(TMP, 'foo*'), 'change star')
+
+    const result = await commitScopedFiles({ cwd: TMP, files: ['foo*'], message: 'fix: glob file' })
+    assert.equal(result.ok, true, result.output)
+    assert.deepEqual(
+      git(['show', '--name-only', '--pretty=format:', 'HEAD']).split('\n').filter(Boolean),
+      ['foo*'],
+    )
+    assert.match(git(['status', '--porcelain']), / M foo1\.txt/)
+    assert.match(git(['status', '--porcelain']), / M foo2\.txt/)
+  })
+
   it('rejects stale previews and mixed staged hunks without absorbing changes', async () => {
     writeFileSync(join(TMP, 'owned.txt'), 'first edit')
     const version = captureCommitVersion(TMP, ['owned.txt'])!

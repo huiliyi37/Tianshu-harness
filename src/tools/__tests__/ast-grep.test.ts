@@ -16,7 +16,9 @@ let astGrep: Tool
 // Use a project-relative temp dir (sandbox blocks /tmp outside workspace)
 const testDir = join(process.cwd(), '.test-tmp', `ast-grep-${randomBytes(4).toString('hex')}`)
 // 2026-09-10 卡死事故夹具目录：只放大文件，与常规夹具隔离。
-const bigDir = join(process.cwd(), '.test-tmp', `ast-big-${randomBytes(4).toString('hex')}`)
+// 注意：必须放在 testDir 内——ast_grep 自 2026-11-09 起执行工作区边界校验，
+// 传工作区外的绝对路径会被直接拒绝（安全审计 ast-grep 读面逃逸修复）。
+const bigDir = join(testDir, 'big')
 
 const tsFixture = `
 function foo(a: number) {

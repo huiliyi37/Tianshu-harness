@@ -73,7 +73,15 @@ export function buildTestExecutionPlan(cwd: string, selection: { files?: readonl
   for (const file of files) {
     const path = resolve(root, file)
     if (isAbsolute(file) || !insideTestRoot(root, path) || !insideTestRoot(canonicalTestPath(root), canonicalTestPath(path)) || !existsSync(path) || !statSync(path).isFile() || !SOURCE.test(file)) {
-      block([file], 'invalid_selection', '目标必须是当前仓库内存在的测试文件。'); continue
+      // #564：旧文案把所有拒绝原因都说成「目标必须是存在的测试文件」，用户
+      // 拿一个确实存在、已被跟踪、刚读过的 .py 去问，只能被引向「路径/跟踪」。
+      // 逐因区分：越界 / 不存在 / 语言不在逐文件采证范围内，各说各的。
+      const outside = isAbsolute(file) || !insideTestRoot(root, path) || !insideTestRoot(canonicalTestPath(root), canonicalTestPath(path))
+      const languageUnsupported = !outside && existsSync(path) && statSync(path).isFile() && !SOURCE.test(file)
+      block([file], 'invalid_selection', outside ? `目标必须位于当前仓库内；${file} 越出仓库或软链到了仓库外。`
+        : languageUnsupported ? `${file} 的语言不在逐文件采证范围内：files/deliveryFiles 的逐文件完成证明只覆盖 JS/TS（.js/.jsx/.ts/.tsx/.mjs/.cjs）。Python 测试请用 files=["${file}"] 定向或 filter，会路由到 pytest；其他语言用 bash 运行项目自己的命令。`
+        : `目标测试文件不存在：${file}。请确认路径相对仓库根目录且文件已落盘。`)
+      continue
     }
     const directory = packageForFile(root, file), owned = groups.get(directory) ?? []
     owned.push(relative(root, path).replaceAll('\\', '/')); groups.set(directory, owned)

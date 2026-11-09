@@ -317,7 +317,7 @@ function truncateOutput(output: string, rawPath?: string, tailOnly = false): str
   return `${head}\n...（中间省略 ${omitted} 字符${suffix}）...\n${tail}`
 }
 
-function buildExecutionEnv(cwd: string): NodeJS.ProcessEnv {
+function buildExecutionEnv(cwd: string, pythonRuntime = false): NodeJS.ProcessEnv {
   const localBin = join(cwd, 'node_modules', '.bin')
   const repoBin = join(process.cwd(), 'node_modules', '.bin')
   // Base off the resolved env so test runners that shell out to toolchain
@@ -337,7 +337,23 @@ function buildExecutionEnv(cwd: string): NodeJS.ProcessEnv {
   return {
     ...base,
     [pathKey]: [localBin, repoBin, currentPath].filter(Boolean).join(delimiter),
+    // #564 flat-layout：直接 spawn `pytest`（而非 `python3 -m pytest`）时，
+    // sys.path[0] 是 pytest 脚本所在目录而非 cwd，`import calc`（仓库根下的
+    // 平铺模块）直接 ModuleNotFoundError。`python3 -m pytest` 之所以能跑通，
+    // 唯一差别就是 cwd 进了 sys.path——这里把同一语义显式补齐，且不改变
+    // 命令形态（pytest 也可能是 pipeline 里任意 shell 命令，argv 级改写风险更大）。
+    ...(pythonRuntime ? { PYTHONPATH: pythonPathWith(base.PYTHONPATH, cwd) } : {}),
   }
+}
+
+/** Python 测试运行器判定——扩展名/命令名唯一真源，避免各处手抄字符串。 */
+export function isPythonRunner(runner: string): boolean {
+  return /(?:^|[/\\])?(?:python[\d.]*|py|pytest|uv|poetry|hatch|tox|nox|pipenv)$/i.test(runner.trim().split(/\s+/)[0] ?? '')
+    || /^python[\d.]*\s+-m\s+(?:pytest|unittest)$/i.test(runner.trim())
+}
+
+function pythonPathWith(existing: string | undefined, cwd: string): string {
+  return existing ? [cwd, existing].join(delimiter) : cwd
 }
 
 export const RUN_TESTS_TOOL: Tool = {
@@ -348,6 +364,7 @@ export const RUN_TESTS_TOOL: Tool = {
 ### 用法
 - 修改代码后用 run_tests 验证改动
 - files 接受精确仓库相对路径，可跨包；与 filter 互斥
+- Python 测试：files=["tests/test_x.py"]（可多文件）直接路由到 pytest；deliveryFiles/projects/shard/check=typecheck 仅支持 JS/TS
 - deliveryFiles 指定本次拟提交的文件，验证在当前 HEAD + 这些文件改动的隔离候选树上运行；与 files（测试文件）含义不同
 - check="typecheck" 与 deliveryFiles 合用，仅在本地 tsc 的项目配置覆盖全部候选 TypeScript 文件时提供同树类型检查证明
 - filter 按文件名／词干定位 .test/.spec；重名返回候选，不选择第一项
@@ -376,11 +393,11 @@ export const RUN_TESTS_TOOL: Tool = {
         rerun: { type: 'boolean', description: '仅用户明确要求重跑时 true；相同版本/范围/环境默认复用已结束回执，不因增大 timeout 重跑' },
         full: { type: 'boolean', description: '用户明确要求全量测试时设置 true；与 files/filter 互斥。遵循现有工具审批。' },
         environment: { type: 'string', enum: ['workspace', 'candidate', 'compare'], description: '默认只运行一个环境；deliveryFiles 默认 candidate。compare 显式要求候选与工作区对照。' },
-        files: { type: 'array', items: { type: 'string' }, minItems: 1, description: '精确的仓库相对测试路径；可以跨包，与 filter 互斥。' },
-        deliveryFiles: { type: 'array', items: { type: 'string' }, minItems: 1, description: '拟提交的仓库相对文件路径；仅验证这些改动与当前 HEAD 形成的候选树。' },
-        check: { type: 'string', enum: ['typecheck'], description: '对 deliveryFiles 候选树做完整本地 TypeScript 类型检查；不运行测试。' },
-        projects: { type: 'array', items: { type: 'string' }, description: '明确选择配置项目，空数组表示配置的全部项目；必须同时给出 files/filter 或显式 full。' },
-        shard: { type: 'boolean', enum: [false], description: '显式取消原 Jest/Vitest 分片，用于剩余文件定向补测。' },
+        files: { type: 'array', items: { type: 'string' }, minItems: 1, description: '精确的仓库相对测试路径；可以跨包，与 filter 互斥。支持 JS/TS 与 Python：全为 .py 时路由到 pytest（多文件可一次给出）；Python 与 JS/TS 不能混在同一次调用。' },
+        deliveryFiles: { type: 'array', items: { type: 'string' }, minItems: 1, description: '拟提交的仓库相对文件路径；仅验证这些改动与当前 HEAD 形成的候选树。仅支持 JS/TS 候选树——Python 项目请用 files=["tests/test_x.py"]。' },
+        check: { type: 'string', enum: ['typecheck'], description: '对 deliveryFiles 候选树做完整本地 TypeScript 类型检查；不运行测试。仅支持 TypeScript。' },
+        projects: { type: 'array', items: { type: 'string' }, description: '明确选择配置项目，空数组表示配置的全部项目；必须同时给出 files/filter 或显式 full。仅支持 JS/TS 项目。' },
+        shard: { type: 'boolean', enum: [false], description: '显式取消原 Jest/Vitest 分片，用于剩余文件定向补测。仅用于 JS/TS。' },
         filter: { type: 'string', description: '测试文件名、词干或相对路径（不是测试名）。必须与 files 至少给一个——空参数只返回范围预览，不再默认全量。' },
         timeout: { type: 'integer', description: '整次验证的总预算（毫秒，默认：120000）；仅显式 compare 时两个环境共用，不自动重跑。' },
       },
@@ -394,7 +411,11 @@ export const RUN_TESTS_TOOL: Tool = {
     if (reused) return reused
     if (params.input.deliveryFiles !== undefined) {
       const files = params.input.deliveryFiles
-      if (!Array.isArray(files) || files.length === 0 || files.some(file => typeof file !== 'string' || !file.trim()) || params.candidateSnapshotError || !params.verificationSnapshot?.candidateOnly) {
+      // #564：files 含 .py 时 deliveryFiles 组合本身就不支持（JS/TS-only），
+      // 该拒绝应由后方的 Python 分支如实报出，而不是先被快照门禁盖掉。
+      const hasPythonFiles = Array.isArray(params.input.files)
+        && (params.input.files as unknown[]).some(file => typeof file === 'string' && /\.py$/i.test(file))
+      if (!hasPythonFiles && (!Array.isArray(files) || files.length === 0 || files.some(file => typeof file !== 'string' || !file.trim()) || params.candidateSnapshotError || !params.verificationSnapshot?.candidateOnly)) {
         return { content: params.candidateSnapshotError ?? '候选快照不可用；未运行实时工作区测试，交付验证仍待完成。', isError: true,
           verification: { command: 'run_tests', kind: 'test', status: 'blocked', scope: 'targeted', blockedReason: 'unknown_runner', candidateFiles: Array.isArray(files) ? files.filter((file): file is string => typeof file === 'string') : [] } }
       }
@@ -442,6 +463,27 @@ export const RUN_TESTS_TOOL: Tool = {
     if (params.input.environment === 'workspace' && params.input.deliveryFiles !== undefined
       || (params.input.environment === 'candidate' || params.input.environment === 'compare') && params.input.deliveryFiles === undefined && !params.verificationSnapshot) {
       return { content: 'candidate/compare 环境需要 deliveryFiles；workspace 不接受 deliveryFiles。环境选择不扩大测试范围。', isError: true, errorKind: 'format_error' }
+    }
+    // #564：files 里的 .py 由 legacy pytest 路径承接（planned 路径只采证
+    // JS/TS 逐文件完成证明）。混合语言的无序豁免不可证明，直接如实拒绝；
+    // deliveryFiles / projects / shard / typecheck 仍是 JS/TS-only 组合。
+    const selectedFiles = Array.isArray(params.input.files) ? params.input.files as string[] : undefined
+    const pythonFiles = selectedFiles?.filter(file => /\.py$/i.test(file)) ?? []
+    const unsupportedCombo = pythonFiles.length > 0
+      && (pythonFiles.length !== selectedFiles!.length ? 'files 不能混合 Python 与 JS/TS 测试文件：两者的完成证明机制不同，不能一次调用混跑。请分开调用。'
+        : params.input.deliveryFiles !== undefined ? 'deliveryFiles 仅支持 JS/TS 候选树；Python 项目请直接用 files=["path/test_x.py"]。'
+        : params.input.projects !== undefined ? 'projects 仅支持 JS/TS 项目的配置项目选择；Python 不支持。'
+        : params.input.shard !== undefined ? 'shard 仅用于取消 Jest/Vitest 分片；Python 不支持。'
+        : '')
+    if (unsupportedCombo) return { content: unsupportedCombo, isError: true, errorKind: 'format_error' }
+    if (pythonFiles.length > 0) {
+      const testCommand = await buildLegacyTestCommand(params.cwd, pythonFiles.join(' '))
+      if (testCommand.type === 'blocked') {
+        const rawPath = await persistRawOutput(params.toolUseId, testCommand.message)
+        return { content: testCommand.message, uiContent: buildUiOutput(testCommand.message, { command: testCommand.display, exitCode: -1, durationMs: 0 }),
+          rawPath, isError: true, verification: buildBlockedVerification(testCommand, Date.now(), testCommand.blockedReason, testCommand.userGuidance) }
+      }
+      return runTestPhases(params, { ...testCommand, targetFiles: pythonFiles }, pythonFiles.join(' '), remaining)
     }
     if (params.input.deliveryFiles !== undefined || params.input.projects !== undefined || params.input.shard !== undefined || params.input.files !== undefined || existsSync(join(params.cwd, 'package.json')) && !loadDeclaredVerify(params.cwd).test
       && (filter || classifyVerificationCommand('npm test', params.cwd).runner)) {
@@ -585,7 +627,7 @@ export async function runTestCommandIn(
       }
       const child = deps.spawn(spawnSpec.command, spawnSpec.args, {
         cwd,
-        env: { ...buildExecutionEnv(cwd), ...completion?.env },
+        env: { ...buildExecutionEnv(cwd, isPythonRunner(testCommand.runner)), ...completion?.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: spawnSpec.shell,
         // Own process group on POSIX so killProcessTree can reap the whole test

@@ -4,7 +4,8 @@ import { chmodSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { RUN_TESTS_TOOL, parseOutput } from '../run-tests.js'
+import { RUN_TESTS_TOOL, parseOutput, isPythonRunner } from '../run-tests.js'
+import { buildTestExecutionPlan } from '../test-execution-plan.js'
 import { makeTestDir, cleanupTestDir } from './_test-tmp.js'
 
 // output-store.ts 的 rawDir() 懒加载且受 TMPDIR 控制。全量 runner 已保证
@@ -344,6 +345,88 @@ process.exit(result.status ?? 1);`)
       assert.equal(result.verification!.command, 'pytest')
       assert.equal(result.verification!.status, 'passed')
       assert.equal(result.verification!.passed, 1)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    }
+  })
+
+  /* ── #564：files 的 Python 定向入口 ──────────────────────────────────────
+   * 旧行为：files 一律走 planned 路径，其 TEST/SOURCE 只匹配 JS/TS，`.py` 必然
+   * 落到 invalid_selection，文案还说「目标必须是当前仓库内存在的测试文件」——
+   * 用户拿一个确实存在、已被跟踪、刚读过的文件来问，只能被引向路径/跟踪问题。 */
+  it('routes .py files to pytest instead of failing as a missing test file', { skip: FAKE_PYTEST_SKIP }, async () => {
+    const dir = setupUnmarkedPythonProject()
+    try {
+      const result = await RUN_TESTS_TOOL.execute(makeParams({ files: ['tests/test_example.py'] }, dir))
+
+      assert.equal(result.isError, false, result.content)
+      assert.equal(result.verification!.command, 'pytest tests/test_example.py')
+      assert.equal(result.verification!.scope, 'targeted')
+      assert.equal(result.verification!.status, 'passed')
+      assert.deepEqual(result.verification!.targetFiles, ['tests/test_example.py'])
+      assert.doesNotMatch(result.content, /目标必须是当前仓库内存在的测试文件/)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    }
+  })
+
+  it('passes multiple .py files as separate pytest spans', { skip: FAKE_PYTEST_SKIP }, async () => {
+    const dir = setupUnmarkedPythonProject()
+    try {
+      writeFileSync(join(dir, 'tests', 'test_second.py'), 'def test_ok2():\n    assert 2 + 2 == 4\n')
+      const result = await RUN_TESTS_TOOL.execute(makeParams({
+        files: ['tests/test_example.py', 'tests/test_second.py'],
+      }, dir))
+
+      assert.equal(result.isError, false, result.content)
+      // 空格拼接的多 span 必须逐段清洗后作为独立 argv，不能糊成一个路径。
+      assert.equal(result.verification!.command, 'pytest tests/test_example.py tests/test_second.py')
+      assert.equal(result.verification!.targetFiles?.length, 2)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    }
+  })
+
+  it('rejects mixed Python and JS/TS files with an explicit reason', async () => {
+    const dir = setupUnmarkedPythonProject()
+    try {
+      const result = await RUN_TESTS_TOOL.execute(makeParams({
+        files: ['tests/test_example.py', 'src/example.test.ts'],
+      }, dir))
+
+      assert.equal(result.isError, true)
+      // 混跑不能被静默降级成其中一条路径：说清为什么，而不是报一个语言问题。
+      assert.match(result.content, /不能混合/)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    }
+  })
+
+  it('says deliveryFiles is JS/TS-only instead of blaming the path', async () => {
+    const dir = setupUnmarkedPythonProject()
+    try {
+      const result = await RUN_TESTS_TOOL.execute(makeParams({
+        files: ['tests/test_example.py'],
+        deliveryFiles: ['calc.py'],
+      }, dir))
+
+      assert.equal(result.isError, true)
+      assert.match(result.content, /仅支持 JS\/TS/)
+      assert.doesNotMatch(result.content, /目标必须是当前仓库内存在的测试文件/)
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
+    }
+  })
+
+  it('planned path names the language limit for a .py file it cannot prove', async () => {
+    // 绕过 execute 层的路由，直接验证 planned 的报错不再误导成路径问题。
+    const dir = setupUnmarkedPythonProject()
+    try {
+      const plan = buildTestExecutionPlan(dir, { files: ['tests/test_example.py'] })
+      assert.equal(plan.groups.length, 0)
+      assert.equal(plan.blocked.length, 1)
+      assert.match(plan.blocked[0]!.reason, /语言不在逐文件采证范围内/)
+      assert.doesNotMatch(plan.blocked[0]!.reason, /目标必须是当前仓库内存在的测试文件/)
     } finally {
       await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 50 })
     }

@@ -1,7 +1,7 @@
 import type { Tool, ToolCallParams, ToolResult } from './types.js'
 import { issueMatchRef } from './ast-match-refs.js'
 import { currentFileVersion } from '../agent/file-version.js'
-import { resolve } from 'node:path'
+import { validatePathSafe } from './path-validate.js'
 import { cpuPool } from '../workers/cpu-pool.js'
 import type { AstScanArgs, AstScanMatch, AstScanResult } from '../workers/cpu-tasks.js'
 import { MAX_PARSE_FILE_BYTES, astScanSoftMs, astScanUnavailable, collectFiles, resolveRuleOrPattern } from './ast-shared.js'
@@ -91,10 +91,24 @@ export const AST_GREP_TOOL: Tool = {
     const includeMeta = input.includeMeta === true
 
     const allFiles: string[] = []
+    const cwd = params.cwd ?? process.cwd()
     for (const p of paths) {
-      const resolved = resolve(params.cwd ?? process.cwd(), p)
+      // ast_grep 是只读工具，但「只读」不等于「无边界」：它把文件内容原样
+      // 回传给模型，读面与 read_file 同级。此前这里直接 resolve + collectFiles，
+      // 完全绕过 validatePathSafe——实测 `paths: ['../outside']` 能读到工作区外
+      // 的源码，`paths: ['/etc/passwd']` 能读到系统文件，`paths: ['.env']` 能读到
+      // 工作区内凭据（validatePathSafe 的敏感文件硬门同样被绕过）。故与
+      // read_file / grep 走同一套校验，并对收集结果逐个复查（工作区内指向外部
+      // 的软链目录会在遍历后暴露）。
+      const check = validatePathSafe(cwd, p, 'read')
+      if (!check.ok) return { content: `错误：${check.error}`, isError: true }
       try {
-        allFiles.push(...await collectFiles(resolved))
+        const collected = await collectFiles(check.path)
+        for (const f of collected) {
+          const fcheck = validatePathSafe(cwd, f, 'read')
+          if (!fcheck.ok) return { content: `错误：${fcheck.error}`, isError: true }
+          allFiles.push(fcheck.path)
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         return { content: `错误：${message}`, isError: true }

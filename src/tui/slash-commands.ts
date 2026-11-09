@@ -8,7 +8,7 @@ import { registerRepairPrefixCommand } from './repair-prefix.js'
 import type { AgentLoop } from '../agent/loop.js'
 import type { SessionContext } from '../agent/context.js'
 import { catalogMetaFor } from './command-catalog.js'
-import { isProjectSlotSkill, resolveAppPromptInput } from './prompt-input-resolver.js'
+import { isProjectSlotSkill, parseReviewTargetArgs, resolveAppPromptInput } from './prompt-input-resolver.js'
 import { projectSurfaceAllowed } from '../config/project-trust.js'
 import { SessionPersist, getSessionDir } from '../agent/session-persist.js'
 import { forkSession, listBranches, countMessageLines } from '../agent/session-fork.js'
@@ -743,9 +743,23 @@ const TUI_SLASH_COMMANDS: readonly TuiSlashCommandDef[] = [
       }
       if (!ctx.runIndependentReview) return false
       const hasLevel = ['max', 'l2', 'l3'].includes(keyword ?? '')
-      const focus = parts.slice(hasLevel ? 2 : 1).join(' ').trim()
+      // issue #563：解析 files=/commit_ref=/range= 对象参数并透传给 review_changes；
+      // 此前这些 token 整段落进 focus，工具收到的 input.files 恒为 undefined。
+      const parsed = parseReviewTargetArgs(parts.slice(hasLevel ? 2 : 1))
+      if (!parsed.ok) {
+        pushStatic(createLogEntry({ type: 'system', content: `❌ ${parsed.error}` }))
+        setIsStreaming(false)
+        return true
+      }
+      const { files, commit_ref, range, focus } = parsed.args
+      // minimal preset 下 review_changes 在模型工具列表中不可见：执行前显式挂载，
+      // 挂载失败只告警不阻断——handler 经 toolRegistry.get 直执行仍可用。
+      const activation = activateRequiredToolsNow(['review_changes'], name => ctx.agent.enableTool(name), note => pushStatic(createLogEntry({ type: 'system', content: note })))
+      if (!activation.ok) {
+        pushStatic(createLogEntry({ type: 'system', content: `⚠️ ${activation.error}；继续执行审查（经工具注册表直接调用）。` }))
+      }
       try {
-        const result = await ctx.runIndependentReview({ action: 'start', depth: keyword === 'max' || keyword === 'l3' ? 'max' : 'default', ...(focus ? { focus } : {}) })
+        const result = await ctx.runIndependentReview({ action: 'start', depth: keyword === 'max' || keyword === 'l3' ? 'max' : 'default', ...(files ? { files } : {}), ...(commit_ref ? { commit_ref } : {}), ...(range ? { range } : {}), ...(focus ? { focus } : {}) })
         pushStatic(createLogEntry({ type: 'system', content: result.content }))
       } catch (error) {
         pushStatic(createLogEntry({ type: 'system', content: `审查未完成：${String(error)}` }))

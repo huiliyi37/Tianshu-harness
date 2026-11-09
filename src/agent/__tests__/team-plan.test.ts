@@ -252,4 +252,36 @@ Alternate task
     const t2 = tasks.find(t => t.id === 'T2')!
     assert.deepEqual(t2.dependsOn, ['T1', { dependsOn: 'T3', onFailure: 'skip' }])
   })
+
+  it('filters out Chinese placeholder dependencies like 无, 无依赖, - (issue #562)', () => {
+    const tasks = parseTeamTasks(`
+### T1: add mul to a
+- 文件: a.py, tests/test_a.py
+- 依赖: 无
+- 验收: python3 -m pytest tests/test_a.py -q
+
+### T2: add slugify to b
+- 文件: b.py, tests/test_b.py
+- 依赖: -
+- 验收: python3 -m pytest tests/test_b.py -q
+`)
+    assert.equal(tasks.length, 2)
+    assert.deepEqual(tasks[0]!.dependsOn, [])
+    assert.deepEqual(tasks[1]!.dependsOn, [])
+  })
+
+  it('captures root-level files and explicit 文件/files lines (issue #562)', () => {
+    const drafts = parseTeamTaskDrafts(`
+### T1: add mul to a
+- 文件: a.py, tests/test_a.py
+- 验收: python3 -m pytest tests/test_a.py -q
+
+### T2: modify main with backtick \`calc.py\`
+- touch: \`main.go\`
+`)
+    assert.equal(drafts.length, 2)
+    assert.deepEqual(drafts[0]!.files, ['a.py', 'tests/test_a.py'])
+    assert.ok(drafts[1]!.files.includes('calc.py'))
+    assert.ok(drafts[1]!.files.includes('main.go'))
+  })
 })

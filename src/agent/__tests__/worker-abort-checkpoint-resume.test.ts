@@ -17,6 +17,7 @@ import { ToolRegistry } from '../../tools/registry.js'
 import type { Tool, ToolCallParams } from '../../tools/types.js'
 import type { ModelCapabilityCard } from '../../model/capability.js'
 import { DelegationCoordinator } from '../coordinator.js'
+import { isValidSessionId } from '../../validation.js'
 import { READ_ONLY_WORKER_TOOLS, buildBlockedWorkerResult, deriveWorkerSessionId, type WorkOrder } from '../work-order.js'
 import { profileRegistry } from '../profile-registry.js'
 import type { WorkerCheckpoint, WorkerSessionConfig } from '../worker-session.js'
@@ -209,6 +210,15 @@ describe('W4 worker session id de-collision', () => {
     assert.equal(deriveWorkerSessionId('batch:0'), 'worker-batch-0')
     assert.equal(deriveWorkerSessionId('batch:0', 'x7f3a'), 'worker-batch-0-x7f3a')
     assert.equal(deriveWorkerSessionId('wo_abc'), 'worker-wo_abc')
+    const task1Session = deriveWorkerSessionId('Task 1', '68a63')
+    assert.equal(task1Session, 'worker-Task-1-68a63')
+    assert.ok(isValidSessionId(task1Session))
+    const cjkSession = deriveWorkerSessionId('任务 1: 算法实现')
+    assert.equal(cjkSession, 'worker-1')
+    assert.ok(isValidSessionId(cjkSession))
+    const pureCjkSession = deriveWorkerSessionId('独立任务')
+    assert.match(pureCjkSession, /^worker-task-[a-f0-9]{8}$/)
+    assert.ok(isValidSessionId(pureCjkSession))
   })
 
   it('re-dispatching the same stable batch order id yields a fresh session nonce each time', async () => {

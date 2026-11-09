@@ -33,7 +33,7 @@ export async function captureCommitVersionDetailed(cwd: string, files: string[],
       const path = resolve(root, file), rel = relative(root, path)
       if (detectSensitiveFile(file).sensitive) return { ok: false, code: 'sensitive-file', detail: file }
       if (isAbsolute(rel) || rel.startsWith('..')) return { ok: false, code: 'path-escape', detail: file }
-      hash.update(file)
+      hash.update(file.replace(/\\/g, '/'))
       try {
         const actual = await realpath(path), inside = relative(root, actual)
         if (isAbsolute(inside) || inside.startsWith('..')) return { ok: false, code: 'symlink-escape', detail: file }

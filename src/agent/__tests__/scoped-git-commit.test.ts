@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync, spawn } from 'node:child_process'
@@ -50,6 +50,27 @@ describe('commitScopedFiles', () => {
     assert.equal(result.ok, true, result.output)
     assert.match(result.output, /Skipped 1 stale path/)
     assert.equal(git(['log', '-1', '--format=%s']).trim(), 'fix: stale skip')
+  })
+
+  it('Windows 风格反斜杠与子目录路径的摘要一致，正常提交（issue #554）', async () => {
+    mkdirSync(join(TMP, 'subdir'), { recursive: true })
+    writeFileSync(join(TMP, 'subdir', 'sub.txt'), 'sub file content')
+    git(['add', 'subdir/sub.txt'])
+    git(['commit', '-m', 'add sub file'])
+
+    writeFileSync(join(TMP, 'subdir', 'sub.txt'), 'sub file updated')
+    const versionForward = captureCommitVersion(TMP, ['subdir/sub.txt'])!
+    const versionBackward = captureCommitVersion(TMP, ['subdir\\sub.txt'])!
+    assert.equal(versionForward.files, versionBackward.files, '正反斜杠产出的 files 摘要必须完全一致')
+
+    const result = await commitScopedFiles({
+      cwd: TMP,
+      files: ['subdir\\sub.txt'],
+      message: 'fix: sub file path on windows',
+      expectedVersion: versionForward,
+    })
+    assert.equal(result.ok, true, result.output)
+    assert.equal(git(['log', '-1', '--format=%s']).trim(), 'fix: sub file path on windows')
   })
 
   it('stale 场景下部分暂存仍被拒绝（修复没有拆掉半暂存保护）', async () => {

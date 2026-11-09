@@ -227,7 +227,7 @@ function normalizeFiles(cwd: string, files: string[]): string[] {
       const resolved = resolve(cwd, file)
       const rel = relative(cwd, resolved)
       if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
-      return rel
+      return rel.replace(/\\/g, '/')
     })
     .filter((file): file is string => file !== null)
   return [...new Set(normalized)].sort((a, b) => a.localeCompare(b))
